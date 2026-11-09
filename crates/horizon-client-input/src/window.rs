@@ -395,16 +395,14 @@ impl FullscreenState {
         let mode_change = !in_video_screen && self.take_mode_change();
         match request {
             Some(false) => window.set_fullscreen(None),
-            Some(true) => window.set_fullscreen(Some(fullscreen_request(
+            Some(true) => enter_fullscreen(
                 window,
-                exclusive,
-                preferred.as_ref(),
-            ))),
-            None if reapply || mode_change => window.set_fullscreen(Some(fullscreen_request(
+                fullscreen_request(window, exclusive, preferred.as_ref()),
+            ),
+            None if reapply || mode_change => enter_fullscreen(
                 window,
-                exclusive,
-                preferred.as_ref(),
-            ))),
+                fullscreen_request(window, exclusive, preferred.as_ref()),
+            ),
             None => {}
         }
     }
@@ -583,6 +581,34 @@ fn monitor_current_mode(
         .max_by_key(|m| (m.refresh_rate_millihertz(), m.bit_depth()))
 }
 
+/// `window.set_fullscreen(Some(fullscreen))`. On Windows a maximized window leaves its maximized
+/// state first: winit keeps a maximized window's client area inside the work area, so a
+/// borderless fullscreen kept the taskbar over its bottom and pushed its top off screen (#9984).
+pub fn enter_fullscreen(window: &winit::window::Window, fullscreen: winit::window::Fullscreen) {
+    #[cfg(target_os = "windows")]
+    if window.is_maximized() {
+        window.set_maximized(false);
+    }
+    window.set_fullscreen(Some(fullscreen));
+}
+
+/// Borderless fullscreen on the window's own monitor (the primary one when it has none).
+pub fn borderless_fullscreen(window: &winit::window::Window) -> winit::window::Fullscreen {
+    winit::window::Fullscreen::Borderless(
+        window
+            .current_monitor()
+            .or_else(|| window.primary_monitor()),
+    )
+}
+
+/// A window created fullscreen that the system also marked maximized enters it again
+/// unmaximized ([`enter_fullscreen`]); only Windows does that.
+pub fn settle_created_fullscreen(window: &winit::window::Window, fullscreen: bool) {
+    if cfg!(target_os = "windows") && fullscreen && window.is_maximized() {
+        enter_fullscreen(window, borderless_fullscreen(window));
+    }
+}
+
 /// `Window.applyFullscreen`: the fullscreen the window asks for. Exclusive fullscreen takes
 /// `Monitor.getPreferredVideoMode` (the preferred mode if the monitor has it, else the desktop
 /// mode); a monitor with no usable mode falls back to borderless, as vanilla does.
@@ -592,13 +618,13 @@ pub fn fullscreen_request(
     preferred: Option<&VideoMode>,
 ) -> winit::window::Fullscreen {
     use winit::window::Fullscreen;
-    if !exclusive {
-        return Fullscreen::Borderless(None);
-    }
-    let Some(monitor) = window
+    let monitor = window
         .current_monitor()
-        .or_else(|| window.primary_monitor())
-    else {
+        .or_else(|| window.primary_monitor());
+    if !exclusive {
+        return Fullscreen::Borderless(monitor);
+    }
+    let Some(monitor) = monitor else {
         return Fullscreen::Borderless(None);
     };
     let wanted = preferred.and_then(|p| {
@@ -608,7 +634,7 @@ pub fn fullscreen_request(
     });
     match wanted.or_else(|| monitor_current_mode(&monitor)) {
         Some(mode) => Fullscreen::Exclusive(mode),
-        None => Fullscreen::Borderless(None),
+        None => Fullscreen::Borderless(Some(monitor)),
     }
 }
 
@@ -626,6 +652,22 @@ pub fn icon() -> Option<winit::window::Icon> {
     }
     bytes.truncate(info.buffer_size());
     winit::window::Icon::from_rgba(bytes, info.width, info.height).ok()
+}
+
+/// Apply Horizon's icon to every window. Windows has a separate taskbar icon slot from the small
+/// window icon; requiring the decoded icon there prevents a generic taskbar icon from appearing.
+pub fn with_horizon_icon(
+    attributes: winit::window::WindowAttributes,
+) -> winit::window::WindowAttributes {
+    let icon = icon();
+    #[cfg(target_os = "windows")]
+    let icon = Some(icon.expect("Horizon's icon must be available on Windows"));
+
+    let attributes = attributes.with_window_icon(icon.clone());
+    #[cfg(target_os = "windows")]
+    let attributes =
+        winit::platform::windows::WindowAttributesExtWindows::with_taskbar_icon(attributes, icon);
+    attributes
 }
 
 #[cfg(test)]

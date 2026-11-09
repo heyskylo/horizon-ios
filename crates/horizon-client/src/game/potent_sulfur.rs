@@ -13,7 +13,8 @@ use horizon_client::{
     block_entities::Pos,
     containers::BlockEntity,
     effects::EffectInstance,
-    mobs::Mob,
+    join_seq::{JoinList, ListStamp},
+    mobs::{Mob, seen_grid::SeenGrid},
     particles::{ParticleLevel, ParticleOptions, ParticleType as T},
     potent_sulfur::{
         can_be_reached_by_noxious_gas, find_noxious_gas_source_block, unobstructed_block_count,
@@ -25,6 +26,22 @@ use horizon_core::{
     random::{PositionalRandom, RandomSource, XoroshiroRandom},
 };
 use horizon_world::{level::flags, registry::BlockStateId};
+
+/// The mobs' boxes for one block entity pass, built when a geyser's gas first
+/// looks for mobs and kept until the mob list's next write (a spawner's mob, a
+/// launch), so every geyser of the pass reads its neighbours, not every mob.
+#[derive(Default)]
+pub(super) struct PassMobs {
+    grid: Option<(ListStamp, SeenGrid)>,
+}
+impl PassMobs {
+    /// The list was written without moving, adding or removing a mob.
+    fn wrote(&mut self, mobs: &JoinList<Mob>) {
+        if let Some((stamp, _)) = &mut self.grid {
+            *stamp = mobs.stamp();
+        }
+    }
+}
 
 /// `PotentSulfurBlockEntity.GEYSER_SALT`.
 const GEYSER_SALT: i64 = -904_011_478;
@@ -172,23 +189,58 @@ impl Game<'_> {
         {
             self.as_fight_player(player.who, |g| g.apply_nausea_effect_to_player(source));
         }
+        let mut near = Vec::new();
+        if !self.mobs_in_pass(area, &mut near) {
+            near.extend(0..self.mobs.len() as u32);
+        }
         let level = ParticleLevel {
             world: &self.world,
             facts: self.res.facts(),
             collision: &self.collision,
             player: None,
         };
-        let tags = &self.res.stations().enchantments.entity_tags;
-        for mob in self
-            .mobs
-            .iter_mut()
-            .filter(|m| m.alive() && m.bounds().intersects(area))
-        {
-            let eye = [mob.position.x, mob.eye_y(), mob.position.z];
-            if can_be_reached_by_noxious_gas(&level, source, eye) {
-                apply_nausea_effect_to_mob(mob, tags);
-            }
+        // The gas reads blocks only, so the mobs it reaches can be found
+        // before any gets its effect.
+        near.retain(|&j| {
+            let mob = &self.mobs[j as usize];
+            mob.alive()
+                && mob.bounds().intersects(area)
+                && can_be_reached_by_noxious_gas(
+                    &level,
+                    source,
+                    [mob.position.x, mob.eye_y(), mob.position.z],
+                )
+        });
+        if near.is_empty() {
+            return;
         }
+        let tags = &self.res.stations().enchantments.entity_tags;
+        for j in near {
+            apply_nausea_effect_to_mob(&mut self.mobs[j as usize], tags);
+        }
+        // An effect moves no mob and changes no list: the grid still holds.
+        if let Some(pass) = self.pass_mobs.as_mut() {
+            pass.wrote(&self.mobs);
+        }
+    }
+
+    /// The slots of the mobs whose box may meet `area`, from a grid kept for
+    /// the block entity pass; false outside the pass: scan them all.
+    fn mobs_in_pass(&mut self, area: Aabb, out: &mut Vec<u32>) -> bool {
+        let Some(pass) = self.pass_mobs.as_mut() else {
+            return false;
+        };
+        let mobs = &self.mobs;
+        if pass
+            .grid
+            .as_ref()
+            .is_none_or(|(stamp, _)| *stamp != mobs.stamp())
+        {
+            pass.grid = Some((mobs.stamp(), SeenGrid::new(mobs.iter().map(Mob::bounds))));
+        }
+        pass.grid
+            .as_ref()
+            .is_some_and(|(_, grid)| grid.candidates(area, out))
     }
 
     /// `PotentSulfurBlockEntity.applyNauseaEffect` on the player acting (a
@@ -309,13 +361,18 @@ impl Game<'_> {
         let area = launch_area(pos, height);
         let limit = f64::from(0.3f32) + f64::from(water_blocks) * 0.1;
         let push = f64::from(0.2f32);
+        let mut near = Vec::new();
+        if !self.mobs_in_pass(area, &mut near) {
+            near.extend(0..self.mobs.len() as u32);
+        }
+        near.retain(|&j| {
+            let m = &self.mobs[j as usize];
+            m.alive() && m.bounds().intersects(area)
+        });
         let tags = &self.res.stations().enchantments.entity_tags;
         let immune = tags.get("minecraft:not_affected_by_geysers");
-        for mob in self
-            .mobs
-            .iter_mut()
-            .filter(|m| m.alive() && m.bounds().intersects(area))
-        {
+        for &j in &near {
+            let mob = &mut self.mobs[j as usize];
             // Entity.checkFallDistanceAccumulation.
             if mob.velocity.y > -0.5 && mob.fall_distance > 1.0 {
                 mob.fall_distance = 1.0;
@@ -326,6 +383,12 @@ impl Game<'_> {
             {
                 mob.velocity.y += push;
             }
+        }
+        // A push changes velocities, not boxes: the grid still holds.
+        if !near.is_empty()
+            && let Some(pass) = self.pass_mobs.as_mut()
+        {
+            pass.wrote(&self.mobs);
         }
         for item in self
             .dropped
@@ -481,5 +544,77 @@ impl Game<'_> {
             }
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod pass_tests {
+    use super::*;
+    use horizon_core::random::LegacyRandom;
+
+    /// The mobs whose box meets `area`, by walking them all.
+    fn scan(game: &Game<'_>, area: Aabb) -> Vec<u32> {
+        (0..game.mobs.len() as u32)
+            .filter(|&j| game.mobs[j as usize].bounds().intersects(area))
+            .collect()
+    }
+    /// The same from the pass's grid.
+    fn from_grid(game: &mut Game<'_>, area: Aabb) -> Vec<u32> {
+        let mut near = Vec::new();
+        assert!(
+            game.mobs_in_pass(area, &mut near),
+            "a small area reads the grid"
+        );
+        near.retain(|&j| game.mobs[j as usize].bounds().intersects(area));
+        near
+    }
+
+    /// The grid of a block entity pass finds every mob a scan finds, in the
+    /// same order, however the mob list changed between two geysers.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn the_pass_grid_finds_what_a_scan_finds() {
+        let mut game = super::super::native_machines::tests::server_game();
+        let kinds = ["minecraft:zombie", "minecraft:chicken", "minecraft:ravager"];
+        let kinds: Vec<_> = kinds
+            .iter()
+            .map(|k| game.res.mob_types().get(*k).cloned().unwrap())
+            .collect();
+        let mut rng = LegacyRandom::new(8645);
+        let place = |rng: &mut LegacyRandom| {
+            let mut at = || f64::from(rng.next_int_bound(4000).unwrap()) / 100.0 - 20.0;
+            Vec3::new(at(), 64.0 + at() / 8.0, at())
+        };
+        for id in 0..60u32 {
+            let kind = kinds[id as usize % kinds.len()].clone();
+            game.mobs.push(Mob::new(id + 1, kind, place(&mut rng), 0.0));
+        }
+        let areas: Vec<Aabb> = (0..40)
+            .map(|i| {
+                let c = place(&mut rng);
+                // Geyser columns one block wide, and wider gas boxes.
+                let (w, h) = if i % 2 == 0 { (1.0, 6.0) } else { (5.0, 9.0) };
+                Aabb::new(c, Vec3::new(c.x + w, c.y + h, c.z + w))
+            })
+            .collect();
+        game.pass_mobs = Some(PassMobs::default());
+        let check = |game: &mut Game<'_>, what: &str| {
+            for &area in &areas {
+                assert_eq!(from_grid(game, area), scan(game, area), "{what}");
+            }
+        };
+        check(&mut game, "as built");
+        game.mobs[7].position = areas[0].center();
+        check(&mut game, "a mob moved into a geyser");
+        let kind = kinds[2].clone();
+        game.mobs
+            .insert(0, Mob::new(100, kind, areas[1].center(), 0.0));
+        check(&mut game, "a mob added in front");
+        game.mobs.retain(|m| m.id % 5 != 0);
+        check(&mut game, "some removed");
+        // A geyser's own write leaves the boxes as they were.
+        game.mobs[3].velocity.y += 0.2;
+        game.pass_mobs.as_mut().unwrap().wrote(&game.mobs);
+        check(&mut game, "a push");
     }
 }

@@ -7,16 +7,109 @@ use crate::{
 };
 use std::io;
 
+/// A fluid: its index in the fluid table, which is its `minecraft:fluid`
+/// network id. Vanilla's five come first, in their registry order; the
+/// constants keep the names the enum had, so code matches on them as before.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FluidKind(u8);
+
+/// The vanilla fluid a fluid behaves as: how it flows, what it does to
+/// mobs and how it meets other fluids. A mod fluid copies water or lava
+/// (#6301), as a content block copies a template block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub enum FluidKind {
+pub enum FluidTemplate {
     Empty,
-    FlowingWater,
     Water,
-    FlowingLava,
     Lava,
 }
+
+/// Numbers a fluid gives instead of its template's (NeoForge's
+/// `BaseFlowingFluid.Properties`). Vanilla's give none: water and lava keep
+/// their own rules, lava's faster ones in an ultrawarm dimension included.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FluidNumbers {
+    /// `getTickDelay`: ticks between spreads.
+    pub tick_delay: Option<i32>,
+    /// `getDropOff`: levels lost per block.
+    pub drop_off: Option<i32>,
+    /// `getSlopeFindDistance`: how far a spread looks for a way down.
+    pub slope_find_distance: Option<i32>,
+    /// `canConvertToSource`: two sources make a third.
+    pub convert_to_source: Option<bool>,
+}
+
+/// One row of the fluid table.
+#[derive(Clone, Copy, Debug)]
+pub struct FluidInfo {
+    pub name: &'static str,
+    pub template: FluidTemplate,
+    /// Its family's source and flowing forms (the empty fluid is both).
+    pub source: FluidKind,
+    pub flowing: FluidKind,
+    pub numbers: FluidNumbers,
+}
+
+/// Vanilla's fluids, in `minecraft:fluid` order.
+const VANILLA: [FluidInfo; 5] = {
+    const fn row(
+        name: &'static str,
+        template: FluidTemplate,
+        source: FluidKind,
+        flowing: FluidKind,
+    ) -> FluidInfo {
+        let numbers = FluidNumbers {
+            tick_delay: None,
+            drop_off: None,
+            slope_find_distance: None,
+            convert_to_source: None,
+        };
+        FluidInfo {
+            name,
+            template,
+            source,
+            flowing,
+            numbers,
+        }
+    }
+    let (empty, flowing_water, water, flowing_lava, lava) = (
+        FluidKind(0),
+        FluidKind(1),
+        FluidKind(2),
+        FluidKind(3),
+        FluidKind(4),
+    );
+    [
+        row("minecraft:empty", FluidTemplate::Empty, empty, empty),
+        row(
+            "minecraft:flowing_water",
+            FluidTemplate::Water,
+            water,
+            flowing_water,
+        ),
+        row(
+            "minecraft:water",
+            FluidTemplate::Water,
+            water,
+            flowing_water,
+        ),
+        row(
+            "minecraft:flowing_lava",
+            FluidTemplate::Lava,
+            lava,
+            flowing_lava,
+        ),
+        row("minecraft:lava", FluidTemplate::Lava, lava, flowing_lava),
+    ]
+};
+
+#[allow(non_upper_case_globals)]
 impl FluidKind {
+    pub const Empty: Self = Self(0);
+    pub const FlowingWater: Self = Self(1);
+    pub const Water: Self = Self(2);
+    pub const FlowingLava: Self = Self(3);
+    pub const Lava: Self = Self(4);
+    /// Vanilla's fluids.
     pub const ALL: [Self; 5] = [
         Self::Empty,
         Self::FlowingWater,
@@ -24,34 +117,56 @@ impl FluidKind {
         Self::FlowingLava,
         Self::Lava,
     ];
+    /// Its row in the fluid table, and its network id.
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+    pub const fn info(self) -> &'static FluidInfo {
+        &VANILLA[self.0 as usize]
+    }
     pub const fn name(self) -> &'static str {
-        match self {
-            Self::Empty => "minecraft:empty",
-            Self::FlowingWater => "minecraft:flowing_water",
-            Self::Water => "minecraft:water",
-            Self::FlowingLava => "minecraft:flowing_lava",
-            Self::Lava => "minecraft:lava",
-        }
+        self.info().name
     }
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|kind| kind.name() == name)
     }
-    pub const fn same_family(self, other: Self) -> bool {
-        matches!(
-            (self, other),
-            (Self::Empty, Self::Empty)
-                | (
-                    Self::Water | Self::FlowingWater,
-                    Self::Water | Self::FlowingWater
-                )
-                | (
-                    Self::Lava | Self::FlowingLava,
-                    Self::Lava | Self::FlowingLava
-                )
-        )
+    pub const fn template(self) -> FluidTemplate {
+        self.info().template
     }
-    pub const fn mask(self) -> u8 {
-        1 << self as u8
+    /// The source form of its family (`minecraft:water` for flowing water).
+    pub const fn source(self) -> Self {
+        self.info().source
+    }
+    /// The flowing form of its family.
+    pub const fn flowing(self) -> Self {
+        self.info().flowing
+    }
+    pub const fn numbers(self) -> FluidNumbers {
+        self.info().numbers
+    }
+    /// `Fluid.isSame`: the same fluid, flowing or not.
+    pub const fn same_family(self, other: Self) -> bool {
+        self.source().0 == other.source().0
+    }
+    /// Its bit in a fluid tag's mask.
+    pub const fn mask(self) -> FluidMask {
+        1 << self.0
+    }
+}
+
+/// A set of fluids, one bit per [`FluidKind`] (fluid tags). Eight bits hold
+/// vanilla's five; it widens when mod fluids join the table, with the
+/// behaviour cache's version (its snapshots keep these masks).
+pub type FluidMask = u8;
+
+impl std::fmt::Debug for FluidKind {
+    /// The enum's variant names, which logs and probes print.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const NAMES: [&str; 5] = ["Empty", "FlowingWater", "Water", "FlowingLava", "Lava"];
+        match NAMES.get(self.index()) {
+            Some(name) => f.write_str(name),
+            None => write!(f, "FluidKind({})", self.0),
+        }
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,7 +198,7 @@ impl FluidState {
         if kind == FluidKind::Empty {
             return Ok(Self::EMPTY);
         }
-        let flowing = matches!(kind, FluidKind::FlowingWater | FluidKind::FlowingLava);
+        let flowing = kind == kind.flowing();
         let mut state = Self {
             kind,
             amount: if flowing { 1 } else { 8 },
@@ -103,15 +218,14 @@ impl FluidState {
                     _ => {}
                 }
             }
-            if flowing {
-                if let Some(value) = properties
+            if flowing
+                && let Some(value) = properties
                     .get("level")
                     .and_then(serde_json::Value::as_str)
                     .and_then(crate::registry::java_integer)
                     .filter(|v| (1..=8).contains(v))
-                {
-                    state.amount = value as u8;
-                }
+            {
+                state.amount = value as u8;
             }
         }
         Ok(state)
@@ -158,7 +272,7 @@ impl FluidState {
         self.falling
     }
     pub const fn is_source(self) -> bool {
-        matches!(self.kind, FluidKind::Water | FluidKind::Lava)
+        self.kind.0 != FluidKind::Empty.0 && self.kind.0 == self.kind.source().0
     }
     pub const fn is_full(self) -> bool {
         self.amount == 8
@@ -318,5 +432,78 @@ impl FluidBlockBindings {
         } else {
             self.lava[level]
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FluidKind, FluidNumbers, FluidState, FluidTemplate};
+
+    /// The table gives vanilla's fluids what the enum gave them: their
+    /// `minecraft:fluid` ids and names, families, sources and no numbers of
+    /// their own (water's and lava's rules stay in the flowing code).
+    #[test]
+    fn vanillas_fluids_keep_their_ids_families_and_rules() {
+        let names = [
+            "minecraft:empty",
+            "minecraft:flowing_water",
+            "minecraft:water",
+            "minecraft:flowing_lava",
+            "minecraft:lava",
+        ];
+        for (id, (kind, name)) in FluidKind::ALL.into_iter().zip(names).enumerate() {
+            assert_eq!((kind.index(), kind.name()), (id, name));
+            assert_eq!(FluidKind::from_name(name), Some(kind));
+            assert_eq!(kind.numbers(), FluidNumbers::default());
+            assert_eq!(kind.mask(), 1 << id);
+        }
+        use FluidKind as K;
+        let rows = [
+            (K::Empty, FluidTemplate::Empty, K::Empty, K::Empty),
+            (
+                K::FlowingWater,
+                FluidTemplate::Water,
+                K::Water,
+                K::FlowingWater,
+            ),
+            (K::Water, FluidTemplate::Water, K::Water, K::FlowingWater),
+            (K::FlowingLava, FluidTemplate::Lava, K::Lava, K::FlowingLava),
+            (K::Lava, FluidTemplate::Lava, K::Lava, K::FlowingLava),
+        ];
+        for (kind, template, source, flowing) in rows {
+            assert_eq!(
+                (kind.template(), kind.source(), kind.flowing()),
+                (template, source, flowing)
+            );
+        }
+        assert!(K::Water.same_family(K::FlowingWater) && K::Lava.same_family(K::FlowingLava));
+        assert!(!K::Water.same_family(K::Lava) && !K::Empty.same_family(K::Water));
+        assert!(K::Empty.same_family(K::Empty));
+        let sources: Vec<_> = K::ALL
+            .into_iter()
+            .filter(|k| FluidState::new(*k, 8, false).is_source())
+            .collect();
+        assert_eq!(sources, [K::Water, K::Lava]);
+        // Logs and probes print the enum's names.
+        assert_eq!(
+            format!("{:?} {:?}", K::FlowingLava, K::Empty),
+            "FlowingLava Empty"
+        );
+    }
+
+    #[test]
+    fn a_fluid_state_reads_its_flowing_form_from_the_table() {
+        let flowing = FluidState::from_json(
+            r#"{"id":"minecraft:flowing_lava","properties":{"level":"3","falling":"false"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (flowing.kind(), flowing.amount(), flowing.is_source()),
+            (FluidKind::FlowingLava, 3, false)
+        );
+        let source =
+            FluidState::from_json(r#"{"id":"minecraft:water","properties":{"level":"3"}}"#)
+                .unwrap();
+        assert_eq!((source.amount(), source.is_source()), (8, true));
     }
 }

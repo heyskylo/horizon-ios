@@ -93,12 +93,17 @@ again. The controls options can make it hold-to-sneak.
 A Nintendo pad's face buttons can go by their places, as the table and SDL's
 layout have them (B, at the bottom, jumps and confirms), or by their letters,
 as a Switch's own menus and keyboard do: A (right) jumps and confirms, B goes
-back and drops, X swaps the offhand, Y opens the inventory, and the binds list
-and the on-screen keyboard's hints show those letters (splitscreen's join and
-lost-controller prompts, which a controller nobody holds yet answers, stay by
-places). `nintendoLetters:true|false` in `horizon-controller.txt`
-picks one; by places unless it says otherwise (a build for the Switch itself
-goes by letters). Bindings name the part, so a rebinding means the same on
+back and drops, X swaps the offhand, Y opens the inventory, and every glyph
+shows those letters: the binds list, the gameplay guide, the glyphs on declared
+buttons, notices and the on-screen keyboard's hints. Letter mode is part of the
+player's resolved glyph style, so nothing that draws a glyph handles it
+([ui-kit.md](ui-kit.md)). Splitscreen's join and lost-controller prompts, which
+a controller nobody holds yet answers, stay by places. Controller Settings > Device > Nintendo Buttons picks one: By
+Position or By Letter, saved as `nintendoLetters:true|false` in
+`horizon-controller.txt`. By position unless changed (a build for the Switch
+itself goes by letters). The row is always there, like the DualSense rows
+beside it, and changes nothing until a Nintendo controller is the one
+playing (the glyph choice alone doesn't turn it on). Bindings name the part, so a rebinding means the same on
 either.
 
 ## Menus and inventories
@@ -130,7 +135,7 @@ for it, or running off a split view, goes without it and keeps its pad button. W
 stops counting as soon as another screen is drawn over it (`widgets::begin_screen`: a popup's buried
 buttons can't be pressed) or takes its place. While a key row waits for its key nothing is declared and only B and Start act:
 they are Escape, which unbinds. A row on Controller Settings > Bindings takes the next button pressed
-as its binding, and Start cancels.
+as its binding, and Start, a click or a key cancels; the keyboard's Escape unbinds it, as on Key Binds.
 
 Don't declare a button Escape deliberately ignores: Optimize World's and a connection's Cancel have
 no pad button, only A on them, and show in `undeclared` for that reason.
@@ -196,16 +201,25 @@ the crafting result, armour to the player's grid.
 | Y | quick move (shift-click) in inventories; on the pause menu, moves the focus to the exit button, for A to confirm |
 | View | throw one item from the focused slot (Q) |
 | Left stick click | throw the focused stack (Ctrl+Q) |
-| LB / RB | previous / next tab (Create World, Player Social, the graphics settings' sidebar) |
+| LB / RB | previous / next tab (Create World, Player Social, the settings shell's page list, as on Graphics) |
 | Right stick | scroll the list, wherever the focus is: the focus stays on its row (when the row leaves the view, on the nearest one still in view), no value changes, and nothing scrolls under the on-screen keyboard |
 
 - **Tooltips**: an options page's tooltip hangs from the focused widget's bottom left while the pad's focus drives
   the page, since the pad's hidden pointer sits mid-widget. The mouse and the keyboard keep vanilla's positioners.
 - **Declared buttons**: a button that says what it's for gets its controller
   button and a glyph on it while the pad drives; see "Adding a screen".
-- **Sliders**: left and right move the value (one pixel per press like
-  vanilla's arrow keys, faster while held); A does nothing on a slider, as a
-  click would jump the handle.
+- **Sliders**: A takes hold of a focused slider, shown by a white outline; left
+  and right then move the value (one pixel per press like vanilla's arrow keys,
+  faster while held). A or B lets go and keeps the value, and up or down lets go
+  and moves on. Until then left and right move the focus, so passing over a
+  slider doesn't change it.
+- **Choices on the settings shell** (Extras, Graphics: a value between `<` `>`): left and right step the
+  focused one back and on at once, as its arrows show, and A steps it on. They are a press and a Shift press
+  (`Screen::press` with `back`), so Undo and saving follow as for a click. Up and down leave the row, and LB
+  and RB go to the page list (the previous or next page, focused); a choice declares itself with
+  `widgets::steps_value`. Stepping at once rather than after A, as sliders do, keeps A's step and adds no
+  mode to find: passing over a choice with up and down never changes it.
+- **The server list**: the bumpers move the selected server up or down, as its arrows do.
 - **Lists** follow focus: a step out of a list that can still scroll that way
   scrolls it and lands on the next row once it is drawn, so every row can be
   reached; the buttons below or above come after its last or first row.
@@ -239,6 +253,8 @@ most for the narrator: the focused widget is the narration's focused one.
   and right change the value (one pixel per press, `1 / (width - 8)`);
   focused with an arrow they move the focus until Enter lets them change
   it. Enter toggles that. Up and down always move the focus.
+- **Choices on the settings shell**: left and right step the focused one back and on, as the D-pad does;
+  Tab and Shift+Tab, up and down leave it.
 - **Text fields** keep left and right for their caret (`EditBox.keyPressed`),
   and Enter and Space for themselves; Tab, up and down leave them. Focus
   landing on a field focuses it with the caret at the end; leaving it
@@ -298,9 +314,47 @@ Approximations:
 - A = left click, X = right click, Y = quick move, B = back; View and the left
   stick click throw, as in focus mode.
 - LB / RB switch tabs (creative, Statistics, Advancements); with the recipe book
-  open they turn its pages, stopping at the ends, and LT / RT change its category.
-  Right stick scrolls.
+  open they turn its pages, stopping at the ends, and LT / RT change its
+  category. Right stick scrolls.
 - Sliders: hold A on the slider and move the stick, or nudge with the D-pad.
+- **The recipe book's categories**: RT changes to the next category as it goes down. LT changes to the previous one
+  as it goes down on a furnace's, smoker's or blast furnace's book; on the crafting book (the inventory's and the
+  crafting table's), where LT + A crafts, it changes it as it's let go instead, however long it was held, unless A
+  was pressed meanwhile.
+- **Direct crafting**: LT + A on a recipe crafts it once into the inventory.
+  With both still held past the repeat delay it keeps crafting until either is
+  let go, the items run out or the inventory is full. It's the recipe book's
+  own placing and a quick move of the result, one request at a time, each
+  waiting for the server's answer. On any server but single player's own, placements
+  go at most one every 250 ms (`PLACE_GAP`), under Paper's default limit of 5 a second
+  over 4 seconds; on a server that needs **Quick Craft on Servers** (below) every request
+  also waits a tick (`REQUEST_GAP`). A quick tap
+  makes one, whichever button comes up first, and each LT + A on the recipe while one
+  is still in flight makes one more. An LT + A it refuses is plain A. The inventory's guide says so
+  with the pad's own glyphs, on a recipe, while the pad is in use, nothing is in the hand and it's allowed there.
+  Letting go of either button, any other press, the pad going away or focus
+  leaving the window all end it one way: no new craft starts, the one in flight
+  finishes, and what's in the grid goes back, so the grid ends empty unless
+  something can't fit. If the screen itself has gone, the game returns the grid
+  as it does on closing any screen. A result only moves with room for all of
+  it, as the client last heard the inventory, so a full inventory stops the craft with the
+  ingredients back in the inventory. A pickup the client hasn't heard of yet can take
+  that room first, and then the server's quick move drops the rest, as a vanilla
+  shift-click on the result does. What's in the grid goes back first, and
+  what a recipe leaves behind (bottles, buckets) follows the result, or stays
+  in the grid if there's no room. A stack in the hand refuses it. It's on by itself
+  only in single player, a splitscreen guest's join of that world, and on a LAN world
+  joined from the server list's LAN entries (and that world's reconnects). Everywhere else,
+  a server joined by address included, even one on this computer or the local network
+  (it can be a proxy, a tunnel or a relay), and Play with Friends, it's off until **Quick
+  Craft on Servers** is on in Controller Settings > General, as a server's rules may count
+  it as a macro.
+- **When direct crafting stops short**, the craft ends and nothing says so but the grid, in view on the open
+  screen. A result that isn't the recipe's (item and count, as a server with recipes of its own can number the
+  book differently) stops it with nothing moved, as a click on the recipe would leave it. Two seconds with no
+  answer from the server stops it too, and nothing more goes out, as a quick move can't return what a late answer
+  has yet to place: what the server placed stays in the grid. Either way, closing the screen returns the grid, and
+  so does the next LT + A before it places anything.
 
 The cursor is drawn only while the pad is the last-used input.
 
@@ -369,7 +423,7 @@ Steam + X opens it at any time. "On-Screen Keyboard: Auto / Horizon / Steam"
 Both modes send the same pointer events, but neither reaches everything. Focus mode
 registers targets on: the title menus (main, world list and its search, create
 and edit world, delete, multiplayer list and its edit screens), every options
-page (vanilla's and Horizon Settings with the pages it opens except Replay Studio, key and
+page (vanilla's and Horizon Settings with the pages it opens, key and
 controller binds, language list), pause and Play with Friends, death, chat, signs and books (their buttons), the
 survival and creative inventories, every container and station (chests,
 furnaces, brewing, crafter, crafting table with its recipe book, anvil,
@@ -377,24 +431,31 @@ grindstone, smithing, stonecutter, loom, cartography, enchanting, beacon,
 villager and wandering-trader trades, mount inventories), and the LAN /
 world options. Where a screen draws something clickable no target names
 (the advancements map, the statistics lists, the pack screen's rows, the
-book's page text), the pad drives the pointer instead, as it does on Replay Studio, which registers nothing yet.
+book's page text), the pad drives the pointer instead.
 
 ## Glyphs
 
 A button is drawn as Horizon's own art where its family has a picture, and otherwise as the label
 printed on the pad, in its colour, on a dark key (`pad_glyph.rs`; no Mojang assets, nothing from the
-player's jar). Whatever draws or measures a glyph goes through that module.
+player's jar). Whatever draws or measures a glyph goes through that module, asking for it by what the button
+does (a bound action or a menu job), never by a button: a rebinding or a pad's letters reach every glyph
+([ui-kit.md](ui-kit.md)).
 
 | Family | Art | Text |
 |---|---|---|
 | Xbox, also Auto, Steam Deck and anything unknown | `xb_*`: a b x y, lb rb lt rt, view menu, l3 r3, up down left right | none |
 | PlayStation | `psx_*`: cross circle square triangle, l1 r1 l2 r2, create options, l3 r3, up down left right | none |
-| Nintendo | `nx_*`, by what the pad prints: b a y x at south, east, west and north, l r zl zr, minus plus, l3 r3, up down left right | none |
+| Nintendo | `nx_*`, by what the pad prints: b a y x at south, east, west and north, l r zl zr, minus plus, l3 r3, up down left riEach family has its own file for every picture, so a family's art can change without touching another's.
+Only the sticks and the D-pad are the same picture in all three. Nintendo's letters are plain white, as the
+pad prints them, where Xbox's carry Xbox's colours. Text remains for what runs inside a line of text, and for
+an atlas without the sprite.
 
-Every family has its own file for every button, so a family's art can change without touching another's.
-Some are copies until theirs is drawn: Nintendo's letters and shoulders are Xbox's, and all three share the
-same sticks, D-pad and menu pictures. Text remains for what runs inside a line of text, and for an atlas
-without the sprite.
+Nintendo's art, Xbox's View and Menu and PlayStation's Create and Options are drawn by
+`tools/pad_glyphs/gen.py` (standard library only: `python3 tools/pad_glyphs/gen.py` rewrites them in place,
+byte for byte); the rest is hand-made. The script measures nothing at run time: the key shapes and bevel
+were measured from the hand-made art and typed in, so the set matches.
+
+ the sprite.
 
 The art is in `crates/horizon-client/assets/horizon/textures/gui/controller/`, built into the binary, one
 line of `pad_glyph::ART` per picture: a button with no line is text, and adding one is that line and its
@@ -408,8 +469,8 @@ The picture's texture is 32 pixels tall, drawn 16 GUI pixels tall with a clear e
 glyph shows 12 tall, as a text glyph does: a square picture 12 wide, a bumper or trigger 20. A declared
 button's label leaves room for it.
 
-Art shows on declared buttons and a focused field's A, in notices and splitscreen's strips. What runs
-inside a line of text stays text: the recipe tooltip, the on-screen keyboard's hint line and the buttons on
+Art shows on declared buttons and a focused field's A, in notices, the gameplay guide and splitscreen's
+strips. What runs inside a line of text stays text: the recipe tooltip, the on-screen keyboard's hint line and the buttons on
 the Bindings page. Vanilla's own messages that name a key (tutorial hints) keep the keyboard's names.
 
 The inventory crosshair is `crosshair_inv` in the same folder, drawn at 16 GUI pixels on the point it
@@ -425,13 +486,25 @@ and everything else are Xbox.
 
 Controller settings are Horizon's own: **Options → Controls → Controller
 Settings...** (or **Options → Horizon Settings... → Controller Settings...**),
-a screen in the graphics settings' style with a search field and General, Bindings and Device pages. Bindings
-is a list like the key binds screen (pick an action, press a button; conflicts marked as vanilla does), and
-Reset. General's Play group has **Trigger Threshold**, how far a trigger is pulled before it counts as pressed:
+a screen on the settings shell (`controller_ui.rs` on `settings_shell.rs`, [ui-kit.md](ui-kit.md)), like
+Extras and Graphics, with a search field and General, Bindings and Device pages. The strip under the list
+describes the pointed or focused row, and what a choice's value does. Left and Right step a choice both
+ways, as its `<` `>` show. The search gives the keys back as soon as the focus leaves it.
+
+Bindings is a list like the key binds screen. Each action's row shows its button's art in the player's
+glyphs. Press the row and then a button; Start, a click or a key cancels, and the keyboard's Escape
+unbinds. Meanwhile the row reads "> A <" and the strip names the button that cancels. A button that does
+more than one action is marked "[ ]" in yellow, as vanilla marks conflicts, and the strip lists what else
+it does; an unbound action says so in the strip. A changed binding has a reset at its row's end (Right
+reaches it), and Reset All puts every action back.
+
+General's Play group has the **Gameplay Guide** setting (Full, Basic or Off) and **Trigger Threshold**, how far a trigger is pulled before it counts as pressed:
 0.1 to 0.9, by default 0.4, which also places a DualSense's catch (see "Adaptive triggers"). The screen
 names the player whose profile it edits and the controller the game sees; Device also shows its vendor and
-product ids, the detected glyph family and the override. Changes apply at once; **Undo** (X) is there only
-while something differs from when the screen opened, and **Done** (B) leaves. They live in
+product ids, the detected glyph family and the override, as lines the focus reaches so the strip can say
+what each one is. Changes apply at once; **Undo** (X) is there only while something differs from when the
+screen opened, a binding included, and puts back every value and binding as they were. **Done** (B)
+leaves. They live in
 `horizon-controller.txt` next to `options.txt`, like `horizon-graphics.txt`: `options.txt` stays
 exactly vanilla's, so a vanilla client can share the game folder.
 
@@ -449,6 +522,8 @@ triggerThreshold:0.4
 toggleSneak:true
 glyphs:auto
 bind_key.jump:south
+craftOnServers:false
+gameplayGuide:full
 bind_pad.hotbarNext:rb
 bindLayout:1
 ```
@@ -460,6 +535,31 @@ Deadzones are radial (the stick's length, so diagonals aren't clipped) and the
 remaining range is rescaled to 0..1. Look uses a squared curve for precise
 aim near the centre, up to 200°/s yaw and 140°/s pitch at the default
 sensitivity, slower while scoping with a spyglass.
+
+## Playing in the background
+
+Play in Background (off by default, per player) lets the pad keep driving the game while its window
+has no focus, and a game the pad is playing doesn't pause on losing focus. Every game on the PC reads
+every pad: for a pad in one window and the keyboard in another, turn Controllers off in the keyboard's.
+
+## Gameplay guide
+
+While the pad plays, the HUD's top corners say what its buttons do now: break, use and pick block
+at the top right when there is something to do them to, movement and the player's own actions at
+the top left. The rows follow the bindings, the game mode, what the crosshair is on, the held
+items, riding, swimming and flying, and an item in use; an action that would do nothing, or has no
+button, has no row. The mouse or keyboard taking over hides them, as do a menu, F1, F3 and the
+Gameplay Guide option. They read what a click would do from the client's own answers
+(`remote_block_reacts`, `remote_mob_takes`), and a use only a fluid ray or the server can tell (an
+empty bucket) shows nothing. The rows step around what the HUD drew (effect icons, boss bars, the
+sidebar, chat, toasts, splitscreen's badge), and in a small view the last rows drop.
+
+An inventory or creative screen the pad drives has rows of its own, from its bottom corners, under
+the same option, and what's under the crosshair decides them: a slot, by whether it holds anything
+and what's carried; a recipe; another of the book's controls. Bottom right, what one face button
+does: Close, always the lowest row, then Take, Put Down, Quick Move, Place Recipe and so on. Bottom
+left, the rest: LT + A where direct crafting is allowed, View and the left stick's drops, the recipe book's pages and categories, and creative's
+tabs. The creative grid's items aren't slots, so creative has only Close and its tabs.
 
 ## Rumble
 

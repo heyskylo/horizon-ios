@@ -36,6 +36,7 @@ use std::{
 
 pub(super) mod events;
 mod management;
+mod predicate_graph;
 mod report;
 mod status;
 mod transfer;
@@ -166,6 +167,16 @@ pub(super) fn player_joined(id: u128, name: &str) {
             name: name.to_owned(),
         });
     }
+}
+
+/// A player in the user cache by name (`UserCache::find_by_name`), on a dedicated server.
+pub(super) fn cached_user_by_name(name: &str) -> Option<NameAndId> {
+    USER_CACHE.lock().unwrap().as_ref()?.find_by_name(name)
+}
+
+/// A player in the user cache by id, on a dedicated server.
+pub(super) fn cached_user_by_id(id: u128) -> Option<NameAndId> {
+    USER_CACHE.lock().unwrap().as_mut()?.get_by_id(id)
 }
 
 /// `server.toml`'s `[anticheat]`, beside server.properties when horizon-server runs the game; the
@@ -680,6 +691,16 @@ fn parse_identifier(text: &str) -> Option<String> {
     (valid(namespace, &[]) && valid(path, &['/'])).then(|| format!("{namespace}:{path}"))
 }
 
+/// The world's packs failed to load: the start ends before Ready, as vanilla's `Main` does.
+#[derive(Debug)]
+struct DatapacksRefused;
+impl std::fmt::Display for DatapacksRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Failed to load datapacks, can't proceed with server load")
+    }
+}
+impl std::error::Error for DatapacksRefused {}
+
 impl Game<'_> {
     /// DedicatedServerProperties.createDimensions for a world that doesn't
     /// exist yet: `level-type`'s preset, a flat world's `generator-settings`
@@ -886,6 +907,10 @@ impl Game<'_> {
             self.native_players_leaving();
             self.native_lifecycle_world_failed(&error.to_string());
             self.native_lifecycle_close_failed(&error.to_string());
+            // Main: a world the packs can't load ends the start, and the process, normally.
+            if error.downcast_ref::<DatapacksRefused>().is_some() {
+                return Ok(());
+            }
         }
         result
     }
@@ -1031,6 +1056,24 @@ impl Game<'_> {
         request.allowlist = allowlist;
         request.session_lock = Some(session_lock);
         self.load_world(request)?;
+        // WorldLoader: the world's packs must load before the server starts. The data store is read
+        // now rather than at the first tick (reading parses functions; it runs none), and a broken
+        // predicate graph stops the start before anything listens (a partial check: predicate_graph.rs).
+        self.ensure_datapacks();
+        if let Err(error) = predicate_graph::check(&self.fns.store.predicates) {
+            let level = match error {
+                predicate_graph::GraphError::Unbound(_) => "ERROR",
+                predicate_graph::GraphError::Recursive(_) => "WARN",
+            };
+            for line in error.lines() {
+                log(level, &line);
+            }
+            log(
+                "WARN",
+                "Failed to load datapacks, can't proceed with server load. You can either fix your datapacks or reset to vanilla with --safeMode",
+            );
+            return Err(Box::new(DatapacksRefused));
+        }
         if new_world {
             self.level.hardcore = props.hardcore;
         }
@@ -1061,6 +1104,7 @@ impl Game<'_> {
         // Nothing is kept around the spawn while nobody is on.
         self.streaming.radius = -1;
         self.settle_spawn()?;
+        self.prepare_levels()?;
         let gate_lists = lists.clone();
         let gate: LoginGate = Arc::new(move |address, uuid, name| {
             // `ServerActivityMonitor.reportLoginActivity`: a login attempt, however it ends. The management
@@ -1163,6 +1207,7 @@ impl Game<'_> {
                 Vec::new()
             },
             owner_profile: None,
+            singleplayer_profile: None,
         };
         let config = HubConfig {
             allow_flight: props.allow_flight,
@@ -1282,8 +1327,9 @@ impl Game<'_> {
         let mut braked = Instant::now();
         let mut overload_warned: Option<Instant> = None;
         // `/stop`, or a stop signal (the shutdown hook's `halt`): either way the players and levels are
-        // saved below.
-        while !state.lists.lock().unwrap().stop && horizon_threads::stop_requests() == 0 {
+        // saved below, after the wait `[transfer]` may make (transfer.rs).
+        while !self.stop_now(&state) {
+            self.server_tick_deadline = Some(next + self.clock.tick_duration());
             let tick_start = Instant::now();
             if let Some(watchdog) = &watchdog {
                 watchdog.tick_due(next, self.clock.tick_duration());
@@ -1624,6 +1670,15 @@ impl Game<'_> {
     /// server (permission level 4). The dedicated-only commands are here;
     /// everything else goes to the game's dispatcher.
     fn console_command(&mut self, state: &mut ServerState, line: &str) {
+        let (mut cancel, mut replies) = (false, Vec::new());
+        let source = if self.rcon_source { "rcon" } else { "console" };
+        self.native_console_line(source, line, &mut cancel, &mut replies);
+        for reply in replies {
+            self.console_reply(reply);
+        }
+        if cancel {
+            return;
+        }
         let line = line.strip_prefix('/').unwrap_or(line);
         let mut words = line.split_whitespace();
         let Some(command) = words.next() else {
@@ -2382,6 +2437,7 @@ impl Game<'_> {
         // Only a successful final save closes the epoch; storage is still held.
         self.native_lifecycle_world_closed();
         self.lan_close(false);
+        self.native_server_stopped(true);
         Ok(())
     }
 }

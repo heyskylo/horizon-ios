@@ -130,7 +130,7 @@ impl Game<'_> {
             self.pack
                 .item_renderer
                 .models
-                .components(&horizon_client::item_render::stack_view(stack))
+                .components_view(&horizon_client::item_render::stack_view(stack))
                 .get("minecraft:attack_range")
                 .cloned()
         });
@@ -194,11 +194,33 @@ impl Game<'_> {
         let duration = swing_duration(animation, dig_speed, fatigue);
         if self.swing.start_if_able(hand, animation, duration) {
             self.swings_started += 1;
+            if let Some(r) = self.remote.as_ref()
+                && r.session.is_recording()
+            {
+                let pkt = horizon_protocol::packets::play::Clientbound::SwingAnimation(
+                    horizon_protocol::packets::play::SwingAnimation {
+                        id: r.entity_id,
+                        hand: if hand == Hand::Off { 1 } else { 0 },
+                        kind: animation.kind as i32,
+                        duration,
+                    },
+                );
+                r.session.record_clientbound(&pkt);
+            }
         }
     }
     /// `swing(hand)` for the hand that acts, with the default animation.
     pub(super) fn swing_arm(&mut self) {
         self.swing_hand(self.hand, SwingAnimation::DEFAULT);
+    }
+    /// `swing_arm` for a use whose result is `SwingSource.PREDICTED`: the
+    /// player's client swings by itself, so a server keeps it to the others.
+    pub(super) fn swing_arm_predicted(&mut self) {
+        let before = self.swings_started;
+        self.swing_arm();
+        if self.swings_started != before {
+            self.predicted_swings += 1;
+        }
     }
     /// `Player.resetAttackStrengthTicker`.
     pub(super) fn reset_attack_strength(&mut self) {
@@ -237,7 +259,7 @@ impl Game<'_> {
             self.pack
                 .item_renderer
                 .models
-                .components(&horizon_client::item_render::stack_view(stack))
+                .components_view(&horizon_client::item_render::stack_view(stack))
                 .get("minecraft:attack_range")
                 .cloned()
         });
@@ -253,7 +275,7 @@ impl Game<'_> {
         self.pack
             .item_renderer
             .models
-            .components(&horizon_client::item_render::stack_view(active))
+            .components_view(&horizon_client::item_render::stack_view(active))
             .get("minecraft:attack_range")
             .cloned()
     }
@@ -373,6 +395,7 @@ impl Game<'_> {
         self.mining = d.active.then_some(Mining {
             pos: d.pos,
             progress: d.progress,
+            per_tick: 0.0,
             ticks: d.ticks as u32,
         });
         if let Some(mining) = &self.mining {
@@ -399,18 +422,7 @@ impl Game<'_> {
         let harvest = !facts.requires_tool || self.items().correct_for_drops(held, &facts.name);
         speed = self.modify_destroy_speed(speed);
         speed *= block_break_speed;
-        if let Some(eye) = self.eye_position()
-            && self
-                .res
-                .facts()
-                .get(self.world.block(
-                    eye[0].floor() as i32,
-                    eye[1].floor() as i32,
-                    eye[2].floor() as i32,
-                ))
-                .fluid
-                == horizon_client::blocks::Fluid::Water
-        {
+        if self.mining_eyes_in_water() {
             speed *= self.submerged_mining_speed();
         }
         if self.player.as_ref().is_some_and(|p| !p.ground.on_ground) {
@@ -419,6 +431,31 @@ impl Game<'_> {
         // NeoForge's PlayerEvent.BreakSpeed, where Player.getDestroySpeed ends.
         self.native_break_speed(pos, state, speed, &mut speed);
         speed / hardness / if harvest { 30.0 } else { 100.0 }
+    }
+    /// `EntityFluidInteraction`: compare the eyes with the camera fluid surface.
+    fn mining_eyes_in_water(&self) -> bool {
+        use horizon_client::blocks::Fluid;
+        let Some(eye) = self.eye_position() else {
+            return false;
+        };
+        let [x, y, z] = eye.map(|v| v.floor() as i32);
+        let facts = self.res.facts();
+        let inside = |y| {
+            let fluid = facts.get(self.world.block(x, y, z));
+            if fluid.fluid != Fluid::Water {
+                return false;
+            }
+            let above = facts.get(self.world.block(x, y + 1, z));
+            let source = fluid.fluid_level == 8 && !fluid.fluid_falling;
+            let height = if above.fluid == fluid.fluid || (source && above.sturdy_full & 1 != 0) {
+                1.0
+            } else {
+                f64::from(f32::from(fluid.fluid_level) / 9.0)
+            };
+            eye[1] <= f64::from(y) + height
+        };
+        // The scan also includes a capped source below eyes exactly on a cell boundary.
+        inside(y) || (eye[1] == f64::from(y) && inside(y - 1))
     }
     /// A key for the main-hand stack (`destroyingItem`): its item and components.
     pub(super) fn main_hand_key(&self) -> String {
@@ -492,13 +529,19 @@ impl Game<'_> {
         }
         self.swing.tick();
         let main = self.inventory[self.selected].clone();
-        // Player.tick: a different item resets the attack strength, and
-        // detectEquipmentUpdates gives the player its modifiers.
-        if self.hand_strength.tick(main.as_ref().map(|s| HeldStack {
+        // Player.tick: a different item resets the attack strength; any change
+        // of the stack (`!ItemStack.matches`, e.g. another Efficiency level on
+        // the same tool) is what detectEquipmentUpdates gives the player its
+        // modifiers for.
+        let held = main.as_ref().map(|s| HeldStack {
             item: s.item.to_string(),
             rest: format!("{} {} {:?}", s.count, s.damage, s.extra),
-        })) {
+        });
+        let changed = self.hand_strength.main_hand_changed(&held);
+        if self.hand_strength.tick(held) {
             self.attack_ticks = 0;
+        }
+        if changed {
             self.apply_equipment();
         }
         self.attack_item = main.as_ref().map(|s| s.item.clone());
@@ -527,6 +570,24 @@ impl Game<'_> {
             }
         }
     }
+
+    /// A replay owns its held-item and equip animation state. Reset it when a
+    /// standalone replay closes so a later world cannot inherit lowered hands
+    /// or the replay player's visible stacks.
+    pub(super) fn reset_studio_hand_state(&mut self) {
+        let main = self.inventory.get(self.selected).cloned().flatten();
+        self.visible_hands = [(self.selected, main), (OFFHAND, self.offhand.clone())];
+        self.hands_replaced = [false; 2];
+        self.heights = horizon_client::first_person::HandHeights {
+            main: 1.0,
+            old_main: 1.0,
+            off: 1.0,
+            old_off: 1.0,
+        };
+        self.swing = Default::default();
+        self.sway = Default::default();
+    }
+
     /// `Minecraft.crosshairPickEntity` when it is a `LivingEntity`: whether
     /// it is alive (the nearest entity under the crosshair, before any block).
     pub(super) fn crosshair_living(&self) -> Option<bool> {
@@ -546,7 +607,7 @@ impl Game<'_> {
             self.pack
                 .item_renderer
                 .models
-                .components(&horizon_client::item_render::stack_view(stack))
+                .components_view(&horizon_client::item_render::stack_view(stack))
                 .get("minecraft:attack_range")
                 .cloned()
         });
@@ -612,9 +673,34 @@ impl Game<'_> {
         {
             return menu;
         }
-        let Some(hit) = self.pick() else {
+        self.pick()
+            .is_some_and(|hit| self.block_interactable_for_spectator(&hit))
+    }
+    /// `BlockBehaviour.showAsInteractableInSpectatorMode`: a block with a menu, or a portal.
+    fn block_interactable_for_spectator(&self, hit: &super::Hit) -> bool {
+        let block = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
+        matches!(
+            &*self.res.facts().get(block).name,
+            "minecraft:nether_portal" | "minecraft:end_portal" | "minecraft:end_gateway"
+        ) || self.block_opens_menu(hit)
+    }
+    /// A lectern with no book (`LecternBlock.useWithoutItem` consumes the click and does nothing).
+    pub(super) fn block_is_empty_lectern(&self, hit: &super::Hit) -> bool {
+        let state = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
+        &*self.res.facts().get(state).name == "minecraft:lectern"
+            && self
+                .pack
+                .assets
+                .registry
+                .state(state)
+                .and_then(|s| s.properties.get("has_book"))
+                .is_none_or(|v| v != "true")
+    }
+    /// `BlockState.getMenuProvider`: the block's use opens a screen.
+    pub(super) fn block_opens_menu(&self, hit: &super::Hit) -> bool {
+        if self.block_is_empty_lectern(hit) {
             return false;
-        };
+        }
         let id = &*self
             .res
             .facts()
@@ -622,12 +708,11 @@ impl Game<'_> {
             .name;
         let name = id.trim_start_matches("minecraft:");
         match name {
-            // BlockBehaviour.getMenuProvider and `instanceof Portal`.
+            // BlockBehaviour.getMenuProvider.
             "crafting_table" | "enchanting_table" | "anvil" | "chipped_anvil" | "damaged_anvil"
             | "stonecutter" | "loom" | "cartography_table" | "grindstone" | "smithing_table"
             | "barrel" | "furnace" | "blast_furnace" | "smoker" | "brewing_stand" | "hopper"
-            | "dispenser" | "dropper" | "crafter" | "lectern" | "beacon" | "nether_portal"
-            | "end_portal" | "end_gateway" => true,
+            | "dispenser" | "dropper" | "crafter" | "lectern" | "beacon" => true,
             // ChestBlock.getMenuProvider: none while a redstone conductor
             // sits on top of either half (a sitting cat aside). Copper
             // chests are `ChestBlock`s too.

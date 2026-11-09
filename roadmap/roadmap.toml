@@ -179,7 +179,7 @@ owner = "levzzz5154"
 issue = "#3911"
 plain = """Mods for Horizon, as one line of work led by the modding team: native mods the launcher builds into your \
 game, mods on servers, mod screens and settings, tools for mod makers, the registry and machines."""
-dev = """One item for all modding work (#3911), led by levzzz5154 with vladislav_hagen; the order between the \
+dev = """One item for all modding work (#3911), led by levzzz5154; the order between the \
 parts is theirs. Native mods on stable hook points (game/native_hooks.rs, #3345, #3346, #3434, #3435) built by the \
 launcher (#3388, #3855); server-side hooks (#3878, #3706); mod-owned screens, input and drawing; tools for mod makers \
 (templates, `native.py check`); the registry (#1634, #1642, #1659); machines with inventories and menus (#1189); mods \
@@ -516,7 +516,7 @@ dev = """A clean-room rewrite in `horizon-shaderpack`, from the packs' public fo
 packs, the preprocessor and `.properties` files are merged (#1584, #1585, #1586); translating programs to WGSL \
 through naga, buffers, uniforms and the terrain, entity, sky, weather and hand stages are in review (#1698 to \
 #1801)."""
-links = ["#1561", "#1584", "#1586", "#1698", "#1771", "#1786", "#1801"]
+links = ["#1561", "#1584", "#1586", "#1698", "#1771", "#1786", "#1801", "#9045", "#6233", "#6485", "#3734", "#3125"]
 
 [[item]]
 id = "launcher-redesign"
@@ -570,7 +570,7 @@ classes against the pinned 26.3, regenerates the data-driven tables, runs every 
 writes a port report that becomes issues. The goal is as little human work as possible for any version, past \
 or future. Detection and the first slices are merged; the scheduled agent that runs it every day isn't \
 installed yet. Two versions in one build are out of scope."""
-links = ["docs/version-ports.md"]
+links = ["docs/version-ports.md", "#4758"]
 
 [[item]]
 id = "exact-far-terrain"
@@ -582,7 +582,7 @@ preview from the seed."""
 dev = """Keep a 3D mip store on disk built from real chunks, drawn by the GPU beside the seed preview for areas \
 nobody has visited. Written from scratch and measured before it is kept. Builds on Far Detail and the \
 far-terrain levels of detail already shipped; the open work on them is #718."""
-links = ["#718"]
+links = ["#718", "#4678"]
 
 [[item]]
 id = "older-jars"
@@ -593,7 +593,7 @@ plain = """Recognise mods built for versions before 26.1 in the mod browser, so 
 like newer ones."""
 dev = """A mapping table from intermediary and SRG names so pre-26.1 jars can be classified, and a rename for mod ids \
 with dashes (`fabric-api`); the port step then treats them like newer jars (docs/mod-browser.md)."""
-links = ["docs/mod-browser.md"]
+links = ["docs/mod-browser.md", "#10262"]
 
 [[item]]
 id = "modpack-own-packs"
@@ -627,16 +627,6 @@ started: the Convert button and native rewrites come first."""
 dev = """Earlier research (#527, closed) found that Java mods can't simply run, because they call Minecraft's own \
 classes. Option to look at again: a bridge for simple Fabric mods."""
 links = ["#527"]
-
-[[item]]
-id = "alt-accounts"
-title = "Ely.by and other sign-in providers"
-status = "later"
-area = "servers"
-plain = """Sign in with other account providers, such as Ely.by or any Yggdrasil-compatible one, beside Microsoft."""
-dev = """Issue #1270 asks for Ely.by and Yggdrasil-compatible servers with an account selector in the launcher. It \
-builds on the Microsoft sign-in (docs/microsoft-account.md)."""
-links = ["#1270", "docs/microsoft-account.md"]
 
 [[item]]
 id = "older-servers"
@@ -688,7 +678,7 @@ area = "mods"
 plain = """Contraptions and physics like the Create and Aeronautics mods, as a mod for Horizon rather than part of the \
 base game."""
 dev = """Issue #805 (porting QOL mods) closed with this answer: it would come as a native Horizon mod."""
-links = ["#805"]
+links = ["#805", "#6302", "#5313", "#5556"]
 
 [[item]]
 id = "proximity-voice"
@@ -757,7 +747,7 @@ dev = """Three stages. Recording: capture gameplay in a keypress with an encoder
 Replay: a replay mode for recorded sessions. Editing: cuts, camera paths, titles and export. None of it \
 exists yet; the agent-control socket (docs/agent-control.md) already lets tools drive the game for scripted \
 shots."""
-links = ["docs/agent-control.md"]
+links = ["docs/agent-control.md", "#10025"]
 
 [[item]]
 id = "controllers"
@@ -770,7 +760,7 @@ dev = """The game side is merged (docs/controllers.md): pads read with gilrs, me
 DualSense adaptive triggers, lightbar and haptics, but not yet confirmed on real pads or a Steam Deck \
 (DualSense haptics stay behind a switch until then). Left: a test pass on real hardware, and the same focus \
 navigation in the GPUI launcher."""
-links = ["docs/controllers.md"]
+links = ["docs/controllers.md", "#10298", "#8678"]
 
 [[item]]
 id = "debug-screen"
@@ -794,6 +784,17 @@ dev = """A shared resource store keyed by the preparer's digest, no prepare inte
 and the previous version kept, and an automatic clean-up. Not started."""
 
 [[item]]
+id = "launcher-accessibility"
+title = "A launcher screen readers can read"
+status = "later"
+area = "launcher"
+plain = """Screen readers read the launcher's buttons, lists and settings, and every part of it works from the \
+keyboard."""
+dev = """Issue #4537: the launcher is GPUI (not Electron), so it exposes nothing to UI Automation, NSAccessibility \
+or AT-SPI yet. Needs an accessibility tree from GPUI (an AccessKit bridge) and a role and label on each widget."""
+links = ["#4537"]
+
+[[item]]
 id = "linux-arm64"
 title = "Horizon on Linux ARM64"
 status = "later"
@@ -803,6 +804,18 @@ dev = """Issue #1709: aarch64 builds of the game and the launcher in the release
 machine with its Vulkan driver. The server build already drops audio and controllers \
 (`--no-default-features`)."""
 links = ["#1709"]
+
+[[item]]
+id = "build-it-yourself"
+title = "The launcher builds Horizon on other systems"
+status = "later"
+area = "platforms"
+plain = """On a system Horizon has no download for, such as FreeBSD, the launcher offers to build the game on your \
+computer, as it already does for native mods."""
+dev = """Issue #4354: when no release asset matches the platform, the launcher fetches the tagged source and runs \
+the same pinned-toolchain `cargo build --locked` its native-mod builds use, with a warning about the time it \
+takes. The build is unsigned, so the launcher marks the version as built locally."""
+links = ["#4354", "docs/native-mods.md"]
 
 [[item]]
 id = "windows-arm64"
@@ -839,7 +852,7 @@ packaging and loading the player's own assets all missing; the roadmap now inclu
 build for the browser as long-term goals. First pieces from contributors: `horizon-dualsense` \
 compiling on iOS (#1813) and helper-thread limits on Android (#1751). Preparing without Java (#1750) matters \
 here too. Horizon ships none of Mojang's files on any platform."""
-links = ["#1813", "#1751"]
+links = ["#1813", "#1751", "#9134", "#8069", "#4153"]
 
 [[item]]
 id = "video-series"
@@ -898,7 +911,7 @@ shortcuts that skip blocked connectors and pool elements known not to fit, with 
 chambers and ancient cities first); batched raw mouse input on Windows for 8000 Hz mice; a better atlas \
 packer for huge resource packs (a 64x pack builds a 704 MiB atlas for 452 MiB of textures); sign-heavy \
 scenes (#1461). Profile first, keep what pays, show before and after numbers."""
-links = ["#1461", "docs/profiling.md"]
+links = ["#1461", "docs/profiling.md", "#7752", "#8251", "#10229"]
 
 [[item]]
 id = "convert-to-rust"
@@ -1098,7 +1111,7 @@ dev = """Releases carry signed checksums, and the launcher and `horizon-server u
 (#1011, #1014). Left: the first install through `install.sh` and `install.ps1` still trusts only the \
 checksum GitHub publishes, because verifying Ed25519 signatures needs OpenSSL 3, which macOS doesn't ship \
 (docs/security.md)."""
-links = ["docs/security.md"]
+links = ["docs/security.md", "#10354"]
 
 [[item]]
 id = "cli-server-install"

@@ -35,21 +35,25 @@ static FACES: Once = Once::new();
 /// `Geist Mono`), which must outlive the process: `AddFontMemResourceEx`
 /// keeps referencing them. Repainting is safe and cheap (a background thread
 /// may call this as the console's lines arrive).
-pub fn paint(hwnd: isize, semibold: &[u8], mono: &[u8], logs: &[String]) {
+pub fn paint(hwnd: isize, semibold: &'static [u8], mono: &'static [u8], logs: &[String]) {
     let hwnd = hwnd as HWND;
     FACES.call_once(|| {
         for font in [semibold, mono] {
-            let count = 0u32;
+            let mut count = 0u32;
+            // SAFETY: `font` is a `'static` slice valid for the process lifetime, and
+            // `pNumFonts` (`&raw mut count`) points to writable `u32` storage.
             unsafe {
                 AddFontMemResourceEx(
                     font.as_ptr().cast(),
                     font.len() as u32,
                     std::ptr::null(),
-                    &count,
+                    (&raw mut count).cast_const(),
                 );
             }
         }
     });
+    // SAFETY: `hwnd` is a valid window handle owned by the caller on Windows; all GDI
+    // objects created below are selected out and deleted before releasing `window_dc`.
     unsafe {
         let window_dc = GetDC(hwnd);
         if window_dc.is_null() {

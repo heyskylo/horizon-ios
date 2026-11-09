@@ -27,7 +27,7 @@ command above to inspect the selection rather than relying on historical counts.
 
 | # | Area (commits) | Files | Checks |
 |---|---|---|---|
-| 1 | Game loop, tick order, frame pacing (554) | `L/game.rs` (`fn tick`, `fn tick_world`, `fn render`, `about_to_wait`), `L/clock.rs`, `N/window.rs`, `R/spans.rs` | game_loop, frame_limiter, interaction_input, tick |
+| 1 | Game loop, tick order, frame pacing (554) | `L/game.rs` (`fn tick`, `fn tick_world`, `fn render`), `G/window_handler.rs` (`about_to_wait`), `L/clock.rs`, `N/window.rs`, `R/spans.rs` | game_loop, frame_limiter, interaction_input, tick |
 | 2 | Mobs in the game loop, spawning (166) | `G/creatures.rs`, `G/natural_spawning.rs`, `L/mobs/spawning.rs`, `L/mobs/spawn_rules.rs`, `L/mobs/spawn_selection.rs`, `L/mobs/finalize.rs`, `G/spawner.rs`, `G/trial_spawner.rs` | natural_spawn, spawn_rules, finalize_spawn, spawner, trial_spawner, mob_ai |
 | 3 | World save and load (163) | `L/save.rs`, `G/saving.rs`, `G/persist.rs` (entities), `L/entity_nbt.rs`, `K/block_entity_nbt.rs`, `W/region.rs`, `W/nbt.rs` | save_roundtrip, world_reopen, world, datafix |
 | 4 | World generation (153) | `W/worldgen.rs`, `W/worldgen/` (`generator*.rs`, `feature_graph.rs`, `structure/`, `placement/`), `L/vanillagen.rs` | chunk_generation, worldgen, server_world_gen, world_spawn, feature_graph, feature_placement, decoration and the other worldgen harnesses |
@@ -41,21 +41,21 @@ command above to inspect the selection rather than relying on historical counts.
 | 12 | Guests' actions on a server (98) | `G/lan_actions.rs` (`fn as_guest`, `fn tick_guests`), `G/lan_{attributes,pvp,chat,crafting,stations,trading,mount_menu,waypoints}.rs` | server_player_combat, server_player_damage, server_player_targets, lan_e2e (all) |
 | 13 | Modpack porting, mod content (97) | `crates/horizon-port-pack/`, `L/mod_content.rs`, `tools/port_*.py` | `cargo test -p horizon-port-pack`; `python3 tools/mod_port_harness.py` |
 | 14 | Mob AI (96) | `L/mobs/ai.rs`, `goals.rs`, `brain.rs`, `*_brain.rs`, `nav.rs`, `path.rs`, `control.rs` | mob_ai (probe `examples/mob_ai_probe.rs`; known failure on main: drowned_*, #290) |
-| 15 | Items and item use (96) | `I/items.rs`, `I/item_data.rs`, `G/hand.rs`, `G/consume.rs`, `G/potions.rs`, `R/effects.rs`; game.rs `fn use_hand`, `fn use_item` | use_item_on, item_use, item_use_lifecycle, consumable, consume_effect, status_effect |
+| 15 | Items and item use (96) | `I/items.rs`, `I/item_data.rs`, `G/hand.rs`, `G/consume.rs`, `G/using_item.rs`, `G/potions.rs`, `R/effects.rs`, `G/item_actions.rs` (`fn use_item`), `G/use_hand.rs` (`fn use_hand`) | use_item_on, item_use, item_use_lifecycle, consumable, consume_effect, status_effect |
 | 16 | Options and settings screens (93) | `R/options_ui.rs`, `G/options.rs`, `R/settings.rs`, `R/options_file.rs`, `R/graphics_ui.rs`, `R/graphics.rs` | options, toggle_keys |
-| 17 | HUD, chat, tab list (93) | `R/hud.rs`, `R/hud_layout.rs`, `R/hud_overlays.rs`, `R/chat.rs`, `G/chat.rs`, `R/tab_list.rs`, `L/locator_bar.rs`, `G/locator_bar.rs` | hud, tab_list, locator_bar, chat_screen, secure_chat |
+| 17 | HUD, chat, tab list (93) | `R/hud.rs`, `R/hud_layout.rs`, `R/hud_overlays.rs`, `R/chat.rs`, `G/chat.rs`, `R/tab_list.rs`, `L/locator_bar.rs`, `G/locator_bar.rs`; Horizon's overlays around them: `R/hud_kit/` + `G/hud_room.rs` ([ui-kit.md](ui-kit.md)) | hud, tab_list, locator_bar, chat_screen, secure_chat |
 | 18 | Command execution (88) | `G/commands.rs`, `G/commands/*.rs`, `L/scoreboard_cmd.rs`, `L/data_cmd.rs`, `K/scoreboard.rs`, `G/functions.rs` | command_exec (corpus `tools/command_exec_corpus.py`), scoreboard, server_ops_feedback, lan_e2e commands |
-| 19 | Chunk streaming, light, tickets (85) | `R/streaming.rs`, `R/world.rs`, `R/chunk.rs`, `R/chunk_map.rs`, `R/light.rs`, `L/ticket_levels.rs`, `L/tick_chunk_membership.rs`, `G/world_loading.rs` | light, chunk_status, random_tick_sections; `cargo test -p horizon-client --test streaming_meshes` |
+| 19 | Chunk streaming, light, tickets (85) | `R/streaming.rs`, `R/world.rs`, `R/chunk.rs`, `R/chunk_map.rs`, `R/light.rs`, `L/ticket_levels.rs`, `L/tick_chunk_membership.rs`, `G/world_loading.rs`, `G/world_entry.rs` | light, chunk_status, random_tick_sections; `cargo test -p horizon-client --test streaming_meshes` |
 | 20 | Mob models and animation (78) | `L/mobs/render.rs`, `L/mobs/anim.rs`, `L/mobs/body_anim.rs`, `L/mobs/keyframes.rs`, `R/entity.wgsl` | entity_model |
 | 21 | Block behaviour, server side (78) | `W/level/` (`mod.rs`, `tick.rs`, `hooks.rs`, `data.rs`, `redstone.rs`, `place.rs`), `G/block_entity_ticks.rs`, `G/moving_pistons.rs` | block_update, redstone, random_tick, simple_block, piston_movement, block_entity_tickers |
 | 22 | Player movement and collision (75) | `L/motion.rs` + `L/motion/`, `R/collisions.rs`, `W/entity_move.rs`, `W/player_travel.rs`, `W/collision.rs` | collision, entity_move, player_travel, living_motion, climbing, swimming; `python3 tools/test_native_scene_motion.py` |
 | 23 | Resource packs and models (65) | `R/packs.rs` + `R/packs/`, `R/pack_screen.rs`, `R/atlas_sources.rs`, `R/sprites.rs`, `R/model_library.rs`, `G/packs.rs`, `L/mobs/cem.rs`, `L/mobs/cem_anim.rs`, `R/block_entity_cem.rs`, `crates/horizon-assets/`, `crates/horizon-optifine/` | resource_pack, pack_selection, pack_screen, model_resolution, item_model, mipmap |
-| 24 | Container menus and inventory (61) | `L/menu.rs`, `L/container_screen.rs`, `R/containers.rs`, `L/creative.rs`; game.rs `fn menu_ops`, `fn click_inventory` | menu_click, container_screen, creative, lan_e2e containers clicks |
+| 24 | Container menus and inventory (61) | `L/menu.rs`, `L/container_screen.rs`, `R/containers.rs`, `L/creative.rs`; game.rs `fn menu_ops`, `fn click_inventory`; `G/inventory_input.rs`, `G/inventory_slots.rs` | menu_click, container_screen, creative, lan_e2e containers clicks |
 | 25 | Workstations (60) | `L/stations.rs`, `G/stations.rs`, `I/enchant.rs`, `R/brewing.rs` | enchanting, screen_layout, lan_e2e brewing loom stonecutter grindstone anvil smithing |
 | 26 | Crafting and the recipe book (59) | `L/crafting.rs`, `L/recipe_book.rs`, `L/recipe_book_screen.rs`, `G/recipe_book.rs`, `G/machines.rs`, `G/machines/crafter.rs` | recipe, recipe_book, recipe_book_view, place_recipe, ghost_recipe, crafter |
 | 27 | Vehicles and mounts (54) | `G/boats.rs`, `G/boat_passengers.rs`, `G/minecarts.rs`, `G/mounts.rs`, `G/mount_menu.rs`, `G/llamas.rs`, `G/passengers.rs` | server_entities, lan_e2e boats minecarts riding mounts |
 | 28 | Villagers, trading, raids (50) | `L/mobs/villager*.rs`, `L/merchant.rs`, `G/trading.rs`, `G/villagers.rs`, `L/raid.rs`, `G/raids.rs`, `L/gossip.rs` | trading, raid, mob_ai |
-| 29 | Title, worlds, startup (49) | `L/title.rs` + `L/title/`, `G/startup_menu.rs`, `R/title_edition.rs` | world_options; `cargo test -p horizon-client --lib title` |
+| 29 | Title, worlds, startup (49) | `L/title.rs` + `L/title/`, `G/startup_menu.rs`, `R/title_edition.rs`, `G/loading_window.rs` (the first renderer, `start_game`), `G/resource_load.rs` (the startup resource load) | world_options; `cargo test -p horizon-client --lib title` |
 | 30 | Dedicated server, horizon-server (48) | `G/dedicated.rs`, `G/dedicated/status.rs`, `crates/horizon-server/`, `crates/horizon-server-files/` | dedicated_server, server_files, user_cache, online_mode, server_ops_feedback |
 | 31 | Particles and client effects (46) | `R/particles.rs`, `G/render_tick.rs`, `G/level_particles.rs`, `L/animate_tick.rs` | particle_providers, block_particles, entity_particles, emitter_particles, marker_particles |
 | 32 | Bosses and the End (45) | `G/dragon.rs`, `G/wither.rs`, `G/end.rs` | server_dragon, forced_end, end_podium, end_gateway |
@@ -67,3 +67,6 @@ command above to inspect the selection rather than relying on historical counts.
 | 38 | Command parsing (34) | `C/` (`args.rs`, `selector.rs`, `tree_*.rs`, `vanilla.rs`); `cargo test -p horizon-command` | command_parse (corpus `tools/command_parse_corpus.py`) |
 | 39 | Benchmarks and telemetry (34) | `L/benchmark.rs`, `tools/perf_bench.py`, `R/telemetry.rs`, `crates/horizon-telemetry*/`, `crates/horizon-bench/` | `python3 -m unittest tests.test_perf_bench`; [benchmark.md](benchmark.md) |
 | 40 | Explosions and TNT (31) | `G/explosion.rs`, `G/tnt.rs` | lan_e2e blast; no dedicated harness yet |
+
+Controller glyphs (`R/pad_glyph.rs`, drawn by the gameplay guide, notices, splitscreen prompts and declared
+buttons) are part of the same kit: [ui-kit.md](ui-kit.md) says how to ask for one and how to test it.

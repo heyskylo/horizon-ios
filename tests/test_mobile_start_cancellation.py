@@ -17,7 +17,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def program(game_source=None):
-    game = game_source or (ROOT / 'crates/horizon-client/src/game.rs').read_text()
+    game = game_source or '\n'.join((ROOT / path).read_text() for path in [
+        'crates/horizon-client/src/game.rs',
+        'crates/horizon-client/src/game/loading_screen.rs',
+    ])
     world = (ROOT / 'crates/horizon-client/src/game/world_loading.rs').read_text()
     launcher = (ROOT / 'crates/horizon-client/src/game/launcher.rs').read_text()
     drain = method(game, 'drain_cancelled_start')

@@ -6,6 +6,33 @@ use horizon_client::mod_api::{
 
 struct Keys;
 
+#[test]
+fn a_mod_observes_the_applied_chat_suggestion() {
+    use horizon_client::mod_api::{ChatSuggestionAppliedEvent, dispatch_chat_suggestion_applied};
+    use std::sync::{Arc, Mutex};
+
+    struct TestHost;
+    impl Host for TestHost {}
+    struct Listener(Arc<Mutex<Vec<String>>>);
+    impl Hooks for Listener {
+        fn chat_suggestion_applied(
+            &self,
+            _host: &dyn Host,
+            event: &mut ChatSuggestionAppliedEvent<'_>,
+        ) {
+            assert_eq!(event.original, "😀 hi st");
+            assert_eq!((event.start, event.end), (6, 8));
+            assert_eq!(event.suggestion, "Steve");
+            assert_eq!(event.input, "😀 hi Steve");
+            self.0.lock().unwrap().push(event.input.to_owned());
+        }
+    }
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let mods: Vec<Box<dyn Hooks>> = vec![Box::new(Listener(calls.clone()))];
+    dispatch_chat_suggestion_applied(&TestHost, &mods, "😀 hi st", 6, 8, "Steve", "😀 hi Steve");
+    assert_eq!(*calls.lock().unwrap(), ["😀 hi Steve"]);
+}
+
 impl Hooks for Keys {
     fn key(&self, _host: &mut dyn Host, event: &mut KeyEvent<'_>) {
         let _ = (event.key, event.pressed);
@@ -331,6 +358,87 @@ fn a_tank_hook_can_refuse_a_fluid() {
     assert!(!cancel, "the water tank takes water");
 }
 
+/// `AnvilUpdateEvent`: each mod changes the result after the one before it,
+/// vanilla's stays readable, and a cancel stops the mods after it.
+#[test]
+fn an_anvil_update_is_changed_in_turn_and_cancel_stops_later_mods() {
+    use horizon_client::items::ItemStack;
+    use horizon_client::mod_api::{AnvilUpdateEvent, Flow, dispatch_anvil_update};
+    struct TestHost;
+    impl Host for TestHost {}
+    // An anvil recipe of its own: iron and an emerald give a diamond.
+    struct Recipe;
+    impl Hooks for Recipe {
+        fn anvil_update(&self, _host: &mut dyn Host, event: &mut AnvilUpdateEvent<'_>) -> Flow {
+            if event.item_name == Some("void") {
+                return Flow::Cancel;
+            }
+            if &*event.left.item == "minecraft:iron_ingot"
+                && event.right.is_some_and(|r| &*r.item == "minecraft:emerald")
+            {
+                *event.output = Some(ItemStack::new("minecraft:diamond", 1));
+                event.xp_cost = 5;
+                event.material_cost = 1;
+            }
+            Flow::Continue
+        }
+    }
+    // A level off whatever the mods before it charge.
+    struct Discount;
+    impl Hooks for Discount {
+        fn anvil_update(&self, _host: &mut dyn Host, event: &mut AnvilUpdateEvent<'_>) -> Flow {
+            assert_eq!(event.vanilla_xp_cost, 3, "vanilla's cost stays readable");
+            event.xp_cost -= 1;
+            Flow::Continue
+        }
+    }
+    let mods: Vec<Box<dyn Hooks>> = vec![Box::new(Recipe), Box::new(Discount)];
+    let update = |left: &str, right: Option<&str>, item_name: Option<&str>| {
+        let (left, right) = (ItemStack::new(left, 1), right.map(|r| ItemStack::new(r, 4)));
+        let vanilla = ItemStack::new("minecraft:iron_sword", 1);
+        let mut output = Some(vanilla.clone());
+        let (mut xp_cost, mut material_cost, mut canceled) = (3, 0, false);
+        dispatch_anvil_update(
+            &mut TestHost,
+            &mods,
+            7,
+            "Steve",
+            &left,
+            right.as_ref(),
+            item_name,
+            Some(&vanilla),
+            3,
+            0,
+            &mut output,
+            &mut xp_cost,
+            &mut material_cost,
+            &mut canceled,
+        );
+        (
+            output.map(|o| o.item.to_string()),
+            xp_cost,
+            material_cost,
+            canceled,
+        )
+    };
+    let diamond = Some("minecraft:diamond".to_owned());
+    let sword = Some("minecraft:iron_sword".to_owned());
+    assert_eq!(
+        update("minecraft:iron_ingot", Some("minecraft:emerald"), None),
+        (diamond, 4, 1, false)
+    );
+    // Other inputs keep vanilla's result, less the discount.
+    assert_eq!(
+        update("minecraft:iron_sword", None, Some("")),
+        (sword.clone(), 2, 0, false)
+    );
+    // A cancel: the discount never ran, and the caller empties the result.
+    assert_eq!(
+        update("minecraft:iron_sword", None, Some("void")),
+        (sword, 3, 0, true)
+    );
+}
+
 #[test]
 fn tooltip_render_pre_intercepts_rendering_and_draws_gui_items() {
     use horizon_client::hud::HudBatch;
@@ -442,4 +550,187 @@ fn tooltip_render_pre_intercepts_rendering_and_draws_gui_items() {
         !cancel_stone,
         "unhandled stack continues to vanilla tooltip"
     );
+}
+
+/// #10563: a right-click on an entity hears the point clicked before the
+/// entity's own interact; a claim ends it before the mods after.
+#[test]
+fn entity_interact_specific_hears_the_click_point_and_a_claim_ends_it() {
+    use horizon_client::items::ItemStack;
+    use horizon_client::mod_api::{
+        EntityInteractSpecificEvent, Flow, dispatch_entity_interact_specific,
+    };
+    use std::sync::{Arc, Mutex};
+
+    struct TestHost;
+    impl Host for TestHost {}
+
+    #[derive(Default)]
+    struct Log {
+        calls: Vec<(String, i32, String, [f64; 3])>,
+    }
+
+    struct Recorder {
+        name: String,
+        log: Arc<Mutex<Log>>,
+    }
+    impl Hooks for Recorder {
+        fn entity_interact_specific(
+            &self,
+            _host: &mut dyn Host,
+            event: &mut EntityInteractSpecificEvent<'_>,
+        ) -> Flow {
+            self.log.lock().unwrap().calls.push((
+                self.name.clone(),
+                event.entity,
+                event.kind.to_string(),
+                event.location,
+            ));
+            Flow::Continue
+        }
+    }
+
+    struct Claims;
+    impl Hooks for Claims {
+        fn entity_interact_specific(
+            &self,
+            _host: &mut dyn Host,
+            _event: &mut EntityInteractSpecificEvent<'_>,
+        ) -> Flow {
+            Flow::Cancel
+        }
+    }
+
+    let held = ItemStack::new("minecraft:stick", 1);
+
+    // No claim: both mods hear the call in order, and the second sees the
+    // entity, kind and point the caller passed.
+    let log = Arc::new(Mutex::new(Log::default()));
+    let mods: Vec<Box<dyn Hooks>> = vec![
+        Box::new(Recorder {
+            name: "first".into(),
+            log: log.clone(),
+        }),
+        Box::new(Recorder {
+            name: "second".into(),
+            log: log.clone(),
+        }),
+    ];
+    let mut host = TestHost;
+    let mut claimed = false;
+    dispatch_entity_interact_specific(
+        &mut host,
+        &mods,
+        7,
+        "minecraft:cow",
+        Some(&held),
+        [0.25, 1.5, -0.125],
+        &mut claimed,
+    );
+    assert!(!claimed, "no mod claimed the click");
+    let calls = log.lock().unwrap();
+    assert_eq!(calls.calls.len(), 2, "both mods heard the click");
+    assert_eq!(calls.calls[0].0.as_str(), "first");
+    assert_eq!(calls.calls[1].0.as_str(), "second");
+    assert_eq!(calls.calls[1].1, 7);
+    assert_eq!(calls.calls[1].2.as_str(), "minecraft:cow");
+    assert_eq!(calls.calls[1].3, [0.25, 1.5, -0.125]);
+    drop(calls);
+
+    // A claim stops later mods and sets `claimed`.
+    let log = Arc::new(Mutex::new(Log::default()));
+    let mods: Vec<Box<dyn Hooks>> = vec![
+        Box::new(Claims),
+        Box::new(Recorder {
+            name: "second".into(),
+            log: log.clone(),
+        }),
+    ];
+    let mut host = TestHost;
+    let mut claimed = false;
+    dispatch_entity_interact_specific(
+        &mut host,
+        &mods,
+        7,
+        "minecraft:cow",
+        Some(&held),
+        [0.25, 1.5, -0.125],
+        &mut claimed,
+    );
+    assert!(claimed, "the first mod claimed the click");
+    assert!(
+        log.lock().unwrap().calls.is_empty(),
+        "the second mod was skipped"
+    );
+}
+
+#[test]
+fn a_screen_background_hook_can_cancel_vanilla_gradient() {
+    use horizon_client::mod_api::{
+        Flow, Hooks, Host, ScreenTransparentBackgroundEvent, dispatch_screen_transparent_background,
+    };
+    struct TestHost;
+    impl Host for TestHost {}
+    struct BlurMod;
+    impl Hooks for BlurMod {
+        fn screen_transparent_background(
+            &self,
+            _host: &dyn Host,
+            event: &mut ScreenTransparentBackgroundEvent<'_>,
+        ) -> Flow {
+            if event.screen == "inventory" {
+                Flow::Cancel
+            } else {
+                Flow::Continue
+            }
+        }
+    }
+    let mut batch = horizon_client::hud::HudBatch::new([800, 600]);
+    let mut cancel = false;
+    dispatch_screen_transparent_background(&TestHost, &[], "inventory", &mut batch, &mut cancel);
+    assert!(!cancel, "vanilla gradient drawn without mods");
+    let mods: Vec<Box<dyn Hooks>> = vec![Box::new(BlurMod)];
+    let mut cancel = false;
+    dispatch_screen_transparent_background(&TestHost, &mods, "chest", &mut batch, &mut cancel);
+    assert!(!cancel, "other screens keep vanilla background");
+    let mut cancel = false;
+    dispatch_screen_transparent_background(&TestHost, &mods, "inventory", &mut batch, &mut cancel);
+    assert!(
+        cancel,
+        "inventory cancels vanilla gradient for blur/custom draw"
+    );
+}
+
+#[test]
+fn wind_burst_filter_preserves_order_and_context() {
+    use horizon_client::mod_api::{WindBurstEvent, dispatch_wind_burst};
+    struct TestHost;
+    impl Host for TestHost {}
+    struct Claims;
+    impl Hooks for Claims {
+        fn wind_burst(&self, _host: &mut dyn Host, event: &mut WindBurstEvent<'_>) {
+            assert_eq!(event.dimension, "minecraft:the_nether");
+            assert_eq!(event.center, [1.5, 70.0, -2.5]);
+            event.blocks.retain(|p| p[0] != 1);
+        }
+    }
+    let original = vec![[3, 70, -2], [1, 70, -2], [2, 70, -2]];
+    let mut blocks = original.clone();
+    dispatch_wind_burst(
+        &mut TestHost,
+        &[],
+        "minecraft:the_nether",
+        [1.5, 70.0, -2.5],
+        &mut blocks,
+    );
+    assert_eq!(blocks, original);
+    let mods: Vec<Box<dyn Hooks>> = vec![Box::new(Claims)];
+    dispatch_wind_burst(
+        &mut TestHost,
+        &mods,
+        "minecraft:the_nether",
+        [1.5, 70.0, -2.5],
+        &mut blocks,
+    );
+    assert_eq!(blocks, vec![[3, 70, -2], [2, 70, -2]]);
 }

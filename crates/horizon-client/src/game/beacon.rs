@@ -10,7 +10,7 @@ use super::{
 use horizon_client::{
     containers::{Beacon, BlockEntity},
     effects::EffectInstance,
-    hud::{HudBatch, rgba},
+    hud::HudBatch,
     items::ItemStack,
     mesher::Vertex,
     mobs::render::{DYE, DYE_NAMES},
@@ -287,15 +287,26 @@ impl Game<'_> {
             return;
         };
         let range = f64::from(b.levels * 10 + 10);
-        let Some(pp) = self.player.as_ref().map(|p| p.position) else {
+        let Some((pp, pl)) = self.player.as_ref().map(|p| (p.position, p.dimensions)) else {
             return;
         };
-        let inside = pp.x >= f64::from(p[0]) - range
-            && pp.x <= f64::from(p[0] + 1) + range
-            && pp.z >= f64::from(p[2]) - range
-            && pp.z <= f64::from(p[2] + 1) + range
-            && pp.y >= f64::from(p[1]) - range;
-        if !inside {
+        let height = f64::from(self.world.top_y() - self.world.bottom_y());
+        let bounds = pl.bounds(pp);
+        if !effect_box_hits(
+            p,
+            range,
+            height,
+            [
+                bounds.min_position().x,
+                bounds.min_position().y,
+                bounds.min_position().z,
+            ],
+            [
+                bounds.max_position().x,
+                bounds.max_position().y,
+                bounds.max_position().z,
+            ],
+        ) {
             return;
         }
         let secondary = b.secondary.as_deref().and_then(effect_id);
@@ -466,15 +477,8 @@ impl Game<'_> {
                 |t| t.plain(),
             )
         });
+        self.render_transparent_background("beacon", batch);
         let atlas = &self.gui.atlas;
-        batch.fill(
-            atlas,
-            0.0,
-            0.0,
-            batch.width,
-            batch.height,
-            rgba(16, 16, 16, 160),
-        );
         if let Some(mut r) = atlas.sprites.get("gui/container/beacon").copied() {
             let (du, dv) = ((r.u1 - r.u0) / r.w as f32, (r.v1 - r.v0) / r.h as f32);
             r.u1 = r.u0 + 230.0 * du;
@@ -689,6 +693,17 @@ fn beam(e: &BlockEntity) -> Option<&[(u32, i32)]> {
         _ => None,
     }
 }
+/// `BeaconBlockEntity.applyEffects` box: `AABB(pos).inflate(range).expandTowards(0, height, 0)`,
+/// tested with `AABB.intersects` (strict) against the player's bounding box.
+fn effect_box_hits(p: [i32; 3], range: f64, height: f64, lo: [f64; 3], hi: [f64; 3]) -> bool {
+    let [x, y, z] = p.map(f64::from);
+    lo[0] < x + 1.0 + range
+        && hi[0] > x - range
+        && lo[1] < y + 1.0 + range + height
+        && hi[1] > y - range
+        && lo[2] < z + 1.0 + range
+        && hi[2] > z - range
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -702,5 +717,25 @@ mod tests {
             beam(&BlockEntity::Beacon(Box::new(b))),
             Some(&[(0xFFFFFF, 10)][..])
         );
+    }
+    #[test]
+    fn effect_box_uses_player_overlap() {
+        let hit = |x: f64, y: f64| {
+            effect_box_hits(
+                [0, 100, 0],
+                50.0,
+                384.0,
+                [x - 0.3, y, -0.3],
+                [x + 0.3, y + 1.8, 0.3],
+            )
+        };
+        assert!(hit(-50.2, 100.0));
+        assert!(!hit(-50.4, 100.0));
+        assert!(hit(51.2, 100.0));
+        assert!(!hit(51.4, 100.0));
+        assert!(hit(0.0, 48.3));
+        assert!(!hit(0.0, 48.1));
+        assert!(hit(0.0, 534.9));
+        assert!(!hit(0.0, 535.0));
     }
 }

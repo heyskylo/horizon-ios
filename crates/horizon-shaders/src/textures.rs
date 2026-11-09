@@ -260,12 +260,16 @@ fn decode_png_checked(bytes: &[u8]) -> Result<Texture, String> {
     let rgba: Vec<f32> = match info.color_type {
         png::ColorType::Rgba => pixels.iter().map(|&b| b as f32 / 255.0).collect(),
         png::ColorType::Rgb => pixels
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .flat_map(|p| [p[0], p[1], p[2], 255])
             .map(|b| b as f32 / 255.0)
             .collect(),
         png::ColorType::GrayscaleAlpha => pixels
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .flat_map(|p| [p[0], p[0], p[0], p[1]])
             .map(|b| b as f32 / 255.0)
             .collect(),

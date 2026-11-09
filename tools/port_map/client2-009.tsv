@@ -26,9 +26,9 @@ Font.PreparedTextBuilder.getTextColor	inline	crates/horizon-client-render/src/hu
 Font.PreparedTextBuilder.getShadowColor	inline	crates/horizon-client-render/src/hud.rs::HudBatch::text_styled	gap: minor: style shadow colour is ignored; shadow is always 0.25 of the text colour
 Font.PreparedTextBuilder.bounds	skip:other		bounds of prepared text for vanilla hit tests; Horizon hit-tests by advance
 Gui.update	inline	crates/horizon-client/src/game/narrator.rs::Game::narrate_screen	once a turn after the frame's widgets were read: ScreenNarrator::frame runs the narration handleDelayedNarration makes due and a new screen's
-Gui.isPausing	port	crates/horizon-client/src/game.rs::Game::pauses_game	gap: minor: checks the open screen only, not the overlay part
+Gui.isPausing	port	crates/horizon-client/src/game/pointer_capture.rs::Game::pauses_game	gap: minor: checks the open screen only, not the overlay part
 Gui.addSocialInteractionsToast	skip:service		social interactions are not offered by Horizon
-Gui.handleKeybinds	port	crates/horizon-client/src/game.rs::Game::key_pressed	gap: minor: the social interactions key has no port (see addSocialInteractionsToast)
+Gui.handleKeybinds	port	crates/horizon-client/src/game/play_keys.rs::Game::key_pressed	gap: minor: the social interactions key has no port (see addSocialInteractionsToast)
 Gui.openChatScreen	port	crates/horizon-client/src/game/chat.rs::Game::open_chat	
 Gui.openChatAndAddText	port	crates/horizon-client/src/game/chat.rs::Game::open_chat	the text is passed as the initial input
 Gui.buildInitialScreens	port	crates/horizon-client/src/title.rs::Title::next_ban_notice	the queue ban_notice::initial_notices fills (from Title::poll_account) is popped one notice at a time, the title last
@@ -44,8 +44,8 @@ GuiGraphicsExtractor.blitNineSliceInnerSegment	port	crates/horizon-client-render
 GuiGraphicsExtractor.blitTiledSprite	port	crates/horizon-client-render/src/ui.rs::tiled	
 GuiGraphicsExtractor.innerBlit	port	crates/horizon-client-render/src/screen_draw.rs::blit	texture rectangle by UV; the atlas lookup is in HudBatch::rect_uv
 GuiGraphicsExtractor.innerTiledBlit	port	crates/horizon-client-render/src/ui.rs::tile	one tiled quad
-GuiGraphicsExtractor.item	port	crates/horizon-client/src/game.rs::Game::draw_item	gap: minor: no seed or owner is passed to the item model
-GuiGraphicsExtractor.fakeItem	inline	crates/horizon-client/src/game.rs::Game::draw_item	same as item with no owner
+GuiGraphicsExtractor.item	port	crates/horizon-client/src/game/inventory_slots.rs::Game::draw_item	gap: minor: no seed or owner is passed to the item model
+GuiGraphicsExtractor.fakeItem	inline	crates/horizon-client/src/game/inventory_slots.rs::Game::draw_item	same as item with no owner
 GuiGraphicsExtractor.itemBar	inline	crates/horizon-client-render/src/hud_overlays.rs::item_decorations	damage bar drawn in item_decorations
 GuiGraphicsExtractor.itemCount	inline	crates/horizon-client-render/src/hud_overlays.rs::item_decorations	stack count drawn in item_decorations
 GuiGraphicsExtractor.map	port	crates/horizon-client/src/game/cartography.rs::Game::draw_cartography	
@@ -69,6 +69,8 @@ GuiGraphicsExtractor.ScissorStack.containsPoint	missing		minor: hover ignores th
 Hud.extractHotbarAndDecorations	port	crates/horizon-client-render/src/hud_layout.rs::hotbar	items and decorations are drawn by Game::draw_item
 Hud.<init>	skip:java		constructor state setup
 Hud.extractSubtitleOverlay	port	crates/horizon-client-render/src/hud_overlays.rs::SubtitleOverlay::extract	
+Hud.extractSelectedItemName	port	crates/horizon-client-render/src/hud_overlays.rs::ToolHighlight::draw	59 pixels above the bottom edge, 14 lower in a mode that cannot hurt the player
+Hud.extractOverlayMessage	port	crates/horizon-client-render/src/hud_overlays.rs::Titles::overlay_message	guiHeight - 68 and the text four pixels under that, whatever the bars above the hotbar are
 Hud.extractChat	port	crates/horizon-client-render/src/chat.rs::Chat::layout	
 Hud.extractTabList	port	crates/horizon-client-render/src/tab_list.rs::visible	only inside `if (!isHidden)`, so F1 takes the list away; the list key, the local server and a `list` objective decide the rest
 Hud.getMobEffectSprite	port	crates/horizon-client/src/game/potions.rs::Game::draw_effect_icons	sprite lookup is inside the effect icon draw
@@ -82,7 +84,7 @@ Hud.getAirBubbleYLine	inline	crates/horizon-client-render/src/hud_layout.rs::Hea
 Hud.getCurrentAirSupplyBubble	inline	crates/horizon-client-render/src/hud_layout.rs::HealthHud::layout	air bubble count
 Hud.extractFood	inline	crates/horizon-client-render/src/hud_layout.rs::HealthHud::layout	food row inside the health layout
 Hud.extractTextureOverlay	port	crates/horizon-client-render/src/hud_overlays.rs::camera_overlays	gap: player: the powder-snow freeze outline is not drawn; only the equippable camera overlay (pumpkin) is
-Hud.extractSlot	port	crates/horizon-client/src/game.rs::Game::draw_slot_item	
+Hud.extractSlot	port	crates/horizon-client/src/game/inventory_slots.rs::Game::draw_slot_item	
 Hud.setNowPlaying	port	crates/horizon-client-render/src/hud_overlays.rs::Titles::set_overlay	the animate flag gives the rainbow colour
 Hud.onDisconnected	port	crates/horizon-client/src/game/remote.rs::Game::hud_disconnected	the tab list, boss bars, toasts, debug charts and titles reset; chat is left alone (ChatComponent.storeState)
 Hud.willPrioritizeJumpInfo	port	crates/horizon-client/src/locator_bar.rs::ContextualBar::next	the jumping input comes from Game::mount_jumping

@@ -113,6 +113,7 @@ impl Game<'_> {
                 invisible: false,
                 check_interval: 0,
                 custom_name: None,
+                random: horizon_client::random_source::entity(),
             });
         } else if kind == "minecraft:cushion" {
             // BlockAttachedEntity.pos: `BlockPos.containing` of the spawn.
@@ -538,6 +539,7 @@ mod tests {
                 invisible: false,
                 check_interval: 0,
                 custom_name: None,
+                random: horizon_client::random_source::entity(),
             };
             apply_frame_metadata(&mut frame, 0, &Value::Byte(0x20));
             assert!(frame.invisible);

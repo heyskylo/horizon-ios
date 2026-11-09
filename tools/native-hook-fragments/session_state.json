@@ -1,0 +1,10 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "biome", "target": "horizon_client::game::native_hooks::Game<'_>::native_biome"},
+    {"name": "data_dir", "target": "horizon_client::game::native_hooks::Game<'_>::native_data_dir"}
+  ],
+  "rust_summary": "what a client HUD reads of its session: `native_client_state`'s `screen`, `debug_screen`, `world`\n(`NativeWorldId`) and `sleeping_pos`, the biome at a block (`native_biome`) and a mod's own folder (`native_data_dir`).",
+  "doc_summary": "what a client HUD reads of its session: `native_client_state()` gains `screen` (`NativeScreenKind`: playing, chat, death or another screen), `debug_screen` (F3), `world` (`NativeWorldId`: single player's save folder or a server's address, for per-world data) and `sleeping_pos` (the bed); `native_biome(pos)` is the biome at a block as `Level.getBiome` picks it, and `native_data_dir(mod_id)` a mod's own folder. Bundles need \"hooks\": @API:session_state@.",
+  "comments": ["crates/horizon-client/src/game/native_client_services.rs"]
+}

@@ -93,6 +93,7 @@ fn projectile_kind(kind: &str) -> Option<ProjectileKind> {
         "minecraft:ender_pearl" => ProjectileKind::EnderPearl,
         "minecraft:small_fireball" => ProjectileKind::SmallFireball,
         "minecraft:fireball" => ProjectileKind::LargeFireball { power: 1 },
+        "minecraft:dragon_fireball" => ProjectileKind::DragonFireball,
         "minecraft:llama_spit" => ProjectileKind::LlamaSpit,
         "minecraft:wind_charge" => ProjectileKind::WindCharge,
         "minecraft:breeze_wind_charge" => ProjectileKind::BreezeWindCharge,
@@ -113,7 +114,7 @@ fn projectile_kind(kind: &str) -> Option<ProjectileKind> {
 /// tracker's updates (10 to 20 ticks apart) with its own gravity and drag,
 /// and a block stops it there; only the server decides what it hits.
 pub(super) fn remote_projectile_tick(p: &mut Projectile, w: &impl ProjectileWorld) {
-    if !matches!(p.tick(w).1, Hit::None) {
+    if !matches!(p.tick_remote(w).1, Hit::None) {
         p.velocity = Vec3::ZERO;
     }
 }
@@ -150,6 +151,7 @@ pub(super) fn remote_projectile_power(projectiles: &mut [Projectile], id: i32, p
             p.kind,
             ProjectileKind::SmallFireball
                 | ProjectileKind::LargeFireball { .. }
+                | ProjectileKind::DragonFireball
                 | ProjectileKind::WitherSkull { .. }
                 | ProjectileKind::WindCharge
                 | ProjectileKind::BreezeWindCharge
@@ -248,6 +250,22 @@ impl Game<'_> {
         }
     }
 
+    /// `DragonFireball.getTrailParticle`: dragon breath, where
+    /// `createParticleTrail` puts every hurting projectile's trail.
+    pub(super) fn dragon_breath_trails(&mut self) {
+        let trail = ParticleOptions::simple(ParticleType::DragonBreath);
+        let at: Vec<Vec3> = self
+            .creatures
+            .projectiles
+            .iter()
+            .filter(|p| p.kind == ProjectileKind::DragonFireball)
+            .map(|p| p.position)
+            .collect();
+        for p in at {
+            self.particles.add(&trail, [p.x, p.y + 0.5, p.z], [0.0; 3]);
+        }
+    }
+
     pub(super) fn throwable_bubbles(&mut self, at: Vec<([f64; 3], [f64; 3])>) {
         let bubble = ParticleOptions::simple(ParticleType::Bubble);
         for (position, speed) in at {
@@ -303,6 +321,9 @@ impl Game<'_> {
                 velocity,
                 fuse: 80,
                 on_ground: false,
+                fall_distance: 0.0,
+                stuck: Vec3::ZERO,
+                in_water: false,
                 owner: None,
                 guest: None,
                 power: 4.0,
@@ -323,6 +344,7 @@ impl Game<'_> {
                 portal: Default::default(),
                 drop_item: false,
                 fall_distance: 0.0,
+                on_ground: false,
                 stuck: Vec3::ZERO,
                 damage: Default::default(),
                 saved: None,
@@ -343,9 +365,6 @@ impl Game<'_> {
             | "minecraft:experience_bottle" => {
                 self.potions.add_remote_thrown(id, kind, at, velocity);
             }
-            "minecraft:dragon_fireball" => self
-                .dragon_fireballs
-                .push(super::dragon::DragonFireball::remote(id, at, velocity)),
             "minecraft:area_effect_cloud" => self.potions.clouds.push(RemoteCloud {
                 id,
                 at: position,
@@ -361,10 +380,13 @@ impl Game<'_> {
             "minecraft:fishing_bobber" => self.spawn_remote_hook(id, at, velocity, data),
             "minecraft:end_crystal" => {
                 // EndCrystal's constructor starts `time` from the crystal's own
-                // random, so each placed crystal spins from its own phase.
-                let time = horizon_client::mobs::entity_random(id, at)
+                // random, so each placed crystal spins from its own phase. The id is the
+                // server's, given in the order its chunks load, so under `HORIZON_STILL` the
+                // position alone seeds it.
+                let drawn = horizon_client::mobs::entity_random(id, at)
                     .next_int_bound(100_000)
                     .unwrap_or(0);
+                let time = super::dragon::Crystal::start_time(at, drawn, self.clock.still());
                 self.crystals.push(super::dragon::Crystal {
                     id,
                     position: at,
@@ -653,9 +675,10 @@ impl Game<'_> {
         // where it lands for the server to place it and remove it.
         let mut falling = std::mem::take(&mut self.falling);
         for f in &mut falling {
-            if let Ok(FallStep::Landed(_)) = self.fall_step(f, false) {
-                // Block.updateEntityMovementAfterFallOn, then the air drag.
-                f.velocity = Vec3::new(f.velocity.x * 0.98, 0.0, f.velocity.z * 0.98);
+            if let Ok(FallStep::Landed(_)) = self.fall_step(f, false, &[]) {
+                // Block.updateEntityMovementAfterFallOn, then getAirDrag 0.98F.
+                let drag = f64::from(0.98_f32);
+                f.velocity = Vec3::new(f.velocity.x * drag, 0.0, f.velocity.z * drag);
             }
         }
         self.falling = falling;
@@ -718,6 +741,7 @@ impl Game<'_> {
             .map(|p| p.position)
             .collect();
         self.smoke_trails(trails);
+        self.dragon_breath_trails();
         self.shulker_bullet_trails();
         self.throwable_bubbles(bubbles);
         // FireworkRocketEntity.tick: a rocket attached to another entity
@@ -756,37 +780,6 @@ impl Game<'_> {
         self.tick_remote_hooks();
         self.end.step_remote_eyes();
         self.tick_remote_clouds();
-        // The dragon's fireballs fly on between the tracker's updates, with
-        // their dragon_breath trail (`AbstractHurtingProjectile.getTrailParticle`).
-        let trail = ParticleOptions::simple(ParticleType::DragonBreath);
-        for b in &mut self.dragon_fireballs {
-            let at = b.position;
-            let water = self
-                .res
-                .facts()
-                .get(self.world.block(
-                    at.x.floor() as i32,
-                    at.y.floor() as i32,
-                    at.z.floor() as i32,
-                ))
-                .fluid
-                == horizon_client::blocks::Fluid::Water;
-            if water {
-                // applyInertia, before the move: four bubbles on the motion
-                // the fireball already has.
-                let (at, speed) = horizon_client::projectiles::water_bubble_at(
-                    [at.x, at.y, at.z],
-                    [b.velocity.x, b.velocity.y, b.velocity.z],
-                );
-                let bubble = ParticleOptions::simple(ParticleType::Bubble);
-                for _ in 0..4 {
-                    self.particles.add(&bubble, at, speed);
-                }
-            }
-            b.remote_step(water);
-            let p = b.position;
-            self.particles.add(&trail, [p.x, p.y + 0.5, p.z], [0.0; 3]);
-        }
     }
 
     /// `AreaEffectCloud.clientTick` for each cloud a server tracks.
@@ -806,7 +799,6 @@ impl Game<'_> {
         self.crystals.retain(|c| c.id != id);
         self.potions.remove_remote_thrown(id);
         self.potions.clouds.retain(|c| c.id != id);
-        self.dragon_fireballs.retain(|b| b.id != id);
         self.end.remove_remote_eye(id);
         self.remove_remote_hook(id);
     }
@@ -824,7 +816,6 @@ impl Game<'_> {
         self.dragon = None;
         self.potions.clear_thrown();
         self.potions.clouds.clear();
-        self.dragon_fireballs.clear();
         self.end.clear_remote_eyes();
         self.clear_remote_hooks();
     }

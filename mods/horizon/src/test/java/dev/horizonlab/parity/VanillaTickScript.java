@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.mojang.blaze3d.platform.InputConstants;
+import com.mojang.blaze3d.platform.Window;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.lang.reflect.Field;
@@ -25,6 +26,9 @@ import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.tutorial.Tutorial;
 import net.minecraft.world.inventory.ContainerInput;
 import net.minecraft.world.phys.HitResult;
+import org.lwjgl.sdl.SDLEvents;
+import org.lwjgl.sdl.SDLMouse;
+import org.lwjgl.sdl.SDLVideo;
 
 /**
  * The vanilla 26.3 client playing a tick-indexed script, for tools/test_wire_stream_parity.py: the same
@@ -85,6 +89,7 @@ public final class VanillaTickScript {
 
     private static void read() {
         try {
+            noticeFocus(waitForWindow());
             Minecraft mc = waitForPlayer();
             mc.execute(() -> install(mc));
             BufferedReader in = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
@@ -122,6 +127,36 @@ public final class VanillaTickScript {
                 renderMouse == null || renderMouse.getAsBoolean());
     }
 
+    private static Minecraft waitForWindow() throws InterruptedException {
+        while (true) {
+            Minecraft mc = Minecraft.getInstance();
+            if (mc != null && mc.getWindow() != null) {
+                return mc;
+            }
+            Thread.sleep(20);
+        }
+    }
+
+    /**
+     * Window.focused starts true and changes only on SDL's focus events, which a window shown in the
+     * background (SDL_WINDOW_ACTIVATE_WHEN_SHOWN=0) never gets until someone clicks it: the join's
+     * MouseHandler.grabMouse would take that for focus and warp the person's pointer to its middle. Long
+     * before the join (resources still load), it learns from SDL whether it has the focus.
+     */
+    private static void noticeFocus(Minecraft mc) {
+        mc.execute(() -> {
+            Window window = mc.getWindow();
+            boolean focused = (SDLVideo.SDL_GetWindowFlags(window.handle()) & SDLVideo.SDL_WINDOW_INPUT_FOCUS) != 0;
+            try {
+                Method onFocus = Window.class.getDeclaredMethod("onFocus", boolean.class);
+                onFocus.setAccessible(true);
+                onFocus.invoke(window, focused);
+            } catch (ReflectiveOperationException e) {
+                throw new IllegalStateException(e);
+            }
+        });
+    }
+
     private static Minecraft waitForPlayer() throws InterruptedException {
         while (true) {
             Thread.sleep(250);
@@ -138,6 +173,10 @@ public final class VanillaTickScript {
             Field tutorial = Minecraft.class.getDeclaredField("tutorial");
             tutorial.setAccessible(true);
             tutorial.set(mc, new Hook(mc, mc.options));
+            ignorePeople(mc);
+            Field mouse = Minecraft.class.getDeclaredField("mouseHandler");
+            mouse.setAccessible(true);
+            mouse.set(mc, new FlagMouse(mc));
             grab(mc);
             System.out.println(TAG + "ready");
         } catch (ReflectiveOperationException e) {
@@ -146,17 +185,65 @@ public final class VanillaTickScript {
     }
 
     /**
+     * Only the script plays this client. Away from Linux's virtual screen its window is on the person's
+     * desktop, where the forced grab turns the view with any mouse move: SDL drops the keyboard, mouse and
+     * text events (the script's lines never go through them), and what was held already lets go. A pointer
+     * the join took (MouseHandler.grabMouse, when the window had the focus) goes back to the person, where
+     * it is: the grab flag stays set, so nothing takes it again. Nor does a resize: Window.onResize grabs and
+     * warps the pointer again whenever the flag is set, so SDL drops the window's resize events too (its
+     * pixel-size events, which resize the frame, still come).
+     */
+    private static void ignorePeople(Minecraft mc) {
+        for (int type : new int[] {SDLEvents.SDL_EVENT_KEY_DOWN, SDLEvents.SDL_EVENT_KEY_UP,
+                SDLEvents.SDL_EVENT_TEXT_EDITING, SDLEvents.SDL_EVENT_TEXT_INPUT, SDLEvents.SDL_EVENT_MOUSE_MOTION,
+                SDLEvents.SDL_EVENT_MOUSE_BUTTON_DOWN, SDLEvents.SDL_EVENT_MOUSE_BUTTON_UP,
+                SDLEvents.SDL_EVENT_MOUSE_WHEEL, SDLEvents.SDL_EVENT_WINDOW_RESIZED}) {
+            SDLEvents.SDL_SetEventEnabled(type, false);
+        }
+        SDLMouse.SDL_SetWindowRelativeMouseMode(mc.getWindow().handle(), false);
+        KeyMapping.releaseAll();
+    }
+
+    /**
      * MouseHandler.grabMouse's flag only: an unfocused window on a virtual screen never grabs, and
      * Minecraft.continueAttack and MouseHandler.onButton read it.
      */
-    private static void grab(Minecraft mc) throws ReflectiveOperationException {
-        grab(mc, true);
+    private static void grab(Minecraft mc) {
+        setGrabbed(mc.mouseHandler, true);
     }
 
-    private static void grab(Minecraft mc, boolean capture) throws ReflectiveOperationException {
-        Field grabbed = MouseHandler.class.getDeclaredField("mouseGrabbed");
-        grabbed.setAccessible(true);
-        grabbed.setBoolean(mc.mouseHandler, capture);
+    private static void setGrabbed(MouseHandler mouse, boolean grabbed) {
+        try {
+            Field field = MouseHandler.class.getDeclaredField("mouseGrabbed");
+            field.setAccessible(true);
+            field.setBoolean(mouse, grabbed);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /**
+     * The grab as that flag and nothing more. Vanilla's grabMouse and releaseMouse take, hide and warp the
+     * system pointer, which is the person's: releaseMouse warps it to the window's middle whenever a screen
+     * opens (the inventory, a chest), focused or not. grabMouse does nothing here, as in an unfocused window.
+     */
+    private static final class FlagMouse extends MouseHandler {
+        FlagMouse(Minecraft mc) {
+            super(mc);
+        }
+
+        @Override
+        public void grabMouse() {
+        }
+
+        @Override
+        public void releaseMouse() {
+            setGrabbed(this, false);
+        }
+    }
+
+    private static void grab(Minecraft mc, boolean capture) {
+        setGrabbed(mc.mouseHandler, capture);
     }
 
     private static final class Hook extends Tutorial {

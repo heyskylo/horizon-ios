@@ -70,10 +70,17 @@ impl Game<'_> {
     /// acting as it) and the server's other players.
     /// Starts or ends a stretch of vehicle ticks (`tick_boats`, `tick_carts`): while one runs,
     /// a vehicle's box query tests the mobs' positions against their [`BoxReach`] first.
-    /// Nothing a vehicle does resizes a mob, and a mob joining or leaving works it out again.
+    /// A mob joining or leaving works it out again, and so does [`Self::vehicle_picked_up`].
     pub(super) fn vehicles_ticking(&self, on: bool) {
         self.vehicle_mob_reach
             .set(on.then(|| (self.mobs.len(), BoxReach::of(&self.mobs))));
+    }
+    /// A vehicle picked a mob up: a shulker turns its lid up (`Shulker.startRiding`), which
+    /// changes its box, so the next query works the [`BoxReach`] out again.
+    pub(super) fn vehicle_picked_up(&self) {
+        if let Some((_, reach)) = self.vehicle_mob_reach.get() {
+            self.vehicle_mob_reach.set(Some((usize::MAX, reach)));
+        }
     }
     /// The mobs' [`BoxReach`] while vehicles tick, none otherwise.
     pub(super) fn vehicle_mob_reach(&self) -> Option<BoxReach> {
@@ -132,7 +139,7 @@ impl Game<'_> {
     }
     /// `getRootVehicle` of mob `j`: the mob or boat at the bottom of what it
     /// rides, None when it rides nothing.
-    fn mob_root_vehicle(&self, mut j: usize) -> Option<u32> {
+    pub(super) fn mob_root_vehicle(&self, mut j: usize) -> Option<u32> {
         let mut root = None;
         for _ in 0..8 {
             let Some(v) = self.mobs[j].extra.mount else {
@@ -313,6 +320,7 @@ impl Game<'_> {
                         && self.native_mob_may_ride(mob, id, true)
                         && let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob)
                     {
+                        horizon_client::mobs::shulker::on_start_riding(m);
                         m.extra.mount = Some(id);
                         m.extra.passenger = true;
                         m.ai.nav.stop();
@@ -320,6 +328,7 @@ impl Game<'_> {
                         // Mob.startRiding drops its lead.
                         self.break_leash(mob, true, false);
                         self.note_started_riding(id);
+                        self.vehicle_picked_up();
                     }
                     continue;
                 }
@@ -423,6 +432,7 @@ impl Game<'_> {
             let b = &self.boats[i];
             let full = count == b.max_passengers();
             let delta = b.delta_rotation;
+            let boat_box = b.bounds();
             let seats: Vec<_> = mobs
                 .iter()
                 .enumerate()
@@ -447,14 +457,16 @@ impl Game<'_> {
                         .entity_has("minecraft:can_turn_in_boats", &m.kind.id);
                     (
                         j,
+                        offset,
                         b.seat(index, count, animal, offset, false),
                         b.seat(index, count, animal, offset, true),
                         turns.then_some((b.yaw + turn, b.previous_yaw + turn)),
                     )
                 })
                 .collect();
-            for (j, at, previous, facing) in seats {
+            for (j, offset, at, previous, facing) in seats {
                 let m = &mut self.mobs[j];
+                m.seated(id, offset, boat_box);
                 m.position = at;
                 m.previous = previous;
                 m.velocity = Vec3::ZERO;

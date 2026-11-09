@@ -8,7 +8,11 @@ import hashlib
 import json
 from pathlib import Path
 import sys
-import test_command_exec_parity as driver
+try:
+    from . import harness_args, test_command_exec_parity as driver
+except ImportError:
+    import harness_args
+    import test_command_exec_parity as driver
 
 
 def subjects():
@@ -88,9 +92,7 @@ def main():
         i = sys.argv.index('--reference')
         reference = Path(sys.argv[i + 1]).resolve().read_bytes()
         del sys.argv[i:i + 2]
-    if '--binary' not in sys.argv:
-        raise SystemExit('--binary is required (also for a reference-only run)')
-    build = Path(sys.argv[sys.argv.index('--work-dir') + 1]).resolve()
+    build = harness_args.ensure_work_dir(driver.lab.LOCAL / 'spell-ticks-parity').resolve()
     ops = program(full)
     driver.corpus_module.groups = lambda: [('spell ticks', ops)]
     sys.argv.append('--allow-gaps')

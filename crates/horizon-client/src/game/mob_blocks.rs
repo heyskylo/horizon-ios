@@ -18,21 +18,17 @@ fn carried_block_matrix(base: glam::Mat4) -> glam::Mat4 {
         * glam::Mat4::from_rotation_y(90.0f32.to_radians())
 }
 
-/// Drops the quads of `out[first..]` whose face normal points away from the eye, which
-/// is the origin of camera-relative vertices. Each quad is four vertices carrying its
-/// face normal in `Vertex::normal`, as `block_model_vertices` writes for diffuse faces.
+/// Drops the quads of `out[first..]` that face away from the eye, which is the origin of
+/// camera-relative vertices, as a pipeline that culls back faces does. A quad's front is
+/// the side its winding faces, `(v1 - v0) x (v2 - v0)` (`FaceBakery.calculateFacing`), not
+/// the baked `facing` in `Vertex::normal`: that is the nearest axis, 45 degrees off for a
+/// cross model's planes, and would keep the wrong one of a coplanar pair from some angles.
 fn cull_back_quads(out: &mut Vec<Vertex>, first: usize) {
     let mut kept = first;
     for quad in (first..out.len()).step_by(4) {
-        let vertices = &out[quad..quad + 4];
-        let n = vertices[0].normal;
-        let normal = glam::Vec3::new(f32::from(n[0]), f32::from(n[1]), f32::from(n[2]));
-        let centre = vertices.iter().fold(glam::Vec3::ZERO, |sum, v| {
-            sum + glam::Vec3::from_array(v.pos)
-        }) * 0.25;
-        // The eye is at the origin: the face is seen from its front when the eye is on the
-        // side its normal points to, that is when `normal . (eye - centre) > 0`.
-        if normal.dot(centre) < 0.0 {
+        let [a, b, c] = [0, 1, 2].map(|k| glam::Vec3::from_array(out[quad + k].pos));
+        // The eye is at the origin: the front is seen when `front . (eye - a) > 0`.
+        if (b - a).cross(c - a).dot(a) < 0.0 {
             out.copy_within(quad..quad + 4, kept);
             kept += 4;
         }
@@ -180,6 +176,25 @@ impl Game<'_> {
             render::draw(flag, m, &flag_poses, r, color, light, 0, out);
         }
     }
+    /// `BlockModelRenderState.submit` of a block state's baked model, as every block layer of
+    /// a mob draws it (`CarriedBlockLayer`, `MushroomCowMushroomLayer`, `SnowGolemHeadLayer`,
+    /// `IronGolemFlowerLayer`, `BlockDecorationLayer`): lit, through
+    /// `Sheets.cutoutBlockItemSheet` or `translucentBlockItemSheet`, whose `ITEM_CUTOUT` and
+    /// `ITEM_TRANSLUCENT` pipelines cull back faces. Without the cull both coplanar sides of
+    /// a cross model (a flower, a mushroom) are drawn and flicker as the mob moves. `CULL_BACK`
+    /// would drop them too, but it turns off the normal lighting this model needs.
+    fn block_layer_vertices(
+        &self,
+        state: horizon_world::registry::BlockStateId,
+        seed: i64,
+        t: glam::Mat4,
+        light: u32,
+        out: &mut Vec<Vertex>,
+    ) {
+        let first = out.len();
+        self.block_model_vertices(state, seed, t, light, true, out);
+        cull_back_quads(out, first);
+    }
     /// The blocks one mob holds or carries.
     pub(super) fn mob_block_geometry(
         &self,
@@ -204,13 +219,7 @@ impl Game<'_> {
             let base = render::base_transform(mob, alpha as f32, camera);
             let t = carried_block_matrix(base);
             // Preserve cross models (flowers, fungi) and state properties (facing).
-            let first = out.len();
-            self.block_model_vertices(state, 42, t, light, true, out);
-            // The carried block uses the item cutout render type, which culls back faces
-            // (RenderPipelines.ITEM_CUTOUT). Without that, both coplanar sides of a cross
-            // model are drawn and flicker. CULL_BACK would drop them too, but it turns off
-            // the normal lighting this model needs.
-            cull_back_quads(out, first);
+            self.block_layer_vertices(state, 42, t, light, out);
         }
     }
     /// `BlockDecorationLayer.submit`: the block item in a copper golem's
@@ -269,7 +278,7 @@ impl Game<'_> {
             "minecraft:wildflowers" | "minecraft:pink_petals"
         );
         let t = antenna_block_matrix(head, flowerbeds);
-        self.block_model_vertices(state, 42, t, light, true, out);
+        self.block_layer_vertices(state, 42, t, light, out);
     }
     /// `IronGolemFlowerLayer`: the poppy in the right arm while the golem
     /// offers it (`getOfferFlowerTick() > 0`), drawn with `NO_OVERLAY`.
@@ -302,7 +311,7 @@ impl Game<'_> {
             * Mat4::from_scale(Vec3::splat(0.5))
             * Mat4::from_rotation_x((-90.0f32).to_radians())
             * Mat4::from_translation(Vec3::splat(-0.5));
-        self.block_model_vertices(state, 42, t, light, true, out);
+        self.block_layer_vertices(state, 42, t, light, out);
     }
     /// `SnowGolemHeadLayer` and `MushroomCowMushroomLayer`: the carved pumpkin
     /// on a snow golem's head, and the mushrooms on an adult mooshroom's back
@@ -368,7 +377,7 @@ impl Game<'_> {
         let overlay = horizon_client::overlay::living(0.0, mob.hurt_time > 0 || mob.death_time > 0);
         for t in transforms {
             let start = out.len();
-            self.block_model_vertices(state, 0, t, light, true, out);
+            self.block_layer_vertices(state, 0, t, light, out);
             for vertex in &mut out[start..] {
                 vertex.layer = overlay;
             }
@@ -534,13 +543,10 @@ impl Game<'_> {
         } else {
             return;
         };
-        // Helmets are drawn by HumanoidArmorLayer, not CustomHeadLayer.
-        if self
-            .res
-            .items()
-            .get(&stack.item)
-            .and_then(|i| i.equip_asset.as_ref())
-            .is_some()
+        // Helmets are drawn by HumanoidArmorLayer, not CustomHeadLayer
+        // (LivingEntityRenderer.extractRenderState: HumanoidArmorLayer.shouldRender).
+        if horizon_client::item_sync::equippable(&stack, self.res.items())
+            .is_some_and(|e| e.asset_id.is_some() && e.slot == "head")
         {
             return;
         }
@@ -720,6 +726,53 @@ mod tests {
         // Dead wearer, living vehicle: the vehicle's.
         wearer.health = 0.0;
         assert_eq!(worn_head_animation(&wearer, Some(2), &mobs, 0.5), 3.5);
+    }
+
+    /// One plane of a cross model, turned 45 degrees about Y, as its two baked faces. Face
+    /// `a` is wound towards (1, 0, 1), face `b` the other way, but their baked `facing` is the
+    /// nearest axis: south and north. The eye (the origin) looks at the plane from a side
+    /// that is on `a`'s front yet north of the plane, or the mirror of that, so a cull by
+    /// `facing` keeps the face a culling pipeline drops.
+    #[test]
+    fn cross_planes_keep_the_face_wound_towards_the_eye() {
+        let vertex = |pos: Vec3, normal: [i8; 4]| Vertex {
+            pos: pos.to_array(),
+            uv: [0.0; 2],
+            layer: 0,
+            color: u32::MAX,
+            light: 0,
+            normal,
+            glint_uv: [0.0; 2],
+        };
+        let along = Vec3::new(1.0, 0.0, -1.0);
+        for (to_eye, a_seen) in [
+            (Vec3::new(2.0, 0.0, -1.0), true),
+            (Vec3::new(-2.0, 0.0, 1.0), false),
+        ] {
+            let corner = -to_eye - (along + Vec3::Y) * 0.5;
+            let a = [
+                corner,
+                corner + along,
+                corner + along + Vec3::Y,
+                corner + Vec3::Y,
+            ];
+            let b = [
+                corner,
+                corner + Vec3::Y,
+                corner + along + Vec3::Y,
+                corner + along,
+            ];
+            let mut out: Vec<Vertex> = a.iter().map(|p| vertex(*p, [0, 0, 127, 127])).collect();
+            out.extend(b.iter().map(|p| vertex(*p, [0, 0, -127, 127])));
+            cull_back_quads(&mut out, 0);
+            let kept: Vec<[f32; 3]> = out.iter().map(|v| v.pos).collect();
+            let expected = if a_seen { a } else { b };
+            assert_eq!(
+                kept,
+                expected.map(|p| p.to_array()),
+                "eye on the {to_eye} side"
+            );
+        }
     }
 
     #[test]

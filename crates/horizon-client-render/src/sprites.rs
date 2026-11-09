@@ -783,7 +783,7 @@ impl Sprites {
 /// A PNG's width, height and pixels as RGBA. From the prepared data file
 /// when it holds the texture: no file opened per texture, nor for its absent
 /// LabPBR maps.
-fn read_rgba(path: &Path) -> Result<(u32, u32, Vec<u8>)> {
+pub(crate) fn read_rgba(path: &Path) -> Result<(u32, u32, Vec<u8>)> {
     let bytes = horizon_core::prepared_files::read(path)?;
     let mut reader = crate::hud::resource_png_decoder(&bytes).read_info()?;
     let output_size = reader

@@ -24,7 +24,10 @@ def block(source, start):
 
 
 def program(game=None, control=None):
-    game = game or (ROOT / 'crates/horizon-client/src/game.rs').read_text()
+    game = game or '\n'.join((ROOT / path).read_text() for path in [
+        'crates/horizon-client/src/game.rs',
+        'crates/horizon-client/src/game/play_input.rs',
+    ])
     control = control or (ROOT / 'crates/horizon-client/src/game/control.rs').read_text()
     hooks = (ROOT / 'crates/horizon-client/src/game/native_hooks.rs').read_text()
     clip = (ROOT / 'crates/horizon-client/src/game/clipboard.rs').read_text()
@@ -34,13 +37,14 @@ def program(game=None, control=None):
     early = game[game.index('        // A character that comes with no key'):game.index('        // Fullscreen is a window shortcut')]
     prefix = game[game.index('        let mut typed: Option<String> = None;'):game.index('        // Screen.keyPressed: Tab, the arrows and Enter')]
     # Its pattern contains braces: find the arm body's closing brace.
-    start = game.index('                WindowEvent::KeyboardInput { event, .. } if self.title.is_some() =>')
+    start = game.index('                WindowEvent::KeyboardInput { event, .. } if self.title_input_active() =>')
     body = game.index('{', game.index('=>', start))
     arm = game[start:body] + block(game, body)
     callbacks = '\n'.join(method(uikit,n) for n in ['key_text','insert_text_keys','text_key_code','logical_key'])
     methods = '\n'.join(method(hooks,n) for n in ['screen_chars_typed','screen_text_typed'])
-    methods += '\n'+method(control,'type_chars_into_screen')+'\n'+method(clip,'title_edit')
+    methods += '\n'+method(control,'type_chars_into_screen')+'\n'+method(control,'type_chars_unhooked')+'\n'+method(clip,'title_edit')
     ime = (ROOT / 'crates/horizon-client/src/game/ime.rs').read_text()
+    methods += '\n'+method(game,'title_input_active')
     methods += '\n'+method(ime,'ime_commit')
     methods += '\n'+method(game,'reload_blocks_input')
     presentation = (ROOT / 'crates/horizon-client/src/game/presentation.rs').read_text()
@@ -60,6 +64,8 @@ def program(game=None, control=None):
 
 STUBS = r'''
 #![allow(dead_code)]
+#[macro_export] macro_rules! warn { ($($arg:tt)*) => {{ let _ = format_args!($($arg)*); }}; }
+mod log { pub(crate) use crate::warn; }
 use std::cell::RefCell;
 type Result<T> = std::result::Result<T,String>;
 #[derive(Clone,Copy,PartialEq)]enum KeyCode{KEYS}
@@ -69,7 +75,7 @@ type Result<T> = std::result::Result<T,String>;
 #[derive(Clone,PartialEq)]enum NativeKey{Unidentified}
 #[derive(Clone,PartialEq)]enum Key{Character(String),Named(NamedKey),Unidentified(NativeKey)}
 mod smol_str { pub type SmolStr=String; }
-mod preedit { pub fn set_preedit(_:Option<()>){} }
+mod preedit { pub fn set_preedit(_:Option<()>){} pub fn mark_committed() {} }
 #[derive(Clone,Copy,PartialEq)]enum ElementState{Pressed,Released}
 struct KeyEvent{physical_key:PhysicalKey,state:ElementState,text:Option<String>,repeat:bool}
 enum WindowEvent{KeyboardInput{event:KeyEvent},Other}
@@ -104,6 +110,11 @@ enum Transaction{Preparing,Committing}
 struct Game{renderer:Option<Renderer>,creative_ignore_text:bool,pad:Pad,pack_reload:Option<()>,mods:Mods,screen:Screen,title:Option<Title>,modifiers:u32,book:Option<()>,sign_edit:Option<()>,ui:UI,gui:GUI,creative_screen:Creative,text_selection:Selection,audio:Audio,cancel:bool,cancel_key:bool,blocked:bool,dialog:bool,dialog_value:String,command:String,hooked:RefCell<String>}
 fn glfw_modifiers(m:u32)->u32{m}
 impl Game {
+ fn dialog_open(&self)->bool{self.dialog}
+ fn prompt_open(&self)->bool{self.dialog_open()}
+ // No native mod text-field extension is installed in this fixture.
+ fn type_text_field_input(&mut self,_:&str)->Option<Result<()>>{None}
+ fn report_text_input_result(result:Result<()>){result.unwrap();}
  fn new()->Self{Self{renderer:None,creative_ignore_text:false,pad:Pad::default(),pack_reload:None,mods:Mods::default(),screen:Screen::Playing,title:Some(Title{value:String::new(),focused_button:None}),modifiers:0,book:None,sign_edit:None,ui:UI{options:Options},gui:GUI{atlas:()},creative_screen:Creative{search:false,value:String::new()},text_selection:Selection,audio:Audio,cancel:false,cancel_key:false,blocked:false,dialog:false,dialog_value:String::new(),command:String::new(),hooked:RefCell::new(String::new())}}
  fn screen_hooks_open(&self)->bool{true}fn screen_view_now(&self)->Option<()>{Some(())}
  fn types_text(&self)->bool{!self.blocked}

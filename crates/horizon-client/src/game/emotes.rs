@@ -203,7 +203,7 @@ impl Game<'_> {
         let Some(p) = self.player.as_ref() else {
             return false;
         };
-        horizon_cosmetics::enabled()
+        super::cosmetics::enabled()
             && self.player_model.is_some()
             && !p.health.dead_or_dying()
             && !p.fall_flying

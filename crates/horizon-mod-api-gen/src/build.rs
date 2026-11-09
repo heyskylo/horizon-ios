@@ -6,7 +6,7 @@ use std::{collections::HashSet, fs, path::Path};
 /// Generate only this crate's files, tracking every source read by the generator.
 /// `root` is supplied at run time by the consuming crate's build script.
 pub fn generate(root: &Path, out_dir: &Path, target: Target) -> Result<(), String> {
-    track(root)?;
+    track(root, target)?;
     let generated = sources(root, super::FillMode::Require)?;
     let outputs = match target {
         Target::Render => vec![("native_render_generated.rs", generated.render)],
@@ -35,7 +35,7 @@ pub fn generate(root: &Path, out_dir: &Path, target: Target) -> Result<(), Strin
     Ok(())
 }
 
-pub(super) fn track(root: &Path) -> Result<(), String> {
+pub(super) fn track(root: &Path, target: Target) -> Result<(), String> {
     fn directory(path: &Path, extension: &str, recursive: bool) -> Result<(), String> {
         // Track the directory as well: adding a helper source or fragment changes the inputs.
         println!("cargo:rerun-if-changed={}", path.display());
@@ -53,7 +53,18 @@ pub(super) fn track(root: &Path) -> Result<(), String> {
         println!("cargo:rerun-if-changed={}", root.join(path).display());
     }
     directory(&root.join("tools/native-hook-fragments"), "json", false)?;
-    directory(&root.join("crates/horizon-client/src/game"), "rs", true)?;
+    match target {
+        // The host API is made from every `impl Game` method under game/.
+        Target::Client => directory(&root.join("crates/horizon-client/src/game"), "rs", true)?,
+        // The render hooks read only native_hooks.rs (and their own functions, tracked below).
+        // Tracking all of game/ here rebuilt the renderer, and horizon-client-lib above it, on
+        // every gameplay edit.
+        Target::Render => println!(
+            "cargo:rerun-if-changed={}",
+            root.join("crates/horizon-client/src/game/native_hooks.rs")
+                .display()
+        ),
+    }
     let catalog = serde_json::from_str(
         &fs::read_to_string(root.join("native-hooks.json")).map_err(|e| e.to_string())?,
     )

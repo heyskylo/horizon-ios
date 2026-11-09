@@ -398,6 +398,31 @@ fn a_mod_may_turn_native_once() {
 }
 
 #[test]
+fn a_new_icon_is_a_new_address() {
+    let s = Scratch::new("icon-address");
+    let icon = |s: &Scratch| {
+        s.build()
+            .unwrap()
+            .project("coords_hud")
+            .unwrap()
+            .icon
+            .clone()
+            .unwrap()
+    };
+    let before = icon(&s);
+    let (path, version) = before.split_once("?v=").unwrap();
+    assert_eq!(
+        path,
+        "https://horizon-rust.github.io/horizon-mods/icons/coords_hud.png"
+    );
+    assert_eq!(version.len(), 12, "{before}");
+    assert_eq!(icon(&s), before, "the same icon keeps its address");
+    s.write_bytes("icons/coords_hud.png", &png(256, 256));
+    let after = icon(&s);
+    assert!(after.starts_with(path) && after != before, "{after}");
+}
+
+#[test]
 fn page_fields_and_screenshots_reach_the_index() {
     let s = Scratch::new("page");
     let page = "tags = [\"hud\", \"coordinates\"]\n\

@@ -1,0 +1,12 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "block_states", "target": "horizon_client::game::native_block_sprites::Game<'_>::native_block_states"},
+    {"name": "client_resources", "target": "horizon_client::game::native_block_sprites::Game<'_>::native_client_resources"}
+  ],
+  "rust_summary": "every block state's facts and looks by its id, and the resources' files, for client mods working off the main thread (`native_block_states`, `native_client_resources`).",
+  "doc_summary": "[block states and resource files](#block-states-and-resource-files) for client mods, to keep and use on any thread: `native_block_states()` gives every block state by its id with its facts (name, air, fluid, light, outline, map colour, waterlogged, whether it collides), what its model draws on each side and the texture behind each sprite; `native_client_resources()` reads the resources' files, resource packs' over vanilla's, as bytes or a texture's decoded pixels. Bundles need \"hooks\": @API:block_appearance@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_block_sprites.rs"
+  ]
+}

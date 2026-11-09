@@ -482,7 +482,7 @@ fn run_executes_setup_begin_and_final_across_resize_on_metal() {
         weather: false,
         hand: false,
     };
-    let mut post = PackPost::new(
+    let mut post = PackPost::test_new(
         &device,
         &queue,
         &adapter,
@@ -621,7 +621,7 @@ void main(){
         weather: false,
         hand: false,
     };
-    let mut post = PackPost::new(
+    let mut post = PackPost::test_new(
         &device,
         &queue,
         &adapter,
@@ -700,7 +700,7 @@ void main(){float d=texelFetch(depthtex0,ivec2(0),0).r;imageStore(volume,ivec3(g
         weather: false,
         hand: false,
     };
-    let mut post = PackPost::new(
+    let mut post = PackPost::test_new(
         &device,
         &queue,
         &adapter,

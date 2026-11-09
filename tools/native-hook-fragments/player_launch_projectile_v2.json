@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "player_launch_projectile_v2",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_player_launch_projectile_v2",
+      "neoforge": "none (Bukkit's ProjectileLaunchEvent for a player's throw)",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "a guest about to throw a snowball, egg, ender pearl or mod thrown item, with the whole stack, cancellable (`native_player_launch_projectile_v2`), leaving `native_player_launch_projectile` as it was.",
+  "doc_summary": "`native_player_launch_projectile_v2(player, name, stack, cancel)`: a guest is about to throw `stack` (a snowball, an egg, an ender pearl, a mod's thrown item), heard where `ProjectileItem.use` creates the projectile, before it exists (Bukkit's `ProjectileLaunchEvent` for a player). Set `cancel` and nothing is thrown, used or put on cooldown, `native_player_launch_projectile` hears nothing of it, and the client gets its inventory back. Bundles that use it need `\"hooks\": @API:player_launch_projectile_v2@`."
+}

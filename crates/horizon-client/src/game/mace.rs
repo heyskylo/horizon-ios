@@ -237,6 +237,7 @@ impl Game<'_> {
             damage_type: Some(match source.kind {
                 horizon_client::mobs::DamageKind::MaceSmash => "minecraft:mace_smash",
                 horizon_client::mobs::DamageKind::Spear => "minecraft:spear",
+                horizon_client::mobs::DamageKind::Thorns => "minecraft:thorns",
                 _ => "minecraft:player_attack",
             }),
             items: Some(world_items!(self)),
@@ -280,12 +281,27 @@ impl Game<'_> {
         }
         hurt
     }
+    /// Takes the absorbed tenths a projectile's hit left on the mobs; the shooter gets them
+    /// as `damage_dealt_absorbed` when it is the player (`LivingEntity.actuallyHurt`).
+    pub(super) fn settle_dealt_absorbed(&mut self, by_player: bool) {
+        let absorbed: i32 = self
+            .mobs
+            .iter_mut()
+            .map(|m| std::mem::take(&mut m.dealt_absorbed))
+            .fold(0, i32::saturating_add);
+        if by_player && absorbed > 0 {
+            self.award_custom_stat("damage_dealt_absorbed", absorbed);
+        }
+    }
     /// `Player.itemAttackInteraction` after the player's hit landed on the mob
     /// at `index`: the item's `hurtEnemy` (the "used" statistic of a weapon),
     /// the post-attack enchantments, then `postHurtEnemy` with the weapon's
     /// wear.
     pub(super) fn weapon_hit(&mut self, index: usize) {
         let Some(stack) = self.held().cloned() else {
+            // An empty hand still meets the victim's own post-attack
+            // enchantments (Thorns).
+            self.post_attack(index);
             return;
         };
         let weapon = self
@@ -585,13 +601,13 @@ impl Game<'_> {
                 let Some(i) = self.armor_stands.iter().position(|s| s.id == id) else {
                     continue;
                 };
-                // knockback(0.4, ..) follows a hurtServer that landed, on a
+                // knockback(0.4F, ..) follows a hurtServer that landed, on a
                 // stand that is still there (LivingEntity.knockback).
                 if !self.punch_armor_stand(i) {
                     continue;
                 }
                 let mut knock = horizon_client::health::Knock {
-                    strength: 0.4,
+                    strength: f64::from(0.4_f32),
                     x: xd,
                     z: zd,
                 };
@@ -641,7 +657,7 @@ impl Game<'_> {
                 if old_health > 0.0 && !self.mobs[i].alive() {
                     self.native_kill_event(i);
                 }
-                self.mobs[i].knockback(0.4, xd, zd, &source);
+                self.mobs[i].knockback(f64::from(0.4_f32), xd, zd, &source);
                 self.last_hurt_by_player
                     .insert(self.mobs[i].id, self.lan_acting);
                 self.post_attack(i);

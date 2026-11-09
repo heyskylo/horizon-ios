@@ -66,6 +66,19 @@ impl Default for WorldOptions {
     }
 }
 impl WorldOptions {
+    /// A fresh Create New World in the game folder (the working directory): the defaults, with
+    /// the packs this game folder gives every new world.
+    pub(super) fn for_new_world() -> Self {
+        let seeded = std::env::current_dir()
+            .ok()
+            .and_then(|dir| crate::datapack::seed_create_world(&dir));
+        let mut options = Self::default();
+        if let Some((dir, ids)) = seeded {
+            options.pack_dir = Some(dir);
+            options.data_packs.extend(ids);
+        }
+        options
+    }
     /// Re-Create: the saved world's choices.
     pub(super) fn of_world(
         level: &crate::save::Level,

@@ -26,8 +26,10 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+mod transaction;
+
 const SECTOR: u64 = 4096;
-/// Where rewritten files wait, inside each folder, before they replace the old ones in one rename.
+/// One recoverable region transaction, inside its dimension folder.
 const STAGING: &str = ".horizon-prune";
 /// The decoded bytes read first: `InhabitedTime` comes before the sections in vanilla's and Horizon's
 /// chunks, so most chunks are never decoded in full.
@@ -512,15 +514,8 @@ fn parallel<T: Sync, R: Send>(items: &[T], threads: usize, f: impl Fn(&T) -> R +
     out.into_iter().map(|(_, r)| r).collect()
 }
 
-/// Rewrites a region file without the chunks in `drop`, compacted; deletes it if nothing is left.
-/// The new file replaces the old one in one rename, so a stop halfway leaves the old file whole.
-fn rewrite(path: &Path, gone: &Bits) -> io::Result<()> {
-    let folder = path.parent().unwrap_or(Path::new("."));
-    let staged = folder.join(STAGING).join(path.file_name().unwrap());
-    match fs::remove_file(&staged) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-        _ => {}
-    }
+/// Writes the kept chunks to a staged file; no file means the region will be removed.
+fn stage(path: &Path, staged: &Path, gone: &Bits) -> io::Result<()> {
     let mut source = RegionFile::open(path)?;
     let chunks: Vec<_> = source.chunks().map(|(c, _)| c).collect();
     let mut writer = None;
@@ -532,20 +527,69 @@ fn rewrite(path: &Path, gone: &Bits) -> io::Result<()> {
             .read(c)?
             .ok_or_else(|| io::Error::other("a chunk vanished while copying"))?;
         if writer.is_none() {
-            writer = Some(RegionWriter::create(&staged)?);
+            writer = Some(RegionWriter::create(staged)?);
         }
         writer.as_mut().unwrap().write(c, &record)?;
     }
-    drop(source);
     match writer {
         Some(w) => {
             w.finish()?;
-            // The new file keeps the old one's permissions (a server folder readable by its owner only).
-            fs::set_permissions(&staged, fs::metadata(path)?.permissions())?;
-            fs::rename(&staged, path)
+            fs::set_permissions(staged, fs::metadata(path)?.permissions())?;
+            fs::OpenOptions::new()
+                .write(true)
+                .open(staged)?
+                .sync_all()?;
+            Ok(())
         }
-        None => fs::remove_file(path),
+        None => Ok(()),
     }
+}
+
+/// Finish or roll back interrupted pruning before any server start, even with mode now off.
+pub fn recover(world: &Path) -> Result<(), String> {
+    let folders = recovery_folders(world).map_err(|e| {
+        format!(
+            "Cannot discover pending chunk-prune recovery in {}: {e}; the world was not opened",
+            world.display()
+        )
+    })?;
+    for folder in folders {
+        transaction::recover(&folder).map_err(|e| {
+            format!(
+                "Chunk-prune recovery in {} failed: {e}; the world was not opened",
+                folder.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Unlike the best-effort scan, recovery must not silently omit an unreadable dimension.
+fn recovery_folders(world: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    for folder in [world.to_owned(), world.join("DIM-1"), world.join("DIM1")] {
+        if folder.try_exists()? {
+            out.push(folder);
+        }
+    }
+    let namespaces = match fs::read_dir(world.join("dimensions")) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(out),
+        Err(e) => return Err(e),
+    };
+    for namespace in namespaces {
+        let namespace = namespace?.path();
+        if !namespace.metadata()?.is_dir() {
+            continue;
+        }
+        for entry in fs::read_dir(namespace)? {
+            let folder = entry?.path();
+            if folder.metadata()?.is_dir() {
+                out.push(folder);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// What a run found (and, deleting, did): the report's text.
@@ -561,6 +605,9 @@ pub fn run(
     delete: bool,
     threads: usize,
 ) -> Result<Outcome, String> {
+    if delete {
+        recover(world)?;
+    }
     let started = std::time::Instant::now();
     let mut notes = Vec::new();
     let keep = listed(world, &settings.keep_files, &mut notes)?;
@@ -582,6 +629,7 @@ pub fn run(
     let (r, ring) = (settings.spawn_radius as i32, settings.ring as i32);
     let mut tallies = Vec::new();
     let mut errors = Vec::new();
+    let mut committed_chunks = 0_u64;
     for dim in &dims {
         let near_spawn =
             |c: Chunk| (c.0 - dim.center.0).abs() <= r && (c.1 - dim.center.1).abs() <= r;
@@ -601,7 +649,7 @@ pub fn run(
                 }
         };
         let mut t = Tally::default();
-        let mut work: Vec<(PathBuf, Bits)> = Vec::new();
+        let mut work: Vec<(String, Bits)> = Vec::new();
         for (kind, k) in KINDS.iter().zip(0..) {
             t.before[k] = region_files(&dim.folder.join(kind))
                 .iter()
@@ -675,23 +723,15 @@ pub fn run(
             for (p, h) in others {
                 let k = 1 + usize::from(p.parent().is_some_and(|f| f.ends_with("poi")));
                 t.freed[k] += h.len.saturating_sub(compacted_len(&h, &gone));
-                work.push((p, gone));
             }
-            // Entities and POI first: a chunk generated again must never find the old one's entities.
-            work.push((dim.folder.join("region").join(&name), gone));
+            work.push((name, gone));
         }
         if delete {
-            for kind in KINDS {
-                let _ = fs::create_dir_all(dim.folder.join(kind).join(STAGING));
-            }
-            let failed = parallel(&work, threads, |(p, gone)| {
-                rewrite(p, gone)
-                    .err()
-                    .map(|e| format!("{}: {e}", p.display()))
-            });
-            errors.extend(failed.into_iter().flatten());
-            for kind in KINDS {
-                let _ = fs::remove_dir_all(dim.folder.join(kind).join(STAGING));
+            for (name, gone) in &work {
+                transaction::apply(&dim.folder, name, gone).map_err(|e| format!(
+                    "Chunk prune failed in {} {name}: {e}. {committed_chunks} chunks committed before this region; this region may also have committed if cleanup failed. No successful deletion report was produced. Recovery must complete before the world opens.", dim.id
+                ))?;
+                committed_chunks += u64::from(gone.count());
             }
         }
         tallies.push((dim.id.clone(), t));
@@ -831,7 +871,7 @@ pub fn write_report(dir: &Path, outcome: &Outcome) -> io::Result<PathBuf> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use horizon_core::position::ChunkPos;
     use horizon_world::{compression::Compression, nbt::NamedTag};
@@ -926,7 +966,7 @@ mod tests {
     }
 
     /// Overworld region r.2.0 (chunks 64..95, 0..31), far from the spawn at 0 0.
-    fn world(name: &str) -> (PathBuf, PathBuf) {
+    pub(crate) fn world(name: &str) -> (PathBuf, PathBuf) {
         let dir = temp(name);
         let world = dir.join("world");
         let ow = world.join("dimensions/minecraft/overworld");
@@ -1064,6 +1104,193 @@ mod tests {
             "{}",
             again.report
         );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_entity_copy_does_not_delete_terrain_or_report_success() {
+        let (dir, ow) = world("failed-entity-copy");
+        let entity = ow.join("entities/r.2.0.mca");
+        let mut broken = fs::read(&entity).unwrap();
+        // A valid header and compression byte, but an impossible kept-record length. Header-only
+        // planning succeeds; reading the kept entity chunk during compaction must fail.
+        broken[8192..8196].copy_from_slice(&u32::MAX.to_be_bytes());
+        fs::write(&entity, broken).unwrap();
+        let before: Vec<_> = KINDS
+            .iter()
+            .map(|k| {
+                let p = ow.join(k).join("r.2.0.mca");
+                let bytes = fs::read(&p).unwrap();
+                (p, bytes)
+            })
+            .collect();
+        let result = run(&dir.join("world"), &settings(4), true, 1);
+        assert!(
+            result.is_err(),
+            "a failed rewrite must not return a deletion report"
+        );
+        for (path, bytes) in before {
+            assert_eq!(
+                fs::read(path).unwrap(),
+                bytes,
+                "the entire failed region stays unchanged"
+            );
+        }
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    fn region_snapshot(folder: &Path) -> Vec<Option<Vec<u8>>> {
+        KINDS
+            .iter()
+            .map(|k| fs::read(folder.join(k).join("r.2.0.mca")).ok())
+            .collect()
+    }
+
+    fn interrupted_transaction(folder: &Path, stop: usize) {
+        let mut gone = Bits::default();
+        gone.set(slot((85, 5))); // Deletes the sole POI record, replaces the other two files.
+        let mut step = 0;
+        let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = transaction::apply_with(folder, "r.2.0.mca", &gone, &mut |_| {
+                step += 1;
+                assert_ne!(step, stop, "simulated process interruption");
+                Ok(())
+            });
+        }));
+        assert!(interrupted.is_err(), "checkpoint {stop} was reached");
+    }
+
+    #[test]
+    fn interrupted_region_transactions_recover_before_another_prune() {
+        // Three backups, three staged files, journal, three replacements/deletions and commit.
+        for stop in 1..=11 {
+            let (dir, folder) = world(&format!("interrupt-{stop}"));
+            let before = region_snapshot(&folder);
+            interrupted_transaction(&folder, stop);
+            recover(&dir.join("world")).unwrap();
+            if stop < 11 {
+                assert_eq!(region_snapshot(&folder), before, "checkpoint {stop}");
+            } else {
+                assert!(!folder.join("poi/r.2.0.mca").exists());
+                assert!(!chunks_in(&folder.join("region/r.2.0.mca")).contains(&(85, 5)));
+            }
+            recover(&dir.join("world")).unwrap(); // Recovery is idempotent.
+            assert!(!folder.join(STAGING).exists());
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn io_failures_roll_back_the_whole_region() {
+        for stop in 1..=10 {
+            let (dir, folder) = world(&format!("io-failure-{stop}"));
+            let before = region_snapshot(&folder);
+            let mut gone = Bits::default();
+            gone.set(slot((85, 5)));
+            let mut step = 0;
+            assert!(
+                transaction::apply_with(&folder, "r.2.0.mca", &gone, &mut |_| {
+                    step += 1;
+                    if step == stop {
+                        Err(io::Error::other("injected disk error"))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .is_err()
+            );
+            assert_eq!(region_snapshot(&folder), before, "checkpoint {stop}");
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn rollback_can_itself_be_interrupted_and_retried() {
+        for stop in 1..=4 {
+            let (dir, folder) = world(&format!("rollback-{stop}"));
+            let before = region_snapshot(&folder);
+            interrupted_transaction(&folder, 10); // All three destinations changed, no commit.
+            let mut step = 0;
+            assert!(
+                transaction::recover_with(&folder, &mut |_| {
+                    step += 1;
+                    if step == stop {
+                        Err(io::Error::other("interrupted recovery"))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .is_err()
+            );
+            assert!(folder.join(STAGING).join("journal.json").is_file());
+            recover(&dir.join("world")).unwrap();
+            assert_eq!(region_snapshot(&folder), before);
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn missing_recovery_backup_fails_closed_without_discarding_evidence() {
+        let (dir, folder) = world("missing-backup");
+        interrupted_transaction(&folder, 8);
+        let staged = folder.join(STAGING);
+        fs::remove_file(staged.join("old/poi/r.2.0.mca")).unwrap();
+        let before = region_snapshot(&folder);
+        assert!(recover(&dir.join("world")).is_err());
+        assert_eq!(
+            region_snapshot(&folder),
+            before,
+            "preflight prevents partial rollback"
+        );
+        assert!(staged.join("journal.json").is_file());
+        assert!(run(&dir.join("world"), &settings(4), true, 1).is_err());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unreadable_dimension_discovery_cannot_skip_pending_recovery() {
+        let dir = temp("recovery-discovery");
+        let world = dir.join("world");
+        fs::create_dir_all(&world).unwrap();
+        // A file in place of the namespace directory yields a deterministic listing error on
+        // Windows and Unix, without changing ACLs or depending on elevated test permissions.
+        fs::write(world.join("dimensions"), b"not a directory").unwrap();
+        assert!(
+            recover(&world)
+                .unwrap_err()
+                .contains("world was not opened")
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn interrupted_cleanup_never_rolls_back_a_committed_region() {
+        let (dir, folder) = world("cleanup-interrupted");
+        interrupted_transaction(&folder, 11);
+        let committed = region_snapshot(&folder);
+        let complete = folder.join(".horizon-prune-complete");
+        fs::rename(folder.join(STAGING), &complete).unwrap();
+        fs::remove_file(complete.join("old/poi/r.2.0.mca")).unwrap();
+        recover(&dir.join("world")).unwrap();
+        assert_eq!(region_snapshot(&folder), committed);
+        assert!(!complete.exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn transactions_keep_windows_extended_length_path_support() {
+        let dir = temp("long-path");
+        let folder = dir.join("long-name-".repeat(23));
+        let name = "r.2.0.mca";
+        let path = folder.join("region").join(name);
+        assert!(path.as_os_str().len() > 260);
+        write_region(&path, &[((80, 5), chunk((80, 5), Some(0), 64, false))]);
+        let mut gone = Bits::default();
+        gone.set(slot((80, 5)));
+        transaction::apply(&folder, name, &gone).unwrap();
+        assert!(!path.exists());
+        assert!(!folder.join(STAGING).exists());
         let _ = fs::remove_dir_all(dir);
     }
 

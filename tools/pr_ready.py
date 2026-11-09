@@ -189,17 +189,17 @@ def duration(seconds):
 
 
 def git(*arguments):
-    return subprocess.run(["git", *arguments], cwd=ROOT, capture_output=True, text=True, check=True).stdout
+    return subprocess.run(["git", *arguments], cwd=ROOT, capture_output=True, check=True).stdout.decode("utf-8")
 
 
 def line_counts(base, changed):
     """Lines added and removed in each changed path since base, untracked files included: {path: (added, removed)}."""
     counts = {}
-    for row in git("diff", "--numstat", base).splitlines():
+    for row in filter(None, git("diff", "--numstat", "--no-renames", "-z", base).split("\0")):
         plus, minus, path = row.split("\t", 2)
         if plus != "-":
             counts[path] = (int(plus), int(minus))
-    for path in git("ls-files", "--others", "--exclude-standard").splitlines():
+    for path in git("ls-files", "--others", "--exclude-standard", "-z").split("\0"):
         if path in changed:
             try:
                 counts[path] = (len((ROOT / path).read_text(encoding="utf-8").splitlines()), 0)
@@ -370,6 +370,9 @@ def plan(args, base, changed, crates_of, libraries, dependencies):
     steps = [
         Step("Cargo.lock", where="git"),
         Step("Public tree", "python3 tools/check_public_tree.py", where="here"),
+        # docs/layers.md: a crate depends only on its own layer or a lower one, and the exceptions only shrink.
+        Step("Layers", f"python3 tools/check_layers.py --base {shlex.quote(base)}", where="here"),
+        Step("Addresses", f"python3 tools/check_addresses.py --base {shlex.quote(base)}", where="here"),
         # Always, as in CI: some read the crates, the roadmap or the workflows.
         Step("Python tests", "python3 -m unittest discover -s tests", where="here", summary=unittest_passed),
         Step("rustfmt", "cargo fmt --all -- --check", skip=None if rust else no_rust),
@@ -471,6 +474,10 @@ def run_windows(steps, verbose):
         env["PYTHONUTF8"] = "1"
         if step.name == "Public tree":
             command = [sys.executable, "tools/check_public_tree.py"]
+        elif step.name == "Layers":
+            command = [sys.executable, "tools/check_layers.py", *command[2:]]
+        elif step.name == "Addresses":
+            command = [sys.executable, "tools/check_addresses.py", *command[2:]]
         elif step.name == "Python tests":
             command = [sys.executable, "-m", "unittest", "discover", "-s", "tests"]
         elif step.name == "rustfmt":
@@ -488,7 +495,7 @@ def run_windows(steps, verbose):
             command = ["cargo", "clippy", "--all-targets", "--locked", "--", "-D", "warnings"]
             cwd = ROOT / "launcher"
         elif step.name == "launcher tests":
-            command = ["cargo", "test", "--locked", "--lib"]
+            command = ["cargo", "test", "--locked", "--lib", "--bins"]
             cwd = ROOT / "launcher"
         elif step.name == "Parity":
             command = shlex.split(step.command)

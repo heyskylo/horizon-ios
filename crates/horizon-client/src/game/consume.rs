@@ -318,6 +318,8 @@ impl Game<'_> {
             self.dismount_cart(i);
         } else if let Some(c) = self.cushions.iter().find(|c| c.id == id).cloned() {
             self.get_up_from_cushion(&c);
+        } else if self.seat(id).is_some() {
+            self.get_off_seat();
         } else {
             self.dismount_mount();
         }
@@ -424,6 +426,9 @@ impl TeleportConsumeWorld for Teleporter<'_, '_> {
             let high = shape.min_y + shape.logical_height - 1;
             let y = to[1].clamp(f64::from(shape.min_y), f64::from(high));
             *target = Vec3::new(to[0], y, to[2]);
+        }
+        if !cancel {
+            horizon_client::lan::hub::teleport_cause(Some("chorus_fruit"));
         }
         Ok(!cancel)
     }

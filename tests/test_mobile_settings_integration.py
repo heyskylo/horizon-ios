@@ -23,12 +23,20 @@ def program():
     code += 'impl Item {\n' + '\n'.join("pub(crate) " + method(extras, n) for n in ['description_key', 'description', 'description_text']) + '}\n}\n'
     code += 'pub mod mobile_ui {use super::*;\n' + mobile_enum + "pub(crate) " + method(mobile, 'rows')
     code += '\nimpl Item {\n' + '\n'.join("pub(crate) " + method(mobile, n) for n in ['shared', 'description_key', 'description', 'description_text']) + '}\n}}\n'
-    for module, filename in [('graphics_ui', 'graphics_ui.rs'), ('controller_ui', 'controller_ui.rs')]:
-        code += 'mod ' + module + '{use crate::EditBox;\n'
-        code += '#[derive(Clone,Copy,PartialEq)]pub enum Target{Search,Done}\n#[derive(Clone,Copy)]pub enum Page{General,Advanced,Hdr,Bindings}\n'
-        code += '#[derive(Default)]pub struct Ui{pub search:EditBox,pub focus:Option<Target>}\nimpl Ui{' + "pub(crate) " + method((RENDER / filename).read_text(), 'typing') + '}}\n'
+    # Graphics/controller input moved to the shared settings shell. Execute its
+    # production Hosted methods rather than the removed per-screen Ui methods.
+    hosted = (RENDER / 'settings_shell.rs').read_text()
+    hosted = hosted[hosted.index('impl<S: Screen + Default> Hosted for Shell<S> {'):]
+    code += 'mod shell {use crate::EditBox;\n'
+    code += '#[derive(Clone,Copy,PartialEq)]pub enum Target{Search,Done}\n'
+    code += 'pub trait Hosted{fn typing(&self)->bool;fn focused_rect(&self)->Option<[f32;4]>;}\n'
+    code += '#[derive(Default)]pub struct Ui{pub search:EditBox,pub focus:Option<Target>}\nimpl Hosted for Ui{'
+    code += method(hosted, 'typing') + method(hosted, 'focused_rect') + '} }\n'
+    for module in ['graphics_ui', 'controller_ui']:
+        code += 'mod ' + module + '{pub use crate::shell::{Ui,Target};#[derive(Clone,Copy)]pub enum Page{General,Advanced,Hdr,Bindings}}\n'
+    code += 'mod shader_ui{pub enum Tab{Packs,Screen(usize)}}\n'
     code += OPTIONS_TYPES
-    code += 'impl OptionsUi {\n' + '\n'.join(method(options, n) for n in ['page', 'settings_search_active', 'typing', 'focused_rect', 'graphics_page', 'controller_page', 'controller_open', 'video_open']) + '}\n'
+    code += 'impl OptionsUi {\n' + '\n'.join(method(options, n) for n in ['page', 'settings_search_active', 'typing', 'focused_rect', 'graphics_page', 'controller_page', 'controller_open', 'video_open', 'shell', 'shader_page']) + '}\n'
     # Exercise the native-only match arm on the host; iOS compilation checks its cfg.
     code += 'const SORT_KEY:&str="horizon.sort";const ZOOM_KEY:&str="horizon.zoom";\n#[derive(Default)]struct ExtraKeys{sort_key:String,zoom_key:String,pvp:pvp::Keys}\nimpl ExtraKeys{'
     code += method(extras, 'set_key').replace('#[cfg(target_os = "ios")]', '') + '}\n'
@@ -60,11 +68,11 @@ impl Packs{fn search_focused(&self)->bool{self.focused}fn search_rect(&self)->Op
 
 OPTIONS_TYPES = r'''
 #[derive(Clone,Copy,PartialEq,Default)]enum Page{
- #[default]Main,Language,Packs,Video,Controls,KeyBinds,ModBrowser,Graphics,GraphicsAdvanced,GraphicsHdr,Controller,PadBinds,
+ #[default]Main,Language,Packs,Video,Controls,KeyBinds,ModBrowser,Graphics,GraphicsAdvanced,GraphicsHdr,Controller,PadBinds,Extras,ShaderPacks,ShaderOptions,
 }
 #[derive(Default)]struct OptionsUi{
  stack:Vec<Page>,resource_error:Option<String>,settings_search:EditBox,language_search:EditBox,
- pack_screen:Option<Packs>,graphics:graphics_ui::Ui,controller:controller_ui::Ui,
+ pack_screen:Option<Packs>,graphics:graphics_ui::Ui,controller:controller_ui::Ui,extras:shell::Ui,shader:shell::Ui,
 }
 '''
 

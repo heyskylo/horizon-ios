@@ -18,6 +18,56 @@ type Start = dyn Fn(Task) -> io::Result<JoinHandle<()>> + Send + Sync;
 const THREADS: usize = 4;
 const BACKLOG: usize = 32;
 
+pub(crate) trait WorkerOutput: Send + 'static {
+    fn cancelled() -> Self;
+    fn unavailable() -> Self;
+}
+impl<T: Send + 'static> WorkerOutput for Result<T, RealmsError> {
+    fn cancelled() -> Self {
+        Err(RealmsError::Cancelled)
+    }
+    fn unavailable() -> Self {
+        Err(RealmsError::WorkerUnavailable)
+    }
+}
+impl<T: Send + 'static> WorkerOutput for Result<T, super::upload::UploadError> {
+    fn cancelled() -> Self {
+        Err(super::upload::UploadError::Cancelled)
+    }
+    fn unavailable() -> Self {
+        Err(super::upload::UploadError::Failed(
+            "Realms worker unavailable".into(),
+        ))
+    }
+}
+impl<T: Send + 'static> WorkerOutput for Result<T, super::download::DownloadError> {
+    fn cancelled() -> Self {
+        Err(super::download::DownloadError::Cancelled)
+    }
+    fn unavailable() -> Self {
+        Err(super::download::DownloadError::Failed(
+            "Realms worker unavailable".into(),
+        ))
+    }
+}
+impl<R: WorkerOutput, const N: usize> WorkerOutput for [R; N] {
+    fn cancelled() -> Self {
+        std::array::from_fn(|_| R::cancelled())
+    }
+    fn unavailable() -> Self {
+        std::array::from_fn(|_| R::unavailable())
+    }
+}
+
+impl WorkerOutput for u64 {
+    fn cancelled() -> Self {
+        0
+    }
+    fn unavailable() -> Self {
+        0
+    }
+}
+
 struct State {
     jobs: Mutex<VecDeque<Task>>,
     wake: Condvar,
@@ -114,27 +164,34 @@ impl Workers {
         &self,
         work: impl FnOnce() -> Result<T, RealmsError> + Send + 'static,
     ) -> Job<Result<T, RealmsError>> {
+        self.spawn_output(work)
+    }
+
+    pub(crate) fn spawn_output<R: WorkerOutput>(
+        &self,
+        work: impl FnOnce() -> R + Send + 'static,
+    ) -> Job<R> {
         let job = Arc::new(Mutex::new(None));
         let pool = &self.0.0;
         if !pool.start_workers() {
-            *job.lock().unwrap() = Some(Err(if pool.state.cancel.cancelled() {
-                RealmsError::Cancelled
+            *job.lock().unwrap() = Some(if pool.state.cancel.cancelled() {
+                R::cancelled()
             } else {
-                RealmsError::WorkerUnavailable
-            }));
+                R::unavailable()
+            });
             return job;
         }
         let result_slot = job.clone();
         let cancel = pool.state.cancel.clone();
         let task: Task = Box::new(move || {
             let result = if cancel.cancelled() {
-                Err(RealmsError::Cancelled)
+                R::cancelled()
             } else {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
-                    .unwrap_or(Err(RealmsError::WorkerUnavailable))
+                    .unwrap_or_else(|_| R::unavailable())
             };
             let result = if cancel.cancelled() {
-                Err(RealmsError::Cancelled)
+                R::cancelled()
             } else {
                 result
             };
@@ -146,11 +203,11 @@ impl Workers {
             drop(task);
             // The new result slot has not escaped this call yet, so settling
             // a refused submission cannot wait behind a UI reader.
-            *job.lock().unwrap() = Some(Err(if pool.state.cancel.cancelled() {
-                RealmsError::Cancelled
+            *job.lock().unwrap() = Some(if pool.state.cancel.cancelled() {
+                R::cancelled()
             } else {
-                RealmsError::WorkerUnavailable
-            }));
+                R::unavailable()
+            });
         } else {
             queue.push_back(task);
             drop(queue);

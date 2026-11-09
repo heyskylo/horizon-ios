@@ -158,6 +158,7 @@ impl Game<'_> {
                     from: Some([p.previous.x, p.previous.y, p.previous.z]),
                     attacker_species: owner_breeze.then_some(Species::Breeze),
                 };
+                let mut hurt = false;
                 if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                     // Breeze.isInvulnerableTo: its own kind's charges.
                     if owner_breeze && m.species() == Species::Breeze {
@@ -168,10 +169,13 @@ impl Game<'_> {
                     if horizon_client::mobs::wither::armor_refuses(m, &p.kind) {
                         return;
                     }
-                    m.damage(1.0, source);
+                    hurt = m.damage(1.0, source);
                 }
                 if p.owner == Some(Who::Player) {
                     self.last_hurt_by_player.insert(id, self.lan_acting);
+                }
+                if hurt {
+                    self.shot_post_attack(p, who, p.kind.id(), "minecraft:wind_charge");
                 }
             }
         }
@@ -470,6 +474,8 @@ impl Game<'_> {
                 let swap = self.world.random.next_int_bound(i as i32).unwrap_or(0) as usize;
                 targets.swap(i - 1, swap);
             }
+            let dimension = self.dim.id();
+            self.native_wind_burst(dimension, center, &mut targets);
             for pos in targets {
                 self.wind_trigger_block(pos)?;
             }
@@ -661,6 +667,9 @@ mod tests {
             velocity: Vec3::ZERO,
             fuse: 80,
             on_ground: false,
+            fall_distance: 0.0,
+            stuck: Vec3::ZERO,
+            in_water: false,
             owner: None,
             guest: None,
             no_gravity: false,

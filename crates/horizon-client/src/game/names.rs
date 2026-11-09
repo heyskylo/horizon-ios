@@ -163,9 +163,10 @@ impl Game<'_> {
     /// The other players' models and names: the players a server sends.
     fn other_players(&self) -> Vec<(&Mob, String)> {
         let mut out = Vec::new();
+        let indices = first_mob_indices(&self.mobs);
         for (id, name) in self.remote_player_names() {
-            if let Some(m) = self.mobs.iter().find(|m| m.id == id) {
-                out.push((m, name));
+            if let Some(&index) = indices.get(&id) {
+                out.push((&self.mobs[index], name));
             }
         }
         out
@@ -223,6 +224,15 @@ impl Game<'_> {
         self.name_tags_with_hooks(camera, alpha, !mod_api::mods().is_empty())
     }
     fn name_tags_with_hooks(&self, camera: glam::DVec3, alpha: f64, hooks: bool) -> Vec<NameTag> {
+        self.collect_name_tags(camera, alpha, hooks, None)
+    }
+    fn collect_name_tags(
+        &self,
+        camera: glam::DVec3,
+        alpha: f64,
+        hooks: bool,
+        frustum: Option<&horizon_client::gfx::Frustum>,
+    ) -> Vec<NameTag> {
         let target = self.mob_hit().map(|(i, _, _)| self.mobs[i].id);
         let viewer = self.player_team();
         let mut tags = Vec::new();
@@ -270,9 +280,27 @@ impl Game<'_> {
             // The name tag distance (64) is measured to the entity.
             let distance_sqr =
                 glam::DVec3::new(m.position.x, m.position.y, m.position.z).distance_squared(camera);
-            if distance_sqr >= 64.0 * 64.0 {
+            // Match the model's renderer-specific box, not the tag anchor: the
+            // name must survive when only the entity's feet are in view.
+            let (lo, hi) = super::entity_culling::cull_box(m, alpha);
+            let inflate = glam::DVec3::splat(0.5);
+            if !name_tag_in_view(
+                frustum,
+                distance_sqr,
+                (lo - camera - inflate).as_vec3(),
+                (hi - camera + inflate).as_vec3(),
+            ) {
                 continue;
             }
+            let marks = if player || self.cosmetics_local() {
+                self.cosmetics_marks(m, Some(m.id) == own)
+            } else {
+                Marks::default()
+            };
+            let at = match marks.top {
+                Some(top) => p + glam::DVec3::Y * cosmetic_lift(top, m.model_scale()),
+                None => p,
+            };
             // A player's scores and team go by name, a mob's by UUID.
             let holder = if player {
                 Some(name.clone())
@@ -387,17 +415,6 @@ impl Game<'_> {
                 (m.position.y + f64::from(m.height())).floor() as i32,
                 m.position.z.floor() as i32,
             );
-            // Horizon's mark before a Horizon player's name and their name tag style (cosmetics).
-            let marks = if player || self.cosmetics_local() {
-                self.cosmetics_marks(m, Some(m.id) == own)
-            } else {
-                Marks::default()
-            };
-            // Horizon: over a tall cosmetic. Without one, vanilla's height, untouched.
-            let at = match marks.top {
-                Some(top) => p + glam::DVec3::Y * cosmetic_lift(top, m.model_scale()),
-                None => p,
-            };
             tags.push(NameTag {
                 at,
                 lines,
@@ -425,7 +442,27 @@ impl Game<'_> {
             };
             let distance_sqr =
                 glam::DVec3::new(a.position.x, a.position.y, a.position.z).distance_squared(camera);
-            if distance_sqr >= 64.0 * 64.0 {
+            let position = a.render_position(alpha);
+            // Same dimensions and dragon-head growth as armor_stand_geometry.
+            let width = if a.marker {
+                0.0
+            } else if a.small {
+                0.25
+            } else {
+                0.5
+            };
+            let dragon = a.equipment[5]
+                .as_ref()
+                .is_some_and(|i| &*i.item == "minecraft:dragon_head");
+            let grow = if dragon { 1.0 } else { 0.5 };
+            let half = glam::DVec3::new(width / 2.0 + grow, grow, width / 2.0 + grow);
+            let origin = super::entity_culling::at(position) - camera;
+            if !name_tag_in_view(
+                frustum,
+                distance_sqr,
+                (origin - half).as_vec3(),
+                (origin + glam::DVec3::new(half.x, height + grow, half.z)).as_vec3(),
+            ) {
                 continue;
             }
             let team = self.mob_team(a.id);
@@ -570,7 +607,12 @@ impl Game<'_> {
         let mut patches = Vec::new();
         let mut layouts = std::mem::take(&mut self.name_tag_layouts);
         layouts.begin_frame(&self.gui.atlas);
-        for tag in self.name_tags(camera, alpha) {
+        for tag in self.collect_name_tags(
+            camera,
+            alpha,
+            !mod_api::mods().is_empty(),
+            self.view_frustum.as_ref(),
+        ) {
             let o = tag.at - camera;
             // `gbuffers_entities` draws name tag text (2.3); a sneaking player's faded tag, on its
             // background, blends.
@@ -775,6 +817,25 @@ impl Game<'_> {
         // Glyphs rasterized on first use (Unifont's) upload with the frame.
         batch.patches
     }
+}
+
+/// Use the renderer's camera-relative clip test before measuring or emitting text.
+fn name_tag_in_view(
+    frustum: Option<&impl horizon_client::gfx::Cull>,
+    distance_sqr: f64,
+    min: glam::Vec3,
+    max: glam::Vec3,
+) -> bool {
+    distance_sqr < 64.0 * 64.0 && frustum.is_none_or(|view| view.intersects(min, max))
+}
+
+fn first_mob_indices(mobs: &[Mob]) -> std::collections::HashMap<u32, usize> {
+    let mut indices = std::collections::HashMap::with_capacity(mobs.len());
+    for (index, mob) in mobs.iter().enumerate() {
+        // Match iter().find even if a transient snapshot contains duplicate IDs.
+        indices.entry(mob.id).or_insert(index);
+    }
+    indices
 }
 
 /// Collect entity IDs of all vehicles: entities that have passengers
@@ -1022,6 +1083,73 @@ mod tests {
         sprite.u0 += 0.1;
         atlas.sprites.insert("item/probe".into(), sprite);
         assert_ne!(tag_bytes(&mut cache, &atlas, &text, 255, false), first);
+    }
+
+    #[test]
+    fn name_tag_culling_keeps_intersecting_entity_boxes_within_distance() {
+        // A 90-degree camera looking down -Z, with near/far at 1/100.
+        struct View;
+        impl horizon_client::gfx::Cull for View {
+            fn intersects(&self, lo: glam::Vec3, hi: glam::Vec3) -> bool {
+                lo.z <= -1.0
+                    && hi.z >= -100.0
+                    && lo.x + lo.z <= 0.0
+                    && hi.x - lo.z >= 0.0
+                    && lo.y + lo.z <= 0.0
+                    && hi.y - lo.z >= 0.0
+            }
+            fn contains(&self, lo: glam::Vec3, hi: glam::Vec3) -> bool {
+                self.intersects(lo, hi)
+            }
+        }
+        // The head/anchor at y=12 is outside the top plane, but the
+        // entity's feet are inside: vanilla still submits its name.
+        assert!(name_tag_in_view(
+            Some(&View),
+            181.0,
+            glam::Vec3::new(-0.8, 8.5, -10.8),
+            glam::Vec3::new(0.8, 11.3, -9.2)
+        ));
+        for (offset, distance, expected) in [
+            ([0.0, 0.0, -10.0], 100.0, true),
+            ([0.0, 0.0, 10.0], 100.0, false),
+            ([12.0, 0.0, -10.0], 244.0, false),
+            ([0.0, 12.0, -10.0], 244.0, false),
+            ([0.0, 0.0, -65.0], 4225.0, false),
+            ([0.0, 0.0, -64.0], 4096.0, false),
+            ([0.0, 0.0, -63.0], 3969.0, true),
+        ] {
+            assert_eq!(
+                name_tag_in_view(
+                    Some(&View),
+                    distance,
+                    glam::Vec3::from_array(offset) - glam::Vec3::splat(0.5),
+                    glam::Vec3::from_array(offset) + glam::Vec3::splat(0.5)
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn name_tag_id_lookup_matches_scan_on_randomized_duplicate_lists() {
+        let mut seed = 4664_u32;
+        for len in [0, 1, 10, 150, 300] {
+            let mut mobs = Vec::new();
+            for _ in 0..len {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let mut mob = player_mob();
+                mob.id = seed % 80;
+                mobs.push(mob);
+            }
+            let indices = first_mob_indices(&mobs);
+            for id in 0..100 {
+                assert_eq!(
+                    indices.get(&id).copied(),
+                    mobs.iter().position(|m| m.id == id)
+                );
+            }
+        }
     }
 
     /// The player model `perspective::player_type` builds from the prepared

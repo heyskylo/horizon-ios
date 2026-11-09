@@ -88,7 +88,7 @@ fn storage_volume_compute_is_sampled_and_retains_history_on_metal() {
         weather: false,
         hand: false,
     };
-    let mut post = PackPost::new(
+    let mut post = PackPost::test_new(
         &device,
         &queue,
         &adapter,
@@ -266,7 +266,7 @@ fn mismatched_storage_image_dimension_is_rejected_before_first_frame() {
         weather: false,
         hand: false,
     };
-    let post = PackPost::new(
+    let post = PackPost::test_new(
         &device,
         &queue,
         &adapter,

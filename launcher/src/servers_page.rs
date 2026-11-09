@@ -475,7 +475,17 @@ impl Launcher {
             let log = move |l: String| {
                 let _ = lines.send(Event::Line(l));
             };
-            let _ = tx.send(Event::Done(job(&log)));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&log)))
+                .unwrap_or_else(|panic| {
+                    let error = (panic.downcast_ref::<&str>().map(|s| s.to_string()))
+                        .or_else(|| panic.downcast_ref::<String>().cloned())
+                        .unwrap_or_default();
+                    Err(Problem::plain(trf(
+                        "Could not run {program}: {error}",
+                        &[("program", "horizon-server"), ("error", &error)],
+                    )))
+                });
+            let _ = tx.send(Event::Done(result));
         });
     }
 
@@ -544,8 +554,7 @@ impl Launcher {
             && (self.servers.tab == Tab::Overview || self.theme.glass);
         let mut changed = self.internet_tick(overview);
         while let Ok(event) = self.servers.rx.try_recv() {
-            changed = true;
-            self.servers_event(event);
+            changed |= self.servers_event(event);
         }
         if self.page != Page::Servers || self.servers.polling || !self.servers.loaded {
             return changed;
@@ -599,21 +608,24 @@ impl Launcher {
         changed
     }
 
-    fn servers_event(&mut self, event: Event) {
+    fn servers_event(&mut self, event: Event) -> bool {
         let s = &mut self.servers;
         match event {
             Event::Polled { dir, status, logs } => {
                 s.polling = false;
+                let mut changed = false;
                 let was = s.statuses.get(&dir).map(|st| st.phase.clone());
                 if was.as_deref() != Some("running") && status.phase == "running" {
                     // A fresh start took every saved setting.
                     s.restart_needed.clear();
                     s.pvp = None;
+                    changed = true;
                 }
                 if let Some((next, lines)) = logs {
                     if s.log_dir.as_ref() != Some(&dir) {
                         s.log.clear();
                         s.log_dir = Some(dir.clone());
+                        changed = true;
                     }
                     if !lines.is_empty() {
                         s.log.extend(lines);
@@ -621,24 +633,38 @@ impl Launcher {
                             s.log.pop_front();
                         }
                         s.console_scroll.handle.scroll_to_bottom();
+                        changed = true;
                     }
                     s.log_next = next;
                 }
                 let read_pvp = status.phase == "running" && s.pvp.is_none();
-                s.statuses.insert(dir, *status);
+                if s.statuses.get(&dir) != Some(&status) {
+                    s.statuses.insert(dir, *status);
+                    changed = true;
+                }
                 if read_pvp {
                     self.read_pvp();
+                    changed = true;
                 }
+                changed
             }
             Event::Statuses(all) => {
                 s.polling = false;
-                s.statuses.extend(all);
+                let mut changed = false;
+                for (dir, status) in all {
+                    if s.statuses.get(&dir) != Some(&status) {
+                        s.statuses.insert(dir, status);
+                        changed = true;
+                    }
+                }
+                changed
             }
             Event::Line(line) => {
                 s.job_log.push_back(line);
                 while s.job_log.len() > 6 {
                     s.job_log.pop_front();
                 }
+                true
             }
             Event::Done(result) => {
                 s.busy = None;
@@ -649,6 +675,7 @@ impl Launcher {
                     Err(p) => s.problem = Some(p),
                 }
                 self.load_details();
+                true
             }
             Event::Created(result) => {
                 s.creating = false;
@@ -666,6 +693,7 @@ impl Launcher {
                     }
                     Err(p) => s.problem = Some(p),
                 }
+                true
             }
             Event::Details {
                 dir,
@@ -677,6 +705,9 @@ impl Launcher {
                     s.config = config;
                     s.backups = backups;
                     s.service = Some(service);
+                    true
+                } else {
+                    false
                 }
             }
             Event::Deleted { dir, result } => {
@@ -697,6 +728,7 @@ impl Launcher {
                     Ok(()) => s.note = Some("Server moved to the trash.".into()),
                     Err(e) => s.problem = Some(Problem::plain(e)),
                 }
+                true
             }
             Event::Applied(result) => {
                 s.applying = false;
@@ -710,16 +742,24 @@ impl Launcher {
                 } else {
                     self.apply_settings();
                 }
+                true
             }
-            Event::Pvp(on) => s.pvp = on,
+            Event::Pvp(on) => {
+                s.pvp = on;
+                true
+            }
             Event::UpdateCheck(result) => {
                 s.checking = false;
                 match result {
                     Ok(v) => s.update = Some(v),
                     Err(p) => s.problem = Some(p),
                 }
+                true
             }
-            Event::Failed(e) => s.problem = Some(Problem::plain(e)),
+            Event::Failed(e) => {
+                s.problem = Some(Problem::plain(e));
+                true
+            }
         }
     }
 
@@ -812,8 +852,49 @@ impl Launcher {
         STARTED_HERE.lock().unwrap().push(dir.clone());
         self.servers.restart_needed.clear();
         self.server_job("Starting", move |log| {
+            if let Some(api) = servers::Api::open(&dir) {
+                if let Ok(status) = api.call("GET", "/api/v1/status", None) {
+                    if status["phase"] == "stopped"
+                        && api.call("POST", "/api/v1/start", None).is_ok()
+                    {
+                        return Ok(String::new());
+                    }
+                }
+            }
             log("A new world takes a minute the first time".into());
             servers::run_streamed(&dir, &["start"], log).map(|_| String::new())
+        });
+    }
+
+    fn stop_server(&mut self) {
+        let Some(dir) = self.servers.open.clone() else {
+            return;
+        };
+        self.server_job("Stopping", move |log| {
+            // The running server's API first; when it can't be reached or refuses, the CLI,
+            // whose error is the job's.
+            let via_api = servers::Api::open(&dir)
+                .is_some_and(|api| api.call("POST", "/api/v1/stop", None).is_ok());
+            if via_api {
+                return Ok(String::new());
+            }
+            servers::run_streamed(&dir, &["stop"], log).map(|_| String::new())
+        });
+    }
+
+    fn restart_server(&mut self) {
+        let Some(dir) = self.servers.open.clone() else {
+            return;
+        };
+        self.server_job("Restarting", move |log| {
+            // The running server's API first; when it can't be reached or refuses, the CLI,
+            // whose error is the job's.
+            let via_api = servers::Api::open(&dir)
+                .is_some_and(|api| api.call("POST", "/api/v1/restart", None).is_ok());
+            if via_api {
+                return Ok(String::new());
+            }
+            servers::run_streamed(&dir, &["restart"], log).map(|_| String::new())
         });
     }
 
@@ -1486,7 +1567,11 @@ impl Launcher {
                 if !dir.join("server.toml").is_file() {
                     servers::run(&dir, &["init", "--yes"])?;
                 }
-                let entry = Entry { name, dir };
+                let entry = Entry {
+                    name,
+                    dir,
+                    host: None,
+                };
                 servers::add(entry.clone()).map_err(Problem::plain)?;
                 Ok(entry)
             })();
@@ -1566,7 +1651,7 @@ impl Launcher {
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .child(div().size(px(8.)).rounded_full().bg(dot))
+                    .child(div().size(px(8.)).bg(dot))
                     .child(caps(phase_label(&status)).text_color(t.muted))
                     .when_some(status.uptime.filter(|_| running), |d, up| {
                         d.child(caps(format!("· up {}", uptime(up))).text_color(t.muted))
@@ -1608,7 +1693,7 @@ impl Launcher {
             disabled(start)
         } else if running {
             start.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                this.server_command("Stopping", vec!["stop".into()]);
+                this.stop_server();
                 cx.notify();
             }))
         } else {
@@ -1621,7 +1706,7 @@ impl Launcher {
         let restart = if idle && running {
             restart.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.servers.restart_needed.clear();
-                this.server_command("Restarting", vec!["restart".into()]);
+                this.restart_server();
                 cx.notify();
             }))
         } else {
@@ -1687,7 +1772,7 @@ impl Launcher {
                     .items_center()
                     .gap(px(12.))
                     .p(px(16.))
-                    .child(div().flex_none().size(px(6.)).rounded_full().bg(t.success))
+                    .child(div().flex_none().size(px(6.)).bg(t.success))
                     .child(
                         div()
                             .flex_1()
@@ -1710,7 +1795,7 @@ impl Launcher {
                     .items_center()
                     .gap(px(12.))
                     .p(px(16.))
-                    .child(div().flex_none().size(px(6.)).rounded_full().bg(t.accent))
+                    .child(div().flex_none().size(px(6.)).bg(t.accent))
                     .child(
                         div()
                             .flex_1()
@@ -1727,7 +1812,7 @@ impl Launcher {
                         if idle {
                             b.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.servers.restart_needed.clear();
-                                this.server_command("Restarting", vec!["restart".into()]);
+                                this.restart_server();
                                 cx.notify();
                             }))
                         } else {
@@ -3050,7 +3135,6 @@ impl Launcher {
                         .child(
                             div()
                                 .size(px(12.))
-                                .rounded_full()
                                 .border_1()
                                 .border_color(if chosen { t.accent } else { t.muted })
                                 .when(chosen, |d| d.bg(t.accent)),
@@ -3124,7 +3208,6 @@ impl Launcher {
                 .id(id)
                 .flex_none()
                 .size(px(18.))
-                .rounded(px(4.))
                 .border_1()
                 .border_color(if on { t.accent } else { t.muted })
                 .bg(if on { t.accent } else { t.surface })

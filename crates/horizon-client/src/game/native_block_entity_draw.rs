@@ -132,7 +132,6 @@ pub(super) fn place_turning(
     }
 }
 
-#[allow(dead_code)]
 impl BlockEntityDraw {
     /// A frame drawn from `pose` (relative to the camera), lit by `light` and
     /// `lights`, adding to `vertices`; `block` is where `native_draw_item`'s
@@ -541,7 +540,7 @@ impl Game<'_> {
 
 /// Helpers for drawing mod block entities, kept as stable as the hook points.
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
 impl Game<'_> {
     /// Draws a quad with `corners` in blocks under `draw`'s pose, in a model
     /// face's order (top left, bottom left, bottom right, top right as seen
@@ -601,6 +600,7 @@ impl Game<'_> {
                 x,
                 y: at[1],
                 text: shown,
+                style: Default::default(),
                 color: 0xFF00_0000 | (span.style.color.unwrap_or(color) & 0xFF_FFFF),
                 outline: if outline == 0 {
                     0
@@ -608,8 +608,14 @@ impl Game<'_> {
                     0xFF00_0000 | (outline & 0xFF_FFFF)
                 },
                 light,
+                tier: 0,
             };
-            text_vertices(&glyph, &call, &mut draw.vertices);
+            text_vertices(
+                &glyph,
+                Some(self.gui.atlas.font.white()),
+                &call,
+                &mut draw.vertices,
+            );
             x += width;
         }
         x - at[0]

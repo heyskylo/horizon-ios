@@ -106,6 +106,11 @@ thread_local! {
     static ACTION_SCREENS: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
     /// The lists drawn with a scrollbar since `end_frame`, and the last frame's.
     static SCROLL_AREAS: RefCell<(Vec<ScrollArea>, Vec<ScrollArea>)> = const { RefCell::new((Vec::new(), Vec::new())) };
+    /// The steps screens declared since `end_frame` ([`focus_link`]), and the last frame's.
+    static FOCUS_LINKS: RefCell<(Vec<FocusLink>, Vec<FocusLink>)> = const { RefCell::new((Vec::new(), Vec::new())) };
+    /// The targets whose value left and right step ([`steps_value`]) since `end_frame`, and the
+    /// last frame's.
+    static STEPPERS: RefCell<(Vec<[f32; 4]>, Vec<[f32; 4]>)> = const { RefCell::new((Vec::new(), Vec::new())) };
 }
 
 /// Splitscreen: one player's buttons and focus targets, kept aside while another player's game
@@ -119,6 +124,8 @@ pub struct Saved(
     (u64, u64),
     (Vec<ScrollArea>, Vec<ScrollArea>),
     (Vec<PointerBinding>, Vec<PointerBinding>),
+    (Vec<FocusLink>, Vec<FocusLink>),
+    (Vec<[f32; 4]>, Vec<[f32; 4]>),
 );
 
 /// This thread's buttons and targets, leaving none.
@@ -131,6 +138,8 @@ pub fn take() -> Saved {
         ACTION_SCREENS.take(),
         SCROLL_AREAS.take(),
         POINTER_BINDINGS.take(),
+        FOCUS_LINKS.take(),
+        STEPPERS.take(),
     )
 }
 
@@ -139,6 +148,8 @@ pub fn put(saved: Saved) {
     WIDGETS.set(saved.0);
     TARGETS.set(saved.1);
     SCROLL_AREAS.set(saved.5);
+    FOCUS_LINKS.set(saved.7);
+    STEPPERS.set(saved.8);
     ACTIONS.set(saved.2);
     ACTION_GLYPHS.set(saved.3);
     ACTION_SCREENS.set(saved.4);
@@ -338,6 +349,8 @@ pub fn cover_frame() {
     TARGETS.with_borrow_mut(|(current, _, _)| current.clear());
     ACTIONS.with_borrow_mut(|(current, _)| current.clear());
     SCROLL_AREAS.with_borrow_mut(|(current, _)| current.clear());
+    FOCUS_LINKS.with_borrow_mut(|(current, _)| current.clear());
+    STEPPERS.with_borrow_mut(|(current, _)| current.clear());
 }
 
 /// This frame drew a list with something to scroll, in `rect`, scrolled `amount`
@@ -369,6 +382,50 @@ pub fn over_scroll_area(at: (f32, f32)) -> (f32, f32) {
             _ => at,
         }
     })
+}
+
+/// A step the arrows and the D-pad take that the rectangles don't show: `down` (else up) from
+/// a focus whose middle is in `from`, to the target at `to`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FocusLink {
+    pub from: [f32; 4],
+    pub down: bool,
+    pub to: [f32; 4],
+}
+
+/// Down (or up) from what is in `from` goes to `to`: a screen whose layout puts the next control
+/// off to one side, where vanilla's step would pass it by (the settings shell's search field over
+/// its list, on a screen with no page list).
+pub fn focus_link(from: [f32; 4], down: bool, to: [f32; 4]) {
+    FOCUS_LINKS.with_borrow_mut(|(current, _)| current.push(FocusLink { from, down, to }));
+}
+
+/// Where the last drawn frame said a step `down` (else up) from `focus` goes, if it said.
+pub fn linked_step(focus: [f32; 4], down: bool) -> Option<[f32; 4]> {
+    let [x, y, w, h] = focus;
+    let middle = (x + w / 2.0, y + h / 2.0);
+    FOCUS_LINKS.with_borrow(|(_, last)| {
+        last.iter()
+            .find(|l| {
+                let [lx, ly, lw, lh] = l.from;
+                l.down == down
+                    && (lx..lx + lw).contains(&middle.0)
+                    && (ly..ly + lh).contains(&middle.1)
+            })
+            .map(|l| l.to)
+    })
+}
+
+/// Left and right on the target at `rect` step its value, back and on, rather than move the focus
+/// (the settings shell's choices, whose `<` `>` say so): Right as a press, Left as a Shift press.
+pub fn steps_value(rect: [f32; 4]) {
+    STEPPERS.with_borrow_mut(|(current, _)| current.push(rect));
+}
+
+/// Whether the last drawn frame said left and right step the value of the target at `focus`.
+pub fn last_steps_value(focus: [f32; 4]) -> bool {
+    let same = |rect: &[f32; 4]| rect.iter().zip(focus).all(|(a, b)| (a - b).abs() < 0.5);
+    STEPPERS.with_borrow(|(_, last)| last.iter().any(same))
 }
 
 /// The focus targets of the last drawn frame.
@@ -449,6 +506,12 @@ pub fn end_frame(frames: u64) {
             });
             ACTION_SCREENS.set((ACTION_SCREENS.get().0, ACTION_SCREENS.get().0));
             SCROLL_AREAS.with_borrow_mut(|(current, last)| {
+                *last = std::mem::take(current);
+            });
+            FOCUS_LINKS.with_borrow_mut(|(current, last)| {
+                *last = std::mem::take(current);
+            });
+            STEPPERS.with_borrow_mut(|(current, last)| {
                 *last = std::mem::take(current);
             });
             NARRATION.with_borrow_mut(|(current, last)| {

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Compare persistent enchantment levels and display names with vanilla 26.3."""
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -9,6 +10,16 @@ try:
 except ImportError:
     import lab
     import test_rust_parity as base
+
+
+def registry():
+    """Every enchantment the prepared data pack registers, with its max_level."""
+    root = lab.RESOURCES / 'data/minecraft/enchantment'
+    out = []
+    for path in sorted(root.glob('*.json')):
+        data = json.loads(path.read_text(encoding='utf-8'))
+        out.append((f'minecraft:{path.stem}', int(data.get('max_level', 1))))
+    return out
 
 
 def corpus():
@@ -26,6 +37,26 @@ def corpus():
         for label, levels in cases:
             yield (f'{index}:{label}\t{{"minecraft:damage":12,"{key}":'
                    f'{levels},"{other}":{{mending:1}}}}')
+    # Every registered enchantment at every interesting level, alone and beside a
+    # second enchantment: the level ranges each definition declares (its
+    # max_level, one below, one above, far above), the byte range the component
+    # stores, and levels the display name turns into a numeral or a number.
+    enchantments = registry()
+    for index, key in enumerate(keys):
+        other = keys[1 - index]
+        for name, maximum in enchantments:
+            levels = sorted({-2147483648, -1, 0, 1, 2, max(1, maximum - 1), maximum,
+                             maximum + 1, 255, 256, 32767, 2147483647})
+            for level in levels:
+                yield (f'{index}:{name[10:]}-{level}\t{{"minecraft:damage":12,"{key}":'
+                       f'{{"{name}":{level}}},"{other}":{{"minecraft:mending":1}}}}')
+            for level in sorted({0, 1, maximum, maximum + 1}) if name != "minecraft:sharpness" else ():
+                yield (f'{index}:{name[10:]}-{level}-pair\t{{"minecraft:damage":12,"{key}":'
+                       f'{{"minecraft:sharpness":{maximum},"{name}":{level}}}}}')
+        for label, level in [('all-max', None), ('all-one', 1), ('all-zero', 0)]:
+            levels = {name: (maximum if level is None else level) for name, maximum in enchantments}
+            body = ','.join(f'"{name}":{value}' for name, value in levels.items())
+            yield f'{index}:{label}\t{{"minecraft:damage":12,"{key}":{{{body}}}}}'
 
 
 def main():

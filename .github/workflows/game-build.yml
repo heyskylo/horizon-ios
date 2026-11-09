@@ -299,6 +299,11 @@ jobs:
         run: |
           set -euo pipefail
           cargo run --locked -p xtask -- package "$BIN/horizon-client${{ matrix.exe }}" "dist/${{ matrix.dir }}"
+          # Windows x64: Microsoft's DXC, pinned and checksummed, which DirectX 12 uses on integrated GPUs
+          # (gfx/dx12_compiler.rs), with its licence. ARM64 keeps FXC (THIRD_PARTY_NOTICES.md says why).
+          if [[ "${{ matrix.name }}" == windows ]]; then
+            python tools/ci/fetch_dxc.py "dist/${{ matrix.dir }}"
+          fi
           cd dist
           rm -f "${{ matrix.asset }}"
           case "${{ matrix.asset }}" in

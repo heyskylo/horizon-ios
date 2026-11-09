@@ -139,6 +139,7 @@ pub(in crate::game) fn fixture() -> (Game<'static>, LanHost) {
                 latency: Arc::new(std::sync::atomic::AtomicI32::new(0)),
                 address: "127.0.0.1:25565".parse().unwrap(),
                 expected: false,
+                configured: Default::default(),
             },
             conn as i32,
             [8.5, 65.0, 8.5],

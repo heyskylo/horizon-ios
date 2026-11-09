@@ -15,13 +15,24 @@ use horizon_theme::glass::{fill, ink, radius};
 
 impl Launcher {
     pub(super) fn glass_account(&mut self, cx: &mut Context<Self>) -> Div {
+        let wide = self.window_width >= crate::glass_home::WIDE;
         let left = self.glass_who_plays(cx);
         let right = self.glass_microsoft_card(cx);
-        div()
-            .flex()
-            .gap(px(8.))
-            .child(left.flex_1().min_w_0().p(px(20.)))
-            .child(right.flex_none().w(px(360.)))
+        if wide {
+            div()
+                .flex()
+                .flex_row()
+                .gap(px(8.))
+                .child(left.flex_1().min_w(px(280.)).p(px(20.)))
+                .child(right.flex_none().w(px(360.)))
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(16.))
+                .child(left.w_full().min_w_0().p(px(20.)))
+                .child(right.w_full())
+        }
     }
 
     /// The player now, the offline names and the field to add one.

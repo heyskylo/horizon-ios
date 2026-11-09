@@ -65,6 +65,9 @@ pub fn start_converting(
 ) {
     villager::ext_mut(m).cure = Some(Cure { time, starter });
     m.extra.effects.retain(|e| e.0 != "minecraft:weakness");
+    m.extra
+        .effect_fallbacks
+        .retain(|h| h.id != "minecraft:weakness");
     // Strength amplifier: min(difficulty id - 1, 0), always 0 with monsters.
     m.add_effect("minecraft:strength", time, 0);
     events.push(MobEvent::EntityEvent {
@@ -233,16 +236,18 @@ mod tests {
             others: &[],
             dragon: None,
             leash_boats: &[],
+            who_lookup: None,
             others_grid: None,
             others_index: None,
             others_villagers: None,
+            others_solid: None,
             daylight: true,
             monsters_burn: false,
             game_time: 1000,
             day_time: 18000,
             raining: false,
             thundering: false,
-            nether: false,
+            level: horizon_core::LevelKey::OVERWORLD,
             block_tags: &items.block_tags,
             landing: &motion.landing,
             biomes: &biomes,
@@ -251,7 +256,7 @@ mod tests {
             mob_drops: true,
             max_entity_cramming: 24,
             difficulty: super::super::spawning::LocalDifficulty::new(2, 18000, 0, 0.0),
-            end: false,
+            dimension_type: horizon_world::dimension_type::DimensionFacts::overworld(),
             world_seed: 0,
             sea_level: 63,
             items: Some(&items),

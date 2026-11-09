@@ -21,7 +21,7 @@ def program(game_source=None):
     source=source[:fixture_start]+source[fixture_end:]
     assert source.count("impl Game<'_>") == 1
     source=source.replace('use super::{Game, Screen};', 'use crate::winit;\nuse super::{Game, Screen};')
-    game_source=game_source or (ROOT/'crates/horizon-client/src/game.rs').read_text()
+    game_source=game_source or (ROOT/'crates/horizon-client/src/game/pointer_capture.rs').read_text()
     pause=method(game_source,'pauses_game')
     return STUBS+'\nmod emote {\n'+source+"\nimpl Game<'_> {\n"+pause+'\n}\n'+CASES+'\n}\n'
 

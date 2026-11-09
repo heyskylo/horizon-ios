@@ -115,7 +115,7 @@ targets:
           # The profile and flags the workflow builds with, so what a player runs from Xcode is what CI measured.
           # `audio` is cpal, whose CoreAudio backend plays through RemoteIO on a phone; `controllers` stays off
           # (gilrs and hidapi want libudev or IOKit: GameController reads pads instead).
-          cargo build --release --locked --target "$IOS_TARGET" -p horizon-client --no-default-features --features audio
+          cargo build --release --locked --target "$IOS_TARGET" -p horizon-client --no-default-features --features audio,horizon-extras
     postCompileScripts:
       - name: Put the Rust game in the bundle
         shell: /bin/bash

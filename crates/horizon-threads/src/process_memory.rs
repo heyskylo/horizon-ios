@@ -1,18 +1,20 @@
 //! Read-only process memory diagnostics.
 /// The process's memory counters.
 #[cfg(windows)]
-fn counters() -> Option<windows_sys::Win32::System::ProcessStatus::PROCESS_MEMORY_COUNTERS> {
+fn counters() -> Option<windows_sys::Win32::System::ProcessStatus::PROCESS_MEMORY_COUNTERS_EX2> {
     use windows_sys::Win32::System::ProcessStatus::{
-        K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+        K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX2,
     };
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
-    let size = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
-    // SAFETY: all-zero is a valid value of this plain C struct, and the call writes at most `size`
-    // bytes into it; the current process's pseudo-handle needs no closing.
+    let size = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX2>() as u32;
+    // SAFETY: all-zero is a valid value of this plain C struct, which starts with the fields of the
+    // one the call is declared with, and the call writes at most `size` bytes into it; the current
+    // process's pseudo-handle needs no closing.
     unsafe {
-        let mut counters: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
+        let mut counters: PROCESS_MEMORY_COUNTERS_EX2 = std::mem::zeroed();
         counters.cb = size;
-        (K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, size) != 0).then_some(counters)
+        (K32GetProcessMemoryInfo(GetCurrentProcess(), (&raw mut counters).cast(), size) != 0)
+            .then_some(counters)
     }
 }
 
@@ -20,6 +22,34 @@ fn counters() -> Option<windows_sys::Win32::System::ProcessStatus::PROCESS_MEMOR
 #[cfg(windows)]
 pub fn resident_bytes() -> Option<u64> {
     Some(counters()?.WorkingSetSize as u64)
+}
+
+/// The private memory this process holds in RAM, all it holds in RAM and the machine's RAM, in
+/// bytes.
+#[cfg(windows)]
+pub fn usage() -> Option<[u64; 3]> {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let counters = counters()?;
+    let resident = counters.WorkingSetSize as u64;
+    let private = match counters.PrivateWorkingSetSize {
+        // Windows before 10 22H2 leaves it empty: the private commit is the nearest it has.
+        0 => (counters.PrivateUsage as u64).min(resident),
+        bytes => bytes as u64,
+    };
+    // SAFETY: all-zero is a valid value of this plain C struct, its length is set as the call
+    // requires, and the call only writes into it.
+    let ram = unsafe {
+        let mut status: MEMORYSTATUSEX = std::mem::zeroed();
+        status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+        (GlobalMemoryStatusEx(&mut status) != 0).then_some(status.ullTotalPhys)
+    }?;
+    Some([private, resident, ram])
+}
+
+/// [`usage`]'s counters: not read on this system.
+#[cfg(not(windows))]
+pub fn usage() -> Option<[u64; 3]> {
+    None
 }
 
 /// The memory this process holds in RAM, in bytes.

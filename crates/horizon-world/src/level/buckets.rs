@@ -2,11 +2,11 @@
 //! `DispensibleContainerItem.emptyContents` for filled ones (`BucketItem`,
 //! `MobBucketItem`, `SolidBucketItem`), both without a player.
 use super::{
-    Behaviours, Dimension, LevelAccess, Sim, Ticks,
+    Behaviours, LevelAccess, Sim, Ticks,
     classes::{Class, Interface},
 };
 use crate::{
-    fluid::{FluidKind, FluidState},
+    fluid::{FluidKind, FluidState, FluidTemplate},
     registry::BlockStateId,
 };
 use horizon_core::{position::BlockPos, random::RandomSource};
@@ -42,10 +42,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let b = self.b;
         let state = self.state(pos);
         let item = if b.instance_of(state, Class::Liquid) {
-            match b.fluid(state).kind() {
-                FluidKind::Water | FluidKind::FlowingWater => "minecraft:water_bucket",
-                FluidKind::Lava | FluidKind::FlowingLava => "minecraft:lava_bucket",
-                FluidKind::Empty => return None,
+            match b.fluid(state).kind().template() {
+                FluidTemplate::Water => "minecraft:water_bucket",
+                FluidTemplate::Lava => "minecraft:lava_bucket",
+                FluidTemplate::Empty => return None,
             }
         } else if b.implements(state, Interface::SimpleWaterlogged)
             && b.table.has(state, b.props.waterlogged)
@@ -120,7 +120,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             });
         }
         let water = matches!(fluid, FluidKind::Water | FluidKind::FlowingWater);
-        if water && self.level.dimension() == Dimension::Nether {
+        if water && self.level.dimension_type().water_evaporates {
             // WATER_EVAPORATES: the water hisses away.
             let pitch = 2.6 + (self.random().next_float() - self.random().next_float()) * 0.8;
             self.emit(super::LevelEvent::Sound {

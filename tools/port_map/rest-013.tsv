@@ -72,14 +72,14 @@ MinecraftServer.constructOrExtractCrashReport	skip:debug		crash report wrapping
 MinecraftServer.haveTime	inline	crates/horizon-client/src/game/levels.rs::Game::wait_for_next_server_tick	gap: minor: no time budget for queued tasks
 MinecraftServer.waitUntilNextTick	port	crates/horizon-client/src/game/levels.rs::Game::wait_for_next_server_tick	gap: minor: queued tasks are not run before the wait
 MinecraftServer.waitForTasks	inline	crates/horizon-client/src/game/levels.rs::Game::wait_for_next_server_tick	idle sleep until the next tick
-MinecraftServer.shouldRun	missing		minor: no per-task deferral; queued tasks run in one pass
+MinecraftServer.shouldRun	skip:other		Horizon has no haveTime budget to defer against: the only queued-task pass (IntegratedServer::run_tasks) drains the window's requests once per tick with no tick stamp and no clock, so tasks are never starved; a faithful port is a server-loop redesign
 MinecraftServer.pollTaskInternal	inline	crates/horizon-client/src/game/integrated.rs::Game::run_tasks	gap: minor: only the task queue; chunk-source tasks are not polled here
 MinecraftServer.loadStatusIcon	inline	crates/horizon-client/src/game/dedicated.rs::Game::run_dedicated	gap: minor: only server-icon.png; no world icon fallback
 MinecraftServer.processPacketsAndTick	port	crates/horizon-client/src/game/levels.rs::Game::tick_server	reads the network, then ticks the levels
 MinecraftServer.autoSave	inline	crates/horizon-client/src/game.rs::Game::tick	gap: minor: the save runs every 6000 ticks; /save-off is checked in the dedicated loop, where the check does nothing, so it does not stop the save
 MinecraftServer.logTickMethodTime	skip:server		tick timing log for the profiler
-MinecraftServer.computeNextAutosaveInterval	port	crates/horizon-client/src/game.rs::Game::next_autosave_interval	Math.max(100, (int)(rate * 300.0F)) ticks counted down a tick at a time, at the tick rate or the measured rate while /tick sprint runs; twenty a second is still the six thousand a world autosaved on
-MinecraftServer.onTickRateChanged	port	crates/horizon-client/src/game.rs::Game::on_tick_rate_changed	/tick rate recomputes the wait and shortens the one already running when the new rate asks for less
+MinecraftServer.computeNextAutosaveInterval	port	crates/horizon-client/src/game/autosave.rs::Game::next_autosave_interval	Math.max(100, (int)(rate * 300.0F)) ticks counted down a tick at a time, at the tick rate or the measured rate while /tick sprint runs; twenty a second is still the six thousand a world autosaved on
+MinecraftServer.onTickRateChanged	port	crates/horizon-client/src/game/autosave.rs::Game::on_tick_rate_changed	/tick rate recomputes the wait and shortens the one already running when the new rate asks for less
 MinecraftServer.buildPlayerStatus	port	crates/horizon-client/src/lan/mod.rs::Shared::status_json	up to 12 sampled player names in the status JSON
 MinecraftServer.updateEffectiveRespawnData	inline	crates/horizon-client/src/game/initial_spawn.rs::Game::spawn_finder	gap: minor: no cached respawn data; the radius is clamped to the border when the spawn is found
 MinecraftServer.forceGameTimeSynchronization	port	crates/horizon-client/src/lan/hub.rs::Hub::sync_world	game time sent to guests with SetTime
@@ -134,7 +134,7 @@ ReloadableServerRegistries.createAndValidateFullContext	skip:data		registry cont
 ReloadableServerRegistries.validateLootRegistries	skip:data		loot table validation at load
 ReloadableServerResources.loadResources	skip:data		server resource loading
 ServerAdvancementManager.validate	skip:data		advancement validation logging at load
-ServerFunctionLibrary.reload	port	crates/horizon-client/src/game/functions.rs::Game::rebuild_store	rebuilds the function store from the data packs
+ServerFunctionLibrary.reload	port	crates/horizon-client/src/game/functions.rs::Game::reload_datapacks	loads a candidate store, refreshes explicit-reload content, validates ordinary commands, then commits accepted functions
 ServerFunctionLibrary.readLines	inline	crates/horizon-client-render/src/datapack.rs::parse_function	splits the function text into lines
 ServerFunctionManager.executeTagFunctions	port	crates/horizon-client/src/game/functions.rs::Game::tick_functions	runs the functions of a tag
 ServerFunctionManager.execute	port	crates/horizon-client/src/game/functions.rs::Game::run_function	runs one function as the sender

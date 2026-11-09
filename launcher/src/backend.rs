@@ -1714,16 +1714,17 @@ pub(crate) fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     copy_dir_except(from, to, None)
 }
 
-/// Copy a folder, leaving out one directory when given.
+/// Copy a folder, leaving out one directory or file when given.
 pub(crate) fn copy_dir_except(from: &Path, to: &Path, skip: Option<&Path>) -> std::io::Result<()> {
     fs::create_dir_all(to)?;
     for entry in fs::read_dir(from)? {
         let entry = entry?;
+        if Some(entry.path().as_path()) == skip {
+            continue;
+        }
         let target = to.join(entry.file_name());
         if entry.file_type()?.is_dir() {
-            if Some(entry.path().as_path()) != skip {
-                copy_dir_except(&entry.path(), &target, skip)?;
-            }
+            copy_dir_except(&entry.path(), &target, skip)?;
         } else {
             horizon_prepare::clone_or_copy(&entry.path(), &target)?;
         }
@@ -1760,7 +1761,9 @@ fn reuse_prepared(versions: &Path, tag: &str) -> Option<String> {
         let n = COPIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let partial = to.with_file_name(format!(".{version}.partial-{}-{n}", std::process::id()));
         let _ = fs::remove_dir_all(&partial);
-        let copied = copy_dir(&from, &partial).and_then(|_| {
+        // Without the data file: it names its own root, so the copy could not use it.
+        let data_file = from.join(horizon_core::prepared_files::FILE_NAME);
+        let copied = copy_dir_except(&from, &partial, Some(&data_file)).and_then(|_| {
             if to.join(RESOURCES_MANIFEST).exists() {
                 return Ok(false); // Prepared meanwhile, by another copy or the player.
             }
@@ -1778,11 +1781,37 @@ fn reuse_prepared(versions: &Path, tag: &str) -> Option<String> {
 }
 
 /// What an install does once its folder is in place (an imported build's too, `build_import`):
-/// another installed version's resources if it has none, and whatever its resources lack.
+/// another installed version's resources if it has none, whatever its resources lack, then its
+/// data file.
 pub(crate) fn reuse_prepared_for(tag: &str) {
     reuse_prepared(&versions_dir(), tag);
     complete_assets(tag);
     forget_prepared();
+    let resources = resources(tag);
+    let spawned = std::thread::Builder::new()
+        .name("Prepared data file".into())
+        .spawn(move || {
+            if let Err(e) = write_data_file(&resources) {
+                eprintln!("{}: not written: {e}", resources.display());
+            }
+        });
+    if let Err(e) = spawned {
+        eprintln!("{tag}: the data file was not written: {e}");
+    }
+}
+
+/// Writes a prepared version's `horizon-data.bin` so its first start already reads one file, not
+/// thousands: over a minute under Windows Defender (#1961), and a player who updates would pay it
+/// after every update. After `complete_assets`, as the file answers "missing" for what it lacks.
+/// The game still writes it when this didn't finish. Only looks for the file, as
+/// `prepared_files::open` keeps it open for the whole run, which would stop a removal on Windows.
+fn write_data_file(resources: &Path) -> std::io::Result<()> {
+    use horizon_core::prepared_files;
+    if !prepared_at(resources) || resources.join(prepared_files::FILE_NAME).exists() {
+        return Ok(());
+    }
+    let readers = std::thread::available_parallelism().map_or(1, |n| n.get().min(8));
+    prepared_files::write_with_readers(resources, readers)
 }
 
 /// `reuse_prepared` for every installed version that is not prepared, oldest first, so a
@@ -1970,13 +1999,14 @@ fn complete_assets_in(
         return;
     }
     let mut tried = TRIED.lock().unwrap_or_else(|e| e.into_inner());
-    let lacking = lacking();
-    if tried.contains(&root) || lacking.is_empty() {
+    let to_add = lacking();
+    if tried.contains(&root) || to_add.is_empty() {
         return;
     }
     tried.push(root.clone());
     let folders = folders();
-    for (what, _, copy) in lacking {
+    let lacked = to_add.len();
+    for (what, _, copy) in to_add {
         let mut first_error = None;
         let added = folders.iter().any(|folder| {
             let copied = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1990,6 +2020,16 @@ fn complete_assets_in(
                 "{tag}: {what} not added: {}",
                 first_error.unwrap_or_else(|| "no Minecraft folder found".into())
             ));
+        }
+    }
+    // The data file answers "missing" for what it lacks, so one from before these copies would
+    // hide them. Only when something was added: a version that stays lacking keeps its file.
+    if lacking().len() < lacked {
+        let data_file = resources.join(horizon_core::prepared_files::FILE_NAME);
+        if let Err(e) = fs::remove_file(&data_file) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log(format!("{}: not removed: {e}", data_file.display()));
+            }
         }
     }
 }
@@ -2988,17 +3028,47 @@ pub fn remove_version(tag: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// How many of the newest release versions stay installed when the player has not said.
+/// How many of the newest managed versions of each kind stay installed by default.
 const KEEP_NEWEST: usize = 2;
 
-/// The release versions to delete: all but the `keep` newest of `installed` (newest first), and
-/// never one of `protected`. Nightly builds are left out: `nightly::after_update` removes the
-/// older ones.
-fn stale_versions(installed: &[String], keep: usize, protected: &[String]) -> Vec<String> {
+/// Only Nightlies installed by an update may be removed automatically. Absence of this marker
+/// means a manual install or a version from an older launcher whose origin is unknown.
+const AUTO_INSTALLED: &str = ".auto-installed";
+
+pub(crate) fn auto_installed(tag: &str) -> bool {
+    version_dir(tag).join(AUTO_INSTALLED).is_file()
+}
+
+pub fn mark_auto_installed(tag: &str) -> Result<(), String> {
+    let dir = version_dir(tag);
+    if !dir.join(COMPLETE).is_file() {
+        return Err(format!("{tag} is not installed."));
+    }
+    fs::write(dir.join(AUTO_INSTALLED), "").map_err(|e| e.to_string())
+}
+
+/// Keep the newest releases and automatically installed Nightlies separately. Manual and legacy
+/// Nightlies are outside the quota; selected and instance-pinned versions are always protected.
+fn stale_versions(
+    installed: &[String],
+    keep: usize,
+    protected: &[String],
+    auto: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let (mut releases, mut nightlies) = (0, 0);
     installed
         .iter()
-        .filter(|t| is_game_tag(t))
-        .skip(keep)
+        .filter(|t| {
+            if is_game_tag(t) {
+                releases += 1;
+                releases > keep
+            } else if crate::nightly::date_of(t).is_some() && auto(t) {
+                nightlies += 1;
+                nightlies > keep
+            } else {
+                false
+            }
+        })
         .filter(|t| !protected.contains(t))
         .cloned()
         .collect()
@@ -3043,7 +3113,12 @@ pub fn prune_old_versions() -> Vec<String> {
             .filter_map(|i| i.version),
     );
     let mut gone = Vec::new();
-    for tag in stale_versions(&installed(), settings.keep_newest(), &protected) {
+    for tag in stale_versions(
+        &installed(),
+        settings.keep_newest(),
+        &protected,
+        auto_installed,
+    ) {
         if in_use(&tag) {
             eprintln!("Keeping old version {tag}: the game is running from it.");
             continue;
@@ -3090,6 +3165,12 @@ pub fn need_prepared(tag: &str) -> Result<(), String> {
     }
 }
 
+/// Says on stderr which step Play is at, one line each: a terminal run shows where it stops when
+/// it never gets to the game (#12179).
+pub fn play_step(step: &str) {
+    eprintln!("Horizon: Play: {step}…");
+}
+
 /// The client's command, once the owner gate lets it start and its resources are prepared. Past
 /// the gate, a sign-in that can't be renewed (no network, expired) still lets the game start,
 /// offline.
@@ -3105,15 +3186,23 @@ pub fn client_as(tag: &str, who: Option<&account::Player>) -> Result<Command, St
     if let Some(error) = game_architecture_launch_error(tag) {
         return Err(error);
     }
+    play_step("reading the sign-in");
+    let hint = |refused: String| format!("{refused} {}", crate::i18n::tr(SIGN_IN_HINT));
     let session = match who {
-        None => account::session_for_game(&game_home(), false).map_err(|e| e.to_string()),
-        Some(who) => account::session_for_game_as(&game_home(), who),
-    }
-    .map_err(|refused| format!("{refused} {}", crate::i18n::tr(SIGN_IN_HINT)))?;
+        None => account::session_for_game(&game_home(), false).map_err(|refused| {
+            // A keyring that didn't answer isn't a missing sign-in (#12179).
+            match refused.keyring {
+                Some(why) => why,
+                None => hint(refused.to_string()),
+            }
+        }),
+        Some(who) => account::session_for_game_as(&game_home(), who).map_err(hint),
+    }?;
     if let Err(e) = need_prepared(tag) {
         account::discard_unread_sessions();
         return Err(e);
     }
+    play_step("checking the game's assets");
     complete_assets(tag);
     crate::browser::horizon::before_play(&game_home());
     let mut cmd = client_command(tag);
@@ -3371,6 +3460,11 @@ pub fn install_tag(tag: &str, as_update: bool, progress: impl Fn(f32)) -> Result
         eprintln!("{warning}");
     }
     install(release, progress)?;
+    if as_update && release.nightly.is_some() {
+        if let Err(e) = mark_auto_installed(&release.tag) {
+            eprintln!("Could not mark updated Nightly {}: {e}", release.tag);
+        }
+    }
     let mut settings = Settings::load();
     // An older Nightly is a deliberate rollback: installed, but an update never moves the selection back.
     let select = !as_update
@@ -4150,6 +4244,8 @@ pub enum Msg {
     PackLine(String),
     /// A modpack step ended: the pack as it now is.
     PackDone(Result<Box<crate::modpacks::Imported>, String>),
+    /// The modpacks other launchers keep on this computer (`modpacks::found_on_this_computer`).
+    FoundPacks(Vec<crate::other_launchers::Found>),
     /// How many play Horizon now, or none when the server can't be reached (`telemetry`).
     Playing(Option<u64>),
     /// How many play on the official server now, or none when it doesn't answer its status ping
@@ -4714,8 +4810,8 @@ mod tests {
         let log = |_: String| {};
         let no_owner = || Ok(account::Launch::default());
         for (pass, signed_in) in [
-            (Err(account::NoOwner), false),
-            (Err(account::NoOwner), true),
+            (Err(account::NoOwner::default()), false),
+            (Err(account::NoOwner::default()), true),
             (no_owner(), false),
             (no_owner(), true),
         ] {
@@ -4750,7 +4846,7 @@ mod tests {
         )
         .unwrap();
         asked.lock().unwrap().clear();
-        for (pass, signed_in) in [(Err(account::NoOwner), true), (no_owner(), true)] {
+        for (pass, signed_in) in [(Err(account::NoOwner::default()), true), (no_owner(), true)] {
             assert!(download_for(&pins, &dir, pass, signed_in, &fetch, &log).is_err());
         }
         assert!(asked.lock().unwrap().is_empty());
@@ -6345,6 +6441,33 @@ pub fn {f}("
     }
 
     #[test]
+    fn a_prepared_version_gets_a_data_file_that_holds_its_files() {
+        use horizon_core::prepared_files::FILE_NAME;
+        let resources =
+            std::env::temp_dir().join(format!("horizon-launcher-data-file-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&resources);
+        let recipe = resources.join("data/minecraft/recipe/stick.json");
+        fs::create_dir_all(recipe.parent().unwrap()).unwrap();
+        fs::write(&recipe, "{\"stick\":1}").unwrap();
+
+        // Not prepared yet: nothing to hold.
+        write_data_file(&resources).unwrap();
+        assert!(!resources.join(FILE_NAME).exists());
+
+        fs::write(resources.join(RESOURCES_MANIFEST), "{}").unwrap();
+        write_data_file(&resources).unwrap();
+        let written = fs::read(resources.join(FILE_NAME)).unwrap();
+        let held = b"{\"stick\":1}";
+        assert!(written.windows(held.len()).any(|w| w == held));
+
+        // One already there stays: the game judges whether it can use it.
+        fs::write(resources.join(FILE_NAME), "kept").unwrap();
+        write_data_file(&resources).unwrap();
+        assert_eq!(fs::read(resources.join(FILE_NAME)).unwrap(), b"kept");
+        fs::remove_dir_all(&resources).unwrap();
+    }
+
+    #[test]
     fn a_new_version_reuses_resources_prepared_by_a_compatible_one() {
         let versions =
             std::env::temp_dir().join(format!("horizon-launcher-test-{}", std::process::id()));
@@ -6387,6 +6510,13 @@ pub fn {f}("
         prepared("v2026.10.13", "26.3");
         release("v2026.10.12", "26.2");
         prepared("v2026.10.12", "26.2");
+        // A data file names its own root: the new version writes its own.
+        let data_file = horizon_core::prepared_files::FILE_NAME;
+        write(
+            "v2026.10.13",
+            &format!(".local/horizon-client/26.3/{data_file}"),
+            "written for v2026.10.13",
+        );
         release("v2026.10.13.1", "26.3");
         assert_eq!(
             reuse_prepared(&versions, "v2026.10.13.1"),
@@ -6395,6 +6525,12 @@ pub fn {f}("
         assert!(is_prepared("v2026.10.13.1"));
         assert!(resources_at(&versions.join("v2026.10.13.1"))
             .join("worldgen/biomes.json")
+            .exists());
+        assert!(!resources_at(&versions.join("v2026.10.13.1"))
+            .join(data_file)
+            .exists());
+        assert!(resources_at(&versions.join("v2026.10.13"))
+            .join(data_file)
             .exists());
         let left: Vec<_> = fs::read_dir(versions.join("v2026.10.13.1/.local/horizon-client"))
             .unwrap()
@@ -6697,12 +6833,21 @@ pub fn {f}("
 
         // Resources prepared without any of them: a folder without an asset store is skipped.
         release("v0.2.1", true);
+        let data_file = horizon_core::prepared_files::FILE_NAME;
+        write(
+            resources_at(&versions.join("v0.2.1")).join(data_file),
+            b"older",
+        );
         complete_assets_in(
             &versions,
             "v0.2.1",
             || vec![empty.clone(), store.clone()],
             &log,
         );
+        // Written before them, it would answer "missing" for what was just added.
+        assert!(!resources_at(&versions.join("v0.2.1"))
+            .join(data_file)
+            .exists());
         assert_eq!(
             lines
                 .borrow()
@@ -6732,8 +6877,16 @@ pub fn {f}("
         // No asset store anywhere: one line each, the version stays prepared, and no second try.
         lines.borrow_mut().clear();
         release("v0.2.2", true);
+        write(
+            resources_at(&versions.join("v0.2.2")).join(data_file),
+            b"kept",
+        );
         complete_assets_in(&versions, "v0.2.2", || vec![empty.clone()], &log);
         complete_assets_in(&versions, "v0.2.2", || vec![empty.clone()], &log);
+        // Nothing was added: its data file is still good.
+        assert!(resources_at(&versions.join("v0.2.2"))
+            .join(data_file)
+            .exists());
         let what = lines
             .borrow()
             .iter()
@@ -6935,15 +7088,95 @@ pub fn {f}("
             "v0.2.91", "v0.2.90", "v0.2.88", "v0.2.85", "v0.2.80", "nightly",
         ]);
         assert_eq!(
-            stale_versions(&installed, 2, &tags(&["v0.2.85"])),
+            stale_versions(&installed, 2, &tags(&["v0.2.85"]), |_| false),
             tags(&["v0.2.88", "v0.2.80"])
         );
         // A protected version among the newest still leaves the newest `keep` in place.
         assert_eq!(
-            stale_versions(&installed, 2, &tags(&["v0.2.91"])),
+            stale_versions(&installed, 2, &tags(&["v0.2.91"]), |_| false),
             tags(&["v0.2.88", "v0.2.85", "v0.2.80"])
         );
-        assert!(stale_versions(&installed, 9, &[]).is_empty());
+        assert!(stale_versions(&installed, 9, &[], |_| false).is_empty());
+    }
+
+    #[test]
+    fn pruning_removes_unused_nightlies_when_the_instance_follows_updates() {
+        let installed = [
+            "nightly-2026-11-05-f319701",
+            "nightly-2026-11-04-6475f62",
+            "nightly-2026-11-03-f42ef42",
+            "nightly-2026-10-31-d91cab6",
+        ]
+        .map(String::from);
+        // The default instance follows the selected version, so it adds no pin.
+        let protected = [installed[0].clone()];
+        assert_eq!(
+            stale_versions(&installed, 2, &protected, |_| true),
+            ["nightly-2026-11-03-f42ef42", "nightly-2026-10-31-d91cab6"]
+        );
+    }
+
+    #[test]
+    fn pruning_keeps_selected_and_instance_pinned_nightlies() {
+        let installed = [
+            "nightly-2026-11-05-f319701",
+            "nightly-2026-11-04-6475f62",
+            "nightly-2026-11-03-f42ef42",
+            "nightly-2026-11-01-c9d474d",
+            "nightly-2026-10-31-d91cab6",
+        ]
+        .map(String::from);
+        // A manual selection and a different instance's pin both survive the keep limit.
+        let protected = [installed[2].clone(), installed[4].clone()];
+        assert_eq!(
+            stale_versions(&installed, 1, &protected, |_| true),
+            ["nightly-2026-11-04-6475f62", "nightly-2026-11-01-c9d474d"]
+        );
+        assert!(stale_versions(&installed, 5, &protected, |_| true).is_empty());
+    }
+
+    #[test]
+    fn pruning_keeps_releases_separate_from_nightlies_and_local_builds() {
+        let installed = [
+            "native-local-build",
+            "imported-2026-11-05-abcdef0",
+            "nightly-2026-11-05-f319701",
+            "nightly-2026-11-04-6475f62",
+            "v0.2.91",
+            "v0.2.90",
+        ]
+        .map(String::from);
+        assert!(stale_versions(&installed, 2, &[], |_| true).is_empty());
+        assert_eq!(
+            stale_versions(&installed, 1, &[], |_| true),
+            ["nightly-2026-11-04-6475f62", "v0.2.90"]
+        );
+    }
+
+    #[test]
+    fn pruning_preserves_manual_and_legacy_nightlies() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-prune-origin-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let installed = [
+            "nightly-2026-11-05-aaaaaaa", // automatically updated, selected
+            "nightly-2026-11-04-bbbbbbb", // installed manually
+            "nightly-2026-11-03-ccccccc", // automatically updated
+            "nightly-2026-11-02-ddddddd", // from an older launcher; origin unknown
+            "nightly-2026-11-01-eeeeeee", // automatically updated
+        ]
+        .map(String::from);
+        for tag in [&installed[0], &installed[2], &installed[4]] {
+            let dir = root.join(tag);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join(AUTO_INSTALLED), "").unwrap();
+        }
+        let auto = |tag: &str| root.join(tag).join(AUTO_INSTALLED).is_file();
+        assert_eq!(
+            stale_versions(&installed, 2, &[installed[0].clone()], auto),
+            [installed[4].clone()]
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

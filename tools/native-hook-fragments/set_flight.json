@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "set_flight", "target": "horizon_client::game::native_travel::Game<'_>::native_set_flight"}
+  ],
+  "rust_summary": "a server player let fly in any game mode and set flying (`native_set_flight`), as Bukkit's `Player.setAllowFlight` and `setFlying`.",
+  "doc_summary": "`native_set_flight(uuid, allow, flying)` lets a server player fly in any game mode or not, and sets whether they fly now, until their game mode changes, they respawn or leave. Bundles need \"hooks\": @API:set_flight@.",
+  "comments": ["crates/horizon-client/src/game/native_travel.rs"]
+}

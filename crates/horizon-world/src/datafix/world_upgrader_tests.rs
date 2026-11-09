@@ -296,3 +296,183 @@ fn region_names_and_dimension_folders() {
         [OVERWORLD, NETHER, END, "mod:sky"]
     );
 }
+
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// Every file below `dir` by relative path. The region header's timestamp
+/// table (bytes 4096..8192) is zeroed: it holds the wall clock of the write.
+fn snapshot(dir: &Path, rel: &Path, out: &mut BTreeMap<PathBuf, Vec<u8>>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let entry = entry.unwrap();
+        let rel = rel.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            snapshot(&entry.path(), &rel, out);
+        } else {
+            let mut bytes = fs::read(entry.path()).unwrap();
+            if bytes.len() >= 8192 {
+                bytes[4096..8192].fill(0);
+            }
+            out.insert(rel, bytes);
+        }
+    }
+}
+
+/// The folders of [`multi_region_world`]: 10 region files each, 6 chunks a file.
+const MULTI_FOLDERS: [(&str, &str); 3] = [
+    (OVERWORLD, "entities"),
+    (NETHER, "poi"),
+    (OVERWORLD, "region"),
+];
+
+/// Whether chunk `i` of region file `rx`, `rz` of [`multi_region_world`] is old.
+fn is_old(rx: i32, rz: i32, i: i32) -> bool {
+    (rx + rz + i) % 3 != 0
+}
+
+fn multi_region_world(name: &str) -> TempWorld {
+    let world = TempWorld::new(name);
+    for (dimension, folder) in MULTI_FOLDERS {
+        for rx in -2..3 {
+            for rz in 0..2 {
+                let file = world
+                    .folder(dimension, folder)
+                    .join(format!("r.{rx}.{rz}.mca"));
+                let chunks: Vec<_> = (0..6)
+                    .map(|i| {
+                        let (x, z) = (rx * 32 + i, rz * 32 + (i * 3) % 32);
+                        let version = if is_old(rx, rz, i) { 4000 } else { CURRENT };
+                        let tag = if folder == "region" {
+                            Tag::compound([
+                                ("DataVersion", Tag::Int(version)),
+                                ("xPos", Tag::Int(x)),
+                                ("zPos", Tag::Int(z)),
+                                ("Status", Tag::String("minecraft:full".into())),
+                                ("isLightOn", Tag::Byte(1)),
+                                ("Heightmaps", Tag::Compound(Default::default())),
+                            ])
+                        } else {
+                            entity_chunk(version, x, z)
+                        };
+                        (ChunkPos::new(x, z), tag)
+                    })
+                    .collect();
+                write_chunks(&file, &chunks);
+            }
+        }
+    }
+    world
+}
+
+/// The counts vanilla's loop leaves for [`multi_region_world`]'s last stage,
+/// the `region` folder (each stage starts them again): a file's chunks in
+/// order, each converted when old (or when its cache is erased, or always
+/// when recreating), and the first one left as it is ends the file's pass.
+fn expected_counts(erase: bool, recreate: bool) -> (i32, i32) {
+    let (mut converted, mut skipped) = (0, 0);
+    for rx in -2..3 {
+        for rz in 0..2 {
+            for i in 0..6 {
+                if is_old(rx, rz, i) || recreate || erase {
+                    converted += 1;
+                } else {
+                    skipped += 1;
+                    break;
+                }
+            }
+        }
+    }
+    (converted, skipped)
+}
+
+/// The output of a many-threaded run equals the one-thread run byte for byte,
+/// and both give vanilla's counts and end at full progress.
+#[test]
+fn parallel_output_is_byte_identical_to_one_thread() {
+    for (erase, recreate) in [(false, false), (true, false), (false, true)] {
+        let source = multi_region_world("par-src");
+        let mut results = Vec::new();
+        for threads in [1, 4] {
+            let copy = TempWorld::new(&format!("par-{threads}"));
+            copy_tree(&source.0, &copy.0);
+            let progress = Arc::new(UpgradeProgress::new());
+            work_with_threads(&copy.0, &level(&copy), &progress, erase, recreate, threads);
+            assert!(progress.is_finished());
+            assert_eq!(
+                (progress.converted(), progress.skipped()),
+                expected_counts(erase, recreate),
+                "threads={threads} erase={erase} recreate={recreate}"
+            );
+            assert_eq!(progress.total_progress(), 1.0);
+            assert_eq!(progress.dimension_progress(NETHER), 1.0);
+            let mut files = BTreeMap::new();
+            snapshot(&copy.0, Path::new(""), &mut files);
+            results.push(files);
+        }
+        assert_eq!(results[0].len(), 30, "erase={erase} recreate={recreate}");
+        assert!(
+            results[0] == results[1],
+            "erase={erase} recreate={recreate}: the files differ"
+        );
+    }
+}
+
+/// A cancel during a file stops every worker before its next chunk, not at
+/// the end of its file; a canceled `recreate_region_files` run leaves the
+/// old files as they were.
+#[test]
+fn cancel_stops_every_worker_within_a_chunk() {
+    for recreate in [false, true] {
+        let world = TempWorld::new(&format!("cancel-workers-{recreate}"));
+        for rx in 0..8 {
+            let file = world
+                .folder(OVERWORLD, "entities")
+                .join(format!("r.{rx}.0.mca"));
+            let chunks: Vec<_> = (0..32)
+                .map(|x| {
+                    let pos = ChunkPos::new(rx * 32 + x, 0);
+                    (pos, entity_chunk(4000, pos.x, pos.z))
+                })
+                .collect();
+            write_chunks(&file, &chunks);
+        }
+        let mut before = BTreeMap::new();
+        snapshot(&world.0, Path::new(""), &mut before);
+        let progress = Arc::new(UpgradeProgress::new());
+        let mut builder = Builder::new(UpgradeDataFixType::EntityChunk, "entities", recreate);
+        builder.threads = 4;
+        let canceling = progress.clone();
+        // The first chunk upgraded cancels the run.
+        builder.add_tag_modifier(
+            CURRENT,
+            Box::new(move |_, _| {
+                canceling.set_canceled();
+                false
+            }),
+        );
+        let mut upgrader =
+            RegionStorageUpgrader::init(builder, progress.clone(), 0, OVERWORLD, &world.0);
+        upgrader.upgrade();
+        let looked_at = progress.converted() + progress.skipped();
+        // At most the chunk each of the 4 workers had in hand; a file is 32.
+        assert!(
+            (1..=4).contains(&looked_at),
+            "recreate={recreate}: {looked_at} chunks after the cancel"
+        );
+        if recreate {
+            let mut after = BTreeMap::new();
+            snapshot(&world.0, Path::new(""), &mut after);
+            assert!(before == after, "a canceled recreate changed the world");
+        }
+    }
+}

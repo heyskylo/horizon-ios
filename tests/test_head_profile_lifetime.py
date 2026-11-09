@@ -44,6 +44,8 @@ const MAX_HEAD_PROFILES:usize=4096;
 
 STUBS = r'''
 use crate::serde_json;
+// Discovery/texture codec remains an endpoint in this lifetime-only probe.
+fn texture_uris()->&'static [&'static str]{&TEXTURE_URIS}
 #[derive(Debug,Default,PartialEq)]pub struct ProfileInfo {pub textures:Option<(String,Signature)>,pub dynamic:Option<NameOrId>,pub id:u128}
 fn parse_profile(p:&serde_json::Value)->ProfileInfo{ProfileInfo{textures:None,dynamic:Some(NameOrId::Name(p.0.clone())),id:0}}
 pub struct Downloader;

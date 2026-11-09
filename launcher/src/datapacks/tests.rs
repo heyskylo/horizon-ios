@@ -117,14 +117,15 @@ fn coverage_says_what_runs() {
             ("data/a/loot_table/l.json", "{}"),
             ("data/a/loot_table/k.json", "{}"),
             ("data/a/worldgen/biome/b.json", "{}"),
+            ("data/a/worldgen/world_preset/w.json", "{}"),
             ("assets/a/lang/en_us.json", "{}"),
         ],
     );
     let c = coverage(&file).unwrap();
     assert_eq!(
         c.summary(),
-        "Runs its 1 function, 1 item modifier, 1 predicate. Not read yet: 2 loot tables, 1 item \
-         tag, 1 worldgen."
+        "Runs its 1 function, 1 item tag, 1 item modifier, 2 loot tables, 1 predicate, 1 \
+         worldgen. Not read yet: 1 worldgen world preset."
     );
     let many = Coverage {
         read: Vec::new(),

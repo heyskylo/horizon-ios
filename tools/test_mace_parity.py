@@ -1,7 +1,8 @@
 """Compare a player's melee hit with a mace (and other weapons) with vanilla's.
 
 Every case has a stone floor, a target mob standing on it or hanging in the
-air (health raised so no hit kills it, sometimes in armor) or an armor stand
+air (health raised so no hit kills it, sometimes in armor: Unbreaking, pieces
+worn to their last points, Thorns on one of them) or an armor stand
 (a living target whose own `hurtServer` wobbles on a first punch and breaks on
 a second within five ticks; its hit still runs `itemAttackInteraction`, so a
 smash knocks the creatures around it away and a Wind Burst launches the
@@ -19,14 +20,18 @@ thinned by Breach in `CombatRules.getDamageAfterAbsorb`), then
 `itemAttackInteraction`: `ItemStack.hurtEnemy` (`MaceItem.hurtEnemy`: the
 stopped fall, the waived fall damage, the smash sounds, the dust-pillar level
 event and the knockback around the target), the post-attack enchantments
-(Wind Burst's `ExplodeEffect` on the player) and `postHurtEnemy` (the fall
-reset and the weapon's wear with Unbreaking). Horizon runs the same steps
+(the target's Thorns first: the player's hurt, its knockback and sounds, the
+piece's wear, then Wind Burst's `ExplodeEffect` on the player) and
+`postHurtEnemy` (the fall reset and the weapon's wear with Unbreaking).
+Horizon runs the same steps
 through the helpers `Game::attack` uses (`smash_damage_bonus`,
 `hurt_by_player`, `weapon_hit`) in a headless game
 (`HORIZON_DISPENSE_FIXTURE`). Both print every target's health and
-velocity, the player's velocity, fall distance, impulse impact and grace
-time and its landing-particle flag, sounds, level and game events, the used
-statistic, the held stack and the level random afterwards.
+velocity, the first target's worn pieces, the player's health, velocity,
+fall distance, impulse impact and grace time and its landing-particle flag,
+sounds, level and game events, the used and damage_taken statistics, the held
+stack and the level random afterwards. Thorns' damage comes from the player's
+own unseeded random, so only its range is compared (`own_random`).
 """
 import json
 import math
@@ -44,6 +49,9 @@ except ImportError:
 TARGETS = ['pig', 'cow', 'sheep', 'zombie', 'husk', 'skeleton', 'zombie', 'pig']
 AROUND = ['pig', 'cow', 'zombie', 'sheep', 'armor_stand']
 ARMOR = ['iron', 'diamond', 'golden', 'chainmail', 'leather']
+PIECES = [('feet', 'boots'), ('legs', 'leggings'), ('chest', 'chestplate'), ('head', 'helmet')]
+BASE_DURABILITY = {'feet': 13, 'legs': 15, 'chest': 16, 'head': 11}
+MULTIPLIER = {'iron': 15, 'diamond': 33, 'golden': 7, 'chainmail': 15, 'leather': 5}
 FALLS = [0.0, 0.5, 1.0, 1.5, 1.5000001, 2.0, 2.75, 3.0, 3.25, 5.0, 5.0001, 6.5, 8.0, 8.5, 12.0, 25.3, 60.0]
 
 
@@ -70,6 +78,42 @@ def weapon(rng):
         return stack(rng.choice(['diamond_sword', 'iron_axe', 'stone_pickaxe']),
                      {'breach': 2} if rng.random() < 0.2 else None, rng.choice([0, 0, 10]))
     return rng.choice([stack('stick'), '-'])
+
+
+def armor(rng):
+    """A target's armor: a chestplate and sometimes other pieces, with Unbreaking,
+    some worn down to their last points, and Thorns on one of them at most (the
+    player's second Thorns hurt would land inside its hurt cooldown by an amount
+    from its own unseeded random, which the runs can't compare)."""
+    material = rng.choice(ARMOR)
+    worn = [slot for slot, _ in PIECES if slot == 'chest' or rng.random() < 0.4]
+    thorny = rng.choice(worn) if rng.random() < 0.7 else None
+    equip = {}
+    for slot, name in PIECES:
+        if slot in worn:
+            # ArmorMaterial durability: the piece's base times the material's multiplier.
+            most = BASE_DURABILITY[slot] * MULTIPLIER[material]
+            enchantments = {'thorns': rng.randint(1, 3)} if slot == thorny else {}
+            if rng.random() < 0.3:
+                enchantments['unbreaking'] = rng.randint(1, 3)
+            damage = rng.choice([0, 0, 0, 7, most - 3, most - 2, most - 1])
+            equip[slot] = stack(f'{material}_{name}', enchantments, damage)
+    return equip
+
+
+def own_random(lines):
+    """Thorns' damage to the player comes from the player's own unseeded random
+    (vanilla's runs mark it "~"): its health and damage_taken only need to show
+    one hurt of 1 to 5 (normal difficulty, no armor)."""
+    out = []
+    for line in lines:
+        value = line.rsplit(' ', 1)[-1].lstrip('~')
+        if line.startswith('H ') and 15.0 < float(value) <= 19.0:
+            line = 'H thorned'
+        elif line.startswith('stat minecraft:damage_taken minecraft:custom ') and 10 <= int(value) <= 50:
+            line = 'stat minecraft:damage_taken minecraft:custom thorned'
+        out.append(line)
+    return out
 
 
 def cases(facts, count, seed):
@@ -104,10 +148,7 @@ def cases(facts, count, seed):
         if grounded:
             target['ground'] = True
         if target['type'] in ('minecraft:zombie', 'minecraft:husk', 'minecraft:skeleton') and rng.random() < 0.6:
-            material = rng.choice(ARMOR)
-            target['equip'] = {'chest': d.plain(f'{material}_chestplate')}
-            if rng.random() < 0.5:
-                target['equip']['head'] = d.plain(f'{material}_helmet')
+            target['equip'] = armor(rng)
         if not stand and rng.random() < 0.15:
             target['knockback_resistance'] = rng.choice([0.25, 0.5, 1.0])
         entities = [target]
@@ -157,6 +198,8 @@ def kind(case):
             name += ' with wind burst'
     if case['entities'][0]['type'] == 'minecraft:armor_stand':
         name += ' on an armor stand'
+    if 'thorns' in json.dumps(case['entities'][0].get('equip')):
+        name += ' on thorns'
     return name
 
 
@@ -215,15 +258,17 @@ def main():
     rust = h.split_cases((work / 'rust.txt').read_text(), ignore)
     assert len(native) == len(rust) == len(all_cases), (len(native), len(rust), len(all_cases))
     groups, errors = {}, {}
-    smashed = burst = 0
+    smashed = burst = thorned = 0
     for case, a, b in zip(all_cases, native, rust):
         if a and a[0].startswith('error'):
             errors.setdefault(a[0], []).append(case)
             continue
         smashed += any('source=minecraft:mace_smash hurt=true' in line for line in a)
         burst += any(line.endswith('minecraft:entity.wind_charge.wind_burst') for line in a)
+        thorned += any(line.endswith('minecraft:enchant.thorns.hit') for line in a)
         if case['entities'][0]['type'] == 'minecraft:armor_stand':
             a, b = weapon_part(a), weapon_part(b)
+        a, b = own_random(a), own_random(b)
         if not d.same(a, b):
             groups.setdefault(kind(case), []).append((case, a, b))
     for name, entries in sorted(errors.items(), key=lambda e: -len(e[1])):
@@ -237,7 +282,7 @@ def main():
     total = sum(len(v) for v in groups.values())
     skipped = sum(len(v) for v in errors.values())
     print(f'{len(all_cases) - total - skipped}/{len(all_cases) - skipped} cases match ({skipped} oracle errors); '
-          f'vanilla smashed in {smashed} and burst in {burst}')
+          f'vanilla smashed in {smashed}, burst in {burst} and thorns hurt the player in {thorned}')
     h.finish(total + skipped)
 
 

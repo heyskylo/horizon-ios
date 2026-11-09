@@ -6,12 +6,14 @@
 //! (`minecraft:overworld`), as `native_set_block` does.
 use super::Game;
 use horizon_client::containers::ModFluidTanks;
+use horizon_client::mod_api::{
+    NativeFluidAction, NativeFluidDrain, NativeFluidStack, NativeFluidTankView,
+};
 use horizon_core::geometry::Direction;
 use horizon_world::nbt::{Compound, JavaString, Tag};
 use std::sync::Arc;
 
 /// A tank as a side reaches it (`native_fluid_tanks`).
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeFluidTank {
     /// Its number, for the mod's own use.
@@ -45,6 +47,28 @@ fn tank_fluid(fluid: &str) -> bool {
             && namespace.bytes().all(ok)
             && !path.is_empty()
             && path.bytes().all(|b| ok(b) || b == b'/')
+    })
+}
+
+fn plain_stack(stack: &NativeFluidStack, capacity: i32) -> bool {
+    stack.components.is_empty()
+        && (1..=capacity).contains(&stack.amount)
+        && tank_fluid(&stack.fluid)
+}
+
+fn plain_tank(tank: NativeFluidTankView) -> Option<NativeFluidTank> {
+    let (fluid, amount) = match tank.content {
+        Some(stack) if plain_stack(&stack, tank.capacity) => (Some(stack.fluid), stack.amount),
+        Some(_) => return None,
+        None => (None, 0),
+    };
+    (tank.capacity >= 0).then_some(NativeFluidTank {
+        tank: tank.tank,
+        fluid,
+        amount,
+        capacity: tank.capacity,
+        can_fill: tank.can_fill,
+        can_drain: tank.can_drain,
     })
 }
 
@@ -88,6 +112,7 @@ fn drain_take(level: u8, amount: i32) -> (i32, u8) {
 /// (`CauldronFluids`). An empty cauldron is fillable; powder snow is not a
 /// fluid (`FluidKind` has none), so a powder snow cauldron holds none.
 enum FluidAt {
+    Custom,
     /// A mod block's tanks, and its block id (`mymod:tank`).
     Mod {
         tanks: Arc<ModFluidTanks>,
@@ -213,7 +238,6 @@ fn tank_room(tanks: &[NativeFluidTank], fluid: &str, accepts: impl Fn(usize) -> 
 }
 
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// What holds fluids at `pos` in the level in place, `dimension`: a mod
     /// block's tanks (its block entity's, and not the placeholder standing in
@@ -224,8 +248,20 @@ impl Game<'_> {
         }
         let key = (pos[0], pos[1], pos[2]);
         let state = self.world.block(pos[0], pos[1], pos[2]);
+        let info = self.pack.assets.registry.state(state)?;
+        if !info.name.starts_with("minecraft:")
+            && matches!(
+                self.world.block_entities.get(&key),
+                Some(horizon_client::containers::BlockEntity::Mod(m)) if !m.id.is_empty()
+            )
+        {
+            let mut custom = false;
+            self.native_custom_block_fluids(&info.name, &mut custom);
+            if custom {
+                return Some(FluidAt::Custom);
+            }
+        }
         if let Some(tanks) = self.world.block_entities.mod_fluids(state.0) {
-            let block = self.pack.assets.registry.state(state)?.name.to_string();
             // The block entity is out of the world while it ticks.
             return matches!(
                 self.world.block_entities.get(&key),
@@ -233,10 +269,9 @@ impl Game<'_> {
             )
             .then(|| FluidAt::Mod {
                 tanks: Arc::clone(tanks),
-                block,
+                block: info.name.clone(),
             });
         }
-        let info = self.pack.assets.registry.state(state)?;
         match &*info.name {
             "minecraft:cauldron" => Some(FluidAt::Cauldron(CauldronFluids::Empty)),
             "minecraft:water_cauldron" => {
@@ -305,6 +340,22 @@ impl Game<'_> {
             return amount;
         }
         match self.native_fluid_at(self.dim.id(), pos) {
+            Some(FluidAt::Custom) if amount > 0 => {
+                let resource = NativeFluidStack {
+                    fluid: fluid.to_owned(),
+                    amount,
+                    components: Compound::new(),
+                };
+                let mut accepted = None;
+                self.native_custom_fluid_fill(
+                    pos,
+                    Some(face),
+                    &resource,
+                    NativeFluidAction::Execute,
+                    &mut accepted,
+                );
+                amount - accepted.filter(|&n| (0..=amount).contains(&n)).unwrap_or(0)
+            }
             Some(FluidAt::Mod { tanks, block }) => {
                 let key = (pos[0], pos[1], pos[2]);
                 let n = tanks.tanks.len();
@@ -358,7 +409,7 @@ impl Game<'_> {
                 // would turn it to stone in vanilla's world, not in a tank.
                 _ => amount,
             },
-            None => amount,
+            Some(FluidAt::Custom) | None => amount,
         }
     }
     /// The tanks of the block at `pos` in the level in place, `dimension`,
@@ -373,6 +424,11 @@ impl Game<'_> {
         face: Direction,
     ) -> Option<Vec<NativeFluidTank>> {
         match self.native_fluid_at(dimension, pos)? {
+            FluidAt::Custom => {
+                let mut tanks = None;
+                self.native_custom_fluid_tanks(pos, Some(face), &mut tanks);
+                tanks?.into_iter().map(plain_tank).collect()
+            }
             FluidAt::Mod { tanks, .. } => {
                 let key = (pos[0], pos[1], pos[2]);
                 let state = {
@@ -432,7 +488,35 @@ impl Game<'_> {
         face: Direction,
         amount: i32,
     ) -> Option<(String, i32)> {
-        self.fluid_take(dimension, pos, face, amount)
+        if amount <= 0 {
+            return None;
+        }
+        let storage = self.native_fluid_at(dimension, pos)?;
+        if matches!(storage, FluidAt::Custom) {
+            // The legacy interface cannot represent fluid components. Ask
+            // without mutating storage, then request precisely what it saw.
+            let mut preview = None;
+            self.native_custom_fluid_drain(
+                pos,
+                Some(face),
+                &NativeFluidDrain::Any(amount),
+                NativeFluidAction::Simulate,
+                &mut preview,
+            );
+            let preview = preview.filter(|s| plain_stack(s, amount))?;
+            let mut result = None;
+            self.native_custom_fluid_drain(
+                pos,
+                Some(face),
+                &NativeFluidDrain::Exact(preview.clone()),
+                NativeFluidAction::Execute,
+                &mut result,
+            );
+            return result
+                .filter(|s| plain_stack(s, preview.amount) && s.fluid == preview.fluid)
+                .map(|s| (s.fluid, s.amount));
+        }
+        self.fluid_take(storage, pos, face, amount)
             .map(|(fluid, taken, _)| (fluid, taken))
     }
     /// `native_fluid_extract`'s drain, remembering what left which tank, so a
@@ -440,7 +524,7 @@ impl Game<'_> {
     /// cauldron, whose own fill takes it back.
     fn fluid_take(
         &mut self,
-        dimension: &str,
+        storage: FluidAt,
         pos: [i32; 3],
         face: Direction,
         amount: i32,
@@ -448,7 +532,8 @@ impl Game<'_> {
         if amount <= 0 {
             return None;
         }
-        match self.native_fluid_at(dimension, pos)? {
+        match storage {
+            FluidAt::Custom => None,
             FluidAt::Mod { tanks, .. } => {
                 let key = (pos[0], pos[1], pos[2]);
                 let n = tanks.tanks.len();
@@ -534,11 +619,17 @@ impl Game<'_> {
         if from == to {
             return None;
         }
+        // Only built-in storage provides receipts that can restore the
+        // exact drained tanks on failure.
+        let source = self.native_fluid_at(dimension, from)?;
+        if matches!(source, FluidAt::Custom) {
+            return None;
+        }
         // Ask the source for no more than the target has room for: a
         // cauldron drains in whole thirds and fills back only by them, so a
         // part the target refused couldn't always go back.
         let max = max.min(self.fluid_room(dimension, from, from_face, to, to_face)?);
-        let (fluid, taken, receipt) = self.fluid_take(dimension, from, from_face, max)?;
+        let (fluid, taken, receipt) = self.fluid_take(source, from, from_face, max)?;
         let left = self.native_fluid_insert(to, to_face, &fluid, taken);
         if left > 0 {
             // What the target wouldn't take goes back where it came from,
@@ -575,6 +666,7 @@ impl Game<'_> {
             .find(|t| t.can_drain && t.amount > 0)?
             .fluid?;
         let block = match self.native_fluid_at(dimension, to)? {
+            FluidAt::Custom => return None,
             FluidAt::Mod { block, .. } => Some(block),
             FluidAt::Cauldron(_) => None,
         };
@@ -637,6 +729,183 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "prepared resources in HORIZON_TEST_RESOURCES; run alone to isolate the mod registry"]
+    fn the_standard_helpers_route_to_native_owned_storage() {
+        use crate::game::{Audio, Options, Progress, Settings, World, load_resources};
+        use crate::mod_api::{
+            self, CustomBlockFluidsEvent, CustomFluidDrainEvent, CustomFluidFillEvent,
+            CustomFluidTanksEvent, Hooks, Host,
+        };
+        use horizon_client::chunk::Chunk;
+        use horizon_client::containers::{BlockEntity, ModBlockEntityFields};
+        use horizon_client::mod_content::{ContentMod, build};
+        use horizon_mods::content::{Block, Content};
+        use std::sync::Mutex;
+
+        const BLOCK: &str = "fixture:tank";
+        const POS: [i32; 3] = [2, 64, 2];
+        const DIM: &str = "minecraft:overworld";
+        struct Tank(Mutex<NativeFluidStack>);
+        impl Hooks for Arc<Tank> {
+            fn custom_block_fluids(&self, _: &dyn Host, event: &mut CustomBlockFluidsEvent<'_>) {
+                event.custom |= event.block == BLOCK;
+            }
+            fn custom_fluid_tanks(
+                &self,
+                _: &dyn Host,
+                event: &mut CustomFluidTanksEvent,
+            ) -> Option<Vec<NativeFluidTankView>> {
+                assert_eq!((event.pos, event.side), (POS, Some(Direction::Up)));
+                Some(vec![NativeFluidTankView {
+                    tank: 0,
+                    content: Some(self.0.lock().unwrap().clone()),
+                    capacity: 1000,
+                    can_fill: true,
+                    can_drain: true,
+                }])
+            }
+            fn custom_fluid_fill(
+                &self,
+                _: &mut dyn Host,
+                event: &mut CustomFluidFillEvent<'_>,
+            ) -> Option<i32> {
+                assert_eq!((event.pos, event.side), (POS, Some(Direction::Up)));
+                assert_eq!(event.action, NativeFluidAction::Execute);
+                let mut tank = self.0.lock().unwrap();
+                assert_eq!(event.resource.fluid, tank.fluid);
+                let amount = event.resource.amount.min(1000 - tank.amount);
+                tank.amount += amount;
+                Some(amount)
+            }
+            fn custom_fluid_drain(
+                &self,
+                _: &mut dyn Host,
+                event: &mut CustomFluidDrainEvent<'_>,
+            ) -> Option<NativeFluidStack> {
+                let mut tank = self.0.lock().unwrap();
+                let mut drained = tank.clone();
+                match (event.action, event.request) {
+                    (NativeFluidAction::Simulate, NativeFluidDrain::Any(max)) => {
+                        drained.amount = tank.amount.min(*max);
+                    }
+                    (NativeFluidAction::Execute, NativeFluidDrain::Exact(exact)) => {
+                        assert_eq!(exact.fluid, tank.fluid);
+                        drained.amount = tank.amount.min(exact.amount);
+                        tank.amount -= drained.amount;
+                    }
+                    _ => panic!("unexpected drain mode"),
+                }
+                Some(drained)
+            }
+        }
+        let base = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let scratch =
+            std::env::temp_dir().join(format!("horizon-fluid-provider-{}", std::process::id()));
+        let mut content = Content::declared("fixture");
+        content
+            .declare(
+                &[Block {
+                    id: BLOCK.into(),
+                    template: "minecraft:stone".into(),
+                    ..Default::default()
+                }],
+                &[],
+            )
+            .unwrap();
+        build(
+            &base,
+            &[ContentMod {
+                id: "fixture".into(),
+                content,
+            }],
+            &scratch,
+        )
+        .unwrap();
+        let settings = Settings::default();
+        let loaded = load_resources(
+            scratch.clone(),
+            None,
+            &scratch,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = scratch.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&scratch),
+            None,
+        )
+        .unwrap();
+        game.options.dedicated = Some(Vec::new());
+        game.world = World::new(game.res.facts().air, 0);
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        let state = game.pack.assets.registry.default_state(BLOCK).unwrap();
+        game.world.set(POS[0], POS[1], POS[2], state).unwrap();
+        game.world.block_entities.insert(
+            (2, 64, 2),
+            BlockEntity::Mod(Box::new(
+                ModBlockEntityFields {
+                    id: BLOCK.into(),
+                    ..Default::default()
+                }
+                .into(),
+            )),
+        );
+
+        let tank = Arc::new(Tank(Mutex::new(NativeFluidStack {
+            fluid: "minecraft:water".into(),
+            amount: 750,
+            components: Compound::new(),
+        })));
+        assert!(
+            mod_api::MODS
+                .set(Arc::from(vec![Box::new(tank.clone()) as Box<dyn Hooks>]))
+                .is_ok()
+        );
+        let top = Direction::Up;
+        assert_eq!(
+            game.native_fluid_tanks(DIM, POS, top).unwrap()[0].amount,
+            750
+        );
+        assert_eq!(
+            game.native_fluid_insert(POS, top, "minecraft:water", 400),
+            150
+        );
+        assert_eq!(
+            game.native_fluid_extract(DIM, POS, top, 300),
+            Some(("minecraft:water".into(), 300))
+        );
+        assert_eq!(tank.0.lock().unwrap().amount, 700);
+        assert!(
+            game.native_move_fluids(DIM, POS, top, [3, 64, 2], top, 50)
+                .is_none()
+        );
+        assert_eq!(tank.0.lock().unwrap().amount, 700);
+        tank.0
+            .lock()
+            .unwrap()
+            .components
+            .insert("fixture:color".into(), Tag::Int(2));
+        assert!(game.native_fluid_extract(DIM, POS, top, 50).is_none());
+        assert_eq!(tank.0.lock().unwrap().amount, 700);
+        drop(game);
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
 
     /// Tanks hold vanilla's two fluids and any of a mod's own; not a
     /// made-up vanilla one, nor a name that isn't an identifier.

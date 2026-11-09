@@ -1419,6 +1419,11 @@ impl Game<'_> {
 }
 
 impl Repro {
+    /// A replay is running or waiting for its world.
+    pub(super) fn replaying(&self) -> bool {
+        self.replay.is_some() || self.pending_replay.is_some()
+    }
+
     /// An agent event while recording joins `events.jsonl`.
     pub(super) fn note_event(&mut self, tick: u64, event: &Value) {
         let Some(rec) = self.recording.as_mut() else {

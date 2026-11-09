@@ -39,7 +39,7 @@ fn real_packs_read() {
             let start = Instant::now();
             let pack = Pack::open(&f.path).unwrap();
             // The macros the game reads the pack's programs with: the standard set, the renderer's
-            // (at Mipmap Levels 4), then the features the pack turns on.
+            // (at Mipmap Levels 4), then the supported-feature diagnostics (without another loader's identity macros).
             let mut macros = test_macros();
             macros.define_renderer(4);
             let (shaders, feature_notes) = horizon_shaders::read_properties(&pack, &mut macros);
@@ -232,7 +232,7 @@ fn real_packs_read() {
                 for note in feature_notes
                     .iter()
                     .cloned()
-                    .chain(macros.define_features(&shaders))
+                    .chain(Macros::feature_notes(&shaders))
                 {
                     println!("    {note}");
                 }

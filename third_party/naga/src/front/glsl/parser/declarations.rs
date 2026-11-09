@@ -77,12 +77,12 @@ impl ParsingContext<'_> {
         {
             let token = self.bump(frontend)?;
             match token.value {
-                TokenValue::Semicolon if frontend.meta.version == 460 => Ok(()),
+                // An empty declaration, which GLSL 4.60's grammar allows: GL drivers take one in
+                // every version, and shader packs leave them after a function a macro writes
+                // (`DECLARE_NOISE(fbm, noise);`, DrDestens).
+                TokenValue::Semicolon => Ok(()),
                 _ => {
-                    let expected = match frontend.meta.version {
-                        460 => vec![TokenValue::Semicolon.into(), ExpectedToken::Eof],
-                        _ => vec![ExpectedToken::Eof],
-                    };
+                    let expected = vec![TokenValue::Semicolon.into(), ExpectedToken::Eof];
                     Err(Error {
                         kind: ErrorKind::InvalidToken(token.value, expected),
                         meta: token.meta,

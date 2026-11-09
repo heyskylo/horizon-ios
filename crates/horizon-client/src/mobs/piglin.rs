@@ -25,6 +25,17 @@ const CONVERSION: i32 = 300;
 /// `DANCING` memories last.
 const CELEBRATION: i32 = 300;
 
+/// `Piglin.holdInOffHand`: equip the item being admired, dropped when the
+/// piglin is killed; anything but the barter item keeps the piglin from
+/// despawning.
+pub fn hold_in_offhand(m: &mut Mob, item: std::sync::Arc<str>) {
+    if &*item != "minecraft:gold_ingot" {
+        m.persistent = true;
+    }
+    m.extra.off_hand = Some(item);
+    super::finalize::set_drop_chance(m, super::finalize::OFFHAND, 2.0);
+}
+
 /// `Activity`: what a piglin's or hoglin's brain is busy with. `Admire`,
 /// `Celebrate` and `Ride` are a piglin's only; the others are both.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -409,7 +420,7 @@ fn is_baby_riding_baby(m: &Mob, w: &MobWorld) -> bool {
 /// `Hoglin.isConverting` and `AbstractPiglin.isConverting`: in a dimension
 /// that is not piglin safe, a mob that is not immune and has AI.
 fn converting(m: &Mob, w: &MobWorld) -> bool {
-    !w.nether && !m.extra.flag2 && !m.no_ai
+    w.dimension_type.piglins_zombify && !m.extra.flag2 && !m.no_ai
 }
 /// `Hoglin.getAmbientSound`: the sound of the activity it is in
 /// (`HoglinAi.getSoundForCurrentActivity`).
@@ -798,8 +809,15 @@ fn hoglin_retaliates(m: &mut Mob, w: &MobWorld, by: Who, at: Vec3) -> bool {
 /// `HoglinAi.wasHurtBy`, which `Hoglin.hurtServer` calls: a hit ends the
 /// pacified state; a baby retreats from the attacker, an adult retaliates
 /// when `maybeRetaliate` allows. The hurt-by goal does the retaliating, so a
-/// hit that does not get it is used up.
-fn hoglin_hurt(m: &mut Mob, w: &MobWorld, lr: &mut LegacyRandom, by: Who) {
+/// hit that does not get it is used up. A retaliation is broadcast to the
+/// visible adult hoglins (`broadcastAttackTarget`, `NEAREST_VISIBLE_ADULT_HOGLINS`).
+fn hoglin_hurt(
+    m: &mut Mob,
+    w: &MobWorld,
+    lr: &mut LegacyRandom,
+    events: &mut Vec<MobEvent>,
+    by: Who,
+) {
     m.extra.ints[0] = 0;
     let Some(at) = w.target_info(by).map(|t| t.position) else {
         return;
@@ -809,6 +827,39 @@ fn hoglin_hurt(m: &mut Mob, w: &MobWorld, lr: &mut LegacyRandom, by: Who) {
         m.ai.last_hurt_by = None;
     } else if !hoglin_retaliates(m, w, by, at) {
         m.ai.last_hurt_by = None;
+    } else {
+        for &mob in &m.extra.piglin.adults {
+            events.push(MobEvent::HoglinAttackTarget { mob, target: by });
+        }
+    }
+}
+/// `HoglinAi.setAttackTargetIfCloserThanCurrent` for a hoglin that received a
+/// broadcast: nothing while pacified; otherwise `BehaviorUtils.getNearestTarget`,
+/// the new target unless the current one is strictly nearer
+/// (`getTargetNearestMe`). `position` gives a live mob target's place; a
+/// current target it cannot place counts as absent. A player on either side
+/// is not compared (`Who::Player` is each mob's own player): the current
+/// target stays.
+pub fn receive_attack_target(m: &mut Mob, target: Who, position: impl Fn(Who) -> Option<Vec3>) {
+    if m.extra.ints[0] > 0 {
+        return;
+    }
+    let Some(current) = m.ai.target else {
+        m.ai.target = Some(target);
+        return;
+    };
+    if current == Who::Player || target == Who::Player {
+        return;
+    }
+    let Some(now) = position(current) else {
+        m.ai.target = Some(target);
+        return;
+    };
+    let Some(new) = position(target) else {
+        return;
+    };
+    if m.distance_sqr(now) >= m.distance_sqr(new) {
+        m.ai.target = Some(target);
     }
 }
 /// `PiglinAi.stopHoldingOffHandItem` without bartering (`wasHurtBy`): a gold
@@ -941,7 +992,7 @@ pub fn before_goals(m: &mut Mob, w: &MobWorld, lr: &mut LegacyRandom, events: &m
     {
         m.extra.piglin.hurt_seen = m.ai.last_hurt_by_time;
         if m.species() == Species::Hoglin {
-            hoglin_hurt(m, w, lr, by);
+            hoglin_hurt(m, w, lr, events, by);
         } else {
             piglin_hurt(m, w, lr, events, by);
         }
@@ -1420,7 +1471,8 @@ pub fn register_hoglin(m: &mut Mob) {
     g.add(4, NotRetreating(super::goals::FollowParent::new(1.1)));
     g.add(5, Stroll::avoiding_water(0.4));
     g.add(6, LookAtPlayer::new(8.0));
-    m.ai.targets.add(1, HurtByTarget::new().alert());
+    // The retaliation's broadcast is `hoglin_hurt`'s (`HoglinAi.broadcastAttackTarget`), not an alert.
+    m.ai.targets.add(1, HurtByTarget::new());
     // `HoglinAi.findNearestValidAttackTarget`: nothing while pacified, and
     // `StartAttacking` is not in the retreat activity.
     m.ai.targets.add(
@@ -1812,28 +1864,9 @@ pub fn ai_step(
         }
     }
     // Zombification outside the Nether (piglins without immunity, hoglins).
-    if !w.nether && !m.extra.flag2 && m.alive() {
+    if w.dimension_type.piglins_zombify && !m.extra.flag2 && m.alive() {
         m.extra.counter2 += 1;
         if m.extra.counter2 > CONVERSION {
-            // `Piglin.finishConversion` runs `PiglinAi.cancelAdmiring` first:
-            // the item the piglin is admiring leaves the off hand and lands
-            // where it stands, so the zombified piglin never carries it.
-            if m.species() == Species::Piglin {
-                let admiring = (m.extra.off_hand.is_some() && m.extra.using_item > 0)
-                    || m.extra.piglin.seen_admire > 0;
-                if admiring && let Some(item) = m.extra.off_hand.take() {
-                    events.push(MobEvent::DropItem {
-                        mob: m.id,
-                        item,
-                        count: 1,
-                        at: [m.position.x, m.position.y, m.position.z],
-                    });
-                    m.extra.using_item = 0;
-                }
-            }
-            // `Hoglin.finishConversion` is `ConversionParams.single(this, true,
-            // false)`, `AbstractPiglin.finishConversion` `(this, true, true)`;
-            // both leave the new mob nauseous (the game adds it).
             let (kind, sound, params) = match m.species() {
                 Species::Hoglin => (
                     "minecraft:zoglin",
@@ -1855,6 +1888,32 @@ pub fn ai_step(
                 ),
             };
             events.push(MobEvent::Sound(sound, m.center(), 1.0, 1.0));
+            // `Piglin.finishConversion` runs `PiglinAi.cancelAdmiring` first:
+            // the item the piglin is admiring leaves the off hand and lands
+            // where it stands, so the zombified piglin never carries it.
+            if m.species() == Species::Piglin {
+                let admiring = (m.extra.off_hand.is_some() && m.extra.using_item > 0)
+                    || m.extra.piglin.seen_admire > 0;
+                if admiring && let Some(item) = m.extra.off_hand.take() {
+                    events.push(MobEvent::DropItem {
+                        mob: m.id,
+                        item,
+                        count: 1,
+                        at: [m.position.x, m.position.y, m.position.z],
+                    });
+                    m.extra.using_item = 0;
+                }
+                for stack in m.extra.inventory.drain(..).filter(|stack| stack.count > 0) {
+                    events.push(MobEvent::DropStack {
+                        mob: m.id,
+                        stack,
+                        at: [m.position.x, m.position.y, m.position.z],
+                    });
+                }
+            }
+            // `Hoglin.finishConversion` is `ConversionParams.single(this, true,
+            // false)`, `AbstractPiglin.finishConversion` `(this, true, true)`;
+            // both leave the new mob nauseous (the game adds it).
             events.push(MobEvent::Convert {
                 from: Box::new(m.clone()),
                 kind,
@@ -2286,6 +2345,47 @@ mod crossbow_tests {
         Mob::new(1, kind, Vec3::ZERO, 0.0)
     }
 
+    #[test]
+    fn admired_item_drops_when_killed_without_a_player() {
+        use crate::mobs::drops::{Death, Drop, die};
+        use crate::random_sequences::RandomSequences;
+        use horizon_world::loot::{LootData, PackOverlay};
+
+        let root =
+            std::env::temp_dir().join(format!("horizon-piglin-drop-test-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("data/minecraft/loot_table")).unwrap();
+        std::fs::write(root.join("items.json"), "{}").unwrap();
+        let loot = LootData::load(&root, &PackOverlay::default()).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        let death = Death {
+            loot: &loot,
+            damage: None,
+            player: None,
+            player_killed: false,
+            luck: 0.0,
+            vehicle: None,
+            mob_drops: true,
+            world_seed: 0,
+        };
+        let mut apple = piglin();
+        hold_in_offhand(&mut apple, "minecraft:golden_apple".into());
+        assert!(apple.persistent);
+        let mut m = piglin();
+        hold_in_offhand(&mut m, "minecraft:gold_ingot".into());
+        assert!(!m.persistent);
+        let (drops, _) = die(
+            &mut m,
+            &death,
+            &mut RandomSequences::default(),
+            &mut LegacyRandom::new(7),
+        );
+        assert!(
+            drops.iter().any(
+                |drop| matches!(drop, Drop::Item(item) if item.item == "minecraft:gold_ingot")
+            )
+        );
+    }
+
     /// The spawn weapon is equipped after the goals are registered, so the
     /// crossbow goal must exist on a piglin that holds nothing yet, and the
     /// melee goal must be off once a crossbow is held.
@@ -2351,6 +2451,56 @@ mod crossbow_tests {
 mod conversion_tests {
     use super::*;
     use crate::mobs::world::with_test_world;
+
+    #[test]
+    fn converting_piglin_drops_its_inventory_before_conversion() {
+        let ran = with_test_world(&[], |w, types| {
+            let at = [0.5, 64.0, 0.5];
+            let mut m = Mob::new(
+                1,
+                std::sync::Arc::new(types.types["minecraft:piglin"].clone()),
+                Vec3::new(at[0], at[1], at[2]),
+                0.0,
+            );
+            let stacks = vec![
+                crate::items::ItemStack {
+                    item: "minecraft:gold_nugget".into(),
+                    count: 7,
+                    damage: 0,
+                    extra: None,
+                },
+                crate::items::ItemStack {
+                    item: "minecraft:gold_ingot".into(),
+                    count: 3,
+                    damage: 0,
+                    extra: None,
+                },
+            ];
+            m.extra.inventory = stacks.clone();
+            m.extra.off_hand = Some("minecraft:gold_ingot".into());
+            m.extra.using_item = 60;
+            m.extra.counter2 = CONVERSION + 1;
+            let mut events = Vec::new();
+            ai_step(&mut m, w, &mut LegacyRandom::new(0), &mut events);
+            let relevant: Vec<_> = events
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        e,
+                        MobEvent::DropItem { .. }
+                            | MobEvent::DropStack { .. }
+                            | MobEvent::Convert { .. }
+                    )
+                })
+                .collect();
+            assert!(
+                matches!(relevant.as_slice(), [MobEvent::DropItem { .. }, MobEvent::DropStack { stack: a, at: p, .. }, MobEvent::DropStack { stack: b, .. }, MobEvent::Convert { from, .. }] if *a == stacks[0] && *b == stacks[1] && *p == at && from.extra.inventory.is_empty())
+            );
+            assert!(m.extra.inventory.is_empty());
+        });
+        // Without the vanilla data there is nothing to check.
+        let _ = ran;
+    }
 
     /// `Piglin.finishConversion` cancels the admire before it converts: the
     /// item in the off hand is dropped at the piglin's feet and the zombified

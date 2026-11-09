@@ -1,5 +1,5 @@
 //! Cosmetics on players ([docs/cosmetics.md](../../../../docs/cosmetics.md)): only Horizon
-//! clients draw them, off unless `horizon_cosmetics::enabled()`. What another player wears comes
+//! clients draw them, off unless [`enabled`]. What another player wears comes
 //! from the cosmetics service by UUID (`horizon_cosmetics::Cosmetics`, its own thread); this file
 //! puts the items on the avatar's bones, on the GPU skin path when the renderer takes it.
 //!
@@ -489,6 +489,13 @@ fn body_top(
         .reduce(f32::max)
 }
 
+/// Whether cosmetics, emotes and the "Horizon player" presence run at all: the `horizon-extras`
+/// feature's gate for all three (docs/forking.md), then `horizon_cosmetics::enabled()`. The game
+/// asks this, never `horizon_cosmetics::enabled()` itself.
+pub(super) fn enabled() -> bool {
+    cfg!(feature = "horizon-extras") && horizon_cosmetics::enabled()
+}
+
 impl Game<'_> {
     /// Cosmetic motion and particle budgets belong to one client level.
     pub(super) fn clear_cosmetics_fx(&mut self) {
@@ -577,7 +584,7 @@ impl Game<'_> {
     pub(super) fn cosmetics_frame(&mut self) {
         self.settle_owned_emotes();
         self.update_others_emote_visibility();
-        if !horizon_cosmetics::enabled() {
+        if !enabled() {
             return;
         }
         let c = &mut self.cosmetics;
@@ -808,7 +815,7 @@ impl Game<'_> {
         if self.cosmetics.workers.closed()
             || self.cosmetics.local
             || std::env::var_os("HORIZON_COSMETICS_LOCAL").is_some()
-            || !horizon_cosmetics::enabled()
+            || !enabled()
             || !e.catalogue.due(Instant::now())
         {
             return;

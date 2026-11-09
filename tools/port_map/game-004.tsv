@@ -6,7 +6,7 @@ AbsorptionMobEffect.onEffectStarted	port	crates/horizon-client/src/game/potions.
 BadOmenMobEffect.applyEffectTick	port	crates/horizon-client/src/game/raids.rs::Game::omen_tick	bad omen in a village (not peaceful, not spectator, raid below max omen level) becomes Raid Omen 600 ticks and records the position
 HealOrHarmMobEffect.applyEffectTick	port	crates/horizon-client-render/src/effects.rs::periodic	instant_health heals 4 << level, instant_damage hurts 6 << level (magic); mobs get the instant effects from splash and cloud code in potions.rs
 HungerMobEffect.applyEffectTick	port	crates/horizon-client-render/src/effects.rs::periodic	exhaustion 0.005 * (level + 1) every tick, applied by Game::apply_effect_action; player only like vanilla
-InfestedMobEffect.spawnSilverfish	inline	crates/horizon-client/src/game/potions.rs::Game::infested_hurt	the 10 percent roll and the one or two silverfish thrown along the look direction, with the hurt sound; player and mobs
+InfestedMobEffect.spawnSilverfish	port	crates/horizon-client/src/game/potions.rs::Game::spawn_infested	one silverfish per drawn velocity at half the bearer's height, with the hurt sound; the 10% roll and the velocity draws are mobs.rs::infested_silverfish
 MobEffect.getOrCreateDescriptionId	skip:java		lazy translation key cache
 MobEffect.setBlendDuration	inline	crates/horizon-client-render/src/screen_effects.rs::ScreenEffects::tick_spinning	nausea fades in over 150 and out over 20 ticks, darkness over 22 (sculk.rs::Game::tick_darkness_blend); no other effect blends
 MobEffect.removeAttributeModifiers	inline	crates/horizon-client/src/game/potions.rs::Game::apply_effect_status	modifiers that left the effect list are removed in the diff loop; horizon-world has an unused kernel (effect_attribute_modifiers.rs::remove_modifiers)
@@ -19,7 +19,7 @@ MobEffectInstance.mapDuration	inline	crates/horizon-client/src/game/potions.rs::
 MobEffectInstance.tickDownDuration	port	crates/horizon-client-render/src/effects.rs::EffectInstance::tick_down	hidden effect ticks down too; infinite stays
 MobEffectInstance.downgradeToHiddenEffect	port	crates/horizon-client-render/src/effects.rs::EffectInstance::downgrade	gap: minor: mobs keep no hidden effects (Mob::add_effect drops a weaker one)
 MobEffectInstance.onMobRemoved	inline	crates/horizon-client/src/game/potions.rs::Game::effects_on_death	oozing, weaving and wind charged run when their bearer dies (player or mob)
-MobEffectInstance.onMobHurt	inline	crates/horizon-client/src/game/potions.rs::Game::infested_hurt	only infested reacts to being hurt; called for the player from combat.rs and for mobs from creatures.rs
+MobEffectInstance.onMobHurt	inline	crates/horizon-client/src/game/potions.rs::Game::player_infested	only infested reacts to being hurt; the player's roll and spawn fold here (infested_silverfish + spawn_infested), mobs queue MobEvent::Infested from creatures.rs
 MobEffectInstance.toString	skip:debug		debug string
 MobEffectInstance.equals	skip:java		value equality
 MobEffectInstance.hashCode	skip:java		value hash
@@ -45,12 +45,14 @@ AgeableMob.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_met
 AgeableMob.getAge	inline	crates/horizon-client/src/game/remote_mob_data.rs::apply	m.extra.age on the host; a remote client only learns baby or not (-1 or 0)
 AgeableMob.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	modeled Age, ForcedAge and AgeLocked for baby-capable creatures; zombie nautiluses omit ignored raw age keys
 AgeableMob.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	Age/ForcedAge through NumericTag.intValue; AgeLocked unchanged
+AgeableMob.canBeABaby	port	crates/horizon-client/src/mobs/species.rs::can_be_a_baby	false for the frog, parrot, zombie nautilus, camel husk, slime and magma cube, true for the rest of the ageable tree and for the zombie/piglin/zoglin synced flag
+AgeableMob.isBaby	port	crates/horizon-client/src/mobs/living.rs::Mob::is_baby	canBeABaby && getAge() < 0: a negative Age alone is not a baby, so the box, voice, breeding, growth and loot stay an adult's
 AnimationState.getTimeInMillis	port	crates/horizon-client/src/mobs/keyframes.rs::AnimationState::millis	
 AreaEffectCloud.defineSynchedData	port	crates/horizon-client/src/game/lan_entities.rs::Game::lan_projectile_states	radius, waiting and particle for dragon breath and lingering clouds; read back in remote_projectiles.rs::remote_projectile_data
 AreaEffectCloud.setRadius	inline	crates/horizon-client/src/game/potions.rs::Game::tick_potion_cloud	loaded radius and nonzero per-tick/per-use changes clamp to 0..32
 AreaEffectCloud.refreshDimensions	inline	crates/horizon-client/src/game/potions.rs::Game::tick_potion_cloud	the affected box is rebuilt from the radius every check
 AreaEffectCloud.readAdditionalSaveData	port	crates/horizon-client/src/game/potions.rs::Game::load_potion_cloud	loaded potion effects, age, radius, duration, wait, reapplication, per-use/per-tick changes and duration scale join the live cloud model; owner resolution and custom particles remain unmodeled; save/reopen remains separate
-AreaEffectCloud.addAdditionalSaveData	missing		minor: a lingering potion or dragon breath cloud is gone after the world is saved and reopened
+AreaEffectCloud.addAdditionalSaveData	port	crates/horizon-client/src/game/potions.rs::potion_cloud_to_nbt	the lifetime, radius, the four use settings, RadiusPerTick, potion_duration_scale and the effects as `custom_effects` with the colour; a dragon's own breath carries no potion and is not written
 AreaEffectCloud.get	skip:other		entity data component accessor for predicates and /data; Horizon keeps the cloud's potion in PotionCloud
 AreaEffectCloud.applyImplicitComponents	inline	crates/horizon-client/src/game/potions.rs::Game::splash	the lingering branch takes the thrown stack's potion effects and colour; potion_duration_scale is fixed at 0.25
 AreaEffectCloud.applyImplicitComponent	inline	crates/horizon-client/src/game/potions.rs::Game::splash	same: potion contents only
@@ -71,7 +73,9 @@ Display.tick	port	crates/horizon-client/src/game/text_displays.rs::RemoteTextDis
 Display.defineSynchedData	port	crates/horizon-client/src/text_display.rs::TextDisplayData::default	the defaults of entries 8 to 22
 Display.readAdditionalSaveData	port	crates/horizon-client/src/text_display.rs::display_data	the synched data entries (ids 8 to 22) of a saved display, matrix transformation included
 Display.setTransformation	port	crates/horizon-client/src/game/native_entities.rs::Game::native_set_display	a display Horizon keeps as a saved tag (block_display, item_display, text_display) eases from what it showed: the transformation and its interpolation and teleport durations, written for the mod API (native_set_display); nothing writes the brightness, billboard or shadow values back
-Display.addAdditionalSaveData	inline	crates/horizon-client/src/game/native_entities.rs::NativeDisplay::write	the transformation and both durations of a display Horizon holds, plus the start delay flipped between 0 and -1; billboard, brightness, glow colour, view range, shadow and the width and height are not written
+Display.addAdditionalSaveData	port	crates/horizon-client/src/game/persist/display.rs::Game::write_display_nbt	the display transformation, duration, culling, brightness, billboard and shadow settings in the saved compound
+Display.BlockDisplay.addAdditionalSaveData	inline	crates/horizon-client/src/game/persist/display.rs::Game::write_display_nbt	block_state, defaulting to air
+Display.ItemDisplay.addAdditionalSaveData	inline	crates/horizon-client/src/game/persist/display.rs::Game::write_display_nbt	item_display context and the nonempty item stack
 Display.getInterpolatedBoundingBox	port	crates/horizon-client/src/text_display.rs::culling_box	width-centred XZ box from y to y+height at the interpolated origin; used by Game::display_in_view
 Display.setBrightnessOverride	missing		minor: server side setter; there is no local display entity
 Display.getBrightnessOverride	inline	crates/horizon-client/src/game/text_displays.rs::Game::text_display_geometry	the packed sky and block light of the brightness entry (-1 uses the world light)
@@ -88,7 +92,7 @@ Display.TextDisplay.onSyncedDataUpdated	port	crates/horizon-client/src/game/text
 Display.TextDisplay.loadFlag	inline	crates/horizon-client/src/text_display.rs::text_display_data	each NBT boolean (shadow, see_through, default_background) ORs its bit into the flags, then the alignment
 Display.TextDisplay.readAdditionalSaveData	port	crates/horizon-client/src/text_display.rs::text_display_data	a saved text display's synched data (ids 23 to 27) is read back from its compound and re-sent
 Display.TextDisplay.storeFlag	missing		minor: writes the style flags to NBT; no local display entity
-Display.TextDisplay.addAdditionalSaveData	missing		minor: no local display entity to save
+Display.TextDisplay.addAdditionalSaveData	port	crates/horizon-client/src/game/persist/display.rs::write_text_display	text, layout, opacity, background and style flags; gap: dynamic text resolution
 Display.TextDisplay.updateRenderSubState	port	crates/horizon-client/src/text_display.rs::TextDisplayData::blend	text, line width, opacity and background blend over the interpolation
 Display.TextDisplay.createFreshTextRenderState	inline	crates/horizon-client/src/game/text_displays.rs::RemoteTextDisplay::tick	the plain copy of the synced text data
 Display.TextDisplay.createInterpolatedTextRenderState	port	crates/horizon-client/src/text_display.rs::TextDisplayData::blend	opacity and the four background channels interpolate linearly

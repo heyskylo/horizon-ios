@@ -7,7 +7,6 @@ use super::Game;
 use std::sync::Arc;
 
 // Native mods call it; nothing in Horizon does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// Asks `native_biome_colors` again for every biome and, when the colours
     /// differ from those in use, rebuilds every loaded section and the far

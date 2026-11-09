@@ -6,10 +6,13 @@
 
 use horizon_client::camera::CameraFluid;
 use horizon_client::gfx::pack_uniforms::{PackInputs, PlayerStatus};
+use horizon_client::mod_list::ModList;
 use horizon_client::shader_options::ShaderOptions;
 use horizon_client::text::Text;
+use horizon_shader_api::Api;
 use horizon_shaders::{BlockIds, Macros, Pack, Properties, dimension_folder_named, load_post};
 
+use super::native_shaders::{fingerprint, outcome, refused, remember};
 use super::{Dim, Game};
 use horizon_client::gfx::pack_draw::EntitySpan;
 use std::cell::{Cell, RefCell};
@@ -29,6 +32,10 @@ pub(super) fn read_shader_options(
     language: &str,
     macros: &Macros,
 ) -> Option<ShaderOptions> {
+    // Native options come from the manifest; the shared screen opens either kind.
+    if name.starts_with("horizon:") {
+        return None;
+    }
     let pack = match Pack::open(&Game::shader_packs_dir().join(name)) {
         Ok(pack) => pack,
         Err(e) => {
@@ -70,21 +77,60 @@ pub(super) fn write_shader_options(options: &ShaderOptions) {
 
 /// The pack that runs over the world ("": none): `HORIZON_SHADER_PACK`, else the pick
 /// (`active_pack`).
-fn picked_pack(settings: &horizon_client::settings::Settings) -> &str {
+pub(super) fn dev_pack() -> Option<&'static str> {
     static DEV_PACK: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    let dev = DEV_PACK.get_or_init(|| std::env::var("HORIZON_SHADER_PACK").ok());
+    DEV_PACK
+        .get_or_init(|| std::env::var("HORIZON_SHADER_PACK").ok())
+        .as_deref()
+}
+
+pub(super) fn picked_pack(settings: &horizon_client::settings::Settings) -> &str {
     active_pack(
-        dev.as_deref().unwrap_or(&settings.horizon.shader_pack),
+        dev_pack().unwrap_or(&settings.horizon.shader_pack),
         &settings.mods,
     )
 }
 
-/// Whether the pack picked (`picked_pack`) draws flat where the device can (`pack_draws_flat`):
-/// a renderer made now lays the sections out for it before the first world frame loads it
-/// (`Renderer::new`).
-pub(super) fn picked_pack_draws_flat(settings: &horizon_client::settings::Settings) -> bool {
+/// What a renderer readies for the pick, unless it was refused, is missing or its owner is off.
+#[derive(Clone, Copy)]
+pub(crate) struct PickedPack {
+    /// It draws flat where the device can (`pack_draws_flat`): the sections are laid out so.
+    pub draws_flat: bool,
+    /// It is a shader API 0.2 pack under `HORIZON_HDR_FRAME=float`: the frame is float.
+    pub linear: bool,
+    /// HDR is on under `HORIZON_HDR_FRAME=float`, with no pack available or a 0.2 one: the
+    /// frame is the layered float one where HDR output is offered
+    /// (docs/design/hdr-linear-light.md, The HUD and menus).
+    pub hdr_float: bool,
+}
+
+pub(super) fn picked_pack_shape(settings: &horizon_client::settings::Settings) -> PickedPack {
     let picked = picked_pack(settings);
-    !picked.is_empty() && pack_draws_flat(&Game::shader_packs_dir().join(picked))
+    let dir = Game::shader_packs_dir();
+    let path = if dev_pack().is_some() {
+        dir.join(picked)
+    } else {
+        horizon_client::shader_pack_list::resolve(&dir, picked).1
+    };
+    let active = !picked.is_empty()
+        && (!super::native_shaders::linear_frame_switch()
+            || (path.exists() && outcome(&path) != Some(None)))
+        && path
+            .file_name()
+            .is_none_or(|f| !active_pack(&f.to_string_lossy(), &settings.mods).is_empty());
+    let linear = || {
+        super::native_shaders::linear_frame_switch()
+            && horizon_shader_api::Pack::read_manifest(&path)
+                .is_ok_and(|m| m.api == horizon_shader_api::Api::V0_2)
+    };
+    let linear = active && linear();
+    PickedPack {
+        draws_flat: active && pack_draws_flat(&path),
+        linear,
+        hdr_float: (!active || linear)
+            && settings.horizon.hdr_wanted()
+            && super::native_shaders::linear_frame_switch(),
+    }
 }
 
 /// Whether the pack at `path` has passes that draw the terrain flat where the device can,
@@ -92,11 +138,11 @@ pub(super) fn picked_pack_draws_flat(settings: &horizon_client::settings::Settin
 /// draw terrain, or one of Horizon's own with a `[shadow]` pass.
 fn pack_draws_flat(path: &std::path::Path) -> bool {
     !horizon_shader_api::package::is_pack(path)
-        || horizon_shader_api::Pack::read(path).is_ok_and(|p| p.manifest.shadow.is_some())
+        || horizon_shader_api::Pack::read_manifest(path).is_ok_and(|m| m.shadow.is_some())
 }
 
 // A native mod can bundle a pack as `native-<mod-id>`; its Mods toggle controls it too.
-fn active_pack<'a>(picked: &'a str, mods: &horizon_client::mod_list::ModList) -> &'a str {
+pub(super) fn active_pack<'a>(picked: &'a str, mods: &ModList) -> &'a str {
     if picked.strip_prefix("native-").is_some_and(|id| {
         mods.installed
             .iter()
@@ -115,7 +161,17 @@ pub(super) fn picks_material_pack(settings: &horizon_client::settings::Settings)
         dev.as_deref().unwrap_or(&settings.horizon.shader_pack),
         &settings.mods,
     );
-    !picked.is_empty()
+    if picked.is_empty() {
+        return false;
+    }
+    let dir = Game::shader_packs_dir();
+    let path = if dev.is_some() {
+        dir.join(picked)
+    } else {
+        horizon_client::shader_pack_list::resolve(&dir, picked).1
+    };
+    path.file_name()
+        .is_none_or(|f| !active_pack(&f.to_string_lossy(), &settings.mods).is_empty())
 }
 
 use serde_json::{Value, json};
@@ -307,7 +363,7 @@ fn parse_source<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String
 fn start_parser(
     key: LoadKey,
     inputs: horizon_shaders::GameInputs,
-    mut macros: Macros,
+    macros: Macros,
 ) -> Result<(), String> {
     let path = key.path.clone();
     let dimension = key.dimension;
@@ -328,7 +384,7 @@ fn start_parser(
                         let folder = dimension_folder_named(&pack, &dimension_name, dimension);
                         let properties =
                             Properties::from_pack(&pack, &folder, &macros).in_dimension(dimension);
-                        let feature_notes = macros.define_features(&properties);
+                        let feature_notes = Macros::feature_notes(&properties);
                         let mut post = load_post(&pack, &folder, &properties, &macros, &inputs);
                         let read = |namespace: &str, path: &str| {
                             std::fs::read(resources.join("assets").join(namespace).join(path)).ok()
@@ -444,11 +500,18 @@ impl Game<'_> {
                 self.pack_ids = None;
             }
             if let Some((dimension, programs, notes)) = renderer.take_shader_report() {
+                let selected = picked_pack(&self.settings).to_owned();
+                let path = Self::shader_packs_dir().join(&self.native_shaders.picked);
+                remember(
+                    &path,
+                    fingerprint(&path),
+                    (!programs.is_empty()).then_some(Api::V0_1),
+                );
                 if programs.is_empty() {
                     self.pack_ids = None;
-                    failed = Some((self.native_shaders.picked.clone(), dimension, notes.clone()));
+                    failed = Some((selected.clone(), dimension, notes.clone()));
                 }
-                record_report(&self.native_shaders.picked, dimension, &programs, &notes);
+                record_report(&selected, dimension, &programs, &notes);
                 for note in &notes {
                     log::warn!("shader pack: {note}");
                 }
@@ -514,11 +577,21 @@ impl Game<'_> {
             self.streaming.separate_ao = separate_ao;
             self.all_sections_changed();
         }
-        let picked = picked_pack(&self.settings).to_owned();
+        let selected = picked_pack(&self.settings).to_owned();
+        let path = self.native_shaders.resolve_path(
+            &Self::shader_packs_dir(),
+            &selected,
+            dev_pack().is_some(),
+        );
+        let file = path.file_name().unwrap_or_default().to_string_lossy();
+        let picked = if selected.is_empty() || active_pack(&file, &self.settings.mods).is_empty() {
+            String::new()
+        } else {
+            path.to_string_lossy().into_owned()
+        };
         if self.native_shaders.picked != picked {
             REPORT.with_borrow_mut(Option::take);
-            // Another pack, or none: drop what ran.
-            self.native_shaders = super::native_shaders::NativeShaders::picking(&picked);
+            self.native_shaders.select(&picked);
             self.set_translucent_layers(Vec::new());
             self.pack_ids = None;
             if let Some(renderer) = &mut self.renderer {
@@ -533,17 +606,20 @@ impl Game<'_> {
             self.reload_packs();
             return PackInputs::default();
         }
-        let name = picked;
+        let name = selected.clone();
         let dimension = match self.dim {
             Dim::Overworld => 0,
             Dim::Nether => -1,
             Dim::End => 1,
         };
-        let path = Self::shader_packs_dir().join(&name);
-        if horizon_shader_api::package::is_pack(&path) {
+        if (dev_pack().is_none() && selected.starts_with("horizon:"))
+            || horizon_shader_api::package::is_pack(&path)
+        {
             // One of Horizon's own packs (game/native_shaders.rs).
             self.tick_native_shader_pack(&path);
-        } else if let Some(renderer) = &mut self.renderer {
+        } else if let Some(renderer) = &mut self.renderer
+            && !(super::native_shaders::linear_frame_switch() && refused(&path, fingerprint(&path)))
+        {
             // Lava uses the solid terrain program. Supply its sprite layers before
             // taking the renderer inputs handed to the background source parser.
             renderer.set_pack_lava_layers(
@@ -584,6 +660,7 @@ impl Game<'_> {
                         self.pack_ids = parsed.post.complete.then_some(parsed.entity_ids);
                         match renderer.set_shader_pack(dimension, Some(parsed.post), &table) {
                             Ok(Some((programs, notes))) => {
+                                remember(&path, fingerprint(&path), Some(Api::V0_1));
                                 record_report(&name, dimension, &programs, &notes)
                             }
                             Ok(None) => {}
@@ -596,6 +673,7 @@ impl Game<'_> {
                         }
                     }
                     Err(error) => {
+                        remember(&path, fingerprint(&path), None);
                         if error.starts_with(SOURCE_PANIC) {
                             self.shader_pack_failed(&name, dimension, &error);
                         } else {
@@ -626,7 +704,7 @@ impl Game<'_> {
         let (held_items, held_light) = self.held_for_pack();
         let status = self.pack_player_status();
         let info = biome.map(|b| world_biomes!(self).get(b));
-        let (end_flash_position, end_flash_intensity) = self.end_flash_for_pack(partial);
+        let (end_flash_intensity, end_flash_position) = self.end_flash_for_pack(partial);
         let dimension = self.remote.as_ref().map(|r| &r.dimension);
         PackInputs {
             // `Level.getDefaultClockTime`: 0 in a dimension type with no default clock (the
@@ -704,6 +782,7 @@ impl Game<'_> {
             status,
             ambient_light: dimension.map_or(0.0, |d| d.ambient_light),
             still_ticks: self.clock.still().then(|| self.visual_ticks()),
+            frame_timing: None,
         }
     }
 
@@ -765,6 +844,8 @@ impl Game<'_> {
     /// it is no longer the picked pack (so the next start does not load it again), and the chat
     /// says so.
     fn shader_pack_failed(&mut self, name: &str, dimension: i32, error: &str) {
+        let path = Self::shader_packs_dir().join(name);
+        remember(&path, fingerprint(&path), None);
         log::error!("shader pack {name}: turned off: {error}");
         self.pack_ids = None;
         if let Some(renderer) = &mut self.renderer {
@@ -772,7 +853,7 @@ impl Game<'_> {
             // a pack this can't fail).
             let _ = renderer.set_shader_pack(dimension, None, &[]);
         }
-        if self.settings.horizon.shader_pack == name {
+        if Self::shader_packs_dir().join(&self.settings.horizon.shader_pack) == path {
             self.settings.horizon.shader_pack.clear();
             self.settings.save(&Self::options_path());
         }
@@ -1396,8 +1477,64 @@ mod rendered_item_tests {
 
 #[cfg(test)]
 mod native_pack_tests {
-    use super::{active_pack, pack_draws_flat};
+    use super::{active_pack, pack_draws_flat, picked_pack_shape};
     use horizon_client::mod_list::{Installed, ModList, NativePage};
+
+    #[test]
+    fn unknown_pack_is_optimistic_but_refusal_owner_and_presence_override_it() {
+        use crate::game::native_shaders::{fingerprint, remember};
+        use horizon_client::settings::Settings;
+        use horizon_shader_api::Api;
+        let mut settings = Settings::default();
+        settings.horizon.hdr = horizon_client_render::graphics::HdrMode::On;
+        settings.mods.installed.push(Installed {
+            id: "frame_owner".into(),
+            title: "Frame Owner".into(),
+            description: String::new(),
+            problem: None,
+            dev: false,
+            native: Some(NativePage::default()),
+        });
+        let root =
+            std::env::temp_dir().join(format!("horizon-frame-policy-{}", std::process::id()));
+        let path = root.join("native-frame_owner");
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join(horizon_shader_api::MANIFEST),
+            "schema = 1\nid = \"fixture\"\nname = \"Fixture\"\nversion = \"1\"\napi = \"0.2\"\n[[post]]\nfile = \"p.wgsl\"\n").unwrap();
+        settings.horizon.shader_pack = path.to_string_lossy().into_owned();
+        let switch = crate::game::native_shaders::linear_frame_switch();
+        // A 0.2 pack with HDR on asks for the layered frame, as no pack does.
+        let shape = picked_pack_shape(&settings);
+        assert_eq!(shape.linear, switch);
+        assert_eq!(shape.hdr_float, switch);
+        for api in [Api::V0_1, Api::V0_2] {
+            let manifest = path.join(horizon_shader_api::MANIFEST);
+            let text = std::fs::read_to_string(&manifest).unwrap();
+            std::fs::write(
+                &manifest,
+                text.replace("api = \"0.2\"", &format!("api = \"{api}\""))
+                    .replace("api = \"0.1\"", &format!("api = \"{api}\"")),
+            )
+            .unwrap();
+            remember(&path, fingerprint(&path), Some(api));
+            let shape = picked_pack_shape(&settings);
+            assert_eq!(shape.linear, switch && api == Api::V0_2);
+            assert_eq!(shape.hdr_float, switch && api == Api::V0_2);
+        }
+        settings.mods.disabled.insert("frame_owner".into());
+        let shape = picked_pack_shape(&settings);
+        assert!(!shape.linear);
+        assert_eq!(shape.hdr_float, switch);
+        settings.mods.disabled.clear();
+        assert_eq!(picked_pack_shape(&settings).linear, switch);
+        remember(&path, fingerprint(&path), None);
+        assert_eq!(picked_pack_shape(&settings).hdr_float, switch);
+        remember(&path, fingerprint(&path), Some(Api::V0_2));
+        std::fs::remove_dir_all(root).unwrap();
+        let missing = picked_pack_shape(&settings);
+        assert!(!missing.linear);
+        assert_eq!(missing.hdr_float, switch);
+    }
 
     #[test]
     fn shaders_packs_and_packs_with_a_shadow_pass_draw_flat() {
@@ -1438,6 +1575,20 @@ mod native_pack_tests {
         assert_eq!(active_pack(owned, &mods), owned);
         mods.disabled.insert("horizon_better_visuals".into());
         assert_eq!(active_pack(owned, &mods), "");
+        let root =
+            std::env::temp_dir().join(format!("horizon-bundled-shader-{}", std::process::id()));
+        let pack = root.join(owned);
+        std::fs::create_dir_all(&pack).unwrap();
+        std::fs::write(pack.join(horizon_shader_api::MANIFEST),
+            "schema = 1\nid = \"bundled\"\nname = \"Bundled\"\nversion = \"1\"\napi = \"0.1\"\n[[post]]\nfile = \"p.wgsl\"\n").unwrap();
+        let (key, path) = horizon_client::shader_pack_list::resolve(&root, owned);
+        assert_eq!(key, "horizon:bundled");
+        assert_eq!(path, pack);
+        assert_eq!(
+            active_pack(&path.file_name().unwrap().to_string_lossy(), &mods),
+            ""
+        );
+        std::fs::remove_dir_all(root).unwrap();
         assert_eq!(active_pack("golden_hour", &mods), "golden_hour");
         mods.installed[0].native = None;
         assert_eq!(active_pack(owned, &mods), owned);

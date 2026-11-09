@@ -189,12 +189,12 @@ impl<K: ObjectKey + Clone, V: Clone> ObjectOpenMap<K, V> {
                 }
                 p = (p + 1) & mask;
             }
-            if p < hole {
-                if let Some(c) = &mut cursor {
-                    c.wrapped
-                        .get_or_insert_with(Vec::new)
-                        .push(table.keys[p].clone());
-                }
+            if p < hole
+                && let Some(c) = &mut cursor
+            {
+                c.wrapped
+                    .get_or_insert_with(Vec::new)
+                    .push(table.keys[p].clone());
             }
             let key = table.keys[p].clone();
             let value = table.values[p].clone();

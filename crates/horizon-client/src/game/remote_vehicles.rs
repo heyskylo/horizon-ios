@@ -16,6 +16,7 @@
 use super::{Game, Keys, ray_box};
 use crate::Result;
 use horizon_client::mobs::{Mob, equine, happy_ghast};
+use horizon_client::{keybinds, text::Text};
 use horizon_core::geometry::{Aabb, Vec3};
 use horizon_protocol::packets::play::{self, Serverbound as S};
 
@@ -192,6 +193,11 @@ impl Game<'_> {
             } else {
                 r.passengers.insert(vehicle_id, passengers.to_vec());
             }
+            r.passenger_vehicles
+                .retain(|_, parent| *parent != vehicle_id);
+            for &passenger in passengers {
+                r.passenger_vehicles.insert(passenger as u32, vehicle_id);
+            }
         }
         self.remote_seat_passengers(vehicle_id, passengers);
         let player_controls = passengers.first().is_some_and(|&id| {
@@ -247,6 +253,19 @@ impl Game<'_> {
         if passengers.contains(&me) {
             if self.riding != Some(vehicle_id) {
                 self.riding = Some(vehicle_id);
+                // ClientPacketListener.handleSetEntityPassengersPacket: boarding says how to get off,
+                // on the overlay and to the narrator.
+                let key = if self.cushions.iter().any(|c| c.id == vehicle_id) {
+                    "mount.sit"
+                } else {
+                    "mount.onboard"
+                };
+                let message = Text::translate(
+                    key,
+                    &[keybinds::display_name(self.settings.keys.get("key.sneak"))],
+                );
+                self.say_system_now(&message);
+                self.titles.set_overlay(message, false);
                 if let Some(c) = self.carts.iter_mut().find(|c| c.id == vehicle_id) {
                     c.passenger_yaw_delta = 0.0;
                 }
@@ -325,6 +344,9 @@ impl Game<'_> {
         if let Some(p) = self.player.as_mut() {
             p.sprint_input_tick_riding(keys, sprint_window, can_sprint, local)?;
         }
+        // Settle an invisible seat riding a moving avatar before reading it.
+        // The normal end-of-tick pass alone leaves the local rider a tick behind.
+        self.position_riders();
         if let Some(i) = self.mobs.iter().position(|m| m.id == id) {
             // LocalPlayer.aiStep: the jump bar charges while jump is held.
             let jump = self.charge_mount_jump(i, keys);
@@ -335,6 +357,46 @@ impl Game<'_> {
             // (PlayerInput); the rider sits where `positionRider` puts it.
             self.position_rider();
             return Ok(true);
+        }
+        // Generic entities are valid vehicles too (plugins use displays as seats).
+        // Keep riding set so sendChanges sends rotation, never a walking position.
+        if !self.cushions.iter().any(|c| c.id == id)
+            && !self.boats.iter().any(|b| b.id == id)
+            && !self.carts.iter().any(|c| c.id == id)
+        {
+            let index = std::collections::HashMap::new();
+            if let Some(at) = self.passenger_riding_position(id, None, None, &index) {
+                let before = self
+                    .text_displays
+                    .get(&(id as i32))
+                    .map(|d| d.seat().1)
+                    .or_else(|| {
+                        self.armor_stands.iter().find(|a| a.id == id).map(|a| {
+                            let delta = a.previous.subtract(a.position);
+                            at + glam::DVec3::new(delta.x, delta.y, delta.z)
+                        })
+                    });
+                if let Some(p) = self.player.as_mut() {
+                    let scale = p.dimensions.width
+                        / horizon_client::pose::Pose::Standing.dimensions(1.0).width;
+                    let (seat, previous) = generic_player_seat(at, before.unwrap_or(at), scale);
+                    let previous = if before.is_some() {
+                        previous
+                    } else {
+                        p.position
+                    };
+                    self.previous_position = if self.posed_rider != self.riding {
+                        seat
+                    } else {
+                        previous
+                    };
+                    self.posed_rider = self.riding;
+                    p.position = seat;
+                    p.velocity = Vec3::ZERO;
+                    p.fall_distance = 0.0;
+                }
+                return Ok(true);
+            }
         }
         let seat = if let Some(c) = self.cushions.iter().find(|c| c.id == id) {
             // The seat does not move; the rider sits on the cushion.
@@ -349,13 +411,16 @@ impl Game<'_> {
                 b = self.tick_boat(b, true);
                 b.input = [keys.left, keys.right, keys.forward, keys.backward];
             }
-            // positionRider: the seat turns with the boat; clampRotation.
+            // positionRider: the seat turns with the boat; clampRotation,
+            // which moves `yRotO` (the held lead's old look) with the view.
             self.yaw += b.delta_rotation;
+            let previous_yaw = self.yaw;
             self.yaw = super::boats::clamp_player_yaw(self.yaw, b.yaw);
+            self.rope_rot_old.0 += self.yaw - previous_yaw;
             self.boats[i] = b;
             // Use the server-assigned seat, including when another player drives.
             Some(self.player_boat_seat(i))
-        } else {
+        } else if self.carts.iter().any(|c| c.id == id) {
             // Minecart.positionRider runs on the client after the cart tick.
             // The offset belongs to the cart, so switching vehicles cannot
             // transfer the previous vehicle's pending turn.
@@ -368,18 +433,23 @@ impl Game<'_> {
                 }
             }
             // A minecart: the server moves it, the rider sits in it.
-            let cart = self.carts.iter().find(|c| c.id == id).map(|c| {
+            self.carts.iter().find(|c| c.id == id).map(|c| {
                 c.position
                     .add_vector(Vec3::new(0.0, super::minecarts::SEAT, 0.0))
+            })
+        } else if let Some(at) =
+            self.passenger_riding_position(id, None, None, &std::collections::HashMap::new())
+        {
+            let scale = self.player.as_ref().map_or(1.0, |p| {
+                p.dimensions.width / horizon_client::pose::Pose::Standing.dimensions(1.0).width
             });
-            if cart.is_none() {
-                // Entity.baseTick: a passenger whose vehicle is gone stops
-                // riding it. Nothing with the id is in the level any more (it
-                // died, or the world it rode in was left), so the seat goes.
-                self.riding = None;
-                return Ok(false);
-            }
-            cart
+            Some(Vec3::new(at.x, at.y - f64::from(0.6_f32 * scale), at.z))
+        } else {
+            // Entity.baseTick: a passenger whose vehicle is gone stops
+            // riding it. Nothing with the id is in the level any more (it
+            // died, or the world it rode in was left), so the seat goes.
+            self.riding = None;
+            return Ok(false);
         };
         if let Some(p) = self.player.as_mut() {
             // The tick a rider takes its seat is a teleport (`Entity.moveTo`,
@@ -502,11 +572,7 @@ impl Game<'_> {
             }
             self.boats[i].tick_bubble_wobble();
             if !driven {
-                Self::tick_boat_paddles(
-                    &mut self.boats[i],
-                    &mut self.audio,
-                    &mut self.world.random,
-                );
+                Self::tick_boat_paddles(&mut self.boats[i], &mut self.audio);
             }
         }
     }
@@ -537,41 +603,33 @@ impl Game<'_> {
         self.mobs.iter().find(|m| m.id == id && self.drives(m))
     }
 
-    /// `LocalPlayer.aiStep` and `LivingEntity.travelRidden` on the
-    /// controlling client: a released jump goes to the server
-    /// (`sendRidingJump`), and the mount takes the rider's input and moves
-    /// here (`tickRidden`, then `travel`).
+    /// `LivingEntity.travelRidden`, then `LocalPlayer.aiStep`, on the
+    /// controlling client. The vehicle ticks before its passenger
+    /// (`ClientLevel.tickNonPassenger`), so the mount moves (`tickRidden`,
+    /// then `travel`) on what the rider's previous tick left: `xxa`/`zza` from
+    /// `applyInput` (the keys through `modifyInput`: ×0.98, square movement),
+    /// the sprint and the jump `onPlayerJump` set. Only then does this tick's
+    /// aiStep read the keys, send a released jump (`sendRidingJump`) and run
+    /// `onPlayerJump`, for the mount's next tick. Moving on this tick's keys
+    /// put every ridden move a tick ahead of the server's view of the input.
     fn drive_mount(&mut self, i: usize, keys: Keys, jump: f32) {
-        if jump > 0.0
-            && let Some(id) = self.remote.as_ref().map(|r| r.entity_id)
-        {
-            self.send(riding_jump(id, self.mount.jump_scale));
-        }
-        let strafe = f32::from(u8::from(keys.left)) - f32::from(u8::from(keys.right));
-        let forward = f32::from(u8::from(keys.forward)) - f32::from(u8::from(keys.backward));
         let steer = self.steers_mount(&self.mobs[i]);
+        let (yaw, pitch) = (self.yaw, self.pitch);
+        // The first ridden tick reads what the player's last walking tick applied.
+        let walked = self.player.as_ref().map_or([0.0; 2], |p| p.applied_input);
         let m = &mut self.mobs[i];
-        if jump > 0.0 && equine::is_equine(m.species()) {
-            // LocalPlayer.aiStep also runs `onPlayerJump` here: the mount slides
-            // on the rider's keys and rears while the server does the same.
-            equine::on_player_jump(m);
-        }
-        // playerJumpPendingScale waits for the ground.
-        let pending = m.rider.map_or(0.0, |r| r.jump);
-        // The rider's sprint state, not the key: Camel.getRiddenSpeed reads
-        // `controller.isSprinting()`, which keeps the double-tapped sprint
-        // after the key is let go (`shouldStopRunSprinting` decides the end).
-        let sprinting = self.player.as_ref().is_some_and(|p| p.sprinting);
+        let last = m.rider.unwrap_or(equine::Rider {
+            strafe: walked[0],
+            forward: walked[1],
+            ..Default::default()
+        });
+        // tickRidden reads the controller's look as it is now.
         m.rider = Some(equine::Rider {
-            strafe,
-            forward,
-            yaw: self.yaw,
-            pitch: self.pitch,
-            jump: if jump > 0.0 { jump } else { pending },
+            yaw,
+            pitch,
             steer,
-            sprint: sprinting,
-            jumping: keys.jump,
             client: false,
+            ..last
         });
         let mut mob = self.mobs.remove(i);
         let mut random = self.world.random.clone();
@@ -584,6 +642,36 @@ impl Game<'_> {
         mob.removed = false;
         self.world.random = random;
         self.mobs.insert(i, mob);
+        // LocalPlayer.aiStep, after the vehicle's tick.
+        if jump > 0.0
+            && let Some(id) = self.remote.as_ref().map(|r| r.entity_id)
+        {
+            self.send(riding_jump(id, self.mount.jump_scale));
+        }
+        let [strafe, forward] = horizon_client::input::modify_input(keys.direction(), None, None);
+        // The rider's sprint state, not the key: Camel.getRiddenSpeed reads
+        // `controller.isSprinting()`, which keeps the double-tapped sprint
+        // after the key is let go (`shouldStopRunSprinting` decides the end).
+        let sprinting = self.player.as_ref().is_some_and(|p| p.sprinting);
+        let m = &mut self.mobs[i];
+        if jump > 0.0 && equine::is_equine(m.species()) {
+            // `onPlayerJump`: the mount slides on the rider's keys and rears
+            // while the server does the same.
+            equine::on_player_jump(m);
+        }
+        // playerJumpPendingScale waits for the ground (the tick spends it).
+        let pending = m.rider.map_or(0.0, |r| r.jump);
+        m.rider = Some(equine::Rider {
+            strafe,
+            forward,
+            yaw,
+            pitch,
+            jump: if jump > 0.0 { jump } else { pending },
+            steer,
+            sprint: sprinting,
+            jumping: keys.jump,
+            client: false,
+        });
         // #4821: footstep, gallop, breathe, splash and landing sounds from mob.tick
         let _ = self.handle_mob_events(events);
     }
@@ -632,8 +720,38 @@ fn mount_move(m: &Mob) -> S {
     })
 }
 
+/// Avatar's VEHICLE attachment scales independently of the vehicle's seat.
+fn generic_player_seat(at: glam::DVec3, before: glam::DVec3, scale: f32) -> (Vec3, Vec3) {
+    let offset = 0.6 * f64::from(scale);
+    (
+        Vec3::new(at.x, at.y - offset, at.z),
+        Vec3::new(before.x, before.y - offset, before.z),
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn local_player_on_block_display_and_interaction() {
+        for kind in ["minecraft:block_display", "minecraft:interaction"] {
+            let at = glam::DVec3::new(10.5, -59.5, 0.5);
+            let before = glam::DVec3::new(10.0, -59.0, 0.5);
+            let (seat, previous) = super::generic_player_seat(at, before, 1.0);
+            assert_eq!(
+                seat,
+                horizon_core::geometry::Vec3::new(10.5, -60.1, 0.5),
+                "{kind}"
+            );
+            assert_eq!(
+                previous,
+                horizon_core::geometry::Vec3::new(10.0, -59.6, 0.5),
+                "{kind}"
+            );
+            let (scaled, _) = super::generic_player_seat(at, before, 2.0);
+            assert_eq!(scaled.y, -60.7, "{kind}");
+        }
+    }
+
     use super::*;
     use horizon_client::mobs::MobTypes;
 
@@ -809,6 +927,74 @@ mod tests {
         assert!(!client_moves(&m, true, false), "baby ghast");
     }
 
+    /// The mount ticks before its rider (`ClientLevel.tickNonPassenger`): it
+    /// moves on the input the rider's previous tick applied (`zza`, the key
+    /// ×0.98 through `LocalPlayer.modifyInput`), so a press reaches it a tick
+    /// late and a release a tick late too, as the server's anticheats expect.
+    #[test]
+    #[ignore = "requires prepared resources (HORIZON_TEST_RESOURCES)"]
+    fn a_driven_horse_moves_on_the_riders_last_tick_input() {
+        use super::super::{
+            Audio, Options, Progress, Settings, execution_role::ExecutionRole, load_resources,
+        };
+        use horizon_client::{items::ItemStack, motion::PlayerMotion};
+        use horizon_protocol::connection::Pipe;
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!("no menu handoff"),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = ExecutionRole::Client;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let (client, _server) = Pipe::pair();
+        game.connect_local(client, "RiderTest").unwrap();
+        game.remote.as_mut().unwrap().joined = true;
+        game.remote.as_mut().unwrap().first_passenger = true;
+        game.player = Some(PlayerMotion::new(&game.motion, Vec3::new(0.5, 300.0, 0.5)).unwrap());
+        let types = MobTypes::load(&root).unwrap();
+        let t = std::sync::Arc::new(types.types["minecraft:horse"].clone());
+        let mut horse = Mob::new(7, t, Vec3::new(0.5, 300.0, 0.5), 0.0);
+        horse.set_saddle(Some(ItemStack::new("minecraft:saddle", 1)));
+        game.mobs.push(horse);
+        game.riding = Some(7);
+        let forward = Keys {
+            forward: true,
+            ..Keys::default()
+        };
+        let zza = |game: &mut Game, keys| {
+            assert!(game.remote_ride(keys, 0).unwrap());
+            game.mobs[0].ai.zza
+        };
+        assert_eq!(zza(&mut game, forward), 0.0, "the press waits a tick");
+        assert_eq!(zza(&mut game, forward), 0.98, "modifyInput's 0.98");
+        assert_eq!(
+            zza(&mut game, Keys::default()),
+            0.98,
+            "the release waits a tick"
+        );
+        assert_eq!(zza(&mut game, Keys::default()), 0.0);
+    }
+
     /// #2920: the client reports where it moved the mount, and a released
     /// jump with the bar's percentage (`sendRidingJump`).
     #[test]
@@ -944,5 +1130,85 @@ mod native_rider_motion_tests {
         assert!(player.position.z > start.z);
         assert!(!player.collision.horizontal);
         assert!(!player.is_passenger);
+    }
+}
+
+#[cfg(test)]
+mod plugin_seat_tests {
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn local_rider_uses_attachments_and_follows_a_moving_seat_chain() {
+        use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+        use horizon_client::{mobs::Mob, motion::PlayerMotion, sprint::Keys};
+        use horizon_core::geometry::Vec3;
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.player = Some(PlayerMotion::new(&game.motion, Vec3::ZERO).unwrap());
+        let mut stand =
+            horizon_client::entities::ArmorStand::new(42, Vec3::new(2.0, 64.0, 3.0), 0.0);
+        stand.marker = true;
+        game.armor_stands.push(stand);
+        game.riding = Some(42);
+        assert!(game.remote_ride(Keys::default(), 0).unwrap());
+        let close = |actual: f64, expected: f64| {
+            assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}")
+        };
+        // EntityAttachments: zero-height marker minus Avatar's 0.6 attachment.
+        close(game.player.as_ref().unwrap().position.y, 63.4);
+        game.armor_stands[0].marker = false;
+        game.armor_stands[0].small = true;
+        game.remote_ride(Keys::default(), 0).unwrap();
+        close(game.player.as_ref().unwrap().position.y, 64.3875);
+        game.armor_stands[0].small = false;
+        game.remote_ride(Keys::default(), 0).unwrap();
+        close(game.player.as_ref().unwrap().position.y, 65.375);
+        let kind = game.res.player_type().clone().unwrap();
+        game.mobs
+            .push(Mob::new(43, kind, Vec3::new(5.0, 70.0, 6.0), 0.0));
+        game.armor_stands[0].marker = true;
+        game.armor_stands[0].vehicle = Some(43);
+        for at in [Vec3::new(5.0, 70.0, 6.0), Vec3::new(12.0, 72.0, -4.0)] {
+            game.mobs[0].position = at;
+            // No manual position_riders call: local ride must resolve the chain itself.
+            game.remote_ride(Keys::default(), 0).unwrap();
+            let p = game.player.as_ref().unwrap().position;
+            close(p.x, at.x);
+            close(p.z, at.z);
+            close(p.y, at.y + 1.2);
+        }
+        // Direct riding and a scaled avatar share the same attachment calculation.
+        game.riding = Some(43);
+        game.mobs[0].extra.model_scale = 1.5;
+        game.remote_ride(Keys::default(), 0).unwrap();
+        close(game.player.as_ref().unwrap().position.y, 74.1);
+        game.mobs.clear();
+        game.armor_stands.clear();
+        assert!(!game.remote_ride(Keys::default(), 0).unwrap());
+        assert_eq!(game.riding, None);
     }
 }

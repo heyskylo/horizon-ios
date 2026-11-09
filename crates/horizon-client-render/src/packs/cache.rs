@@ -597,10 +597,87 @@ pub(super) fn build(vanilla: &Path, packs: &[Pack], out: &Path) -> io::Result<()
 }
 
 #[cfg(test)]
+mod legacy_maintenance {
+    use super::*;
+}
+
+#[cfg(test)]
 mod tests {
+    use super::legacy_maintenance::{KEEP, hold, prune, use_path};
     use super::*;
     use crate::{packs, text::Text};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn prune_keeps_the_most_recently_used_overlays_and_those_in_use() {
+        let f = Fixture::new();
+        let cache = f.0.join("cache");
+        let now = std::time::SystemTime::now();
+        // KEEP + 4 overlays, overlay 0 used last; one more not an overlay.
+        let overlays: Vec<PathBuf> = (0..KEEP + 4)
+            .map(|i| {
+                let out = cache.join(format!("{i:016x}"));
+                f.write(&format!("cache/{i:016x}/assets/a.png"), b"x");
+                f.write(&format!("cache/{i:016x}.overlay-cache.json"), b"{}");
+                let used = fs::File::create(use_path(&out)).unwrap();
+                used.set_modified(now - std::time::Duration::from_secs(60 * i as u64))
+                    .unwrap();
+                out
+            })
+            .collect();
+        f.write("cache/notes/keep.txt", b"x");
+        // Another process uses the oldest, and builds the second oldest.
+        let using = fs::File::open(use_path(&overlays[KEEP + 3])).unwrap();
+        using.lock_shared().unwrap();
+        let building = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path(&overlays[KEEP + 2]))
+            .unwrap();
+        building.lock().unwrap();
+        prune(&cache);
+        let kept: Vec<bool> = overlays.iter().map(|o| o.is_dir()).collect();
+        let mut expected = vec![true; KEEP];
+        expected.extend([false, false, true, true]);
+        assert_eq!(kept, expected);
+        assert!(
+            !marker_path(&overlays[KEEP]).exists(),
+            "never reused half deleted"
+        );
+        assert!(cache.join("notes/keep.txt").exists());
+        // Released, they go at the next prune.
+        drop((using, building));
+        prune(&cache);
+        assert_eq!(
+            overlays.iter().filter(|o| o.is_dir()).count(),
+            KEEP,
+            "only the most recent stay"
+        );
+        assert!(overlays[..KEEP].iter().all(|o| o.is_dir()));
+    }
+
+    #[test]
+    fn an_overlay_held_by_this_process_is_never_pruned() {
+        let f = Fixture::new();
+        let cache = f.0.join("cache");
+        let held = cache.join("00000000000000ff");
+        f.write("cache/00000000000000ff/assets/a.png", b"x");
+        hold(&held).unwrap();
+        // Older than KEEP others, and still in use.
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        fs::File::options()
+            .write(true)
+            .open(use_path(&held))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        for i in 0..KEEP {
+            f.write(&format!("cache/{i:016x}/assets/a.png"), b"x");
+        }
+        prune(&cache);
+        assert!(held.is_dir());
+    }
 
     struct Fixture(PathBuf);
     impl Fixture {

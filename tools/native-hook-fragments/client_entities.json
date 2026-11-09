@@ -1,0 +1,13 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "reserve_entity_id", "target": "horizon_client::game::native_client_entities::Game<'_>::native_reserve_entity_id"},
+    {"name": "client_entity_spawn", "target": "horizon_client::game::native_client_entities::Game<'_>::native_client_entity_spawn"},
+    {"name": "client_entity_set", "target": "horizon_client::game::native_client_entities::Game<'_>::native_client_entity_set"},
+    {"name": "client_entity_move", "target": "horizon_client::game::native_client_entities::Game<'_>::native_client_entity_move"},
+    {"name": "client_entity_remove", "target": "horizon_client::game::native_client_entities::Game<'_>::native_client_entity_remove"}
+  ],
+  "rust_summary": "entities shown to one player's client alone (`native_client_entity_spawn`, `_set`, `_move`, `_remove`), their data from a compound as `/summon` reads it, and an entity id no server entity takes (`native_reserve_entity_id`).",
+  "doc_summary": "`native_client_entity_spawn(viewer, kind, pos, yaw, nbt)` shows an entity (a text, item or block display, or any type with its custom name, invisibility, glow) to one player's client alone, with its synched data encoded from `nbt` as `/summon` reads it; `native_client_entity_set(viewer, id, nbt)`, `native_client_entity_move(viewer, id, pos, yaw)` and `native_client_entity_remove(viewer, ids)` change, move and take it away. Never simulated, saved or seen by others. `native_reserve_entity_id()` gives an id no server entity takes. Bundles need \"hooks\": @API:client_entities@.",
+  "comments": ["crates/horizon-client/src/game/native_client_entities.rs"]
+}

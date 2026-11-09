@@ -428,7 +428,10 @@ fn sample_probe(
         wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX,
     );
     let rects = buffer(
-        bytemuck::cast_slice(&atlas.rects_table()),
+        bytemuck::cast_slice(&super::super::pack_post::terrain_tables(
+            &[],
+            &atlas.rects_table(),
+        )),
         wgpu::BufferUsages::STORAGE,
     );
     let bindings = [

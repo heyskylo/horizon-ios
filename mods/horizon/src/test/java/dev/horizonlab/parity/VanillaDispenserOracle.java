@@ -23,6 +23,7 @@ import net.minecraft.world.level.block.CrafterBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.CrafterBlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.gameevent.GameEvent;
 import net.minecraft.world.level.gamerules.GameRules;
 import net.minecraft.world.level.levelgen.LegacyRandomSource;
 
@@ -193,10 +194,13 @@ public final class VanillaDispenserOracle {
     static List<String> mine(VanillaBlockUpdateOracle.World w, BlockPos pos, JsonObject op) throws Exception {
         Miner player = (Miner) VanillaBlockUpdateOracle.allocate.invoke(VanillaBlockUpdateOracle.unsafe, Miner.class);
         player.world = w;
+        player.creative = op.has("creative") && op.get("creative").getAsBoolean();
         player.hand = stack(op.get("item").getAsString());
         player.offhand = ItemStack.EMPTY;
         player.stats = new ArrayList<>();
-        VanillaBlockUpdateOracle.set(net.minecraft.world.entity.player.Player.class, player, "abilities", new net.minecraft.world.entity.player.Abilities());
+        var abilities = new net.minecraft.world.entity.player.Abilities();
+        abilities.invulnerable = abilities.instabuild = abilities.mayfly = player.creative;
+        VanillaBlockUpdateOracle.set(net.minecraft.world.entity.player.Player.class, player, "abilities", abilities);
         VanillaBlockUpdateOracle.set(net.minecraft.world.entity.player.Player.class, player, "foodData", new net.minecraft.world.food.FoodData());
         var advancements = (net.minecraft.server.PlayerAdvancements) VanillaBlockUpdateOracle.allocate.invoke(VanillaBlockUpdateOracle.unsafe, net.minecraft.server.PlayerAdvancements.class);
         VanillaBlockUpdateOracle.set(net.minecraft.server.PlayerAdvancements.class, advancements, "activeTriggers", new HashMap<>());
@@ -208,7 +212,7 @@ public final class VanillaDispenserOracle {
         player.setBoundingBox(EntityTypes.PLAYER.getDimensions().makeBoundingBox(at));
         var gameMode = new net.minecraft.server.level.ServerPlayerGameMode(player);
         VanillaBlockUpdateOracle.set(net.minecraft.server.level.ServerPlayerGameMode.class, gameMode, "gameModeForPlayer",
-            net.minecraft.world.level.GameType.SURVIVAL);
+            player.creative ? net.minecraft.world.level.GameType.CREATIVE : net.minecraft.world.level.GameType.SURVIVAL);
         gameMode.destroyBlock(pos);
         List<String> out = new ArrayList<>(player.stats);
         out.add("mine held " + ParityData.canon(player.hand));
@@ -218,14 +222,15 @@ public final class VanillaDispenserOracle {
     /** The player of a "mine" case: a survival `Clicker` whose selected inventory slot is its main hand. */
     static final class Miner extends net.minecraft.server.level.ServerPlayer {
         VanillaBlockUpdateOracle.World world;
+        boolean creative;
         ItemStack hand, offhand;
         List<String> stats;
         Miner() {
             super(null, null, null, null);
         }
         @Override public ServerLevel level() { return world; }
-        @Override public boolean hasInfiniteMaterials() { return false; }
-        @Override public boolean isCreative() { return false; }
+        @Override public boolean hasInfiniteMaterials() { return creative; }
+        @Override public boolean isCreative() { return creative; }
         @Override public boolean isSpectator() { return false; }
         @Override public EntityType<?> getType() { return EntityTypes.PLAYER; }
         @Override public net.minecraft.core.Holder<EntityType<?>> typeHolder() { return EntityTypes.PLAYER.builtInRegistryHolder(); }
@@ -347,6 +352,7 @@ public final class VanillaDispenserOracle {
         }
         if (f.has("rules")) {
             for (var rule : f.getAsJsonObject("rules").entrySet()) {
+                if (rule.getKey().equals("block_drops")) w.rules.set(GameRules.BLOCK_DROPS, rule.getValue().getAsBoolean(), null);
                 if (rule.getKey().equals("tnt_explodes")) w.rules.set(GameRules.TNT_EXPLODES, rule.getValue().getAsBoolean(), null);
                 if (rule.getKey().equals("spawner_blocks_work")) w.rules.set(GameRules.SPAWNER_BLOCKS_WORK, rule.getValue().getAsBoolean(), null);
                 if (rule.getKey().equals("block_explosion_drop_decay")) w.rules.set(GameRules.BLOCK_EXPLOSION_DROP_DECAY, rule.getValue().getAsBoolean(), null);
@@ -467,11 +473,21 @@ public final class VanillaDispenserOracle {
             line.append(' ').append(num(v.x)).append(' ').append(num(v.y)).append(' ').append(num(v.z));
             if (e instanceof ItemEntity item) line.append(' ').append(ParityData.canon(item.getItem()));
             if (e instanceof PrimedTnt tnt) line.append(" fuse=").append(tnt.getFuse());
+            if (e instanceof ExperienceOrb orb) line.append(" value=").append(orb.getValue());
             // An orb that took others in (ExperienceOrb.tryMergeToExisting) prints once per
             // count: whether orbs merge depends on entity ids, which Horizon doesn't share.
             for (int n = e instanceof ExperienceOrb orb ? orbCount(orb) : 1; n > 0; n--) result.add(line.toString());
         }
-        for (int i = 0; i < targets.size(); i++) result.add(describe(i, targets.get(i)));
+        for (int i = 0; i < targets.size(); i++) {
+            result.add(describe(i, targets.get(i)));
+            // A container entity's items (chest boats, chest and hopper minecarts): what a dropper put in.
+            if (targets.get(i) instanceof net.minecraft.world.entity.vehicle.ContainerEntity box) {
+                for (int slot = 0; slot < box.getContainerSize(); slot++) {
+                    ItemStack s = box.getItem(slot);
+                    if (!s.isEmpty()) result.add("Tinv " + i + " " + slot + " " + ParityData.canon(s));
+                }
+            }
+        }
         for (String s : w.log.toString().split("\n")) {
             if (s.isEmpty() || s.startsWith("E ")) continue;
             result.add(s);
@@ -580,8 +596,16 @@ public final class VanillaDispenserOracle {
         @Override public boolean isSilent() { return false; }
         // A book's screen needs a connection; nothing of it is printed.
         @Override public void openItemGui(ItemStack stack, net.minecraft.world.InteractionHand h) { }
+        // `LivingEntity.startUsingItem` on the server posts `ITEM_INTERACT_START`
+        // through `ItemStack.causeUseVibration` when the stack's use effects ask
+        // for interaction vibrations (every item's `UseEffects.DEFAULT` from
+        // `DataComponents.COMMON_ITEM_COMPONENTS`; spears turn it off). The
+        // headless level logs it as any other game event.
         @Override public void startUsingItem(net.minecraft.world.InteractionHand h) {
-            using = BuiltInRegistries.ITEM.getKey(getItemInHand(h).getItem()).toString();
+            ItemStack held = getItemInHand(h);
+            if (held.isEmpty() || isUsingItem()) return;
+            using = BuiltInRegistries.ITEM.getKey(held.getItem()).toString();
+            if (!level().isClientSide()) held.causeUseVibration(this, GameEvent.ITEM_INTERACT_START);
         }
         @Override public boolean isUsingItem() { return using != null; }
         @Override public void awardStat(net.minecraft.stats.Stat<?> stat, int count) {
@@ -810,6 +834,18 @@ public final class VanillaDispenserOracle {
         player.setId(w.getNextEntityId());
         VanillaBlockUpdateOracle.set(LivingEntity.class, player, "attributes",
             new net.minecraft.world.entity.ai.attributes.AttributeMap(net.minecraft.world.entity.player.Player.createAttributes().build()));
+        // What the constructor gives a player and hurtServer reads, for the
+        // target's Thorns: the player's own random rolls the damage.
+        VanillaBlockUpdateOracle.set(Entity.class, player, "random", net.minecraft.util.RandomSource.create());
+        VanillaBlockUpdateOracle.set(LivingEntity.class, player, "combatTracker", new net.minecraft.world.damagesource.CombatTracker(player));
+        VanillaBlockUpdateOracle.set(LivingEntity.class, player, "activeEffects", new HashMap<>());
+        VanillaBlockUpdateOracle.set(LivingEntity.class, player, "useItem", ItemStack.EMPTY);
+        VanillaBlockUpdateOracle.set(LivingEntity.class, player, "lastClimbablePos", Optional.empty());
+        VanillaBlockUpdateOracle.set(net.minecraft.world.entity.player.Player.class, player, "foodData", new net.minecraft.world.food.FoodData());
+        for (String shoulder : new String[] {"shoulderEntityLeft", "shoulderEntityRight"}) {
+            VanillaBlockUpdateOracle.set(net.minecraft.server.level.ServerPlayer.class, player, shoulder, new net.minecraft.nbt.CompoundTag());
+        }
+        player.setHealth(player.getMaxHealth());
         player.setUUID(new UUID(0L, 1L));
         VanillaBlockUpdateOracle.set(net.minecraft.world.entity.player.Player.class, player, "gameProfile",
             new com.mojang.authlib.GameProfile(new UUID(0L, 1L), "Player"));
@@ -855,6 +891,14 @@ public final class VanillaDispenserOracle {
             }
             out.add("V " + i + " " + health + " " + num(v.x) + " " + num(v.y) + " " + num(v.z));
         }
+        // What the first target wears (its Thorns wear it) and the player's health.
+        if (!(target instanceof net.minecraft.world.entity.decoration.ArmorStand)) {
+            for (EquipmentSlot slot : new EquipmentSlot[] {EquipmentSlot.FEET, EquipmentSlot.LEGS, EquipmentSlot.CHEST, EquipmentSlot.HEAD}) {
+                ItemStack worn = target.getItemBySlot(slot);
+                if (!worn.isEmpty()) out.add("W " + slot.getName() + " " + ParityData.canon(worn));
+            }
+        }
+        out.add("H " + num(player.getHealth()));
         var v = player.getDeltaMovement();
         var impact = player.currentImpulseImpactPos;
         Field grace = LivingEntity.class.getDeclaredField("currentImpulseContextResetGraceTime");

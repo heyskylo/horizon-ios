@@ -3,6 +3,7 @@
     {
       "name": "tooltip_render_pre",
       "target": "horizon_client::game::native_hooks::Game<'_>::native_tooltip_render_pre",
+      "neoforge": "RenderTooltipEvent.Pre",
       "side": "client",
       "cancellable": true,
       "mod_api": {

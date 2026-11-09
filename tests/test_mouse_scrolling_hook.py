@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 class MouseScrollingHookTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_axes_accumulation_context_gates_and_cancellation(self):
-        source = (ROOT / "crates/horizon-client/src/game.rs").read_text(encoding="utf-8")
+        source = "".join((ROOT / "crates/horizon-client/src" / path).read_text(encoding="utf-8")
+                         for path in ("game/play_input.rs", "game.rs"))
         start = source.index("                    let (raw_x, raw_y) = match delta")
         normalize = source[start:source.index("                    // ScreenEvent.MouseScrolled.Pre", start)]
         start = source.index("                    if self.hotbar_takes_wheel()", start)

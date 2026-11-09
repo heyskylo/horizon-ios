@@ -47,11 +47,42 @@ pub struct Textures {
     pub slim: bool,
 }
 
-/// The `getTexture` endpoint's valid URIs from Minecraft services discovery.
+/// The `getTexture` endpoint's valid URIs in production's services discovery
+/// document (`MinecraftServicesEnvironment.PROD`).
 pub const TEXTURE_URIS: [&str; 2] = [
     "https://textures.minecraft.net/texture/{textureId}",
     "http://textures.minecraft.net/texture/{textureId}",
 ];
+
+/// `MinecraftServicesDiscoveryService`'s valid texture URIs: the discovery
+/// document's `profiles` / `getTexture` `validUris`, which
+/// `MinecraftServicesSessionService.isAllowedTextureDomain` checks texture URLs
+/// against. Production's document lists [`TEXTURE_URIS`], so they are used
+/// without asking it; another environment (`HORIZON_API_DISCOVERY`) is asked
+/// once per game, and keeps [`TEXTURE_URIS`] when its document lists none or
+/// can't be fetched.
+pub fn texture_uris() -> &'static [String] {
+    static URIS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    URIS.get_or_init(|| {
+        crate::auth::discovery_overridden()
+            .then(|| crate::auth::discovery().ok())
+            .flatten()
+            .and_then(|doc| discovery_texture_uris(&doc))
+            .unwrap_or_else(|| TEXTURE_URIS.map(str::to_owned).to_vec())
+    })
+}
+
+/// The `profiles` / `getTexture` endpoint's `validUris` in a discovery
+/// document, when it lists any.
+fn discovery_texture_uris(doc: &serde_json::Value) -> Option<Vec<String>> {
+    let uris: Vec<String> = doc
+        .pointer("/discovery/profiles/endpoints/getTexture/validUris")?
+        .as_array()?
+        .iter()
+        .filter_map(|u| u.as_str().map(str::to_owned))
+        .collect();
+    (!uris.is_empty()).then_some(uris)
+}
 
 /// `java.util.Base64.getDecoder().decode`.
 pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
@@ -67,7 +98,7 @@ pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
 
 /// `unpackTextures(property)`: the textures of a `textures` property's
 /// base64 JSON payload.
-pub fn unpack(value: &str, signature: Signature, valid_uris: &[&str]) -> Textures {
+pub fn unpack(value: &str, signature: Signature, valid_uris: &[impl AsRef<str>]) -> Textures {
     let empty = Textures::default();
     let Some(json) = base64_decode(value)
         .map(|b| String::from_utf8_lossy(&b).into_owned())
@@ -91,7 +122,7 @@ pub fn unpack(value: &str, signature: Signature, valid_uris: &[&str]) -> Texture
         };
         let allowed = valid_uris
             .iter()
-            .any(|u| url.starts_with(&u.replace("{textureId}", "")));
+            .any(|u| url.starts_with(&u.as_ref().replace("{textureId}", "")));
         if !allowed {
             return empty;
         }
@@ -118,7 +149,7 @@ pub fn unpack(value: &str, signature: Signature, valid_uris: &[&str]) -> Texture
 /// those textures be unsigned (`getInsecureSkinInformation`).
 pub fn profile_skin_url(profile: &serde_json::Value) -> Option<String> {
     let (value, signature) = parse_profile(profile).textures?;
-    unpack(&value, signature, &TEXTURE_URIS).skin
+    unpack(&value, signature, texture_uris()).skin
 }
 
 /// The textures of a Minecraft services `/minecraft/profile` answer: the
@@ -137,7 +168,7 @@ pub fn services_profile_textures(profile: &serde_json::Value) -> Textures {
         .and_then(|t| t.get("url"))
         .and_then(|u| u.as_str())
         .filter(|url| {
-            TEXTURE_URIS
+            texture_uris()
                 .iter()
                 .any(|u| url.starts_with(&u.replace("{textureId}", "")))
         })
@@ -150,7 +181,7 @@ pub fn services_profile_textures(profile: &serde_json::Value) -> Textures {
         .and_then(|t| t.get("url"))
         .and_then(|u| u.as_str())
         .filter(|url| {
-            TEXTURE_URIS
+            texture_uris()
                 .iter()
                 .any(|u| url.starts_with(&u.replace("{textureId}", "")))
         })
@@ -178,7 +209,7 @@ pub fn profile_skin_url_nbt(profile: &horizon_world::nbt::Tag) -> Option<String>
             .then(|| nbt_text(p.get("value")))
             .flatten()
     })?;
-    unpack(&value, Signature::Unsigned, &TEXTURE_URIS).skin
+    unpack(&value, Signature::Unsigned, texture_uris()).skin
 }
 
 /// `ResolvableProfile.skinPatch().body()` of a skull's `profile` NBT: the
@@ -631,7 +662,7 @@ fn prepare_head(profile: &serde_json::Value) -> HeadProfile {
 
 fn prepare_head_info(info: ProfileInfo) -> HeadProfile {
     let skin = info.textures.as_ref().and_then(|(value, signature)| {
-        let url = unpack(value, *signature, &TEXTURE_URIS).skin?;
+        let url = unpack(value, *signature, texture_uris()).skin?;
         let location = skin_location(&texture_hash(&url)?);
         Some((url, location))
     });
@@ -2696,6 +2727,33 @@ mod tests {
         assert!(super::read_offline_skin(&file, "slim").is_err());
         assert!(super::read_offline_skin(&dir.join("missing.png"), "").is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `MinecraftServicesDiscoveryService`: another environment's document
+    /// names its own texture host; one that lists none names nothing.
+    #[test]
+    fn texture_uris_come_from_the_discovery_document() {
+        use super::{Signature, discovery_texture_uris, unpack};
+        let doc = serde_json::json!({"discovery": {"profiles": {"endpoints": {"getTexture": {
+            "validUris": ["https://skins.example.org/t/{textureId}"]
+        }}}}});
+        let uris = discovery_texture_uris(&doc).unwrap();
+        assert_eq!(uris, ["https://skins.example.org/t/{textureId}"]);
+        // {"textures":{"SKIN":{"url":"https://skins.example.org/t/abc"}}}
+        let ours =
+            "eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHBzOi8vc2tpbnMuZXhhbXBsZS5vcmcvdC9hYmMifX19";
+        assert_eq!(
+            unpack(ours, Signature::Signed, &uris).skin.as_deref(),
+            Some("https://skins.example.org/t/abc")
+        );
+        assert_eq!(
+            unpack(ours, Signature::Signed, &super::TEXTURE_URIS).skin,
+            None
+        );
+        let none = serde_json::json!({"discovery": {"profiles": {"endpoints": {}}}});
+        assert_eq!(discovery_texture_uris(&none), None);
+        let empty = serde_json::json!({"discovery": {"profiles": {"endpoints": {"getTexture": {"validUris": []}}}}});
+        assert_eq!(discovery_texture_uris(&empty), None);
     }
 
     /// `MinecraftProfileTexture.getMetadata("model")`: `slim` marks a slim

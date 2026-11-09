@@ -449,7 +449,7 @@ mod transaction_tests {
             .unwrap(),
         );
         client.title = None;
-        client.open_chat("keep");
+        client.open_chat("keep", false);
         client.begin_content_reload(ReloadKind::Selection, stage(&client, next.clone()));
         assert!(client.content_reload_busy());
         client.ime_commit("ignored");
@@ -457,6 +457,7 @@ mod transaction_tests {
         let entry = PendingWorldEntry::Server {
             address: "localhost:25565".into(),
             name: "deferred".into(),
+            realm: false,
             lan: false,
             cookies: None,
         };
@@ -482,7 +483,7 @@ mod transaction_tests {
         assert!(client.pending_entry.take().is_some());
         client.finish_reload_input_disarm(&TestLoop);
         client.title = None;
-        client.open_chat("keep");
+        client.open_chat("keep", false);
         client.ime_commit(" accepted");
         assert_eq!(
             client.ui.chat_screen.as_ref().unwrap().input.value,

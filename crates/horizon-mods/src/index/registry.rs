@@ -413,7 +413,9 @@ pub fn project(entry: &Entry, src: &Sources) -> Result<Project, Vec<String>> {
 
 /// An icon (`folder` = `icons/`) or a screenshot (`screenshots/<id>/`) as the index lists it: an
 /// `https://` address as it is, or a file in the registry repository checked and served from the
-/// registry's site.
+/// registry's site. An icon's address ends in `?v=` and the start of its SHA-256, so a new icon
+/// is a new address: the launcher keeps images by address for a week, and would go on showing
+/// the old one.
 fn image(
     src: &Sources,
     id: &str,
@@ -439,13 +441,14 @@ fn image(
     };
     let checked = image_bytes(src.registry, path, max).and_then(|bytes| {
         if icon {
-            rules::check_icon(&bytes).map_err(|e| format!("{path}: {e}"))
+            rules::check_icon(&bytes).map_err(|e| format!("{path}: {e}"))?;
+            Ok(format!("?v={}", &super::sha256(&bytes)[..12]))
         } else {
-            rules::check_screenshot(name, &bytes)
+            rules::check_screenshot(name, &bytes).map(|()| String::new())
         }
     });
     match checked {
-        Ok(()) => Some(format!("{}{path}", src.site)),
+        Ok(version) => Some(format!("{}{path}{version}", src.site)),
         Err(e) => {
             errors.push(format!("{id}: {e}"));
             None

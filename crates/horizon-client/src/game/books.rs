@@ -54,6 +54,9 @@ fn book_page_box() -> ui::EditBox {
     edit
 }
 
+/// Where a book's text is, from its top left corner, above its page buttons.
+const BOOK_TEXT: [f32; 4] = [36.0, 16.0, 120.0, 136.0];
+
 pub(super) enum BookScreen {
     Edit {
         /// Inventory slot of the book (the selected hotbar slot).
@@ -845,11 +848,13 @@ impl Game<'_> {
             return false;
         }
         let has_book = matches!(self.world.block_entities.get(&key), Some(BlockEntity::Lectern(l)) if l.book.is_some());
+        // `LecternBlock.useItemOn`: `ItemTags.LECTERN_BOOKS`, which a data
+        // pack can add its own books to, not only the two vanilla items.
         let Some(book) = held.filter(|h| {
-            matches!(
-                &*h.item,
-                "minecraft:writable_book" | "minecraft:written_book"
-            )
+            world_items!(self)
+                .item_tags
+                .get("minecraft:lectern_books")
+                .is_some_and(|books| books.contains(&*h.item))
         }) else {
             return false;
         };
@@ -1223,11 +1228,11 @@ impl Game<'_> {
     pub(super) fn draw_book(&self, batch: &mut HudBatch) {
         let Some(book) = &self.book else { return };
         let atlas = &self.gui.atlas;
-        let (w, h) = (batch.width, batch.height);
+        let w = batch.width;
         let (mx, my) = self.cursor;
         let hover =
             |x: f32, y: f32, bw: f32, bh: f32| mx >= x && my >= y && mx < x + bw && my < y + bh;
-        batch.fill(atlas, 0.0, 0.0, w, h, rgba(16, 16, 16, 160));
+        self.render_transparent_background("book", batch);
         let left = ((w - 192.0) / 2.0).floor();
         let top = 2.0;
         if let Some(mut r) = atlas.sprites.get("gui/book").copied() {
@@ -1235,6 +1240,18 @@ impl Game<'_> {
             r.u1 = r.u0 + 192.0 * du;
             r.v1 = r.v0 + 192.0 * dv;
             batch.rect_uv(left, top, 192.0, 192.0, r, u32::MAX);
+        }
+        // The page, or the signing title on it: a field to a controller, which opens its keyboard.
+        if matches!(book, BookScreen::Edit { .. }) {
+            widgets::target_as(
+                [
+                    left + BOOK_TEXT[0],
+                    top + BOOK_TEXT[1],
+                    BOOK_TEXT[2],
+                    BOOK_TEXT[3],
+                ],
+                widgets::Kind::Field,
+            );
         }
         let tr = |key: &str, fallback: &str| self.translate(key, fallback);
         let page_buttons = |batch: &mut HudBatch, back: bool, forward: bool| {
@@ -1585,7 +1602,15 @@ pub(super) fn lectern_signal(world: &horizon_client::world::World, pos: BlockPos
             } else {
                 1.0
             };
-            (f * 14.0).floor() as i32 + 1
+            // `LecternBlockEntity.hasBook`: a `written_book_content` or
+            // `writable_book_content` component, not just any stack. A book
+            // item carries its content by default, so its id counts too.
+            let has_book = matches!(
+                &*b.item,
+                "minecraft:writable_book" | "minecraft:written_book"
+            ) || data
+                .is_some_and(|d| d.written.is_some() || !d.writable_pages.is_empty());
+            (f * 14.0).floor() as i32 + i32::from(has_book)
         })),
         _ => None,
     }
@@ -1601,5 +1626,132 @@ mod text_budget_tests {
         assert_eq!(page_insertion_text(&"a".repeat(1023), "🦀"), "?");
         assert_eq!(page_insertion_text(&"a".repeat(1022), "🦀x"), "🦀");
         assert_eq!(page_insertion_text("", "a\nb§c"), "a\nbc");
+    }
+}
+
+#[cfg(test)]
+mod lectern_books_tag_tests {
+    use super::super::native_machines::tests::server_game;
+    use horizon_client::{containers::BlockEntity, items::ItemStack};
+
+    /// `LecternBlock.useItemOn` checks `ItemTags.LECTERN_BOOKS`; a world's
+    /// data pack adds its own book to that tag, and the lectern takes it.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_packs_lectern_books_entry_goes_onto_the_lectern() {
+        let mut game = server_game();
+        let dir =
+            std::env::temp_dir().join(format!("horizon-lectern-books-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let tags = dir.join("datapacks/books/data/minecraft/tags/item");
+        std::fs::create_dir_all(&tags).unwrap();
+        std::fs::write(
+            dir.join("datapacks/books/pack.mcmeta"),
+            r#"{"pack":{"description":"fixture"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            tags.join("lectern_books.json"),
+            r#"{"values":["minecraft:written_book","minecraft:writable_book","minecraft:book"]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("datapacks.json"),
+            r#"{"enabled":["file/books"],"disabled":[]}"#,
+        )
+        .unwrap();
+        game.world_root = dir;
+        game.world_tables = game.build_world_tables(false, &[]).unwrap().0;
+
+        let state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:lectern")
+            .unwrap();
+        let key = (8, 64, 8);
+        game.world.set(key.0, key.1, key.2, state).unwrap();
+
+        // A book the pack put in the tag is placed; one it did not is not.
+        let stone = ItemStack::new("minecraft:stone", 1);
+        assert!(!game.use_lectern([8, 64, 8], Some(&stone)));
+        let book = ItemStack::new("minecraft:book", 1);
+        assert!(
+            game.use_lectern([8, 64, 8], Some(&book)),
+            "the pack's `#minecraft:lectern_books` entry was refused"
+        );
+        let Some(BlockEntity::Lectern(lectern)) = game.world.block_entities.get(&key) else {
+            panic!("no lectern block entity");
+        };
+        assert_eq!(
+            lectern.book.as_ref().map(|b| &*b.item),
+            Some("minecraft:book")
+        );
+    }
+}
+
+#[cfg(test)]
+mod lectern_signal_tests {
+    use super::super::native_machines::tests::server_game;
+    use super::lectern_signal;
+    use horizon_client::{
+        containers::{BlockEntity, Lectern},
+        item_data::{StackData, WrittenBook},
+        items::ItemStack,
+    };
+    use horizon_core::position::BlockPos;
+    use horizon_world::registry::BlockStateId;
+
+    fn signal(game: &mut super::Game<'_>, book: Option<ItemStack>, page: i32) -> i32 {
+        let key = (8, 64, 8);
+        let state: BlockStateId = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:lectern")
+            .unwrap();
+        game.world.set(key.0, key.1, key.2, state).unwrap();
+        game.world
+            .block_entities
+            .insert(key, BlockEntity::Lectern(Lectern { book, page }));
+        lectern_signal(&game.world, BlockPos::new(key.0, key.1, key.2)).unwrap()
+    }
+
+    /// `LecternBlockEntity.getRedstoneSignal`: `floor(page / (pageCount - 1)
+    /// * 14) + (hasBook() ? 1 : 0)`. `hasBook()` asks for a book-content
+    /// component, so a stack that only sits in the lectern (a non-book item a
+    /// command left in `Book`) reads 14, not the book's 15.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_lecterns_signal_adds_one_only_for_a_book() {
+        let mut game = server_game();
+        assert_eq!(signal(&mut game, None, 0), 0, "no book");
+        assert_eq!(
+            signal(&mut game, Some(ItemStack::new("minecraft:stone", 1)), 0),
+            14,
+            "a non-book stack has no book content"
+        );
+        // `writable_book_content` is a writable book's default component.
+        assert_eq!(
+            signal(
+                &mut game,
+                Some(ItemStack::new("minecraft:writable_book", 1)),
+                0
+            ),
+            15,
+            "a writable book is a book"
+        );
+        let mut written = ItemStack::new("minecraft:written_book", 1);
+        written.extra = Some(Box::new(StackData {
+            written: Some(WrittenBook {
+                title: "T".into(),
+                author: "A".into(),
+                pages: vec!["one".into(), "two".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
+        assert_eq!(signal(&mut game, Some(written.clone()), 0), 1, "page 0");
+        assert_eq!(signal(&mut game, Some(written), 1), 15, "last page");
     }
 }

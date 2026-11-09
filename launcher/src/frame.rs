@@ -383,7 +383,13 @@ impl Launcher {
                         .flex()
                         .items_baseline()
                         .justify_between()
-                        .child(ui::text(14., FontWeight::SEMIBOLD, ink::FULL).child(title))
+                        // The title wraps within the card: a long translation takes a second line.
+                        .child(
+                            ui::text(14., FontWeight::SEMIBOLD, ink::FULL)
+                                .flex_1()
+                                .min_w_0()
+                                .child(title),
+                        )
                         .children(
                             right.map(|r| ui::text(13., FontWeight::NORMAL, ink::NOTE).child(r)),
                         ),
@@ -510,7 +516,11 @@ impl Launcher {
                     .justify_center()
                     .gap(px(10.))
                     .mt(px(12.))
-                    .h(px(40.))
+                    // At least 40 high: a long translation wraps onto a second line, which grows the
+                    // button instead of spilling out of it.
+                    .min_h(px(40.))
+                    .px(px(12.))
+                    .py(px(8.))
                     .rounded(px(radius::ROW))
                     .bg(ui::color(horizon_theme::glass::DISCORD))
                     .hover(|s| s.bg(ui::color(horizon_theme::glass::DISCORD_HOVER)))
@@ -518,6 +528,8 @@ impl Launcher {
                     .child(ui::icon("discord", 18., gpui::white()))
                     .child(
                         ui::text(14., FontWeight::SEMIBOLD, ink::FULL)
+                            .min_w_0()
+                            .text_center()
                             .child(tr("Join the Discord")),
                     )
                     .on_click(move |_, _, cx| cx.open_url(&url)),
@@ -601,22 +613,25 @@ impl Launcher {
     /// Settings (`px-8 pt-3.5`).
     pub(super) fn glass_topbar(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
-        let mut tabs = div().flex().items_center().gap(px(4.)).min_w_0();
+        let wide = self.window_width >= crate::glass_home::TOP_BAR_WIDE;
+        let compact = self.window_width < crate::glass_home::COMPACT;
+        let mut tabs = div()
+            .flex()
+            .items_center()
+            .gap(px(if compact { 2. } else { 4. }))
+            .min_w_0();
         for (page, label, _) in Page::in_top_bar(self.wardrobe_shown()) {
+            let mut item = ui::tab(format!("nav-{label}"), tr(label), self.page == page, &t);
+            if compact {
+                item = item.px(px(8.));
+            }
             tabs = tabs.child(
-                ui::tab(format!("nav-{label}"), tr(label), self.page == page, &t).on_click(
-                    cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.go(page);
-                        cx.notify();
-                    }),
-                ),
+                item.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.go(page);
+                    cx.notify();
+                })),
             );
         }
-        // `min-w-0 xl:shrink-0`: under 1380 px the pages give way to the buttons on the right
-        // and scroll sideways, as the mockup's `Tabs` (`overflow-x-auto`). Non-English locales
-        // with wider labels (and the build log button) require ~1300+ px, so 1380 px ensures
-        // the action buttons (Microsoft sign-in, Settings) are never pushed off-screen (#9902).
-        let wide = self.window_width >= 1380.;
         let strip = crate::glass::plate(radius::LARGE)
             .p(px(4.))
             .min_w_0()
@@ -657,18 +672,18 @@ impl Launcher {
                     div()
                         .flex()
                         .flex_col()
-                        .max_w(px(150.))
+                        .max_w(px(if compact { 100. } else { 150. }))
                         .child(
                             ui::text(14., FontWeight::SEMIBOLD, ink::FULL)
                                 .line_height(px(17.))
                                 .truncate()
                                 .child(name),
                         )
-                        .child(
+                        .children((!compact).then(|| {
                             ui::text(12., FontWeight::NORMAL, ink::QUIET)
                                 .line_height(px(15.))
-                                .child(how),
-                        ),
+                                .child(how)
+                        })),
                 )
                 .child(
                     ui::icon("arrow-down-01", 16., white(ink::FAINT))
@@ -892,7 +907,8 @@ impl Launcher {
         };
         let row = self.row_menu.rows.borrow().get(&id).copied()?;
         let t = self.theme;
-        let height = f32::from(window.viewport_size().height);
+        let viewport = window.viewport_size();
+        let height = f32::from(viewport.height);
         // The mockup's `rect.right + 12`, `min(rect.top - 8, innerHeight - 330)`: its ⋮ button
         // ends 6 px inside the row and sits in the row's middle.
         let x = f32::from(row.origin.x + row.size.width) - 6. + 12.;
@@ -914,12 +930,31 @@ impl Launcher {
             instance.clone(),
         );
         let home = instance.home.clone();
-        let shortcut_label = if self.has_shortcut(&instance.id) {
-            tr("Remove the desktop shortcut")
-        } else {
-            tr("Create a desktop shortcut")
-        };
-        let mut menu = ui::popover(250.)
+        let labels = [
+            tr("Edit…"),
+            tr("Duplicate…"),
+            tr("Open folder"),
+            tr("Export…"),
+            tr("Launch…"),
+            if self.has_shortcut(&instance.id) {
+                tr("Remove the desktop shortcut")
+            } else {
+                tr("Create a desktop shortcut")
+            },
+            if confirm {
+                tr("Click again to delete")
+            } else {
+                tr("Delete…")
+            },
+        ];
+        let [edit_label, copy_label, folder_label, export_label, launch_label, shortcut_label, delete_label] =
+            labels;
+        let viewport_width = f32::from(viewport.width);
+        let width = ui::menu_content_width(window, &labels)
+            .max(250.)
+            .min((viewport_width - 16.).max(0.));
+        let x = x.min(viewport_width - width - 8.).max(8.);
+        let mut menu = ui::popover(width)
             .id("row-menu")
             .occlude()
             .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
@@ -928,7 +963,7 @@ impl Launcher {
                 cx.notify();
             }))
             .child(
-                item("edit", "pencil-edit-02", tr("Edit…").into()).on_click(cx.listener(
+                item("edit", "pencil-edit-02", edit_label.into()).on_click(cx.listener(
                     move |this, _: &ClickEvent, _, cx| {
                         this.row_menu.open = None;
                         this.open_instance_dialog(Some(edit.clone()));
@@ -937,7 +972,7 @@ impl Launcher {
                 )),
             )
             .child(
-                item("duplicate", "copy-01", tr("Duplicate…").into()).on_click(cx.listener(
+                item("duplicate", "copy-01", copy_label.into()).on_click(cx.listener(
                     move |this, _: &ClickEvent, _, cx| {
                         pick(this, &copy);
                         this.start_copy();
@@ -946,7 +981,7 @@ impl Launcher {
                 )),
             )
             .child(
-                item("folder", "folder-01", tr("Open folder").into()).on_click(cx.listener(
+                item("folder", "folder-01", folder_label.into()).on_click(cx.listener(
                     move |this, _: &ClickEvent, _, cx| {
                         this.row_menu.open = None;
                         let _ = std::fs::create_dir_all(&home);
@@ -956,7 +991,7 @@ impl Launcher {
                 )),
             )
             .child(
-                item("export", "upload-04", tr("Export…").into()).on_click(cx.listener(
+                item("export", "upload-04", export_label.into()).on_click(cx.listener(
                     move |this, _: &ClickEvent, _, cx| {
                         pick(this, &export);
                         if this.export.is_none() {
@@ -967,7 +1002,7 @@ impl Launcher {
                 )),
             )
             .child(
-                item("launch", "sliders-horizontal", tr("Launch…").into()).on_click(cx.listener(
+                item("launch", "sliders-horizontal", launch_label.into()).on_click(cx.listener(
                     move |this, _: &ClickEvent, _, cx| {
                         pick(this, &launch);
                         this.home_tab = home_tabs::HomeTab::Overview;
@@ -992,17 +1027,7 @@ impl Launcher {
             && self.client.is_none()
             && self.starting_client.is_none();
         let gone = instance.id.clone();
-        let delete = ui::menu_row(
-            "row-menu-delete",
-            "delete-02",
-            if confirm {
-                tr("Click again to delete")
-            } else {
-                tr("Delete…")
-            },
-            true,
-            &t,
-        );
+        let delete = ui::menu_row("row-menu-delete", "delete-02", delete_label, true, &t);
         let delete = if can_delete {
             delete.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 if let Some((_, confirm)) = this.row_menu.open.as_mut().filter(|(_, c)| !*c) {

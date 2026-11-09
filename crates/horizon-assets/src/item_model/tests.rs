@@ -1,4 +1,5 @@
 use super::*;
+use serde_json::json;
 
 #[test]
 fn component_condition_decodes_predicate_type_and_value() {
@@ -126,4 +127,50 @@ fn custom_condition_validates_its_name_and_both_branches() {
     ));
     assert!(matches!(node("example:charged", empty).unwrap(),
         ItemModelNode::Condition { property: ConditionProperty::Custom(name), .. } if name == "example:charged"));
+}
+
+#[test]
+fn a_patched_stack_reads_its_patch_over_its_items_defaults() {
+    let mut models = ItemModels::default();
+    models.prototypes.insert(
+        "minecraft:diamond_sword".into(),
+        Components::from_iter([
+            (
+                "minecraft:item_model".into(),
+                json!("minecraft:diamond_sword"),
+            ),
+            ("minecraft:max_damage".into(), json!(1561)),
+            ("minecraft:rarity".into(), json!("common")),
+        ]),
+    );
+    let mut stack = StackView::new("minecraft:diamond_sword", 1);
+    stack.patch.insert(
+        "minecraft:enchantments".into(),
+        Some(json!({"minecraft:sharpness": 5})),
+    );
+    stack
+        .patch
+        .insert("minecraft:rarity".into(), Some(json!("rare")));
+    stack.patch.insert("minecraft:max_damage".into(), None);
+    let view = models.components_view(&stack);
+    assert_eq!(view.get("minecraft:rarity"), Some(&json!("rare")));
+    assert_eq!(view.get("minecraft:max_damage"), None, "a removed default");
+    assert_eq!(
+        view.get("minecraft:item_model"),
+        Some(&json!("minecraft:diamond_sword"))
+    );
+    assert!(view.contains_key("minecraft:enchantments"));
+    assert!(!view.contains_key("minecraft:custom_name"));
+    // Every key reads as the merged map has it.
+    let merged = models.components(&stack);
+    for key in [
+        "minecraft:rarity",
+        "minecraft:max_damage",
+        "minecraft:item_model",
+        "minecraft:enchantments",
+        "minecraft:custom_name",
+    ] {
+        assert_eq!(view.get(key), merged.get(key), "{key}");
+    }
+    assert_eq!(view.to_map(), *merged);
 }

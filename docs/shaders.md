@@ -54,12 +54,34 @@ fails, with its problems in the chat. While it runs, the game looks at the pack 
 and the pack is checked and rebuilt in place ("Shader pack ... reloaded"); if the new version fails, the chat says
 where and the last good version keeps drawing. All three stages run.
 
-A picked pack in the `shaders/` format gets a Shader Options... button at the top of the page: its options on the
-screens and with the names the pack gives them, its profiles, and Reset. A click picks an option's next value, a
-right click the one before, shift-click the pack's default, and the options the pack lists in `sliders` are sliders;
-values that differ from the pack's are yellow. Hovering one shows what the pack says of it (`option.NAME.comment`),
-and the whole label when its name was shortened to fit. Leaving the page saves them to
-`shaderpacks/<pack>.txt` (`NAME=value` lines) and loads the pack again with them.
+A picked pack's options are pages of the same screen, under the pack's name in its page list: its screens, with the
+names the pack gives them, its profiles, and Reset. The main screen and those it links to are in the list (when
+there are more than it has room for, they collapse into one `‹ Name ›` row that the arrows and a controller's
+bumpers step through); deeper screens open from their links, and Escape goes back. A click, Enter or Right picks an
+option's next value, a Shift click or Left the one before, and the options the pack lists in
+`sliders` are sliders. Pointing at one shows what the pack says of it (`option.NAME.comment`); the search finds an
+option on any screen. Undo puts back the pick, the Shadow Cache, the Horizon packs' options and the options of the
+`shaders/` pack that was picked when the screen opened; another `shaders/` pack keeps what was saved for it (picking
+away from it saves its changes, as Apply does). A `shaders/` pack's
+options are saved to `shaderpacks/<pack>.txt` (`NAME=value` lines), and the pack loads again with them, with Apply
+(shown while they differ from the saved ones) or on leaving the screen; a Horizon pack's apply at once.
+
+## Testing a pack frame by frame
+
+A pack that keeps something from frame to frame (`history`, eased values) draws a little differently in every run,
+as frames come when they come. With `HORIZON_STILL=1` and the world frozen the scene holds still
+([agent-control.md](agent-control.md#repeatable-screenshots)), and
+
+```sh
+horizon-ctl screenshot-sequence 64 50 frame64.png
+```
+
+starts the pack over as if just loaded (black `history`, eased values from the start) and draws 64 frames 50 ms
+apart on its clock: frame n has `frame_index` n, `time` (n - 1) × 0.05 and `delta_time` 0.05 (0 on frame 1). The
+64th is written to `frame64.png` (and `frame64-hdr.png` with HDR output on) before the reply. STEP_MS may be a
+decimal: `16.666667` steps a 60 fps clock. The same build, GPU
+and driver write the same bytes every run, so two versions of a pack compare by a pixel diff. `screenshot-sequence
+cancel` stops one.
 
 ## A pack
 

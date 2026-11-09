@@ -29,7 +29,7 @@ def method(source, name):
 class ConsumableDispatchTests(unittest.TestCase):
     def test_instant_and_timed_completion_use_original_components_in_order(self):
         consume = (ROOT / "crates/horizon-client/src/game/consume.rs").read_text()
-        game = (ROOT / "crates/horizon-client/src/game.rs").read_text()
+        game = (ROOT / "crates/horizon-client/src/game/using_item.rs").read_text()
         tick = method(game, "tick_used_item")
         completion = tick[tick.rindex("        self.item_on_use_tick(&stack, ticks);"): ]
         completion = completion[:completion.rfind("\n    }")]

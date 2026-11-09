@@ -102,9 +102,39 @@ impl Game<'_> {
     fn scoreboard_path(&self) -> std::path::PathBuf {
         self.world_root.join("data/minecraft/scoreboard.dat")
     }
-    fn border_path(&self) -> std::path::PathBuf {
-        save::dimension_dir(&self.world_root, "minecraft:overworld")
-            .join("data/minecraft/world_border.dat")
+    /// `ServerLevel.getWorldBorder`'s file: each dimension's own
+    /// `data/minecraft/world_border.dat`.
+    fn border_path(&self, dim: super::Dim) -> std::path::PathBuf {
+        save::dimension_dir(&self.world_root, dim.id()).join("data/minecraft/world_border.dat")
+    }
+    /// The border `dim`'s level saved. The Overworld also reads the root file older Horizon
+    /// builds wrote for their one shared border; the other levels start from the default.
+    pub(super) fn load_border(&self, dim: super::Dim) -> horizon_client::worldborder::WorldBorder {
+        let mut root = save::read_dat(&self.border_path(dim));
+        if root.is_none() && dim == super::Dim::Overworld {
+            root = save::read_dat(&self.world_root.join("data/minecraft/world_border.dat"));
+        }
+        root.as_ref()
+            .and_then(|root| root.get("data"))
+            .map(horizon_client::worldborder::WorldBorder::unpack)
+            .unwrap_or_default()
+    }
+    /// Save the border of the level in place (`SavedData`, one per level).
+    pub(super) fn save_border(&self) {
+        if !self.score.loaded || self.remote.is_some() {
+            return;
+        }
+        if self.border != horizon_client::worldborder::WorldBorder::default()
+            && let Err(e) = save::write_dat(
+                &self.border_path(self.dim),
+                Tag::compound([
+                    ("data", self.border.pack()),
+                    ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
+                ]),
+            )
+        {
+            log::warn!("the world border of {} was not written: {e}", self.dim.id());
+        }
     }
     /// `ScoreboardSaveData` read from `data/minecraft/scoreboard.dat`.
     pub(super) fn load_scoreboard(&mut self) {
@@ -119,16 +149,6 @@ impl Game<'_> {
         }
         self.score.storage =
             horizon_client::command_storage::CommandStorage::load(&self.world_root);
-        // ServerLevel.getWorldBorder: each dimension's data/minecraft/world_border.dat. Horizon
-        // keeps one border, so the overworld's file stands for it; the root file is what
-        // older Horizon builds wrote.
-        let border_path = self.border_path();
-        if let Some(root) = save::read_dat(&border_path)
-            .or_else(|| save::read_dat(&self.world_root.join("data/minecraft/world_border.dat")))
-            && let Some(data) = root.get("data")
-        {
-            self.border = horizon_client::worldborder::WorldBorder::unpack(data);
-        }
         self.score.stopwatches = horizon_client::stopwatches::Stopwatches::load(&self.world_root);
         self.sync_score_registries();
     }
@@ -138,17 +158,7 @@ impl Game<'_> {
         }
         self.score.storage.save(&self.world_root);
         self.score.stopwatches.save(&self.world_root);
-        if self.border != horizon_client::worldborder::WorldBorder::default()
-            && let Err(e) = save::write_dat(
-                &self.border_path(),
-                Tag::compound([
-                    ("data", self.border.pack()),
-                    ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
-                ]),
-            )
-        {
-            log::warn!("the world border was not written: {e}");
-        }
+        // The border is saved with its level (`save_level`).
         let path = self.scoreboard_path();
         let board = &self.score.board;
         if board == &Scoreboard::default() && !path.exists() {
@@ -208,6 +218,7 @@ impl Game<'_> {
             | Target::Crystal(id)
             | Target::Dragon(id)
             | Target::Tnt(id)
+            | Target::Cushion(id)
             | Target::Falling(id)
             | Target::Rocket(id)
             | Target::Trident(id)
@@ -220,8 +231,10 @@ impl Game<'_> {
                 .iter()
                 .find(|s| s.id == id)
                 .map(|s| uuid_text(s.uuid)),
-            // Orbs and projectiles have no UUID here.
-            Target::Orb(_) | Target::Projectile(_) => None,
+            // An orb's registered identity, as its saved UUID reads.
+            Target::Orb(id) => Some(uuid_text(self.uuid_for(id))),
+            // Projectiles have no UUID here.
+            Target::Projectile(_) => None,
         }
     }
     fn holder_for(&mut self, t: Target) -> Option<Holder> {
@@ -252,6 +265,7 @@ impl Game<'_> {
             | Target::Boat(id)
             | Target::Cart(id)
             | Target::Tnt(id)
+            | Target::Cushion(id)
             | Target::Orb(id)
             | Target::Projectile(id)
             | Target::Crystal(id)
@@ -378,7 +392,7 @@ impl Game<'_> {
                 }
             }
             if ok && !s.advancements.is_empty() {
-                ok = t == Target::Player && self.advancements_match(&s.advancements);
+                ok = self.advancements_match(t, &s.advancements);
             }
             if ok {
                 pass.insert(t);
@@ -387,21 +401,31 @@ impl Game<'_> {
         pass
     }
 
-    /// `advancements=` of a selector, against the player's progress.
+    /// `advancements=` of a selector, against the selected player's progress.
     fn advancements_match(
         &self,
+        target: Target,
         wanted: &[(String, horizon_client::command::args::AdvCondition)],
     ) -> bool {
         use horizon_client::command::args::AdvCondition;
+        let progress = match target {
+            Target::Player => &self.adv.progress,
+            Target::Guest(conn) => match self.command_guest(conn) {
+                Some(guest) => &guest.advancements,
+                None => return false,
+            },
+            _ => return false,
+        };
         wanted.iter().all(|(id, cond)| {
             let Some(a) = self.adv.tree.get(id) else {
                 return false;
             };
             match cond {
-                AdvCondition::Done(want) => self.adv.progress.done(a) == *want,
-                AdvCondition::Criteria(list) => list
-                    .iter()
-                    .all(|(c, want)| self.adv.progress.has(id, c) == *want),
+                AdvCondition::Done(want) => progress.done(a) == *want,
+                AdvCondition::Criteria(list) => list.iter().all(|(c, want)| {
+                    a.criteria.iter().any(|criterion| criterion.name == *c)
+                        && progress.has(id, c) == *want
+                }),
             }
         })
     }
@@ -524,13 +548,6 @@ impl Game<'_> {
                 board.for_all_objectives(&criteria, &victim_name, inc);
             }
         }
-    }
-    /// `Scoreboard.entityRemoved`: a dead non-player entity leaves the board.
-    pub(super) fn score_entity_removed(&mut self, id: u32) {
-        let Some(uuid) = self.persist.uuids.get(&id).copied() else {
-            return;
-        };
-        self.score.board.entity_removed(&uuid_text(uuid));
     }
 
     // ---- teams in gameplay -----------------------------------------------------
@@ -821,6 +838,31 @@ impl Game<'_> {
         // Skin preparation ran before the frame's optional HUD widgets.
         // This layer may be cancelled without stopping NPC skin progress.
         let key = self.screen == super::Screen::Playing && self.keys.held(Action::Playerlist);
+        let count = self.remote.as_ref().map_or_else(
+            || {
+                1 + self
+                    .lan
+                    .as_ref()
+                    .map_or(0, |h| h.hub.guests.iter().filter(|g| g.placed).count())
+            },
+            |r| r.listed_player_count(),
+        );
+        let has_objective = self.score.board.display_objective(sb::SLOT_LIST).is_some();
+        let shown = tab_list::visible(
+            // `Hud.extractRenderState` draws the list inside `if (!isHidden)`.
+            !self.ui.hide_gui,
+            key,
+            self.has_singleplayer_server(),
+            count,
+            has_objective,
+        );
+        let changed = self.tab_list.set_visible(shown);
+        if !tab_players_needed(shown, changed) {
+            // World skins still need download polling and atlas residency checks.
+            self.update_remote_skins();
+            self.publish_tab_object_skins();
+            return;
+        }
         let (mut players, online_mode, upside_down) = match self.remote_tab_players() {
             Some(remote) => remote,
             None => {
@@ -842,16 +884,7 @@ impl Game<'_> {
                 (players, true, upside_down)
             }
         };
-        let has_objective = self.score.board.display_objective(sb::SLOT_LIST).is_some();
-        let shown = tab_list::visible(
-            // `Hud.extractRenderState` draws the list inside `if (!isHidden)`.
-            !self.ui.hide_gui,
-            key,
-            self.has_singleplayer_server(),
-            players.len(),
-            has_objective,
-        );
-        if self.tab_list.set_visible(shown) {
+        if changed {
             // PlayerTabOverlay.setVisible: the names, said as the list comes up.
             self.say_system_now(&tab_list::narration(&players, &self.score.board));
         }
@@ -859,11 +892,12 @@ impl Game<'_> {
             return;
         }
         // The faces of the players the list shows.
-        let faces: std::collections::HashSet<u128> =
-            tab_list::sorted_players(&players, &self.score.board)
-                .iter()
-                .map(|p| p.uuid)
-                .collect();
+        let faces: std::collections::HashSet<u128> = self
+            .tab_list
+            .displayed_ids(&players, &self.score.board)
+            .iter()
+            .copied()
+            .collect();
         for p in players.iter_mut().filter(|p| faces.contains(&p.uuid)) {
             p.skin = self.face_skin(p.uuid, &p.skin);
         }
@@ -890,6 +924,25 @@ impl Game<'_> {
         };
         let draws = self.tab_list.layout(&inputs, &self.gui.atlas.font);
         horizon_client::hud_layout::paint(batch, &self.gui.atlas, &draws);
+    }
+}
+
+fn tab_players_needed(shown: bool, changed: bool) -> bool {
+    shown || changed
+}
+
+#[test]
+fn hidden_tab_skips_players_except_for_visibility_narration() {
+    use horizon_client::tab_list;
+    for count in [1, 150, 1000] {
+        let shown = tab_list::visible(true, false, false, count, false);
+        assert!(!tab_players_needed(shown, false));
+        assert!(
+            tab_players_needed(shown, true),
+            "closing narration needs names"
+        );
+        let shown = tab_list::visible(true, true, false, count, false);
+        assert!(tab_players_needed(shown, false));
     }
 }
 
@@ -991,6 +1044,7 @@ mod tab_list_tests {
                 latency: Arc::new(AtomicI32::new(42)),
                 address: "127.0.0.1:25565".parse().unwrap(),
                 expected: false,
+                configured: Default::default(),
             },
             uuid as i32,
             [0.0, 64.0, 0.0],
@@ -1139,4 +1193,9 @@ mod team_tests {
 }
 
 #[cfg(test)]
+mod criterion_tests;
+
+#[cfg(test)]
 mod empty_tag_tests;
+#[cfg(test)]
+mod guest_advancement_tests;

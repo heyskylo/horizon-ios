@@ -24,7 +24,7 @@ def program(source=None):
     begin=code.index('#[derive(Default)]struct Menu')
     end=code.index('impl Pads {',begin)
     code=code[:begin]+TYPES+code[end:]
-    code += '\nimpl Pads{'+method(source,'read')+'}\n'+method(menu,'armed_click')
+    code += '\nimpl Pads{'+method(source,'read')+'}\n'+method(menu,'armed_click')+'\n'+menu[menu.index('const SAME_RECT:'):menu.index(';',menu.index('const SAME_RECT:'))+1]
     code += '\nimpl Game{fn release(&mut self,button:Button)->Result<(),()>{let down=false;let event_loop=&();'+release+'Ok(())}}\n'
     return code+'\n'+snapshot+'\nfn main(){device_handoff_does_not_click();}\n'+CASES
 
@@ -42,11 +42,12 @@ mod horizon_gamecontroller{
 }
 type Rect=[f32;4];
 #[derive(Clone,Copy)]struct Target{rect:Rect}impl Target{fn center(&self)->(f32,f32){(self.rect[0]+self.rect[2]/2.,self.rect[1]+self.rect[3]/2.)}}
-#[derive(Default)]struct Menu{armed:Option<Rect>,focus:Option<Target>,held:[bool;2],repeat:Option<(Button,usize,bool)>}
+#[derive(Default)]struct HeldTrigger{pressed_a:bool}
+#[derive(Default)]struct Menu{trigger:Option<HeldTrigger>,armed:Option<Rect>,focus:Option<Target>,held:[bool;2],repeat:Option<(Button,usize,bool)>}
 #[derive(Default)]struct Pads{owner_epoch:u64,devices:Devices,menu:Menu,style:GlyphStyle,device:Option<Device>,connections:Vec<Connection>,feed_source:Option<PadId>}
 #[derive(Debug,PartialEq)]enum Connection{Connected(GlyphStyle),Disconnected{active:bool}}
 #[derive(Default)]struct Game{pad:Pads,clicks:usize}
-impl Game{fn pad_click_at(&mut self,_:&(),_:(f32,f32),_:bool){self.clicks+=1;}fn pad_pointer_button(&mut self,_:&(),_:bool,_:bool){}}
+impl Game{fn pad_recipe_book_showing(&self)->bool{false}fn pad_tab(&mut self,_:&(),_:bool){panic!("recipe book must not be reached by device-handoff probe");}fn pad_click_at(&mut self,_:&(),_:(f32,f32),_:bool){self.clicks+=1;}fn pad_pointer_button(&mut self,_:&(),_:bool,_:bool){}}
 '''
 CASES=r'''
 fn choose(id:Option<u64>,pressed:bool){horizon_gamecontroller::ACTIVE.with_borrow_mut(|p|*p=id.map(|id|snapshot(id,pressed,false,[0.,0.],0.)));}

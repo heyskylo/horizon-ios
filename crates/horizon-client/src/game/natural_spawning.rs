@@ -11,10 +11,10 @@ use horizon_client::{
         Mob, MobWorld, Species,
         data::{self, MobData},
         seen_grid::SeenGrid,
-        spawn_rules::{Dimension, SpawnLevel},
+        spawn_rules::SpawnLevel,
         spawn_selection::{
-            self, Category, Counted, Heightmap, NaturalLevel, SpawnCost, SpawnPlayer, SpawnRequest,
-            SpawnState, Spawned, StructureAt, StructureSpawns,
+            self, Category, Counted, Heightmap, NaturalLevel, PlayerSquares, SpawnCost,
+            SpawnPlayer, SpawnRequest, SpawnState, Spawned, StructureAt, StructureSpawns,
         },
     },
 };
@@ -23,6 +23,7 @@ use horizon_core::{
     random::{LegacyRandom, RandomSource, WorldgenRandom, XoroshiroRandom},
 };
 use horizon_world::{
+    dimension_type::DimensionFacts,
     nbt::{Compound, Tag},
     registry::BlockStateId,
 };
@@ -294,6 +295,8 @@ impl<'p> NearestPlayers<'p> {
     }
 }
 
+/// Up to this many players, a spawn start measures to every one.
+const PLAYERS_SCANNED: usize = 8;
 /// The game level as natural spawning reads it.
 pub(super) struct GameLevel<'g, 'a> {
     pub(super) game: &'g Game<'a>,
@@ -302,6 +305,9 @@ pub(super) struct GameLevel<'g, 'a> {
     pub(super) players: Vec<LevelPlayer>,
     /// Where the non-spectators among them are (`getNearestPlayer`).
     pub(super) nearest: Vec<[f64; 3]>,
+    /// `nearest` by square, built when a spawn start first asks with more
+    /// than [`PLAYERS_SCANNED`] players.
+    pub(super) player_squares: std::cell::OnceCell<PlayerSquares>,
     /// Boxes of the mobs this pass created, not yet in the game's list.
     pub(super) pending: std::cell::RefCell<Vec<Aabb>>,
     /// The types and boxes of what a spawner created this tick.
@@ -392,6 +398,12 @@ impl GameLevel<'_, '_> {
     }
 }
 impl SpawnLevel for GameLevel<'_, '_> {
+    fn within_world_border(&self, x: i32, z: i32) -> bool {
+        self.game
+            .border
+            .geometry()
+            .is_within_bounds(f64::from(x), f64::from(z), 0.0)
+    }
     fn state(&self, x: i32, y: i32, z: i32) -> BlockStateId {
         self.w.state(x, y, z)
     }
@@ -430,8 +442,8 @@ impl SpawnLevel for GameLevel<'_, '_> {
     fn peaceful(&self) -> bool {
         self.w.peaceful()
     }
-    fn dimension(&self) -> Dimension {
-        self.w.dimension()
+    fn dimension_type(&self) -> &DimensionFacts {
+        self.game.dimension_type()
     }
     fn surface_slime_chance(&self, x: i32, y: i32, z: i32) -> f32 {
         self.w.surface_slime_chance(x, y, z)
@@ -470,11 +482,7 @@ impl NaturalLevel for GameLevel<'_, '_> {
         self.w.world.top_y() - 1
     }
     fn ambient_light(&self) -> f32 {
-        match self.game.dim {
-            Dim::Nether => 0.1,
-            Dim::End => 0.25,
-            _ => 0.0,
-        }
+        self.game.dimension_type().ambient_light
     }
     fn has_ceiling(&self) -> bool {
         self.w.world.shape.has_ceiling
@@ -525,6 +533,14 @@ impl NaturalLevel for GameLevel<'_, '_> {
     fn nearest_player_positions(&self) -> &[[f64; 3]] {
         &self.nearest
     }
+    fn player_positions_near(&self, x: f64, z: f64, extent: f64, out: &mut Vec<[f64; 3]>) {
+        if self.nearest.len() <= PLAYERS_SCANNED {
+            out.extend_from_slice(&self.nearest);
+            return;
+        }
+        let squares = (self.player_squares).get_or_init(|| PlayerSquares::new(&self.nearest));
+        squares.near(x, z, extent, out);
+    }
     fn respawn(&self) -> Option<[i32; 3]> {
         // The world spawn point lives in the overworld.
         if self.game.dim != Dim::Overworld {
@@ -538,8 +554,11 @@ impl NaturalLevel for GameLevel<'_, '_> {
             ]
         })
     }
+    /// `ServerLevel.canSpawnEntitiesInChunk`: the whole chunk is inside the border.
     fn can_spawn_in_chunk(&self, cx: i32, cz: i32) -> bool {
         self.game.world.chunks.contains_key(&(cx, cz))
+            && self.within_world_border(cx << 4, cz << 4)
+            && self.within_world_border((cx << 4).wrapping_add(15), (cz << 4).wrapping_add(15))
     }
     fn no_collision(&self, bounds: Aabb) -> bool {
         let mut scene = SceneCollisions {
@@ -643,6 +662,7 @@ impl<'a> Game<'a> {
             w: self.mob_world_base(&[]),
             players,
             nearest,
+            player_squares: Default::default(),
             pending: Default::default(),
             pending_ids: Default::default(),
             boxes: Default::default(),
@@ -750,7 +770,20 @@ impl<'a> Game<'a> {
             return;
         }
         let mut laps = horizon_client::spans::laps();
-        let players = self.level_players();
+        let mut players = self.level_players();
+        // Fake players (mods' bots) do not anchor natural spawning.
+        if let Some(h) = self.lan.as_ref() {
+            let fake: Vec<u128> = h
+                .hub
+                .guests
+                .iter()
+                .filter(|g| g.fake)
+                .map(|g| g.uuid)
+                .collect();
+            if !fake.is_empty() {
+                players.retain(|p| !fake.contains(&p.uuid));
+            }
+        }
         if players.is_empty() {
             return;
         }
@@ -813,6 +846,10 @@ impl<'a> Game<'a> {
             spawn_selection::attempt_counters(false);
             if !categories.is_empty() {
                 for chunk in scratch.candidates.drain(..) {
+                    // ServerChunkCache.tickSpawningChunk gates the initial chunk too.
+                    if !level.can_spawn_in_chunk(chunk.0, chunk.1) {
+                        continue;
+                    }
                     let mut spawn = |l: &GameLevel, r: &SpawnRequest| {
                         let spawned = l.game.finalize_spawned(r, &mut pending);
                         if let Some(s) = &spawned {
@@ -924,6 +961,74 @@ impl<'a> Game<'a> {
 mod tests {
     use super::*;
 
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn authoritative_world_border_gates_positions_and_whole_chunks() {
+        use horizon_core::position::BlockPos;
+        use horizon_world::level::LevelAccess;
+        let mut game = crate::game::native_machines::tests::server_game();
+        game.border.set_center([8.0, 8.0]);
+        game.border.set_size(16.0);
+        assert!(game.natural_level().can_spawn_in_chunk(0, 0));
+        assert!(!game.natural_level().can_spawn_in_chunk(1, 0)); // unloaded
+        game.border.set_size(15.5);
+        assert!(!game.natural_level().can_spawn_in_chunk(0, 0)); // partial
+        assert!(game.natural_level().within_world_border(1, 1));
+        assert!(!game.natural_level().within_world_border(0, 0));
+        game.with_level(|_, level, _| {
+            assert!(level.within_world_border(BlockPos::new(1, 64, 1)));
+            assert!(!level.within_world_border(BlockPos::new(0, 64, 0)));
+        });
+        game.border.set_size(16.5);
+        assert!(game.natural_level().can_spawn_in_chunk(0, 0));
+        assert!(game.mob_world_base(&[]).within_world_border(0, 0));
+        assert!(!game.mob_world_base(&[]).within_world_border(17, 0));
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn world_border_outer_chunk_gate_keeps_attempt_randomness() {
+        use horizon_client::{chunk::Chunk, motion::PlayerMotion};
+        use std::sync::Arc;
+        let mut game = crate::game::native_machines::tests::server_game();
+        // Only the center chunk can tick: its eight neighbors are loaded,
+        // but none of those has all its own neighbors. The center is partial.
+        for x in -1..=1 {
+            for z in -1..=1 {
+                let mut chunk = Chunk::empty(x, z);
+                chunk.lit = x == 0 && z == 0;
+                game.world.chunks.insert((x, z), Arc::new(chunk));
+            }
+        }
+        game.tickets.update(None);
+        game.player = Some(PlayerMotion::new(&game.motion, Vec3::new(8.5, 64.0, 8.5)).unwrap());
+        game.border.set_center([8.0, 8.0]);
+        game.border.set_size(2.0);
+        let mut scratch = SpawnScratch::default();
+        game.spawning_chunks(&game.level_players(), &mut scratch);
+        assert_eq!(scratch.candidates, vec![(0, 0)]);
+        assert!(game.ui.rules.bool("spawn_mobs"));
+        // A contained chunk must actually reach the spawning pass, so an
+        // empty category list cannot satisfy the rejected-chunk assertion.
+        game.border.set_size(64.0);
+        game.world.random = LegacyRandom::new(12345);
+        game.spawn_natural();
+        assert_ne!(
+            game.world.random.next_long(),
+            LegacyRandom::new(12345).next_long()
+        );
+        game.world.inhabited.clear();
+        game.border.set_size(2.0);
+        game.world.random = LegacyRandom::new(12345);
+        game.spawn_natural();
+        // No shuffle draw for one candidate, and no attempt draws for a
+        // rejected chunk. Inhabited time still advances before the gate.
+        assert_eq!(game.world.inhabited.get(&(0, 0)), Some(&1));
+        assert_eq!(
+            game.world.random.next_long(),
+            LegacyRandom::new(12345).next_long()
+        );
+    }
     fn player(x: f64, y: f64, z: f64, spectator: bool) -> LevelPlayer {
         LevelPlayer {
             uuid: 0,

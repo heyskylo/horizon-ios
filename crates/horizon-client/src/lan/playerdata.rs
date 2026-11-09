@@ -3,7 +3,7 @@
 use super::guest::{Guest, SavedBody};
 use crate::{
     items::ItemStack,
-    save::{Level, put, read_dat, uuid_from_tag, write_dat},
+    save::{Level, put, read_dat, uuid_from_tag, uuid_tag, write_dat},
 };
 use horizon_protocol::crypto::uuid_string;
 use horizon_world::{
@@ -99,14 +99,100 @@ pub fn load_owner(guest: &mut Guest, world: &Path, saved: Option<&Level>) -> boo
 /// then to the file level.dat names, which it loads ([`load_owner`]), and to
 /// its own file, so that the one it loads is never the older of the two.
 pub fn save_owner(guest: &Guest, level: &mut Level, world: &Path) {
-    // `MinecraftServer.saveAllChunks`: `singleplayer_uuid` is the integrated server's own profile,
-    // never another player's file the world happened to hold.
-    level.player_uuid.get_or_insert(uuid_ints(guest.uuid));
+    // `MinecraftServer.saveAllChunks`: `saveDataTag(worldData, getSingleplayerProfile().id())`
+    // — the server's own profile on every save, never the stale `singleplayer_uuid` a
+    // world arrived with (a Realms download, a server world). The player file written is
+    // then the owner's own, not another player's the world happened to name.
+    level.player_uuid = Some(uuid_ints(guest.uuid));
     store(guest, level, None);
-    if let Err(e) = level.write_player(world) {
+    // `saveDataTag`: level.dat carries the profile the player file is named after, so the
+    // file the owner loads next is the one just written.
+    if let Err(e) = level.write(world) {
         log::warn!("Horizon: the owner's playerdata is not saved: {e}");
     }
     save(guest, world);
+}
+
+/// Move a world that older Horizon builds named by the offline profile to the account's
+/// (`IntegratedServer.setSingleplayerProfile`): `players/data/<offline uuid>.dat` becomes
+/// `players/data/<account uuid>.dat` — the newer of the two when both exist — with its
+/// `UUID` rewritten, and level.dat's `singleplayer_uuid` follows. Entity `Owner`
+/// references are migrated as their chunks load (`entity_nbt::migrate_player_uuid`).
+///
+/// `old` is `offline_uuid(player name)`, `new` the account's UUID. False when the world
+/// is not this owner's (another account's world, a world made under another name): its
+/// files and level data are left alone.
+pub fn migrate_owner(world: &Path, level: &mut Level, old: u128, new: u128) -> bool {
+    if old == new {
+        return false;
+    }
+    let (old_ints, new_ints) = (uuid_ints(old), uuid_ints(new));
+    let old_file = path(world, old);
+    let old_old = old_file.with_extension("dat_old");
+    let new_file = path(world, new);
+    // `PlayerDataStorage.load`: the owner's file, else its `.dat_old` (what a save cut
+    // off between its two renames leaves).
+    let old_data = read_dat(&old_file).or_else(|| read_dat(&old_old));
+    // Only this owner's world: level.dat names the offline profile (its `singleplayer_uuid`
+    // or the file's own `UUID`), or a world without an owner yet (a server world, a Realms
+    // download) holds the owner's player file by that name. Another account's world names
+    // neither and is left alone.
+    let owns_named_file = level.player_uuid == Some(old_ints);
+    let ownerless = level.player_uuid.is_none() && old_data.is_some();
+    if !owns_named_file && !ownerless {
+        return false;
+    }
+    let new_data = read_dat(&new_file);
+    // Both files: the one written more recently is the player's data. When their
+    // times cannot be compared, the file level.dat names (the old one) wins.
+    let prefer_new = match (&old_data, &new_data) {
+        (Some(_), Some(_)) => {
+            let modified = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+            matches!(
+                (modified(&old_file), modified(&new_file)),
+                (Some(old), Some(new)) if new > old
+            )
+        }
+        (Some(_), None) => false,
+        (None, Some(_)) => true,
+        (None, None) => false,
+    };
+    let source = if prefer_new { new_data } else { old_data };
+    // No player data anywhere: nothing to move, and the owner's first save names the new
+    // file. (`level.dat`'s old `singleplayer_uuid` then names no data, as before.)
+    if source.is_none() && level.player_extra.is_none() {
+        return false;
+    }
+    if let Some(mut tag) = source {
+        // The player file is named after its `UUID` (`PlayerDataStorage.save`).
+        put(&mut tag, "UUID", uuid_tag(new_ints));
+        if let Err(e) = write_dat(&new_file, tag.clone()) {
+            log::warn!(
+                "Horizon: cannot move the owner's playerdata to {}: {e}",
+                new_file.display()
+            );
+            return false;
+        }
+        // The player this open gives the account is the file that won, not the older one
+        // `Level::read` loaded from `singleplayer_uuid`.
+        level.read_player(&tag);
+        level.player_extra = Some(tag);
+        level.singleplayer_file = true;
+        // The same data is under the account's name now. The offline files are kept
+        // beside it as `.dat_offline` / `.dat_old_offline` rather than deleted, so a
+        // migration that went wrong never costs the player their inventory.
+        let _ = std::fs::rename(&old_file, old_file.with_extension("dat_offline"));
+        let _ = std::fs::rename(&old_old, old_file.with_extension("dat_old_offline"));
+    }
+    level.player_uuid = Some(new_ints);
+    // `saveDataTag`: `singleplayer_uuid` is the profile the world's player file is named
+    // after. Written before the account's first session saves, so an interrupted first
+    // open still finds the file written above.
+    if let Err(e) = level.write(world) {
+        log::warn!("Horizon: cannot save the migrated owner: {e}");
+        return false;
+    }
+    true
 }
 
 /// A player new to the world faces the world spawn's angle (`PrepareSpawnTask`:
@@ -130,6 +216,10 @@ pub fn apply(guest: &mut Guest, level: &Level) {
     guest.pitch = level.rotation[1];
     guest.head_yaw = guest.yaw;
     guest.on_ground = level.on_ground;
+    // LivingEntity.readAdditionalSaveData: a saved FallFlying sets shared
+    // flag 7, so a player saved mid-glide (#11193) lands gliding; its next
+    // `updateFallFlying` ends the glide if it can't go on.
+    guest.fall_flying = level.fall_flying;
     guest.health = level.health;
     guest.saved_absorption = Some(level.absorption);
     guest.food = level.food;
@@ -395,6 +485,11 @@ impl Drop for Autosaves {
 /// Put a guest's state in `level`'s player fields; `vehicle` is the
 /// RootVehicle compound of the ride (`ServerPlayer.saveParentVehicle`).
 pub fn store(guest: &Guest, level: &mut Level, vehicle: Option<Tag>) {
+    level.player_impulse_grace = guest.motion.as_ref().map(|p| p.impulse.reset_grace_time);
+    level.player_fall_particles = guest
+        .motion
+        .as_ref()
+        .map(|p| p.spawn_extra_particles_on_fall);
     level.position = Some(guest.position);
     level.dimension = guest.dimension.clone();
     level.rotation = [guest.yaw, guest.pitch];
@@ -423,6 +518,8 @@ pub fn store(guest: &Guest, level: &mut Level, vehicle: Option<Tag>) {
     level.spawn = guest.spawn.map(|s| [s[0] - 0.5, s[1], s[2] - 0.5]);
     level.respawn_elsewhere = guest.respawn_elsewhere.clone();
     level.on_ground = guest.on_ground;
+    // LivingEntity.addAdditionalSaveData: FallFlying is isFallFlying().
+    level.fall_flying = guest.fall_flying;
     level.seen_credits = guest.seen_credits;
     level.post_effects.clone_from(&guest.post_effects);
     level.last_death = guest.last_death.clone();
@@ -546,6 +643,7 @@ mod tests {
                 latency: Arc::new(AtomicI32::new(0)),
                 address: "127.0.0.1:25565".parse().unwrap(),
                 expected: false,
+                configured: Default::default(),
             },
             2,
             [0.0, 64.0, 0.0],
@@ -843,6 +941,128 @@ mod tests {
     }
 
     #[test]
+    fn opening_under_the_account_moves_an_offline_owners_files() {
+        // A world older builds made names its player by the offline UUID: level.dat's
+        // `singleplayer_uuid` and `players/data/<offline>.dat`. The first open under
+        // the account moves the file, its `UUID` and level.dat's name.
+        let old = horizon_protocol::crypto::offline_uuid("Player46606");
+        let new = 0x0123_4567_89ab_cdef_0123_4567_89ab_cdef;
+        let dir = world("migrate");
+        let mut level = Level {
+            player_uuid: Some(uuid_ints(old)),
+            ..Level::default()
+        };
+        store(&holding(old, "minecraft:diamond", 5), &mut level, None);
+        level.write(&dir).unwrap();
+
+        let mut read = Level::read(&dir).unwrap();
+        assert!(migrate_owner(&dir, &mut read, old, new));
+        let moved = read_dat(&path(&dir, new)).expect("the account's player file");
+        assert_eq!(
+            uuid_from_tag(moved.get("UUID")),
+            Some(uuid_ints(new)),
+            "the file is named after its UUID"
+        );
+        assert!(!path(&dir, old).exists(), "the offline file is gone");
+        assert!(
+            path(&dir, old).with_extension("dat_offline").exists(),
+            "the offline file is kept as a backup"
+        );
+        let named = read_dat(&dir.join("level.dat")).unwrap();
+        assert_eq!(
+            uuid_from_tag(named.get("Data").and_then(|d| d.get("singleplayer_uuid"))),
+            Some(uuid_ints(new))
+        );
+        // The owner finds the data as its own; the world opening's copy has it too.
+        let saved = Level::read(&dir).unwrap();
+        assert!(saved.singleplayer_file);
+        let mut g = guest();
+        g.uuid = new;
+        assert!(load_owner(&mut g, &dir, Some(&saved)));
+        assert_eq!(first_item(&g), Some(("minecraft:diamond", 5)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_migration_keeps_the_newer_of_the_two_player_files() {
+        // The account already played this world (its own file is newer than the
+        // offline one level.dat still names): the newer file is the player's data.
+        let old = horizon_protocol::crypto::offline_uuid("Player46606");
+        let new = 0x0123_4567_89ab_cdef_0123_4567_89ab_cdef;
+        let dir = world("migrate-newer");
+        let mut level = Level {
+            player_uuid: Some(uuid_ints(old)),
+            ..Level::default()
+        };
+        store(&holding(old, "minecraft:diamond", 5), &mut level, None);
+        level.write(&dir).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        save(&holding(new, "minecraft:emerald", 9), &dir);
+
+        let mut read = Level::read(&dir).unwrap();
+        assert!(migrate_owner(&dir, &mut read, old, new));
+        let moved = read_dat(&path(&dir, new)).unwrap();
+        assert_eq!(uuid_from_tag(moved.get("UUID")), Some(uuid_ints(new)));
+        assert!(!path(&dir, old).exists());
+        let mut g = guest();
+        g.uuid = new;
+        assert!(load_owner(&mut g, &dir, Some(&read)));
+        assert_eq!(first_item(&g), Some(("minecraft:emerald", 9)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_world_without_an_owner_still_moves_the_offline_file() {
+        // A server world or a Realms download has no `singleplayer_uuid`; its owner's
+        // player file is still named by the offline UUID and is the owner's.
+        let old = horizon_protocol::crypto::offline_uuid("Player46606");
+        let new = 0x0123_4567_89ab_cdef_0123_4567_89ab_cdef;
+        let dir = world("migrate-ownerless");
+        let mut level = Level {
+            player_uuid: Some(uuid_ints(old)),
+            ..Level::default()
+        };
+        store(&holding(old, "minecraft:diamond", 5), &mut level, None);
+        level.write(&dir).unwrap();
+        let mut root = read_dat(&dir.join("level.dat")).unwrap();
+        if let Tag::Compound(root) = &mut root
+            && let Some(Tag::Compound(data)) = root.get_mut(&"Data".into())
+        {
+            data.remove(&"singleplayer_uuid".into());
+        }
+        write_dat(&dir.join("level.dat"), root).unwrap();
+
+        let mut read = Level::read(&dir).unwrap();
+        assert_eq!(read.player_uuid, None);
+        assert!(migrate_owner(&dir, &mut read, old, new));
+        assert!(path(&dir, new).is_file());
+        assert!(!path(&dir, old).exists());
+        assert_eq!(read.player_uuid, Some(uuid_ints(new)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_migration_leaves_another_accounts_world_alone() {
+        let other = horizon_protocol::crypto::offline_uuid("Player46606");
+        let old = horizon_protocol::crypto::offline_uuid("Alex");
+        let new = 0x0123_4567_89ab_cdef_0123_4567_89ab_cdef;
+        let dir = world("migrate-foreign");
+        let mut level = Level {
+            player_uuid: Some(uuid_ints(other)),
+            ..Level::default()
+        };
+        store(&holding(other, "minecraft:diamond", 5), &mut level, None);
+        level.write(&dir).unwrap();
+        let before = read_dat(&dir.join("level.dat")).unwrap();
+
+        let mut read = Level::read(&dir).unwrap();
+        assert!(!migrate_owner(&dir, &mut read, old, new));
+        assert_eq!(read_dat(&dir.join("level.dat")).unwrap(), before);
+        assert!(!path(&dir, new).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_saved_burn_and_fall_come_back() {
         // A player saved burning in mid-fall (#1323, #1327): Entity.saveWithoutId's
         // Fire, Air and fall_distance, read back for the next body.
@@ -879,6 +1099,34 @@ mod tests {
         let mut back = guest();
         apply(&mut back, &read);
         (tag, back)
+    }
+
+    /// #11193: a player who saved while gliding comes back gliding, as
+    /// LivingEntity.addAdditionalSaveData's FallFlying and the flag
+    /// readAdditionalSaveData sets from it have it.
+    #[test]
+    fn a_saved_glide_comes_back() {
+        let mut g = guest();
+        g.fall_flying = true;
+        let (tag, back) = round_trip(&g);
+        assert_eq!(tag.get("FallFlying"), Some(&Tag::Byte(1)));
+        assert!(back.fall_flying);
+        let (tag, back) = round_trip(&guest());
+        assert_eq!(tag.get("FallFlying"), Some(&Tag::Byte(0)));
+        assert!(!back.fall_flying);
+    }
+
+    /// `getBooleanOr` takes any numeric tag: an int `FallFlying` from
+    /// another writer still starts the glide.
+    #[test]
+    fn a_numeric_fall_flying_reads_as_a_glide() {
+        let mut level = Level::default();
+        store(&guest(), &mut level, None);
+        let mut tag = level.player_tag();
+        put(&mut tag, "FallFlying", Tag::Int(1));
+        let mut read = Level::default();
+        read.read_player(&tag);
+        assert!(read.fall_flying);
     }
 
     #[test]
@@ -1236,5 +1484,29 @@ mod tests {
         assert_eq!(level.player_uuid, Some(uuid_ints(owner)));
         assert_eq!(std::fs::read(path(&dir, friend)).unwrap(), before);
         assert!(exists(&dir, owner));
+    }
+
+    #[test]
+    fn a_downloaded_realms_world_finds_the_accounts_player_file() {
+        // `FileDownload.untarGzipArchive` drops `singleplayer_uuid`; the Realm's player
+        // file is named by the account's UUID (the Realm authenticated them). The owner
+        // loads it instead of starting a new player.
+        let account = 0x0123_4567_89ab_cdef_0123_4567_89ab_cdef;
+        let dir = world("download");
+        save(&holding(account, "minecraft:diamond", 5), &dir);
+        let mut level = Level::default();
+        level.write_without_player(&dir).unwrap();
+        let mut tag = read_dat(&dir.join("level.dat")).unwrap();
+        if let Some(Tag::Compound(data)) = tag.get_mut("Data") {
+            data.remove(&"singleplayer_uuid".into());
+        }
+        write_dat(&dir.join("level.dat"), tag).unwrap();
+        let read = Level::read(&dir).unwrap();
+        assert_eq!(read.player_uuid, None);
+        let mut g = guest();
+        g.uuid = account;
+        assert!(load_owner(&mut g, &dir, Some(&read)));
+        assert_eq!(first_item(&g), Some(("minecraft:diamond", 5)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

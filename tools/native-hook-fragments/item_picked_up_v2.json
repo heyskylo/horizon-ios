@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "item_picked_up_v2",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_item_picked_up_v2",
+      "neoforge": "ItemEntityPickupEvent.Pre",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "canceled"
+      }
+    }
+  ],
+  "rust_summary": "a pickup with the whole stack, the item's thrower and position (`native_item_picked_up_v2`), leaving `native_item_picked_up` as it was.",
+  "doc_summary": "`native_item_picked_up_v2(player, stack, thrower, position, canceled)`: an additive version of `native_item_picked_up` with the whole stack (its components), the item entity's thrower UUID (none for block or mob drops) and its position. Heard just before v1, which hears nothing of a pickup canceled here. v1 keeps its signature and firing point. Bundles that use it need `\"hooks\": @API:item_picked_up_v2@`."
+}

@@ -46,6 +46,9 @@ pub fn star_triangles() -> Vec<[f32; 3]> {
 struct Uniform {
     clip_from_sky: [[f32; 4]; 4],
     color: [f32; 4],
+    hdr_settings: [f32; 4],
+    hdr_shares: [f32; 4],
+    hdr_light: [f32; 4],
 }
 
 pub(super) struct Stars {
@@ -91,11 +94,14 @@ impl Stars {
                 resource: uniform.as_entire_binding(),
             }],
         });
-        let shader = crate::gfx::shader_module(
+        let shader = super::shader_module(
             device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("Stars shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("stars.wgsl").into()),
+                source: wgpu::ShaderSource::Wgsl(
+                    (include_str!("../hdr_light.wgsl").to_owned() + include_str!("stars.wgsl"))
+                        .into(),
+                ),
             },
         );
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -104,7 +110,7 @@ impl Stars {
             ..Default::default()
         });
         let attributes = wgpu::vertex_attr_array![0 => Float32x3];
-        let pipeline = crate::gfx::render_pipeline(
+        let pipeline = super::render_pipeline(
             device,
             &wgpu::RenderPipelineDescriptor {
                 label: Some("Stars"),
@@ -134,10 +140,17 @@ impl Stars {
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
                     entry_point: Some("fs_stars"),
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &[(
+                            "HDR_WRITE_LIGHT",
+                            f64::from(u8::from(format == super::LINEAR_FRAME)),
+                        )],
+                        ..Default::default()
+                    },
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
-                        // fs_stars premultiplies brightness; alpha carries the HDR mark.
+                        // RenderPipelines.STARS: the celestial blend (src alpha, one), with the
+                        // colour premultiplied in fs_stars, so its alpha can carry HDR's mark.
                         blend: Some(wgpu::BlendState {
                             color: wgpu::BlendComponent {
                                 src_factor: wgpu::BlendFactor::One,
@@ -170,11 +183,15 @@ impl Stars {
         encoder: &mut wgpu::CommandEncoder,
         clip_from_sky: Mat4,
         brightness: f32,
+        globals: &super::Globals,
     ) {
         let b = brightness.clamp(0.0, 1.0);
         let uniform = Uniform {
             clip_from_sky: clip_from_sky.to_cols_array_2d(),
             color: [b; 4],
+            hdr_settings: globals.hdr_settings,
+            hdr_shares: globals.hdr_shares,
+            hdr_light: globals.hdr_light,
         };
         uploads.buffer(encoder, &self.uniform, 0, bytemuck::bytes_of(&uniform));
     }

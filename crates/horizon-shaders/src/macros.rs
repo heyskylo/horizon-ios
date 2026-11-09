@@ -3,7 +3,10 @@
 
 use std::collections::BTreeMap;
 
-/// The Iris feature flags (`iris.features.*`) Horizon has. `BLOCK_EMISSION_ATTRIBUTE`: terrain's
+/// The feature flags of `iris.features.*` (spec 3.2) Horizon has. A pack that requires one of
+/// them loads; one it lacks is noted. Horizon defines no `IRIS_FEATURE_<name>` macro for them
+/// (spec OQ-2, docs/cleanroom/README.md): that macro family names another loader, so packs take
+/// the path they take without it. `BLOCK_EMISSION_ATTRIBUTE`: terrain's
 /// `at_midBlock.w` is the light its block gives. `SEPARATE_HARDWARE_SAMPLERS` (ShaderDoc,
 /// "Separate Hardware Shadow Samplers"): `shadowtex0`/`shadowtex1` stay plain depth samplers when
 /// hardware filtering is on, `shadowtex0HW`/`shadowtex1HW` compare; Horizon picks a comparison
@@ -84,6 +87,26 @@ pub const RENDER_STAGES: [&str; 24] = [
     "HAND_TRANSLUCENT",
 ];
 
+/// `DH_BLOCK_*`, each its index: Distant Horizons' block materials.
+pub const DH_BLOCK_MATERIALS: [&str; 16] = [
+    "UNKNOWN",
+    "LEAVES",
+    "STONE",
+    "WOOD",
+    "METAL",
+    "DIRT",
+    "LAVA",
+    "DEEPSLATE",
+    "SNOW",
+    "SAND",
+    "TERRACOTTA",
+    "NETHER_STONE",
+    "WATER",
+    "GRASS",
+    "AIR",
+    "ILLUMINATED",
+];
+
 /// The value of `MC_RENDER_STAGE_<name>` (OQ-7: its index in `RENDER_STAGES`).
 pub fn render_stage(name: &str) -> u32 {
     RENDER_STAGES
@@ -129,14 +152,24 @@ impl Macros {
         // default; Iris 1.11.7 defines both too, with or without a resource pack's maps).
         m.define("MC_NORMAL_MAP", "");
         m.define("MC_SPECULAR_MAP", "");
-        // Packs take Iris's extensions (compute programs, images, custom textures) where this
-        // is defined.
-        m.define("IS_IRIS", "");
-        // Iris 1.11.7's own, as it defines them on 26.3 (observed with a probe pack): its version
-        // (1.11.7 as 11107), and translucent terrain sorted back to front, as Horizon sorts it
-        // (vanilla's `VertexSorting.byDistance`, `gfx/translucency.rs`).
-        m.define("IRIS_VERSION", "11107");
-        m.define("IRIS_HAS_TRANSLUCENCY_SORTING", "");
+        // No `IS_IRIS`, `IRIS_VERSION` or `IRIS_HAS_*`: Horizon is not that loader and does not
+        // claim its identity (spec OQ-2, docs/cleanroom/README.md). Packs take their other path.
+        // Distant Horizons' block materials, which Iris defines with or without the mod (packs
+        // compare ids with them unguarded: Exposa's `blockID == DH_BLOCK_LEAVES`), numbered as
+        // the mod's `EDhApiBlockMaterial` numbers them.
+        for (i, material) in DH_BLOCK_MATERIALS.iter().enumerate() {
+            m.define(format!("DH_BLOCK_{material}"), i.to_string());
+        }
+        // The biome categories and precipitations the `biome_category` and
+        // `biome_precipitation` uniforms compare with, as custom uniforms see them (Iris's
+        // replacements define them for the stage files too: Sildur's Enhanced Default reads
+        // `biome_category == CAT_THE_END`). `BIOME_*` needs the world's registry.
+        for (i, category) in crate::biomes::CATEGORIES.iter().enumerate() {
+            m.define(format!("CAT_{category}"), i.to_string());
+        }
+        for (i, precipitation) in ["NONE", "RAIN", "SNOW"].iter().enumerate() {
+            m.define(format!("PPT_{precipitation}"), i.to_string());
+        }
         m
     }
 
@@ -151,34 +184,13 @@ impl Macros {
         self.define("MC_MIPMAP_LEVEL", mipmap_levels.to_string());
     }
 
-    /// Every feature Horizon has, as `IRIS_FEATURE_<name>`: what `shaders.properties` itself is
-    /// read with. Iris 1.11.7 defines a feature it has there whether the pack lists it as
-    /// optional, as required or not at all (probe pack), while its programs see only the optional
-    /// ones (`define_features`).
-    pub fn define_every_feature(&mut self) {
-        for feature in FEATURES {
-            self.define(format!("IRIS_FEATURE_{feature}"), "");
-        }
-    }
-
-    /// `iris.features.optional`'s features Horizon has, as `IRIS_FEATURE_<name>`; a note for
-    /// each feature `iris.features.required` names that it lacks. As in Iris 1.11.7, a name
-    /// matches in any case, and the macro keeps the name as the pack wrote it (`ssbo` defines
-    /// `IRIS_FEATURE_ssbo`).
-    pub fn define_features(&mut self, properties: &crate::Properties) -> Vec<String> {
-        let words = |key: &str| {
-            properties
-                .get(key)
-                .map(|v| v.split_whitespace().map(str::to_owned).collect::<Vec<_>>())
-                .unwrap_or_default()
-        };
-        for feature in words("iris.features.optional") {
-            if is_feature(&feature) {
-                self.define(format!("IRIS_FEATURE_{feature}"), "");
-            }
-        }
-        words("iris.features.required")
-            .into_iter()
+    /// A note for each feature `iris.features.required` names that Horizon lacks; a name matches
+    /// in any case. Optional features need nothing: no macro is defined for them (see `FEATURES`).
+    pub fn feature_notes(properties: &crate::Properties) -> Vec<String> {
+        properties
+            .get("iris.features.required")
+            .unwrap_or_default()
+            .split_whitespace()
             .filter(|f| !is_feature(f))
             .map(|f| format!("the pack requires `{f}`, which is not supported yet"))
             .collect()
@@ -384,7 +396,26 @@ impl Macros {
             }
         }
         joined.retain(|t| !t.text.is_empty());
+        // A paste that makes no single token (`b ## (`, Alpha Piscium's
+        // `colors2_colorspaces_ ## a ## _to_ ## b ##(x)`) stays the tokens it is made of, as
+        // GL drivers' preprocessors leave it: the name before the `(` is then rescanned and can
+        // call a macro.
         joined
+            .into_iter()
+            .flat_map(|token| {
+                let parts = lex(&token.text);
+                if parts.len() < 2 {
+                    return vec![token];
+                }
+                parts
+                    .into_iter()
+                    .map(|text| ExpansionToken {
+                        text: text.into(),
+                        hidden: token.hidden.clone(),
+                    })
+                    .collect()
+            })
+            .collect()
     }
 }
 
@@ -516,13 +547,14 @@ mod tests {
         .map_err(|e| format!("{e:?}"))
     }
 
-    /// Packs see what Iris 1.11.7 defines on 26.3: GL and GLSL 3.3, its version and its sorted
-    /// translucent terrain, so they take the paths they take there.
+    /// Packs see GL and GLSL 3.3, and no other loader's identity (spec OQ-2): a declaration made
+    /// only under that condition is seen.
     #[test]
-    fn programs_see_the_versions_iris_reports() {
+    fn programs_see_gl_33_and_no_other_loader() {
         let fsh = "#version 330\nout vec4 c;\n\
-                   #if MC_GL_VERSION == 330 && MC_GLSL_VERSION == 330 && IRIS_VERSION >= 11107 \\\n\
-                   && defined IRIS_HAS_TRANSLUCENCY_SORTING\nconst float v = 1.0;\n#endif\n\
+                   #if MC_GL_VERSION == 330 && MC_GLSL_VERSION == 330 && !defined IS_IRIS \\\n\
+                   && !defined IRIS_VERSION && !defined IRIS_HAS_TRANSLUCENCY_SORTING\n\
+                   const float v = 1.0;\n#endif\n\
                    void main() { c = vec4(v); }\n";
         translates(fsh, &Macros::standard()).unwrap();
     }
@@ -552,70 +584,24 @@ mod tests {
         translates(fsh, &Macros::standard()).unwrap();
     }
 
-    /// `BLOCK_EMISSION_ATTRIBUTE` (terrain's `at_midBlock.w` is its block's light) is one
-    /// Horizon has: defined when optional, no note when required.
+    /// A required feature Horizon has loads without a note, one it lacks gets a note, whatever the
+    /// case it is written in; no `IRIS_FEATURE_*` macro is defined either way (spec OQ-2).
     #[test]
-    fn block_emission_attribute_is_a_feature() {
+    fn required_features_are_noted_and_never_defined() {
         let properties = crate::Properties::parse(
-            "iris.features.optional = BLOCK_EMISSION_ATTRIBUTE\n\
-             iris.features.required = BLOCK_EMISSION_ATTRIBUTE\n",
+            "iris.features.optional = COMPUTE_SHADERS ssbo NOT_A_FEATURE\n\
+             iris.features.required = BLOCK_EMISSION_ATTRIBUTE HIGHER_SHADOWCOLOR custom_images \
+             Not_A_Feature\n",
             &Macros::standard(),
         );
-        let mut m = Macros::standard();
-        assert!(m.define_features(&properties).is_empty());
-        assert!(m.is_defined("IRIS_FEATURE_BLOCK_EMISSION_ATTRIBUTE"));
-    }
-
-    #[test]
-    fn iris_features_are_defined_or_noted() {
-        let properties = crate::Properties::parse(
-            "iris.features.optional = COMPUTE_SHADERS SEPARATE_HARDWARE_SAMPLERS NOT_A_FEATURE\n\
-             iris.features.required = ENTITY_TRANSLUCENT SEPARATE_HARDWARE_SAMPLERS NOT_A_FEATURE\n",
-            &Macros::standard(),
-        );
-        let mut m = Macros::standard();
-        let notes = m.define_features(&properties);
-        assert!(m.is_defined("IRIS_FEATURE_COMPUTE_SHADERS"));
-        assert!(m.is_defined("IRIS_FEATURE_SEPARATE_HARDWARE_SAMPLERS"));
-        assert!(!m.is_defined("IRIS_FEATURE_NOT_A_FEATURE"));
         assert_eq!(
-            notes,
-            ["the pack requires `NOT_A_FEATURE`, which is not supported yet"]
-        );
-        // HIGHER_SHADOWCOLOR: Iris 1.11.7 defines it for `iris.features.optional` (probe p7951c).
-        let mut m = Macros::default();
-        let notes = m.define_features(&crate::Properties::parse(
-            "iris.features.optional = HIGHER_SHADOWCOLOR\n\
-             iris.features.required = HIGHER_SHADOWCOLOR\n",
-            &Macros::default(),
-        ));
-        assert!(m.is_defined("IRIS_FEATURE_HIGHER_SHADOWCOLOR") && notes.is_empty());
-    }
-
-    /// Iris 1.11.7, with probe packs of our own (#8996): a feature name matches in any case, and
-    /// an optional one defines the macro with the name as written, not in upper case.
-    #[test]
-    fn feature_names_match_in_any_case() {
-        let mut m = Macros::standard();
-        let notes = m.define_features(&crate::Properties::parse(
-            "iris.features.optional = ssbo Custom_Images\n\
-             iris.features.required = compute_shaders ssbo custom_images Not_A_Feature\n",
-            &Macros::standard(),
-        ));
-        assert!(m.is_defined("IRIS_FEATURE_ssbo"));
-        assert!(m.is_defined("IRIS_FEATURE_Custom_Images"));
-        for absent in [
-            "IRIS_FEATURE_SSBO",
-            "IRIS_FEATURE_CUSTOM_IMAGES",
-            "IRIS_FEATURE_compute_shaders",
-            "IRIS_FEATURE_COMPUTE_SHADERS",
-        ] {
-            assert!(!m.is_defined(absent), "{absent}");
-        }
-        assert_eq!(
-            notes,
+            Macros::feature_notes(&properties),
             ["the pack requires `Not_A_Feature`, which is not supported yet"]
         );
+        let mut m = Macros::standard();
+        m.define_renderer(4);
+        let iris: Vec<_> = m.0.keys().filter(|name| name.contains("IRIS")).collect();
+        assert!(iris.is_empty(), "{iris:?}");
     }
 
     #[test]
@@ -626,6 +612,27 @@ mod tests {
         assert_eq!(mc_version("26.3"), 260300);
         assert_eq!(MC_VERSION, 260300);
         assert_eq!(Macros::standard().get("MC_VERSION"), Some("260300"));
+    }
+
+    #[test]
+    fn distant_horizons_block_materials_are_defined_without_the_mod() {
+        let m = Macros::standard();
+        assert_eq!(m.get("DH_BLOCK_UNKNOWN"), Some("0"));
+        assert_eq!(m.get("DH_BLOCK_LEAVES"), Some("1"));
+        assert_eq!(m.get("DH_BLOCK_WATER"), Some("12"));
+        assert_eq!(m.get("DH_BLOCK_ILLUMINATED"), Some("15"));
+        assert_eq!(m.get("DISTANT_HORIZONS"), None);
+    }
+
+    #[test]
+    fn biome_categories_and_precipitations_are_macros_as_custom_uniforms_see_them() {
+        let m = Macros::standard();
+        let constants = crate::biomes::constants(&[]);
+        for (name, value) in &constants {
+            assert_eq!(m.get(name), Some(value.to_string().as_str()), "{name}");
+        }
+        assert_eq!(m.get("CAT_THE_END"), Some("8"));
+        assert_eq!(m.get("PPT_SNOW"), Some("2"));
     }
 
     #[test]

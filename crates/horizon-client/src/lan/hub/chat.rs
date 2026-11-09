@@ -27,6 +27,32 @@ pub fn native_player_chat(
     crate::native_client_hooks::player_chat(player, name, message, replies, cancel);
 }
 
+/// `native_player_chat` with the sender's permission level (`level`, their operator level, 0
+/// for everyone else): heard after v1, with the same cancel and replies. A mod that uses this
+/// hook need not use v1, and a mod that uses both hears the message twice. It cannot change the
+/// text. Once for each message a player sends, on a server. API @API:player_chat_v2@.
+#[inline(never)]
+pub fn native_player_chat_v2(
+    player: u128,
+    name: &str,
+    level: u8,
+    message: &str,
+    replies: &mut Vec<Text>,
+    cancel: &mut bool,
+) {
+    crate::native_client_hooks::player_chat_v2(player, name, level, message, replies, cancel);
+}
+
+/// The look of a player's chat line as the players see it (the chat decorate hook, as vanilla's
+/// `ChatDecorator`): a mod sets `decorated` to the text that replaces the message in the line.
+/// The signed body stays the original message, so its signature still checks; only the shown
+/// text changes, and it is sent as the unsigned content. Heard after `native_player_chat` let
+/// the message through, on a server. API @API:chat_decorate@.
+#[inline(never)]
+pub fn native_chat_decorate(player: u128, name: &str, message: &str, decorated: &mut Option<Text>) {
+    crate::native_client_hooks::chat_decorate(player, name, message, decorated);
+}
+
 /// Now, in epoch milliseconds (Instant.now()).
 pub fn now_millis() -> i64 {
     std::time::SystemTime::now()
@@ -91,6 +117,15 @@ impl ChatMessage {
             last_seen,
             unsigned_content: None,
         }
+    }
+    /// withUnsignedContent: what a mod's `native_chat_decorate` made of the
+    /// message is what clients show, as unsigned content beside the signed
+    /// body, which stays as the sender signed it (its content, signature,
+    /// time, salt and last seen), so the signature still verifies. None
+    /// leaves the message shown as signed.
+    pub fn decorate(&mut self, decorated: Option<Text>) {
+        self.unsigned_content =
+            decorated.map(|line| crate::lan::data::component_nbt(&line.component()));
     }
     /// hasExpiredServer.
     pub fn expired(&self, now: i64) -> bool {
@@ -216,7 +251,7 @@ impl Hub {
         let signature = c.signature.as_deref().and_then(secure_chat::signature);
         let g = &mut self.guests[i];
         let (uuid, name) = (g.uuid, g.name.clone());
-        let message = match g
+        let mut message = match g
             .chain
             .unpack(uuid, signature.as_ref(), &body, enforce, now)
         {
@@ -242,6 +277,15 @@ impl Hub {
         if self.mods_loaded {
             let (mut cancel, mut replies) = (false, Vec::new());
             native_player_chat(uuid, &name, &message.content, &mut replies, &mut cancel);
+            let level = self.guests[i].permission;
+            native_player_chat_v2(
+                uuid,
+                &name,
+                level,
+                &message.content,
+                &mut replies,
+                &mut cancel,
+            );
             for line in replies {
                 self.guests[i].send(&C::SystemChat(play::SystemChat {
                     content: crate::lan::data::component_nbt(&line.component()),
@@ -251,6 +295,9 @@ impl Hub {
             if cancel {
                 return;
             }
+            let mut decorated = None;
+            native_chat_decorate(uuid, &name, &message.content, &mut decorated);
+            message.decorate(decorated);
         }
         let bound = play::ChatTypeBound {
             chat_type: self.chat_type,
@@ -394,6 +441,31 @@ impl Hub {
         }
     }
 
+    /// A chat line as a player who is on, disguised: no signature, named as the player is shown,
+    /// to the players who show chat (a mod's character or a bot's line). `message` is the
+    /// component. False when the player isn't on.
+    pub fn chat_as(&self, uuid: u128, message: Tag) -> bool {
+        let Some(name) = self
+            .guests
+            .iter()
+            .find(|g| g.placed && g.uuid == uuid)
+            .map(|g| g.name.clone())
+        else {
+            return false;
+        };
+        let bound = play::ChatTypeBound {
+            chat_type: self.chat_type,
+            name: self.player_display_name(uuid, &name),
+            target: None,
+        };
+        for k in 0..self.guests.len() {
+            if self.guests[k].placed {
+                self.send_disguised(k, message.clone(), bound.clone());
+            }
+        }
+        true
+    }
+
     /// collectSignedArguments, or collectUnsignedArguments when the client
     /// signed none: each of the command's message arguments (`parsed`, by
     /// name) through the sender's chain.
@@ -456,6 +528,29 @@ impl Hub {
             return Err(mismatch(events));
         }
         Ok(out)
+    }
+
+    /// `PlayerList.broadcastChatMessage` for a non-player command source:
+    /// an unsigned message with the source's display name, visible as player chat.
+    /// `except` is a connection that gets the line another way (with its
+    /// command's captured output).
+    pub fn broadcast_source_chat(
+        &self,
+        chat_type: &str,
+        name: Tag,
+        message: Tag,
+        except: Option<u32>,
+    ) {
+        let bound = play::ChatTypeBound {
+            chat_type: self.chat_type_id(chat_type),
+            name,
+            target: None,
+        };
+        for (k, guest) in self.guests.iter().enumerate() {
+            if guest.placed && Some(guest.conn) != except {
+                self.send_disguised(k, message.clone(), bound.clone());
+            }
+        }
     }
 
     /// A message command's chat (SayCommand, EmoteCommands): to everyone,
@@ -540,5 +635,44 @@ impl Hub {
         self.sync
             .id("minecraft:chat_type", &format!("minecraft:{name}"))
             .unwrap_or(self.chat_type)
+    }
+}
+
+#[cfg(test)]
+mod decorate_tests {
+    use super::*;
+
+    /// A decorated message keeps the body its sender signed and only adds the
+    /// line clients show; an undecorated one is shown as signed.
+    #[test]
+    fn decorating_keeps_the_signed_body() {
+        let seen = [[7u8; secure_chat::SIGNATURE_BYTES]];
+        let body = Body {
+            content: "hello",
+            timestamp: 1_000,
+            salt: 42,
+            last_seen: &seen,
+        };
+        let signed = Unpacked::Signed {
+            index: 3,
+            signature: [9u8; secure_chat::SIGNATURE_BYTES],
+        };
+        let mut message = ChatMessage::new(1, signed, &body, 2_000);
+        let before = message.clone();
+        message.decorate(None);
+        assert_eq!(message, before);
+        let line = Text::literal("[VIP] hello");
+        message.decorate(Some(line.clone()));
+        assert_eq!(
+            message.unsigned_content,
+            Some(crate::lan::data::component_nbt(&line.component()))
+        );
+        assert_eq!(
+            ChatMessage {
+                unsigned_content: None,
+                ..message
+            },
+            before
+        );
     }
 }

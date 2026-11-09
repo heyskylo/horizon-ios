@@ -23,8 +23,8 @@ pub(super) struct Social {
     /// who left is still listed by name.
     names: HashMap<u128, String>,
     page: Page,
-    search: EditBox,
-    scroll: f32,
+    pub(super) search: EditBox,
+    pub(super) scroll: f32,
     /// Opened from the pause menu: Done goes back there.
     from_pause: bool,
 }

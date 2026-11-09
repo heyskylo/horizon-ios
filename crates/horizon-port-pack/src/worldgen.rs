@@ -169,11 +169,33 @@ pub fn upgrade(
 ) -> bool {
     let states = block_states(v);
     report.block_states += usize::from(states);
+    let features = features(kind, v, report);
     let renamed = crate::carry::renamed_ids(v);
     let dropped = crate::processors::each_list(kind, v, &mut |list| {
         drop_java_processors(list, &mut report.processors_dropped)
     });
-    upgrade_types(kind, v, report, set_tags) || states || dropped || renamed
+    upgrade_types(kind, v, report, set_tags) || states || features || dropped || renamed
+}
+
+/// A 1.21.1 configured or placed feature in 26.3's form, as world packs get
+/// it ([`crate::upgrade`]): `config` unwrapped (26.3 skips a feature that
+/// keeps it), patches and placements rewritten. Whether it changed.
+fn features(kind: &str, v: &mut Value, report: &mut Upgrade) -> bool {
+    let mut r = crate::upgrade::Report::default();
+    let new = match kind {
+        // Every 1.21.1 configured feature has `config`; one without is 26.3's.
+        "configured_feature" if v.get("config").is_some() => {
+            crate::upgrade::features::feature(v, &mut r)
+        }
+        "placed_feature" => crate::upgrade::features::placed(v, &mut r),
+        _ => return false,
+    };
+    for (t, n) in r.unknown {
+        *report.unsupported.entry(t).or_default() += n;
+    }
+    let changed = new != *v;
+    *v = new;
+    changed
 }
 
 /// Takes the processors written in Java (any type outside `minecraft:` and
@@ -614,10 +636,10 @@ fn moogs_spacing(p: &mut Value, lost: &mut BTreeMap<String, usize>) {
     let separation = scaled("separation").min(spacing - 1);
     p["spacing"] = spacing.into();
     p["separation"] = separation.into();
-    if let Some(o) = p.as_object_mut() {
-        if o.remove("when_replacing").is_some() {
-            *lost.entry("when_replacing".into()).or_default() += 1;
-        }
+    if let Some(o) = p.as_object_mut()
+        && o.remove("when_replacing").is_some()
+    {
+        *lost.entry("when_replacing".into()).or_default() += 1;
     }
 }
 
@@ -798,10 +820,10 @@ pub fn loader_biome_tags(work: &Path) -> BTreeMap<String, Value> {
                 continue;
             };
             let declared = entry.size();
-            if let Ok(text) = budget.read_text(&mut entry, declared, crate::entry::MAX_TEXT) {
-                if let Ok(v) = serde_json::from_str(&text) {
-                    out.insert(path, v);
-                }
+            if let Ok(text) = budget.read_text(&mut entry, declared, crate::entry::MAX_TEXT)
+                && let Ok(v) = serde_json::from_str(&text)
+            {
+                out.insert(path, v);
             }
         }
     }
@@ -1263,7 +1285,7 @@ mod tests {
             &mut report,
             &NO_TAGS
         ));
-        assert_eq!(spring["config"]["state"], json!({"id": "minecraft:water"}));
+        assert_eq!(spring["state"], json!({"id": "minecraft:water"}));
         // An object with other keys is not a state; a 26.3 state is left as it is.
         let mut other = json!({"Name": "x", "weight": 1, "state": {"id": "minecraft:stone"}});
         assert!(!upgrade(
@@ -1274,6 +1296,56 @@ mod tests {
         ));
         assert_eq!(report.block_states, 2);
         assert_eq!(report.mapped, 0);
+    }
+
+    /// A mod's 1.21.1 configured feature keeps its fields under `config`;
+    /// 26.3 reads them on the feature itself and skips the old shape, so
+    /// the mod's ores never generate.
+    #[test]
+    fn mod_features_unwrap_their_config() {
+        let mut report = Upgrade::default();
+        let mut ore = json!({"type": "minecraft:ore", "config": {
+            "discard_chance_on_air_exposure": 0.0, "size": 5, "targets": [{
+                "state": {"Name": "x:silver_ore"},
+                "target": {"predicate_type": "minecraft:tag_match",
+                    "tag": "minecraft:stone_ore_replaceables"}}]}});
+        assert!(upgrade(
+            "configured_feature",
+            &mut ore,
+            &mut report,
+            &NO_TAGS
+        ));
+        assert_eq!(
+            ore,
+            json!({"type": "minecraft:ore", "discard_chance_on_air_exposure": 0.0, "size": 5,
+                "targets": [{"state": {"id": "x:silver_ore"}, "target": {
+                    "predicate_type": "minecraft:tag_match",
+                    "tag": "minecraft:stone_ore_replaceables"}}]})
+        );
+        // A mod's own feature type is unwrapped too.
+        let mut selector = json!({"type": "lithostitched:weighted_selector",
+            "config": {"features": ["x:tree"]}});
+        assert!(upgrade(
+            "configured_feature",
+            &mut selector,
+            &mut report,
+            &NO_TAGS
+        ));
+        assert_eq!(selector.get("config"), None);
+        assert!(selector["features"].is_array());
+        // A placed feature's 1.21.1 placements are 26.3's.
+        let mut placed = json!({"feature": "x:ore", "placement": [
+            {"type": "minecraft:random_offset", "xz_spread": 2, "y_spread": 1}]});
+        assert!(upgrade(
+            "placed_feature",
+            &mut placed,
+            &mut report,
+            &NO_TAGS
+        ));
+        assert_eq!(
+            placed["placement"][0],
+            json!({"type": "minecraft:offset", "x": 2, "y": 1, "z": 2})
+        );
     }
 
     #[test]

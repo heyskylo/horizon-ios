@@ -26,6 +26,11 @@ extern crate self as log;
 #[macro_export]macro_rules! error{($($t:tt)*)=>{{}}}
 use std::{cell::{Cell,RefCell},path::PathBuf,sync::mpsc};
 type Report=(i32,Vec<String>,Vec<String>);
+#[derive(Clone,Copy,Debug,PartialEq)]enum Api{V0_1}
+thread_local!{static REMEMBERED:RefCell<Vec<(PathBuf,Option<Api>)>>=const{RefCell::new(Vec::new())};}
+fn fingerprint(_:&PathBuf)->u64{42}
+fn remember(path:&PathBuf,fingerprint:u64,api:Option<Api>){assert_eq!(fingerprint,42);REMEMBERED.with_borrow_mut(|r|r.push((path.clone(),api)));}
+
 thread_local!{
  static OPTIONS_REVISION:Cell<u64>=const{Cell::new(0)};
  static PENDING_LOAD:RefCell<Option<PendingLoad>>=const{RefCell::new(None)};
@@ -65,11 +70,12 @@ CASES = r'''
  let mut g=Game::new(Some((0,vec![],notes.clone())));g.poll_shader_workers();
  assert!(g.pack_ids.is_none());assert!(g.settings.horizon.shader_pack.is_empty());assert_eq!(g.settings.saves.get(),1);
  assert!(g.renderer.as_ref().unwrap().disabled);assert_eq!(g.messages.len(),1);
+ REMEMBERED.with_borrow(|r|assert!(r.iter().all(|(p,api)|p==&PathBuf::from("shaderpacks/example.zip")&&api.is_none())));
  REPORT.with_borrow(|r|assert_eq!(r.as_ref().unwrap(),&("example.zip".into(),(0,vec![],notes))));
  g.poll_shader_workers();assert_eq!(g.settings.saves.get(),1);assert_eq!(g.messages.len(),1);
 }
 #[test]fn pending_gpu_job_keeps_selected_pack(){let mut g=Game::new(None);g.poll_shader_workers();assert_eq!(g.settings.horizon.shader_pack,"example.zip");assert_eq!(g.settings.saves.get(),0);assert!(g.messages.is_empty());}
-#[test]fn geometry_only_completed_pack_is_not_quarantined(){let mut g=Game::new(Some((0,vec!["gbuffers_terrain".into()],vec![])));g.poll_shader_workers();assert!(g.pack_ids.is_some());assert_eq!(g.settings.horizon.shader_pack,"example.zip");assert_eq!(g.settings.saves.get(),0);assert!(!g.renderer.as_ref().unwrap().disabled);}
+#[test]fn geometry_only_completed_pack_is_not_quarantined(){let mut g=Game::new(Some((0,vec!["gbuffers_terrain".into()],vec![])));g.poll_shader_workers();assert!(g.pack_ids.is_some());assert_eq!(g.settings.horizon.shader_pack,"example.zip");assert_eq!(g.settings.saves.get(),0);assert!(!g.renderer.as_ref().unwrap().disabled);REMEMBERED.with_borrow(|r|assert_eq!(r.last().unwrap().1,Some(Api::V0_1)));}
 #[test]fn obsolete_dimension_failure_cannot_disable_current_pack(){let mut g=Game::new(Some((-1,vec![],vec!["old failure".into()])));g.renderer.as_mut().unwrap().dimension=Some(-1);g.poll_shader_workers();assert!(g.renderer.as_ref().unwrap().dropped);assert_eq!(g.settings.horizon.shader_pack,"example.zip");assert_eq!(g.settings.saves.get(),0);assert!(g.messages.is_empty());}
 '''
 

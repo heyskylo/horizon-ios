@@ -4,7 +4,7 @@
 //! uniform (set 1) that the vertex inputs read. `gbuffers_skytextured` draws the frame's sun and
 //! moon quads, textured from the shared atlas.
 
-use std::ops::Range;
+use std::{ops::Range, sync::Mutex};
 
 use wgpu::util::DeviceExt;
 
@@ -22,6 +22,8 @@ const SUNSET_APEX: u32 = 1;
 const SUNSET_RIM: u32 = 2;
 const STAR: u32 = 3;
 const VOID: u32 = 4;
+/// The End's fan (`fan`): `pos.xz` of a rim vertex is its direction, scaled by the radius.
+const FAN: u32 = 5;
 
 /// The frame's sky (std140).
 #[repr(C)]
@@ -33,7 +35,7 @@ struct Uniform {
     color: [f32; 4],
     /// Sunset colour and alpha.
     sunrise: [f32; 4],
-    /// cos and sin of the sunset fan's turn, star brightness.
+    /// cos and sin of the sunset fan's turn, star brightness, the End fan's radius.
     sun: [f32; 4],
 }
 
@@ -77,6 +79,8 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
          }} else if (hz_v_kind == {STAR}u) {{\n        \
              hz_p = (hz_sky_stars * vec4(hz_v_pos, 1.0)).xyz;\n        \
              hz_Color = vec4(hz_sky_sun.z);\n    \
+         }} else if (hz_v_kind == {FAN}u) {{\n        \
+             hz_p = vec3(hz_v_pos.x * hz_sky_sun.w, hz_v_pos.y, hz_v_pos.z * hz_sky_sun.w);\n    \
          }} else if (hz_v_kind == {VOID}u) {{\n        \
              hz_Color = vec4(0.0, 0.0, 0.0, 1.0);\n    \
          }}\n    \
@@ -101,6 +105,9 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
         alpha_test: None,
         item_id_declared: false,
         far_depth: true,
+        paged_maps: false,
+        water_mask: false,
+        water_patches: false,
     }
 }
 
@@ -129,6 +136,9 @@ pub fn celestial_inputs() -> horizon_shaders::GbuffersInputs {
         alpha_test: None,
         item_id_declared: false,
         far_depth: true,
+        paged_maps: false,
+        water_mask: false,
+        water_patches: false,
     }
 }
 
@@ -190,14 +200,38 @@ fn horizon(out: &mut Vec<Vertex>) {
     }
 }
 
+/// The fan a pack's `gbuffers_skybasic` draws in the End while the dragon fight's fog leaves out
+/// vanilla's sky (`super::end_fog_sky`): from (0, -16, 0) under the eye to eight rim vertices 16
+/// above it, every 45° from +Z, at the render distance (the `far` uniform; scaled in the vertex
+/// stage). Fitted to the `gl_Vertex` our probe packs' fragments read in Iris 1.11.7 at render
+/// distances 12 and 8: 289 of 291 samples lie within 0.05 block of these eight planes (one of
+/// the other two, checked, sat on a terrain edge), and nothing drew above the rim.
+fn fan(out: &mut Vec<Vertex>) {
+    let rim = |i: i32| {
+        let a = (i as f32 * 45.0).to_radians();
+        Vertex {
+            pos: [a.sin(), 16.0, a.cos()],
+            kind: FAN,
+        }
+    };
+    let apex = Vertex {
+        pos: [0.0, -16.0, 0.0],
+        kind: FAN,
+    };
+    for i in 0..8 {
+        out.extend([apex, rim(i), rim(i + 1)]);
+    }
+}
+
 pub(super) struct PackSky {
     vertices: wgpu::Buffer,
     celestial: wgpu::Buffer,
     uniform: wgpu::Buffer,
     pub layout: wgpu::BindGroupLayout,
     group: wgpu::BindGroup,
-    /// Vertex ranges of the sky disc, the sunset fan, the stars and the void.
-    ranges: [Range<u32>; 4],
+    celestial_scratch: Mutex<Vec<Celestial>>,
+    /// Vertex ranges of the sky disc, the sunset fan, the stars, the void and the End's fan.
+    ranges: [Range<u32>; 5],
 }
 
 impl PackSky {
@@ -229,6 +263,8 @@ impl PackSky {
         let stars = sunset.end..v.len() as u32;
         disc(-4.0, VOID, &mut v);
         let void = stars.end..v.len() as u32;
+        fan(&mut v);
+        let end_fan = void.end..v.len() as u32;
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Shader pack sky"),
             contents: bytemuck::cast_slice(&v),
@@ -273,7 +309,8 @@ impl PackSky {
             uniform,
             layout,
             group,
-            ranges: [sky, sunset, stars, void],
+            celestial_scratch: Mutex::new(Vec::new()),
+            ranges: [sky, sunset, stars, void, end_fan],
         }
     }
 
@@ -296,7 +333,8 @@ impl PackSky {
     /// Writes the frame's sky and returns its draws in vanilla's order: the disc, the sunset
     /// fan while the sun is near the horizon, the sun and the moon, the stars and, with the
     /// camera low, the void. `tilt` is the pack's `sunPathRotation` (degrees): the sun, moon
-    /// and stars turn with it (7.1).
+    /// and stars turn with it (7.1). In the End under the dragon fight's fog, only the End's fan,
+    /// in the fog colour (`fogColor`), as stage SKY.
     pub fn prepare(&self, queue: &wgpu::Queue, frame: &super::Frame, tilt: f32) -> Vec<Part> {
         let turn = super::pack_uniforms::tilt_matrix(tilt);
         let sun_angle = frame.sky.sun_angle.to_radians();
@@ -304,12 +342,22 @@ impl PackSky {
         let flip = if sun_angle.sin() < 0.0 { 180f32 } else { 0.0 };
         let theta = (flip + 90.0).to_radians();
         let (rotation, brightness) = frame.stars.unwrap_or_default();
-        let [r, g, b] = frame.sky.sky_color;
+        let end_fan = super::end_fog_sky(frame);
+        let [r, g, b] = match &frame.fog {
+            Some(f) if end_fan => [f.color[0], f.color[1], f.color[2]],
+            None if end_fan => frame.sky.fog_color,
+            _ => frame.sky.sky_color,
+        };
         let uniform = Uniform {
             stars: (turn * rotation).to_cols_array_2d(),
             color: [r, g, b, 1.0],
             sunrise: frame.sky.sunrise_color,
-            sun: [theta.cos(), theta.sin(), brightness.clamp(0.0, 1.0), 0.0],
+            sun: [
+                theta.cos(),
+                theta.sin(),
+                brightness.clamp(0.0, 1.0),
+                frame.detail_distance,
+            ],
         };
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));
         // The sun's quad, then the moon's (Game::celestial_geometry), as triangles.
@@ -319,22 +367,31 @@ impl PackSky {
             .0
             .iter()
             .take(CELESTIAL_QUADS);
-        let triangles: Vec<Celestial> = quads
-            .clone()
-            .flat_map(|q| [0, 1, 2, 0, 2, 3].map(|i| q[i]))
-            .map(|v| Celestial {
-                pos: turn.transform_vector3(v.pos.into()).into(),
-                uv: v.uv,
-                color: v.color,
-            })
-            .collect();
+        let mut triangles = self
+            .celestial_scratch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        triangles.clear();
+        triangles.extend(
+            quads
+                .clone()
+                .flat_map(|q| [0, 1, 2, 0, 2, 3].map(|i| q[i]))
+                .map(|v| Celestial {
+                    pos: turn.transform_vector3(v.pos.into()).into(),
+                    uv: v.uv,
+                    color: v.color,
+                }),
+        );
         queue.write_buffer(&self.celestial, 0, bytemuck::cast_slice(&triangles));
-        let [sky, sunset, stars, void] = self.ranges.clone();
+        let [sky, sunset, stars, void, fan] = self.ranges.clone();
         let part = |stage, textured, range| Part {
             stage,
             textured,
             range,
         };
+        if end_fan {
+            return vec![part("SKY", false, fan)];
+        }
         let mut parts = vec![part("SKY", false, sky)];
         if frame.sky.sunrise_color[3] > 0.001 {
             parts.push(part("SUNSET", false, sunset));

@@ -3,10 +3,12 @@
 //! them last, over any screen, at the debug GUI scale.
 use crate::{
     font::Font,
+    hud::HudVertex,
     hud_layout::{GuiDraw, PoseOp, fill},
     java_text,
     text::Text,
 };
+use std::time::{Duration, Instant};
 
 /// `extractLines`'s background: ARGB 0x90505050.
 const BACKGROUND: u32 = 0x9050_5050;
@@ -14,6 +16,39 @@ const BACKGROUND: u32 = 0x9050_5050;
 const TEXT: u32 = 0xFFE0_E0E0;
 /// `Font.lineHeight`.
 const LINE_HEIGHT: i32 = 9;
+
+/// How long the painted overlay is reused: 20 times a second, the tick rate most of its lines
+/// change at or below (fps once a second, memory twice).
+const REPAINT: Duration = Duration::from_millis(50);
+/// Least time between frames timed for the overlay's GPU lines. Their medians still span about
+/// 1.5 s of samples.
+pub const GPU_TIMING_GAP: Duration = Duration::from_millis(100);
+
+/// The overlay's painted vertices between rebuilds: copying them is far cheaper than formatting
+/// its lines and laying out their glyphs each frame.
+#[derive(Default)]
+pub struct PaintCache {
+    vertices: Vec<HudVertex>,
+    /// When they were painted, and for what layout (see [`PaintCache::fresh`]).
+    painted: Option<(Instant, PaintLayout)>,
+}
+
+/// What the painted vertices depend on besides the lines: the framebuffer size, the GUI scale's
+/// bits and `Font::epoch` (glyphs move in the atlas when it changes).
+pub type PaintLayout = ([u32; 2], u32, u64);
+
+impl PaintCache {
+    /// The vertices, while they are recent and painted for this `layout`.
+    pub fn fresh(&self, now: Instant, layout: PaintLayout) -> Option<&[HudVertex]> {
+        let (at, painted) = self.painted?;
+        (painted == layout && now.duration_since(at) < REPAINT).then_some(&self.vertices)
+    }
+    pub fn store(&mut self, now: Instant, layout: PaintLayout, vertices: &[HudVertex]) {
+        self.vertices.clear();
+        self.vertices.extend_from_slice(vertices);
+        self.painted = Some((now, layout));
+    }
+}
 
 /// What the enabled entries reported (`DebugScreenDisplayer`).
 #[derive(Default, Debug)]
@@ -422,8 +457,9 @@ pub fn light_line(sky: u8, block: u8) -> String {
 }
 
 /// What the process holds, for `DebugEntryMemory` (Horizon has no JVM heap):
-/// anonymous resident memory for the heap's used part, all resident memory
-/// for its committed part, the machine's memory for its maximum.
+/// anonymous (on Windows, private) resident memory for the heap's used part,
+/// all resident memory for its committed part, the machine's memory for its
+/// maximum.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ProcessMemory {
     pub used: u64,
@@ -432,14 +468,20 @@ pub struct ProcessMemory {
 }
 
 impl ProcessMemory {
-    /// From `/proc/self/status` and `/proc/meminfo`; `None` elsewhere.
+    /// From `/proc/self/status` and `/proc/meminfo` on Linux, the process's
+    /// counters on Windows; `None` elsewhere.
     pub fn read() -> Option<Self> {
-        if !cfg!(target_os = "linux") {
-            return None;
+        if cfg!(target_os = "linux") {
+            let status = std::fs::read_to_string("/proc/self/status").ok()?;
+            let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+            return Self::parse(&status, &meminfo);
         }
-        let status = std::fs::read_to_string("/proc/self/status").ok()?;
-        let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
-        Self::parse(&status, &meminfo)
+        let [used, allocated, max] = horizon_threads::process_memory::usage()?;
+        Some(Self {
+            used,
+            allocated,
+            max: max.max(1),
+        })
     }
     fn parse(status: &str, meminfo: &str) -> Option<Self> {
         let kib = |text: &str, key: &str| -> Option<u64> {
@@ -508,6 +550,38 @@ mod tests {
 
     fn lines(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn painted_vertices_are_reused_until_stale_or_laid_out_again() {
+        let vertex = HudVertex {
+            pos: [1.0, 2.0],
+            uv: [0.0; 2],
+            color: 7,
+            depth: 0.0,
+            glint_uv: [0.0; 2],
+            text: 1,
+        };
+        let layout = ([1920, 1080], 2.0f32.to_bits(), 5);
+        let start = Instant::now();
+        let mut cache = PaintCache::default();
+        assert!(cache.fresh(start, layout).is_none());
+        cache.store(start, layout, &[vertex]);
+        let just_before = start + Duration::from_millis(49);
+        assert_eq!(cache.fresh(just_before, layout).map(<[_]>::len), Some(1));
+        // Stale after a twentieth of a second, so the stats keep moving.
+        assert!(cache.fresh(start + REPAINT, layout).is_none());
+        // Another window size, GUI scale or glyph layout repaints at once.
+        for other in [
+            ([1280, 720], layout.1, layout.2),
+            (layout.0, 3.0f32.to_bits(), layout.2),
+            (layout.0, layout.1, 6),
+        ] {
+            assert!(cache.fresh(just_before, other).is_none());
+        }
+        // A smaller repaint leaves nothing of the last one behind.
+        cache.store(start, layout, &[]);
+        assert_eq!(cache.fresh(start, layout).map(<[_]>::len), Some(0));
     }
 
     #[test]
@@ -609,6 +683,20 @@ mod tests {
                 max: 8192 * 1024,
             })
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_memory_lines_show_on_windows() {
+        let m = ProcessMemory::read().expect("Windows reports the process's memory");
+        assert!(
+            0 < m.used && m.used <= m.allocated && m.allocated <= m.max,
+            "{m:?}"
+        );
+        let lines = MemoryMeter::default()
+            .lines()
+            .expect("the meter reads the same counters");
+        assert!(lines[0].starts_with("Mem: "), "{lines:?}");
     }
 
     #[test]

@@ -18,9 +18,10 @@ def program():
     game = (ROOT / 'crates/horizon-client/src/game.rs').read_text()
     menu = (ROOT / 'crates/horizon-client/src/game/startup_menu.rs').read_text()
     imports = (ROOT / 'crates/horizon-client/src/import.rs').read_text()
-    a = game.index('    let rest_loader = if menu {', game.index('fn load_resources('))
-    b = game.index('    // The world tables load (above)', a)
-    rest = game[a:b]
+    resource = (ROOT / 'crates/horizon-client/src/game/resource_load.rs').read_text()
+    a = resource.index('    let rest_loader = if menu {', resource.index('fn load_resources_with_access('))
+    b = resource.index('    // The world tables load (above)', a)
+    rest = resource[a:b]
     a = game.index('struct WorldRestLoader {')
     b = game.index('\nimpl Game', a)
     loader = game[a:b]
@@ -61,7 +62,8 @@ mod mod_registry{use super::*;pub fn with_content_snapshot<T>(home:&Path,read:im
 #[derive(Clone)]struct Settings{resource_packs:Vec<String>,mods:Mods}
 struct Options{dev_mods:Vec<PathBuf>}
 fn launch_world(_: &Options)->Option<&str>{None}
-mod packs{use super::*;pub fn startup_root_leased(root:&Path,_:&Vec<String>,_:&[()])->Result<(PathBuf,root_lease::RootLease)>{Ok((root.to_owned(),root_lease::RootLease::acquire(root)?))}}
+mod packs{use super::*;pub fn overlay_content(_:&Path,_:&Vec<String>,_:&[()],content:Arc<mods::PreparedContent>)->Result<Arc<mods::PreparedContent>>{Ok(content)}
+pub fn startup_root_leased(root:&Path,_:&Vec<String>,_:&[()])->Result<(PathBuf,root_lease::RootLease)>{Ok((root.to_owned(),root_lease::RootLease::acquire(root)?))}}
 mod mods{use super::*;
  pub struct PreparedContent{pub root:PathBuf,pub catalog:Arc<catalog::Catalog>,pub selection:Selection,pub lease:root_lease::RootLease,pub data_changed:bool}
  mod catalog{use super::*;
@@ -95,7 +97,7 @@ static TAIL_STARTED:AtomicBool=AtomicBool::new(false);
 static FALLBACK_RESULT:AtomicBool=AtomicBool::new(false);
 static REQUESTED:Mutex<Option<Weak<mods::PreparedContent>>>=Mutex::new(None);
 fn tail_gate()->&'static(Mutex<bool>,Condvar){static GATE:OnceLock<(Mutex<bool>,Condvar)>=OnceLock::new();GATE.get_or_init(||(Mutex::new(false),Condvar::new()))}
-fn load_world_rest(root:&Path,_:&Resources,_:&(),_:&(),_:&(),_:(),_:&Progress,_:Instant,_:bool)->Result<String>{
+fn load_world_rest(root:&Path,_:&Resources,_:&(),_:&(),_:&(),_:Option<&()>,_:&(),_:(),_:&Progress,_:Instant,_:bool)->Result<String>{
  TAIL_STARTED.store(true,Ordering::SeqCst);
  let(lock,ready)=tail_gate();let mut release=lock.lock().unwrap();while !*release{release=ready.wait(release).unwrap();}drop(release);
  Ok(fs::read_to_string(root.join("generation"))?)
@@ -109,7 +111,7 @@ fn load_resources_with_access(root:PathBuf,_:Option<&str>,vanilla_root:&Path,_:&
  let core=fs::read_to_string(root.join("generation"))?;
  publish(0,&root);
  let resources=Arc::new(Resources{rest:OnceLock::new()});
- let item_defaults=();let assets=();let behaviour_json=();let gameplay_projection=();let visibility=();
+ let entity_models:Option<Arc<()>>=None;let item_defaults=Arc::new(());let assets=();let behaviour_json=();let gameplay_projection=();let visibility=();
 '''
 LOAD_SUFFIX = r'''
  Ok(Loaded{root,pack:Pack{content:None},home_access,core,resources,rest_loader,pack_error:None})

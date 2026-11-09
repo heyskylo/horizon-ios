@@ -435,12 +435,15 @@ fn make_brain(m: &mut Mob, packed: Memories, shuffle_seed: i64, w_times: (i64, i
 /// Builds the villager's brain as its constructor does, at this game time:
 /// the memories it remembers (job site, bed, bell) come from the mob.
 pub fn init(m: &mut Mob, game_time: i64, day_time: i64, shuffle_seed: i64) {
-    let mut packed = Memories::default();
-    packed.job_site.set_opt(m.extra.home);
-    packed.home.set_opt(m.extra.bed);
-    packed.meeting_point.set_opt(m.extra.meeting);
-    if let Some(t) = super::villager::ext(m).and_then(|e| e.last_slept) {
-        packed.last_slept.set(t);
+    let saved = super::villager::ext_mut(m).saved_memories.take();
+    let mut packed = saved.as_deref().cloned().unwrap_or_default();
+    if saved.is_none() {
+        packed.job_site.set_opt(m.extra.home);
+        packed.home.set_opt(m.extra.bed);
+        packed.meeting_point.set_opt(m.extra.meeting);
+        if let Some(t) = super::villager::ext(m).and_then(|e| e.last_slept) {
+            packed.last_slept.set(t);
+        }
     }
     let b = make_brain(m, packed, shuffle_seed, (game_time, day_time));
     super::villager::ext_mut(m).brain = Some(Box::new(b));
@@ -456,7 +459,7 @@ pub struct Bx<'a, 'w> {
     refresh: bool,
 }
 
-/// `Brain.tick` (from `Villager.customServerAiStep`).
+/// `Brain.tick`, called from the villager's server AI phase.
 pub fn tick(m: &mut Mob, w: &MobWorld, lr: &mut LegacyRandom, events: &mut Vec<MobEvent>) {
     if brain(m).is_none() {
         let seed = i64::from(m.id);
@@ -3038,6 +3041,11 @@ impl B {
                         if let Some(first) = items.first() {
                             *look_time = 900;
                             m.extra.set_main_hand_stack(Some(first.clone()));
+                            super::finalize::set_drop_chance(
+                                m,
+                                super::equip::Slot::MainHand.index(),
+                                0.0,
+                            );
                         }
                     }
                 }
@@ -3052,11 +3060,21 @@ impl B {
                                 *index = 0;
                             }
                             m.extra.set_main_hand_stack(Some(items[*index].clone()));
+                            super::finalize::set_drop_chance(
+                                m,
+                                super::equip::Slot::MainHand.index(),
+                                0.0,
+                            );
                         }
                     }
                 } else {
                     // clearHeldItem; no offer matches: look for a while only.
                     m.extra.set_main_hand(None);
+                    super::finalize::set_drop_chance(
+                        m,
+                        super::equip::Slot::MainHand.index(),
+                        0.085,
+                    );
                     *look_time = (*look_time).min(40);
                 }
                 *look_time -= 1;
@@ -3315,6 +3333,7 @@ impl B {
                 mem(m).interaction_target.clear();
                 // clearHeldItem
                 m.extra.set_main_hand(None);
+                super::finalize::set_drop_chance(m, super::equip::Slot::MainHand.index(), 0.085);
                 *player_item = None;
             }
             B::TradeWithVillager(t) => {
@@ -3584,6 +3603,12 @@ fn harvest_tick(
             }
             cx.events.push(MobEvent::SetBlock {
                 pos: p,
+                state: crop,
+            });
+            cx.events.push(MobEvent::GameEvent {
+                event: "minecraft:block_place",
+                at: p.map(|v| f64::from(v) + 0.5),
+                source: m.id,
                 state: crop,
             });
             cx.events.push(MobEvent::Sound(
@@ -4580,3 +4605,7 @@ pub fn seen_memories(
         mm.last_slept.value(),
     )
 }
+
+#[cfg(test)]
+#[path = "villager_trades_tests.rs"]
+mod trades_tests;

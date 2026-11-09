@@ -25,7 +25,7 @@
 //! cutout ones, so one pass over all of them draws the runs it drew before.
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::{OPAQUE_LAYER, QuadState, TerrainVertex};
+use super::{OPAQUE_LAYER, QuadState, TerrainSource, TerrainVertex};
 
 /// The buckets in mesh order: +X, +Z, other, +Y, -Z, -X, -Y. Seen from
 /// above (+Y, the commonest case), each pair of horizontal sides with a
@@ -245,12 +245,32 @@ fn bucket(quad: &[TerrainVertex; 4]) -> usize {
 pub fn sort(solid: &mut Vec<TerrainVertex>) -> Sides {
     sort_with_metadata(solid, &mut Vec::new(), &mut Vec::new())
 }
+#[cfg(test)]
+pub fn sort_tinted(solid: &mut Vec<TerrainVertex>, tints: &mut Vec<u32>) -> Sides {
+    sort_sourced(solid, tints, &mut Vec::new())
+}
+// Production sorts all metadata together; compact-only sorting is a fixture helper.
+#[cfg(test)]
+pub(super) fn sort_sourced(
+    solid: &mut Vec<TerrainVertex>,
+    tints: &mut Vec<u32>,
+    sources: &mut Vec<TerrainSource>,
+) -> Sides {
+    sort_all_metadata(solid, &mut Vec::new(), tints, sources)
+}
 
 /// `sort`, with all the opaque parts first when `grouped`.
 #[cfg(test)]
 fn sort_parts(solid: &mut Vec<TerrainVertex>, grouped: bool) -> Sides {
     SORT_SCRATCH.with_borrow_mut(|scratch| {
-        sort_with(solid, &mut Vec::new(), &mut Vec::new(), grouped, scratch)
+        sort_with(
+            solid,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            grouped,
+            scratch,
+        )
     })
 }
 
@@ -264,6 +284,7 @@ struct SortScratch {
     sorted: Vec<[TerrainVertex; 4]>,
     states: Vec<QuadState>,
     tints: Vec<u32>,
+    sources: Vec<TerrainSource>,
 }
 thread_local! {
     static SORT_SCRATCH: std::cell::RefCell<SortScratch> = Default::default();
@@ -282,6 +303,7 @@ pub fn sort_with_states(solid: &mut Vec<TerrainVertex>, states: &mut Vec<QuadSta
             solid,
             states,
             &mut Vec::new(),
+            &mut Vec::new(),
             GROUPED.load(Ordering::Relaxed),
             scratch,
         )
@@ -297,6 +319,27 @@ pub fn sort_with_metadata(
             solid,
             states,
             tints,
+            &mut Vec::new(),
+            GROUPED.load(Ordering::Relaxed),
+            scratch,
+        )
+    })
+}
+pub(super) fn sort_all_metadata(
+    solid: &mut Vec<TerrainVertex>,
+    states: &mut Vec<QuadState>,
+    tints: &mut Vec<u32>,
+    sources: &mut Vec<TerrainSource>,
+) -> Sides {
+    if !sources.is_empty() {
+        sources.resize(solid.len() / 4, TerrainSource::default());
+    }
+    SORT_SCRATCH.with_borrow_mut(|scratch| {
+        sort_with(
+            solid,
+            states,
+            tints,
+            sources,
             GROUPED.load(Ordering::Relaxed),
             scratch,
         )
@@ -306,6 +349,7 @@ fn sort_with(
     solid: &mut Vec<TerrainVertex>,
     states: &mut Vec<QuadState>,
     tints: &mut Vec<u32>,
+    sources: &mut Vec<TerrainSource>,
     grouped: bool,
     scratch: &mut SortScratch,
 ) -> Sides {
@@ -391,6 +435,13 @@ fn sort_with(
             sorted_tints.clear();
             sorted_tints.extend(keys.iter().map(|&k| tints[(k & 0xFF_FFFF) as usize]));
             std::mem::swap(tints, sorted_tints);
+        }
+        if sources.len() == quads_len {
+            scratch.sources.clear();
+            scratch
+                .sources
+                .extend(keys.iter().map(|&k| sources[(k & 0xFF_FFFF) as usize]));
+            std::mem::swap(sources, &mut scratch.sources);
         }
     }
     Sides {
@@ -630,10 +681,13 @@ mod tests {
             }
             let mut states: Vec<_> = (0..6).map(test_state).collect();
             let mut tints: Vec<_> = (0..6).map(|id| 0xffabc000 + id).collect();
+            let source = |id| TerrainSource::new(id, [id as i32, 0, 0], id as u8, false);
+            let mut sources: Vec<_> = (0..6).map(source).collect();
             sort_with(
                 &mut solid,
                 &mut states,
                 &mut tints,
+                &mut sources,
                 grouped,
                 &mut SortScratch::default(),
             );
@@ -642,6 +696,7 @@ mod tests {
                 let id = u32::from(quad[0].layer & !OPAQUE_LAYER);
                 assert_eq!(states[i], test_state(id));
                 assert_eq!(tints[i], 0xffabc000 + id);
+                assert_eq!(sources[i], source(id));
             }
         }
     }

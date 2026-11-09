@@ -77,7 +77,7 @@ pub(crate) fn retried<T>(mut attempt: impl FnMut() -> Result<T, String>) -> Resu
 
 /// `[prune_chunks]` (prune.rs): a dry run in the background while the game starts, a delete before it
 /// starts. `mode` goes back to "off" first, so a crash halfway never repeats it unasked.
-fn prune_chunks(shared: &Arc<Shared>, dir: &Path, config: &Config) {
+fn prune_chunks(shared: &Arc<Shared>, dir: &Path, config: &Config) -> Result<(), String> {
     use crate::prune;
     let settings = config.prune_chunks.clone();
     if let Err(e) = config::update(
@@ -86,13 +86,14 @@ fn prune_chunks(shared: &Arc<Shared>, dir: &Path, config: &Config) {
         "mode",
         toml::Value::String("off".into()),
     ) {
-        return note(
+        note(
             shared,
             "WARN",
             &format!(
                 "Chunk prune not run: server.toml's prune_chunks.mode can't be set back to \"off\" ({e})"
             ),
         );
+        return Ok(());
     }
     let world = dir.join(&config.world.name);
     let threads = thread::available_parallelism().map_or(2, |n| n.get());
@@ -109,11 +110,7 @@ fn prune_chunks(shared: &Arc<Shared>, dir: &Path, config: &Config) {
                 &format!("Chunk prune: {} (report: {at})", outcome.summary),
             );
         }
-        Err(e) => note(
-            shared,
-            "ERROR",
-            &format!("Chunk prune stopped before deleting anything: {e}"),
-        ),
+        Err(e) => note(shared, "ERROR", &format!("Chunk prune failed: {e}")),
     };
     if settings.mode == prune::Mode::Delete {
         note(
@@ -121,7 +118,12 @@ fn prune_chunks(shared: &Arc<Shared>, dir: &Path, config: &Config) {
             "INFO",
             "Chunk prune: deleting barely visited chunks before the game starts (server.toml [prune_chunks])",
         );
-        finish(shared, dir, prune::run(&world, &settings, true, threads));
+        let result = prune::run(&world, &settings, true, threads);
+        let failure = result.as_ref().err().cloned();
+        finish(shared, dir, result);
+        if let Some(e) = failure {
+            return Err(e);
+        }
     } else {
         note(
             shared,
@@ -134,6 +136,26 @@ fn prune_chunks(shared: &Arc<Shared>, dir: &Path, config: &Config) {
             finish(&shared, &dir, result);
         });
     }
+    Ok(())
+}
+
+/// Run before every engine start, not only when the one-shot prune setting is still enabled.
+fn prepare_world(shared: &Arc<Shared>, dir: &Path, config: &Config) -> Result<(), String> {
+    let world = dir.join(&config.world.name);
+    crate::prune::recover(&world)?;
+    if config.prune_chunks.mode != crate::prune::Mode::Off
+        && let Err(e) = prune_chunks(shared, dir, config)
+    {
+        // A failed region rolls itself back: with no journal left, the world is whole (the regions
+        // pruned before it stay pruned) and the server starts. Only a pending recovery stops it.
+        crate::prune::recover(&world)?;
+        note(
+            shared,
+            "WARN",
+            &format!("Chunk prune failed, the server starts without the rest of it: {e}"),
+        );
+    }
+    Ok(())
 }
 
 enum Exit {
@@ -221,9 +243,7 @@ pub fn run(dir: &Path) -> Result<(), String> {
         let written = config
             .write_properties(dir)
             .map_err(|e| format!("server.properties: {e}"))?;
-        if config.prune_chunks.mode != crate::prune::Mode::Off {
-            prune_chunks(&shared, dir, &config);
-        }
+        prepare_world(&shared, dir, &config)?;
         note(
             &shared,
             "INFO",
@@ -586,8 +606,11 @@ fn pump(shared: &Arc<Shared>, from: impl Read + Send + 'static, to_stderr: bool)
                             shared.emit("phase", serde_json::json!({ "phase": "running" }));
                             crate::management::started(&shared);
                         }
-                    } else if line.contains("/INFO]: Stopping server") {
-                        // The game's own `stop` (a command in the game, not the supervisor's).
+                    } else if line.contains("/INFO]: Stopping server")
+                        || line.contains("/INFO]: Stopping in ")
+                    {
+                        // The game's own `stop` (a command in the game, not the supervisor's), or the
+                        // start of the wait `[transfer]` makes before it, so a proxy hears of it then.
                         crate::management::stopping(&shared);
                     }
                 }
@@ -846,6 +869,52 @@ fn send_stop(stdin: &mut Option<std::process::ChildStdin>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_prune_that_rolled_back_still_lets_the_server_start() {
+        let (dir, ow) = crate::prune::tests::world("supervisor-rolled-back");
+        // The kept entity record of r.2.0 can't be read: that region fails and rolls back.
+        let entity = ow.join("entities/r.2.0.mca");
+        let mut broken = std::fs::read(&entity).unwrap();
+        broken[8192..8196].copy_from_slice(&u32::MAX.to_be_bytes());
+        std::fs::write(&entity, &broken).unwrap();
+        let terrain = std::fs::read(ow.join("region/r.2.0.mca")).unwrap();
+        std::fs::write(dir.join("server.toml"), crate::config::TEMPLATE).unwrap();
+        let mut config = Config::load(&dir).unwrap();
+        config.prune_chunks.mode = crate::prune::Mode::Delete;
+        config.prune_chunks.spawn_radius = 4;
+        let shared = Shared::with_install(&dir, None);
+        prepare_world(&shared, &dir, &config).unwrap();
+        assert_eq!(std::fs::read(ow.join("region/r.2.0.mca")).unwrap(), terrain);
+        assert_eq!(std::fs::read(&entity).unwrap(), broken);
+        assert!(!ow.join(".horizon-prune").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_unrecoverable_prune_blocks_start_even_with_mode_off() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-server-prune-gate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("server.toml"), crate::config::TEMPLATE).unwrap();
+        let config = Config::load(&dir).unwrap();
+        assert_eq!(config.prune_chunks.mode, crate::prune::Mode::Off);
+        let dimension = dir.join(&config.world.name);
+        std::fs::create_dir_all(dimension.join("region")).unwrap();
+        let pending = dimension.join(".horizon-prune");
+        std::fs::create_dir_all(&pending).unwrap();
+        std::fs::write(
+            pending.join("journal.json"),
+            br#"{"name":"r.2.0.mca","kinds":["region"]}"#,
+        )
+        .unwrap();
+        let shared = Shared::with_install(&dir, None);
+        let error = prepare_world(&shared, &dir, &config).unwrap_err();
+        assert!(error.contains("world was not opened"), "{error}");
+        assert!(pending.join("journal.json").is_file());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn backoff_doubles_up_to_five_minutes() {

@@ -4,7 +4,7 @@
 use crate::{hover_fade, hover_is, keyboard, note_hover, theme::Theme, track_hover, Kind};
 use gpui::{
     div, prelude::*, px, rgb, rgba, svg, App, ClickEvent, Div, FontWeight, Hsla, SharedString,
-    Stateful, Svg, Window,
+    Stateful, Svg, TextRun, Window,
 };
 use horizon_theme::glass::{fill, ink, radius, Glass};
 use std::cell::Cell;
@@ -94,7 +94,8 @@ pub fn flat() -> bool {
 }
 
 /// A Settings row (`SettingRow`): the name in 15 px semibold, its note in 13 px on 1.5 at 60 %,
-/// the control on the right, 40 px away; 16 px around, no fill.
+/// the control on the right, 40 px away; 16 px around, no fill. On a window too narrow for both,
+/// the control wraps under the name (12 px below it), which keeps at least 240 px.
 pub fn setting_row(
     title: impl IntoElement,
     note: Option<gpui::AnyElement>,
@@ -102,8 +103,10 @@ pub fn setting_row(
 ) -> Div {
     div()
         .flex()
+        .flex_wrap()
         .items_center()
-        .gap(px(40.))
+        .gap_x(px(40.))
+        .gap_y(px(12.))
         .px(px(16.))
         .py(px(16.))
         .rounded(px(radius::LARGE))
@@ -112,7 +115,7 @@ pub fn setting_row(
                 .flex()
                 .flex_col()
                 .flex_1()
-                .min_w_0()
+                .min_w(px(240.))
                 .gap(px(4.))
                 .child(
                     text(15., FontWeight::SEMIBOLD, ink::FULL)
@@ -444,6 +447,38 @@ pub fn count_tab(
         .children(count.map(|n| div().text_color(white(ink::DIM)).child(n.to_string())))
 }
 
+const MENU_FONT_SIZE: f32 = 14.;
+const MENU_ICON_SIZE: f32 = 17.;
+const MENU_ROW_GAP: f32 = 12.;
+const MENU_ROW_PADDING: f32 = 12.;
+const POPOVER_PADDING: f32 = 6.;
+
+/// Width needed to fit the longest translated row, including the icon and both paddings.
+pub fn menu_content_width(window: &Window, labels: &[&str]) -> f32 {
+    let font = gpui::font(horizon_theme::glass::FONT);
+    let widest = labels
+        .iter()
+        .map(|&label| {
+            let run = TextRun {
+                len: label.len(),
+                font: font.clone(),
+                color: gpui::black(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let line = window.text_system().shape_line(
+                SharedString::from(label.to_owned()),
+                px(MENU_FONT_SIZE),
+                &[run],
+                None,
+            );
+            f32::from(line.width)
+        })
+        .fold(0., f32::max);
+    widest.ceil() + MENU_ICON_SIZE + MENU_ROW_GAP + 2. * (MENU_ROW_PADDING + POPOVER_PADDING)
+}
+
 /// A popover's row (`MENU_ROW`): 40 px, 14 px text after a 17 px icon at 60 %, white at 7 %
 /// under the pointer. `danger` colours it as the mockup's Delete.
 pub fn menu_row(
@@ -470,19 +505,21 @@ pub fn menu_row(
         .relative()
         .flex()
         .items_center()
-        .gap(px(12.))
+        .gap(px(MENU_ROW_GAP))
         .h(px(40.))
         .w_full()
-        .px(px(12.))
+        .px(px(MENU_ROW_PADDING))
         .rounded(px(radius::CONTROL))
         .cursor_pointer()
         .child(hover_fade(&id, layer(radius::CONTROL), move |d, a| {
             d.bg(hover_color.opacity(hover_color.a * a))
         }))
-        .child(icon(name, 17., icon_color).relative())
+        .child(icon(name, MENU_ICON_SIZE, icon_color).relative())
         .child(
-            text(14., FontWeight::NORMAL, 1.)
+            text(MENU_FONT_SIZE, FontWeight::NORMAL, 1.)
                 .relative()
+                .min_w_0()
+                .truncate()
                 .text_color(fg)
                 .child(label.into()),
         );
@@ -496,7 +533,7 @@ pub fn popover(width: f32) -> Div {
     crate::glass::plate(radius::POPOVER)
         .shadow_lg()
         .w(px(width))
-        .p(px(6.))
+        .p(px(POPOVER_PADDING))
         .flex()
         .flex_col()
 }
@@ -551,9 +588,13 @@ pub fn solid(
             .items_center()
             .justify_center()
             .gap(px(8.))
-            .h(px(h))
+            // `h` is the least height: a label that wraps in a narrow button (a long translation)
+            // grows it instead of spilling out of it.
+            .min_h(px(h))
+            .py(px(4.))
             .px(px(16.))
             .rounded(px(radius::CONTROL))
+            .text_center()
             .bg(paper())
             .cursor_pointer()
             .hover(|s| s.opacity(0.9))

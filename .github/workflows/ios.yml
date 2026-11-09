@@ -59,7 +59,7 @@ jobs:
           HORIZON_MSA_CLIENT_ID: ${{ vars.HORIZON_MSA_CLIENT_ID }}
         # The defaults minus `controllers` (GameController reads pads), with `audio`: project.yml's Cargo phase
         # uses the same flags, so HORIZON_GAME_PREBUILT below finds this build.
-        run: cargo build --release --locked --target "$IOS_TARGET" -p horizon-client --no-default-features --features audio
+        run: cargo build --release --locked --target "$IOS_TARGET" -p horizon-client --no-default-features --features audio,horizon-extras
       - name: Bundle it
         env:
           HORIZON_MSA_CLIENT_ID: ${{ vars.HORIZON_MSA_CLIENT_ID }}

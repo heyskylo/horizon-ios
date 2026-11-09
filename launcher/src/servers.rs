@@ -28,12 +28,29 @@ pub const EULA_URL: &str = "https://aka.ms/MinecraftEULA";
 
 // ----- The list of servers -----------------------------------------------------------------------
 
-/// One server the launcher knows: its name and its folder.
+/// One server the launcher knows: its name and its folder, on this computer or on `host`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     pub name: String,
     pub dir: PathBuf,
+    /// The other computer it runs on, reached over SSH (`user@host`, or a `Host` from `~/.ssh/config`);
+    /// `dir` is then the folder there ([`remote`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
+
+impl Entry {
+    /// `horizon-server --dir <dir> <args>`, here or over SSH on the entry's computer.
+    pub fn command(&self, args: &[&str]) -> Result<Command, String> {
+        match &self.host {
+            Some(host) => remote::command(host, &self.dir.to_string_lossy(), args),
+            None => command(&self.dir, args),
+        }
+    }
+}
+
+#[path = "servers/remote.rs"]
+pub mod remote;
 
 /// The game mode a server's `server.toml` sets (`[world] game_mode`), read from the file
 /// without asking `horizon-server`: the Servers page's list says it for each stopped server.
@@ -51,13 +68,16 @@ fn list_file() -> PathBuf {
     backend::data_dir().join("servers.json")
 }
 
-/// The servers, in the order they were added; folders that are gone are left out.
+/// The servers, in the order they were added; folders on this computer that are gone are left out.
 pub fn list() -> Vec<Entry> {
     let entries: Vec<Entry> = fs::read_to_string(list_file())
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default();
-    entries.into_iter().filter(|e| e.dir.is_dir()).collect()
+    entries
+        .into_iter()
+        .filter(|e| e.host.is_some() || e.dir.is_dir())
+        .collect()
 }
 
 fn save_list(entries: &[Entry]) -> Result<(), String> {
@@ -79,15 +99,22 @@ fn save_list(entries: &[Entry]) -> Result<(), String> {
 /// Adds a server folder to the list (once).
 pub fn add(entry: Entry) -> Result<(), String> {
     let mut all = list();
-    all.retain(|e| e.dir != entry.dir);
+    all.retain(|e| (&e.host, &e.dir) != (&entry.host, &entry.dir));
     all.push(entry);
     save_list(&all)
 }
 
-/// Takes a server off the list; its folder stays.
+/// Takes a server on this computer off the list; its folder stays.
 pub fn forget(dir: &Path) -> Result<(), String> {
     let mut all = list();
-    all.retain(|e| e.dir != dir);
+    all.retain(|e| e.host.is_some() || e.dir != dir);
+    save_list(&all)
+}
+
+/// Takes a server on another computer off the list; nothing there changes.
+pub fn forget_remote(host: &str, dir: &Path) -> Result<(), String> {
+    let mut all = list();
+    all.retain(|e| e.host.as_deref() != Some(host) || e.dir != dir);
     save_list(&all)
 }
 
@@ -367,18 +394,28 @@ pub fn run_streamed(dir: &Path, args: &[&str], line: &dyn Fn(String)) -> Result<
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| Problem::plain(format!("Couldn't run horizon-server: {e}")))?;
+    let (tx_err, rx_err) = std::sync::mpsc::channel();
     let mut err = child.stderr.take();
-    let errors = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         let mut text = String::new();
         if let Some(e) = &mut err {
             let _ = e.read_to_string(&mut text);
         }
-        text
+        let _ = tx_err.send(text);
     });
-    let mut out = String::new();
+    let (tx_line, rx_line) = std::sync::mpsc::channel();
     if let Some(stdout) = child.stdout.take() {
-        // `start` prints a dot every half second on one line: those aren't lines worth showing.
-        for l in BufReader::new(stdout).lines().map_while(Result::ok) {
+        std::thread::spawn(move || {
+            for l in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if tx_line.send(l).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    let mut out = String::new();
+    let status = loop {
+        while let Ok(l) = rx_line.try_recv() {
             let shown = l
                 .trim_start_matches(['.', ' '])
                 .trim_start_matches("Starting");
@@ -389,9 +426,29 @@ pub fn run_streamed(dir: &Path, args: &[&str], line: &dyn Fn(String)) -> Result<
             out.push_str(&l);
             out.push('\n');
         }
-    }
-    let status = child.wait().map_err(|e| Problem::plain(e.to_string()))?;
-    let err = errors.join().unwrap_or_default();
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| Problem::plain(e.to_string()))?
+        {
+            std::thread::sleep(Duration::from_millis(100));
+            while let Ok(l) = rx_line.try_recv() {
+                let shown = l
+                    .trim_start_matches(['.', ' '])
+                    .trim_start_matches("Starting");
+                let shown = shown.trim_start_matches('.').trim();
+                if !shown.is_empty() {
+                    line(shown.to_string());
+                }
+                out.push_str(&l);
+                out.push('\n');
+            }
+            break status;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let err = rx_err
+        .recv_timeout(Duration::from_millis(200))
+        .unwrap_or_default();
     if status.success() {
         Ok(())
     } else {
@@ -708,7 +765,11 @@ pub fn create(spec: &NewServer, tag: Option<&str>, log: &dyn Fn(String)) -> Resu
         &settings.iter().map(String::as_str).collect::<Vec<_>>(),
     )
     .map_err(undo)?;
-    let entry = Entry { name, dir };
+    let entry = Entry {
+        name,
+        dir,
+        host: None,
+    };
     add(entry.clone()).map_err(Problem::plain)?;
     Ok(entry)
 }

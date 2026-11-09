@@ -199,15 +199,51 @@ pub fn packed_vertex(words: &[u32; 6], corner: usize) -> TerrainVertex {
     }
 }
 
+thread_local! {
+    static RECORDS_SCRATCH: std::cell::RefCell<Vec<Option<[u32; 6]>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// The compact layout of sorted solid quads with their tints (`SectionMesh::packed`), or
 /// nothing when it would be no smaller than their vertices.
 pub fn layout(solid: &[TerrainVertex], tints: &[u32]) -> Vec<[u32; 6]> {
+    let mut out = Vec::new();
+    layout_into(solid, tints, &mut out);
+    out
+}
+
+/// Writes the compact layout of sorted solid quads with their tints into `out`,
+/// reusing `out`'s allocation and a thread-local record scratch buffer.
+pub fn layout_into(solid: &[TerrainVertex], tints: &[u32], out: &mut Vec<[u32; 6]>) {
     let quads = solid.as_chunks::<4>().0;
-    let records: Vec<Option<[u32; 6]>> = quads
-        .iter()
-        .zip(tints)
-        .map(|(q, &t)| pack_quad(q, t))
-        .collect();
+    RECORDS_SCRATCH.with(|cell| {
+        let mut records = cell.borrow_mut();
+        records.clear();
+        records.extend(quads.iter().zip(tints).map(|(q, &t)| pack_quad(q, t)));
+        place_into(&records, quads, out);
+    });
+}
+
+/// A mesh's solid range from a record per quad, `None` where no record fits:
+/// the records in mesh order, padded to a multiple of 4 slots, then the four
+/// vertices of each quad without one, whose record holds the distance to them
+/// (`FULL`). Empty where that would not be smaller than the vertices, which is
+/// what makes the layout never a loss.
+///
+/// Shared with `lod::packed`, whose records hold a far tile's quads instead but
+/// spill and pad the same way.
+pub fn place(records: &[Option<[u32; 6]>], quads: &[[TerrainVertex; 4]]) -> Vec<[u32; 6]> {
+    let mut out = Vec::new();
+    place_into(records, quads, &mut out);
+    out
+}
+
+pub fn place_into(
+    records: &[Option<[u32; 6]>],
+    quads: &[[TerrainVertex; 4]],
+    out: &mut Vec<[u32; 6]>,
+) {
+    out.clear();
     let n = quads.len();
     let packed = records.iter().filter(|r| r.is_some()).count();
     let full = n - packed;
@@ -217,9 +253,9 @@ pub fn layout(solid: &[TerrainVertex], tints: &[u32]) -> Vec<[u32; 6]> {
         0
     };
     if n + pad + 4 * full >= 4 * n {
-        return Vec::new();
+        return;
     }
-    let mut out = Vec::with_capacity(n + pad + 4 * full);
+    out.reserve(n + pad + 4 * full);
     let mut next = n + pad;
     for (i, record) in records.iter().enumerate() {
         out.push(record.unwrap_or_else(|| {
@@ -229,7 +265,7 @@ pub fn layout(solid: &[TerrainVertex], tints: &[u32]) -> Vec<[u32; 6]> {
         }));
     }
     out.resize(n + pad, [0; 6]);
-    for (q, record) in quads.iter().zip(&records) {
+    for (q, record) in quads.iter().zip(records) {
         if record.is_none() {
             out.extend(
                 q.iter()
@@ -237,7 +273,6 @@ pub fn layout(solid: &[TerrainVertex], tints: &[u32]) -> Vec<[u32; 6]> {
             );
         }
     }
-    out
 }
 
 /// Quads `layout` gave a record of their own.

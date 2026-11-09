@@ -1,0 +1,26 @@
+{
+  "hooks": [
+    {
+      "name": "server_packet",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_server_packet",
+      "neoforge": "none (NeoForge has no outgoing packet event; ProtocolLib's and PacketEvents' packet listeners)",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "helpers": [
+    {
+      "name": "watch_server_packets",
+      "target": "horizon_client::game::native_packets::Game<'_>::native_watch_server_packets"
+    }
+  ],
+  "rust_summary": "every play packet the server sends a player, decoded, changeable and cancellable (`native_server_packet`), once a mod switched it on (`native_watch_server_packets`).",
+  "doc_summary": "`native_server_packet(player, packet, cancel)` hears each play packet the server is about to send one player's client, decoded, a broadcast once for each player: change `packet` and that client gets the changed one, set `cancel` and it gets nothing (ProtocolLib's outgoing listener). Nothing is decoded or copied until a mod calls `native_watch_server_packets()`. Bundles need \"hooks\": @API:server_packet@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_packets.rs"
+  ]
+}

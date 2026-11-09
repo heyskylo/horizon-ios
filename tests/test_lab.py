@@ -14,6 +14,8 @@ import zipfile
 
 from tools import agent_control_e2e, check_public_tree, lab
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def minimal_class(source="Example.java"):
     # A valid class-file structure with no fields/methods and one SourceFile attribute.
@@ -192,6 +194,41 @@ class PublicationTests(unittest.TestCase):
         for path in ["tools/Minecraft.java", "tests/java/Client.java", ".local/tools/JfrSummary.java",
                      "tools/regex_reference/RecoveredGame.java"]:
             self.assertTrue(check_public_tree.prohibited(path), path)
+
+    def test_copied_data_fixer_tables_are_rejected_in_the_tree_only(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+            def git(*args):
+                subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", *args],
+                               cwd=directory, env=env, check=True, capture_output=True)
+            def check(*args):
+                return subprocess.run([sys.executable, str(ROOT / "tools/check_public_tree.py"), *args],
+                                      cwd=directory, env=env, capture_output=True, text=True)
+            def commit(path, text):
+                (directory / path).parent.mkdir(parents=True, exist_ok=True)
+                (directory / path).write_text(text)
+                git("add", path)
+                git("commit", "-q", "-m", path)
+            git("init", "-q", "-b", "main")
+            # Made-up ids in the tables' shapes: a few lines are fine, a table's worth is not.
+            flattening = "".join(f'("minecraft:widget.{n}", "minecraft:widget_{n}"),\n' for n in range(60))
+            states = "".join(f"{n}\tminecraft:widget\t\tminecraft:widget\tkind={n}\n" for n in range(60))
+            commit("tests/fixture.rs", flattening[:400])
+            self.assertEqual(check().returncode, 0, check().stderr)
+            for path, text in [("crates/a/src/items.rs", flattening), ("data/states.txt", states),
+                               ("data/states.json", json.dumps(states.splitlines())),
+                               ("crates/horizon-world/src/datafix/block_state_data.txt", "retired\n")]:
+                with self.subTest(path=path):
+                    commit(path, text)
+                    result = check()
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(path, result.stderr)
+                    git("rm", "-q", path)
+                    git("commit", "-q", "-m", "remove")
+            # History keeps the old copies: only the tree is checked for them.
+            self.assertEqual(check().returncode, 0)
+            self.assertEqual(check("--history").returncode, 0)
 
     def test_force_added_ignored_file_is_detected_in_index_and_history(self):
         with tempfile.TemporaryDirectory() as temp:

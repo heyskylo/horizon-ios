@@ -25,7 +25,10 @@ use std::{
     fs::{self, File},
     io::{self, BufWriter, Read, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, PoisonError},
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 /// The file, in the prepared folder's root.
@@ -161,7 +164,9 @@ impl PreparedFiles {
             return Ok(None);
         };
         let entries: Box<[Entry]> = raw_entries
-            .chunks_exact(ENTRY)
+            .as_chunks::<ENTRY>()
+            .0
+            .iter()
             .map(|e| {
                 let at = |i: usize, n: usize| {
                     let mut b = [0; 8];
@@ -316,6 +321,13 @@ pub fn read_to_string(path: &Path) -> io::Result<String> {
 /// into place, so a reader sees the old file or the new one. Nothing is
 /// written for a root without `horizon-resources.json`.
 pub fn write(root: &Path) -> io::Result<()> {
+    write_with_readers(root, 1)
+}
+
+/// [`write`], reading the folders' files on `readers` threads: a virus scanner
+/// delays each file's first open, and scans several at once when several are
+/// asked for. The threads run at normal priority: not for a game being played.
+pub fn write_with_readers(root: &Path, readers: usize) -> io::Result<()> {
     let source = fs::read(root.join(SOURCE))?;
     let canonical = fs::canonicalize(root)?;
     let root_bytes = canonical.as_os_str().as_encoded_bytes();
@@ -341,6 +353,7 @@ pub fn write(root: &Path) -> io::Result<()> {
         return Err(io::Error::other("prepared index too large"));
     }
     let tmp = root.join(format!("{FILE_NAME}.{}.tmp", std::process::id()));
+    remove_abandoned(root);
     let result = (|| {
         let mut out = BufWriter::new(File::create(&tmp)?);
         out.write_all(&MAGIC)?;
@@ -372,13 +385,32 @@ pub fn write(root: &Path) -> io::Result<()> {
                 .collect::<Vec<_>>()
                 .as_slice(),
         )?;
-        for (_, path, len) in &files {
-            // Stream bounded bytes rather than allocating from a file that can grow
-            // after it was listed. Any mismatch discards the temporary cache.
-            let copied = io::copy(&mut File::open(path)?.take(len + 1), &mut out)?;
-            if copied != *len {
-                return Err(io::Error::other(format!("{} changed", path.display())));
+        // Retain parallel reads without buffering hundreds of large members
+        // at once on phones. Large individual members stream with an exact cap.
+        let mut start = 0;
+        while start < files.len() {
+            if files[start].2 > 16 * 1024 * 1024 {
+                let (_, path, len) = &files[start];
+                let copied = io::copy(&mut File::open(path)?.take(len + 1), &mut out)?;
+                if copied != *len {
+                    return Err(io::Error::other(format!("{} changed", path.display())));
+                }
+                start += 1;
+                continue;
             }
+            let mut end = start;
+            let mut bytes = 0;
+            while end < files.len()
+                && end - start < READ_BATCH
+                && bytes + files[end].2 <= 16 * 1024 * 1024
+            {
+                bytes += files[end].2;
+                end += 1;
+            }
+            for bytes in read_listed(&files[start..end], readers)? {
+                out.write_all(&bytes)?;
+            }
+            start = end;
         }
         out.into_inner()
             .map_err(io::IntoInnerError::into_error)?
@@ -389,6 +421,69 @@ pub fn write(root: &Path) -> io::Result<()> {
         let _ = fs::remove_file(&tmp);
     }
     result
+}
+
+/// How many files [`write_with_readers`] holds in memory at once.
+const READ_BATCH: usize = 512;
+
+/// `files`' bytes in their order, read on `readers` threads.
+fn read_listed(files: &[(String, PathBuf, u64)], readers: usize) -> io::Result<Vec<Vec<u8>>> {
+    if readers <= 1 {
+        return files.iter().map(read_listed_file).collect();
+    }
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..readers)
+            .map(|_| {
+                scope.spawn(|| -> io::Result<Vec<(usize, Vec<u8>)>> {
+                    let mut read = Vec::new();
+                    loop {
+                        let at = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(file) = files.get(at) else {
+                            return Ok(read);
+                        };
+                        read.push((at, read_listed_file(file)?));
+                    }
+                })
+            })
+            .collect();
+        let mut bytes = vec![Vec::new(); files.len()];
+        for worker in workers {
+            let read = worker
+                .join()
+                .map_err(|_| io::Error::other("a reader stopped"))??;
+            for (at, file) in read {
+                bytes[at] = file;
+            }
+        }
+        Ok(bytes)
+    })
+}
+
+fn read_listed_file((_, path, len): &(String, PathBuf, u64)) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    File::open(path)?.take(len + 1).read_to_end(&mut bytes)?;
+    // Changed since it was listed: the offsets would be wrong.
+    if bytes.len() as u64 != *len {
+        return Err(io::Error::other(format!("{} changed", path.display())));
+    }
+    Ok(bytes)
+}
+
+/// Removes the temporary files of writers that stopped midway (the game or the
+/// launcher closed). One still being written on Windows can't be removed; on
+/// Unix its writer's rename fails, and a later start writes the file.
+fn remove_abandoned(root: &Path) {
+    let prefix = format!("{FILE_NAME}.");
+    for entry in fs::read_dir(root).into_iter().flatten().flatten() {
+        let name = entry.file_name();
+        if name
+            .to_str()
+            .is_some_and(|n| n.starts_with(&prefix) && n.ends_with(".tmp"))
+        {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// The files under `dir` (named `name` from the root) this holds, with their
@@ -559,6 +654,48 @@ mod tests {
         assert_eq!(original.read(member).unwrap().unwrap(), b"{\"stick\":1}");
         invalidate(&root);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A writer that stopped midway leaves its temporary file: the next write
+    /// removes it, and nothing else.
+    #[test]
+    fn a_write_removes_what_a_stopped_writer_left() {
+        let root = root("abandoned");
+        let left = root.join(format!("{FILE_NAME}.1.tmp"));
+        let other = root.join("other.tmp");
+        fs::write(&left, b"cut short").unwrap();
+        fs::write(&other, b"not ours").unwrap();
+        write(&root).unwrap();
+        assert!(!left.exists());
+        assert!(other.exists());
+        assert!(PreparedFiles::open(&root).unwrap().is_some());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Several readers write the same file as one, past a batch's worth of files.
+    #[test]
+    fn readers_write_the_file_one_reader_writes() {
+        let root = root("readers");
+        for at in 0..READ_BATCH + 3 {
+            let name = root.join(format!("data/minecraft/recipe/r{at}.json"));
+            fs::write(name, format!("{{\"at\":{at}}}")).unwrap();
+        }
+        write(&root).unwrap();
+        let one = fs::read(root.join(FILE_NAME)).unwrap();
+        write_with_readers(&root, 4).unwrap();
+        assert!(one == fs::read(root.join(FILE_NAME)).unwrap());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A file that can't be read is an error however many readers there are.
+    #[test]
+    fn a_reader_error_stops_the_write() {
+        let root = root("reader-error");
+        let gone = root.join("gone");
+        let listed = [("gone".to_owned(), gone, 1)];
+        assert!(read_listed(&listed, 1).is_err());
+        assert!(read_listed(&listed, 4).is_err());
+        fs::remove_dir_all(&root).unwrap();
     }
 
     /// Every file of its folders reads back as the folder has it; the sounds

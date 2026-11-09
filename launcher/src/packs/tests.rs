@@ -25,6 +25,8 @@ fn zip_file(path: &Path, files: &[(&str, &[u8])]) {
 const META: &[u8] = "{\"pack\":{\"pack_format\":69,\"description\":[\"\",{\"text\":\"Smooth \u{a7}aglass\"},\"\\nand more\"]}}"
     .as_bytes();
 
+const SHADER_META: &str = "schema = 1\nid = \"warm\"\nname = \"Warm Light\"\nversion = \"1.0\"\napi = \"0.1\"\n[[post]]\nfile = \"post.wgsl\"\n";
+
 /// A game folder with three resource packs (one on), and shader packs of both kinds.
 fn home(name: &str) -> PathBuf {
     let home = scratch(name);
@@ -43,11 +45,7 @@ fn home(name: &str) -> PathBuf {
     zip_file(&rp.join("Zed.zip"), &[("pack.mcmeta", META)]);
     let sp = home.join("shaderpacks");
     fs::create_dir_all(sp.join("warm")).unwrap();
-    fs::write(
-        sp.join("warm/horizon-shaders.toml"),
-        "schema = 1\nid = \"warm\"\nname = \"Warm Light\"\n",
-    )
-    .unwrap();
+    fs::write(sp.join("warm/horizon-shaders.toml"), SHADER_META).unwrap();
     zip_file(&sp.join("Classic.zip"), &[("shaders/final.fsh", b"")]);
     fs::write(sp.join("notes.txt"), b"").unwrap();
     fs::write(
@@ -171,4 +169,119 @@ fn a_dropped_file_goes_to_its_folder_under_a_free_name() {
     assert!(add(&home, &drops.join("picture.png")).is_err());
     fs::remove_dir_all(&home).unwrap();
     fs::remove_dir_all(&drops).unwrap();
+}
+
+#[test]
+fn native_shader_choice_follows_the_manifest_after_rename() {
+    let home = home("native-identity");
+    let pack = find(&home, Kind::Shader, "warm").unwrap();
+    set_enabled(&home, &pack, true).unwrap();
+    assert_eq!(
+        line_value(
+            &fs::read_to_string(home.join(GRAPHICS)).unwrap(),
+            "pickedShaderPack"
+        ),
+        Some("horizon:warm".into())
+    );
+    fs::rename(
+        home.join("shaderpacks/warm"),
+        home.join("shaderpacks/renamed"),
+    )
+    .unwrap();
+    assert!(find(&home, Kind::Shader, "renamed").unwrap().enabled);
+    set_line(&home.join(GRAPHICS), "pickedShaderPack", "warm-1.0.hshader").unwrap();
+    assert!(find(&home, Kind::Shader, "renamed").unwrap().enabled);
+    fs::create_dir_all(home.join("shaderpacks/a-copy")).unwrap();
+    fs::copy(
+        home.join("shaderpacks/renamed/horizon-shaders.toml"),
+        home.join("shaderpacks/a-copy/horizon-shaders.toml"),
+    )
+    .unwrap();
+    let listed = list(&home, Kind::Shader);
+    assert_eq!(
+        listed
+            .iter()
+            .filter(|p| p.description == "Horizon shader pack")
+            .count(),
+        1
+    );
+    assert!(listed.iter().any(|p| p.file == "a-copy" && p.enabled));
+    fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn toggling_native_shader_preserves_legacy_options_before_renaming() {
+    for old in ["warm", "warm-1.0.hshader"] {
+        let home = home(&format!("native-options-{old}"));
+        let dir = home.join("shaderpacks");
+        let legacy = dir.join(format!("{old}.txt"));
+        fs::write(&legacy, "strength=1.5\n").unwrap();
+        set_line(&home.join(GRAPHICS), "pickedShaderPack", old).unwrap();
+        let pack = find(&home, Kind::Shader, "warm").unwrap();
+        set_enabled(&home, &pack, false).unwrap();
+        let canonical = dir.join(".horizon-options/warm.txt");
+        assert_eq!(fs::read_to_string(&canonical).unwrap(), "strength=1.5\n");
+        fs::rename(dir.join("warm"), dir.join("renamed")).unwrap();
+        let renamed = find(&home, Kind::Shader, "renamed").unwrap();
+        set_enabled(&home, &renamed, true).unwrap();
+        fs::write(&legacy, "strength=2\n").unwrap();
+        set_enabled(&home, &renamed, true).unwrap();
+        assert_eq!(fs::read_to_string(&canonical).unwrap(), "strength=1.5\n");
+        assert_eq!(fs::read_to_string(legacy).unwrap(), "strength=2\n");
+        fs::remove_dir_all(home).unwrap();
+    }
+}
+
+#[test]
+fn switching_to_classic_preserves_the_outgoing_native_options_after_update() {
+    let home = home("native-switch");
+    let dir = home.join("shaderpacks");
+    fs::rename(dir.join("warm"), dir.join(".old-fixture")).unwrap();
+    zip_file(
+        &dir.join("warm-2.0.hshader"),
+        &[(SHADER_MANIFEST, SHADER_META.as_bytes())],
+    );
+    let legacy = dir.join("warm-1.0.hshader.txt");
+    fs::write(&legacy, "strength=1.5\n").unwrap();
+    set_line(&home.join(GRAPHICS), "pickedShaderPack", "warm-1.0.hshader").unwrap();
+    let classic = find(&home, Kind::Shader, "Classic.zip").unwrap();
+    set_enabled(&home, &classic, true).unwrap();
+    let native = find(&home, Kind::Shader, "warm-2.0.hshader").unwrap();
+    set_enabled(&home, &native, true).unwrap();
+    assert_eq!(
+        fs::read_to_string(dir.join(".horizon-options/warm.txt")).unwrap(),
+        "strength=1.5\n"
+    );
+    assert_eq!(fs::read_to_string(legacy).unwrap(), "strength=1.5\n");
+    fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn invalid_native_manifest_does_not_hide_a_valid_duplicate() {
+    let home = home("native-invalid-duplicate");
+    let dir = home.join("shaderpacks");
+    fs::rename(dir.join("warm"), dir.join(".old-fixture")).unwrap();
+    let invalid = SHADER_META.replace("schema = 1", "schema = 99");
+    zip_file(
+        &dir.join("a.hshader"),
+        &[(SHADER_MANIFEST, invalid.as_bytes())],
+    );
+    zip_file(
+        &dir.join("z.hshader"),
+        &[(SHADER_MANIFEST, SHADER_META.as_bytes())],
+    );
+    set_line(&home.join(GRAPHICS), "pickedShaderPack", "horizon:warm").unwrap();
+    let native = find(&home, Kind::Shader, "z.hshader").unwrap();
+    assert!(native.enabled);
+    let invalid = find(&home, Kind::Shader, "a.hshader").unwrap();
+    assert!(!invalid.enabled);
+    set_enabled(&home, &invalid, true).unwrap();
+    assert_eq!(
+        line_value(
+            &fs::read_to_string(home.join(GRAPHICS)).unwrap(),
+            "pickedShaderPack"
+        ),
+        Some("a.hshader".into())
+    );
+    fs::remove_dir_all(home).unwrap();
 }

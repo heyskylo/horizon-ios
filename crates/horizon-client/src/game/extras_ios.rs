@@ -114,6 +114,11 @@ impl Game<'_> {
     pub(super) fn server_address(&self) -> Option<&str> {
         self.extras.reconnect.address()
     }
+    /// The last server was selected through LAN discovery, not inferred from its address.
+    pub(super) fn server_is_lan(&self) -> bool {
+        self.extras.reconnect.lan()
+    }
+
     /// Auto-reconnect: a connection to `address` as `name` starts.
     pub(super) fn extras_connecting(&mut self, address: &str, name: &str, lan: bool) {
         self.extras.reconnect.connecting(address, name, lan);

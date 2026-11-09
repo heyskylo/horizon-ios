@@ -16,21 +16,22 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def program():
-    game = (ROOT / 'crates/horizon-client/src/game.rs').read_text()
+    game = (ROOT / 'crates/horizon-client/src/game/play_input.rs').read_text()
     modules = '\n'.join(f'#[path="{ROOT / path}"] mod {name};' for name, path in (
         ('held', 'crates/horizon-client-input/src/held.rs'),
         ('actions', 'crates/horizon-client-input/src/actions.rs'),
         ('keymapping', 'crates/horizon-client-input/src/keymapping.rs'),
     ))
-    methods = '\n'.join(method(game, name) for name in ('sync_toggle', 'heal_hold_latches', 'mapped_key'))
+    methods = '\n'.join(method(game, name) for name in ('sync_toggle', 'heal_hold_latches', 'mapped_key', 'toggle_held_elsewhere'))
+    helpers = '\n'.join(method(game, name) for name in ('studio_replay_shortcut', 'studio_freecam_movement_key'))
     touch = (ROOT / 'crates/horizon-client/src/game/touch.rs').read_text()
     arm = touch.index('Out::Press(Control::Sneak) => {')
     sneak = block(touch, touch.index('{', arm))
     methods += '\nfn touch_sneak(&mut self)->Result<()> {' + sneak + ' Ok(()) }'
     actions = (ROOT / 'crates/horizon-client-input/src/actions.rs').read_text()
-    codes = sorted(set(re.findall(r'KeyCode::(\w+)', actions + methods + STUBS + CASES)))
+    codes = sorted(set(re.findall(r'KeyCode::(\w+)', actions + methods + helpers + STUBS + CASES)))
     stubs = STUBS.replace('enum KeyCode{KEY_CODES}', 'enum KeyCode{' + ','.join(codes) + '}')
-    return stubs + modules + '\nimpl Game {\n' + methods + '\n}\n' + CASES
+    return stubs + modules + helpers + '\nimpl Game {\n' + methods + '\n}\n' + CASES
 
 
 STUBS = r'''
@@ -38,9 +39,9 @@ STUBS = r'''
 extern crate self as winit;
 extern crate self as horizon_client;
 pub mod keyboard {#[derive(Clone,Copy,Debug,Hash,PartialEq,Eq)]pub enum KeyCode{KEY_CODES}}
-use keyboard::KeyCode;use actions::Action;use held::Source;use keymapping::KeyAction;
+use keyboard::KeyCode;use actions::Action;use held::Source;use keymapping::{KeyAction,SNEAK};
 type Result<T>=std::result::Result<T,String>;
-#[derive(Clone,Copy)]enum Screen{Playing,Menu}
+#[derive(Clone,Copy,PartialEq)]enum Screen{Playing,Menu}
 fn gameplay_has_keyboard(screen:Screen,title:bool,dialog:bool)->bool{matches!(screen,Screen::Playing)&&!title&&!dialog}
 use std::collections::HashSet;
 pub mod keybinds{
@@ -48,16 +49,18 @@ pub mod keybinds{
  pub fn key_code(name:&str)->Option<KeyCode>{Some(match name{"shift"=>KeyCode::ShiftLeft,"control"=>KeyCode::ControlLeft,"a"=>KeyCode::KeyA,_=>return None})}
 }
 struct Bindings{rebound:bool}
-impl Bindings{fn get(&self,mapping:&str)->&'static str{if self.rebound{"a"}else if mapping=="key.sneak"{"shift"}else{"control"}}}
-struct Settings{toggle_crouch:bool,toggle_sprint:bool,keys:Bindings,controller:()}
+impl Bindings{fn translate_all(&self,key:KeyCode)->Vec<std::result::Result<KeyCode,()>>{vec![Ok(key)]}fn get(&self,mapping:&str)->&'static str{if self.rebound{"a"}else if mapping=="key.sneak"{"shift"}else{"control"}}}
+#[derive(Default)]struct Controller{toggle_sneak:bool}
+#[derive(Default)]struct Freecam{active:bool}
+struct Settings{toggle_crouch:bool,toggle_sprint:bool,keys:Bindings,controller:Controller}
 struct Modifiers{shift:bool,control:bool}
 impl Modifiers{fn shift_key(&self)->bool{self.shift}fn control_key(&self)->bool{self.control}}
 struct Pad{held:Vec<&'static str>}
-impl Pad{fn holds_action(&self,_:&(),name:&str)->bool{self.held.contains(&name)}}
-struct Game{screen:Screen,title:Option<()>,dialog:bool,dispatched:Vec<KeyCode>,keys:held::HeldKeys,physical_keys:HashSet<KeyCode>,toggles:keymapping::ToggleKeys,modifiers:Modifiers,settings:Settings,pad:Pad}
+impl Pad{fn holds_action(&self,_:&Controller,name:&str)->bool{self.held.contains(&name)}}
+struct Game{studio_replay:Option<()>,studio_freecam:Freecam,screen:Screen,title:Option<()>,dialog:bool,dispatched:Vec<KeyCode>,keys:held::HeldKeys,physical_keys:HashSet<KeyCode>,toggles:keymapping::ToggleKeys,modifiers:Modifiers,settings:Settings,pad:Pad}
 impl Game{
- fn new()->Self{Self{screen:Screen::Playing,title:None,dialog:false,dispatched:vec![],keys:held::HeldKeys::default(),physical_keys:HashSet::new(),toggles:keymapping::ToggleKeys::default(),modifiers:Modifiers{shift:false,control:false},settings:Settings{toggle_crouch:false,toggle_sprint:false,keys:Bindings{rebound:false},controller:()},pad:Pad{held:vec![]}}}
- fn dialog_open(&self)->bool{self.dialog}
+ fn new()->Self{Self{studio_replay:None,studio_freecam:Freecam::default(),screen:Screen::Playing,title:None,dialog:false,dispatched:vec![],keys:held::HeldKeys::default(),physical_keys:HashSet::new(),toggles:keymapping::ToggleKeys::default(),modifiers:Modifiers{shift:false,control:false},settings:Settings{toggle_crouch:false,toggle_sprint:false,keys:Bindings{rebound:false},controller:Controller::default()},pad:Pad{held:vec![]}}}
+ fn dialog_open(&self)->bool{self.dialog}fn screen_over_playing(&self)->bool{self.dialog}
  fn key_pressed(&mut self,key:KeyCode,_:KeyCode)->Result<()>{self.dispatched.push(key);Ok(())}
  fn press(&mut self,slot:usize,source:Source){self.toggles.key(slot,keymapping::KeyAction::Press,false,false);self.keys.press([KeyCode::ShiftLeft,KeyCode::ControlLeft][slot],source);}
 }

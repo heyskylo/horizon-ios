@@ -2,6 +2,7 @@ import argparse
 import datetime
 import json
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import tempfile
@@ -26,6 +27,70 @@ POSIX_BASH = BASH is not None and not (
 
 def args(host="local", quick=False):
     return argparse.Namespace(host=host, quick=quick)
+
+
+class GitChangedPathsTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.git("init")
+        for key, value in (("core.quotePath", "true"), ("core.autocrlf", "false"),
+                           ("core.hooksPath", str(self.root / "no-hooks")), ("commit.gpgsign", "false")):
+            self.git("config", key, value)
+        for module in (pr_ready, pr_ready.parity):
+            patcher = mock.patch.object(module, "ROOT", self.root)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def git(self, *arguments):
+        return subprocess.run(["git", *arguments], cwd=self.root, capture_output=True,
+                              text=True, encoding="utf-8", check=True).stdout
+
+    def write(self, path, text):
+        destination = self.root / path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(text, encoding="utf-8", newline="\n")
+
+    def commit(self):
+        self.git("add", ".")
+        self.git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "base")
+
+    def test_unicode_paths_select_checks_and_keep_line_counts(self):
+        tracked = "crates/horizon-core/src/caf\u00e9 edit.rs"
+        untracked = "crates/horizon-core/src/\u65b0 file.rs"
+        self.write(tracked, "first\n")
+        self.commit()
+        self.write(tracked, "first\nsecond\n")
+        self.write(untracked, "new\nfile\n")
+        changed = pr_ready.parity.changed_files("HEAD")
+        self.assertEqual(changed, {tracked, untracked})
+        self.assertEqual(pr_ready.line_counts("HEAD", changed), {tracked: (1, 0), untracked: (2, 0)})
+        self.assertTrue(all(pr_ready.workspace_rust(path) for path in changed))
+        self.assertEqual(pr_ready.touched_crates(changed, PACKAGES), ["horizon-core"])
+
+    def test_renamed_rust_source_keeps_both_paths_and_counts(self):
+        before, after = "crates/horizon-core/src/moved.rs", "docs/moved.md"
+        self.write(before, "fn moved() {\n}\n")
+        self.commit()
+        (self.root / "docs").mkdir()
+        self.git("mv", before, after)
+        changed = pr_ready.parity.changed_files("HEAD")
+        self.assertEqual(changed, {before, after})
+        self.assertEqual(pr_ready.line_counts("HEAD", changed), {before: (0, 2), after: (2, 0)})
+        self.assertEqual(pr_ready.touched_crates(changed, PACKAGES), ["horizon-core"])
+
+    @unittest.skipIf(os.name == "nt", "Windows filenames cannot contain tabs or newlines")
+    def test_tabs_and_newlines_remain_in_paths(self):
+        tracked = "crates/horizon-core/src/tab\tfile.rs"
+        untracked = "crates/horizon-core/src/line\r\nfile.rs"
+        self.write(tracked, "first\n")
+        self.commit()
+        self.write(tracked, "first\nsecond\n")
+        self.write(untracked, "new\n")
+        changed = pr_ready.parity.changed_files("HEAD")
+        self.assertEqual(changed, {tracked, untracked})
+        self.assertEqual(pr_ready.line_counts("HEAD", changed), {tracked: (1, 0), untracked: (1, 0)})
 
 
 class PrReadyTests(unittest.TestCase):
@@ -133,6 +198,26 @@ class PrReadyTests(unittest.TestCase):
         by_name = {step.name: step for step in steps}
         for name in ("launcher rustfmt", "launcher clippy", "launcher tests"):
             self.assertIsNone(by_name[name].skip)
+
+    @unittest.skipUnless(shutil.which("cargo"), "needs cargo")
+    def test_windows_launcher_checks_include_binary_tests(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            launcher = root / "launcher"
+            (launcher / "src").mkdir(parents=True)
+            (launcher / "Cargo.toml").write_text(
+                '[package]\nname = "launcher-check-fixture"\nversion = "0.1.0"\nedition = "2021"\n[workspace]\n')
+            (launcher / "src/lib.rs").write_text('#[test]\nfn library_passes() {}\n')
+            (launcher / "src/main.rs").write_text(
+                'fn main() {}\n#[test]\nfn binary_fails() { panic!("launcher binary test ran"); }\n')
+            with mock.patch.object(pr_ready, "ROOT", root), \
+                    mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": str(root / "target")}):
+                subprocess.run(["cargo", "generate-lockfile", "--offline"], cwd=launcher, check=True,
+                               capture_output=True)
+                step = pr_ready.Step("launcher tests", "cargo test --locked --lib --bins")
+                pr_ready.run_windows([step], verbose=False)
+            self.assertEqual(step.status, "fail")
+            self.assertIn("launcher binary test ran", step.output)
 
     @unittest.skipUnless(POSIX_BASH, "needs a bash that is not WSL's")
     def test_the_launcher_fallback_asks_for_a_feature_the_launcher_has(self):

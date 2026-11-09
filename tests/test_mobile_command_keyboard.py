@@ -28,9 +28,9 @@ def program(pad_source=None, command_source=None):
     pad_source = pad_source or (ROOT / 'crates/horizon-client/src/game/pad_menu.rs').read_text()
     ime = (ROOT / 'crates/horizon-client/src/game/ime.rs').read_text()
     names = ['pad_typing', 'field_focused', 'sync_system_keyboard', 'show_system_keyboard',
-             'hide_system_keyboard', 'toggle_system_keyboard', 'system_keyboard_up', 'pad_osk_output', 'key_focus_blocked']
+             'hide_system_keyboard', 'toggle_system_keyboard', 'system_keyboard_up', 'pad_osk_output', 'key_focus_blocked', 'pad_has_typing_screen', 'pad_enter_keeps_typing']
     methods = '\n'.join(method(pad_source, n) for n in names)
-    methods += '\n' + method((ROOT / 'crates/horizon-client/src/game.rs').read_text(), 'reload_blocks_input')
+    methods += '\n' + method((ROOT / 'crates/horizon-client/src/game/play_input.rs').read_text(), 'reload_blocks_input')
     methods += '\n' + method(pad_source, 'suspend_system_keyboard')
     methods += '\n' + method((ROOT / 'crates/horizon-client/src/game/presentation.rs').read_text(), 'menu_input_blocked')
     methods += '\n' + method((ROOT / 'crates/horizon-client/src/game/presentation.rs').read_text(), 'presentation_stale')
@@ -41,6 +41,7 @@ def program(pad_source=None, command_source=None):
     context_start = pad_source.index('        let ctx = key_focus::Context {')
     context = pad_source[context_start:pad_source.index('        let act =', context_start)]
     methods += '\nfn actual_navigation_typing(&mut self)->bool { let slider_edit=false; ' + context + '\nctx.typing }'
+    methods += '\n' + method((ROOT / 'crates/horizon-client/src/game.rs').read_text(), 'title_input_active')
     methods += '\n' + method(ime, 'text_field_focused') + '\n' + method(ime, 'ime_commit')
     command_source = command_source or (ROOT / 'crates/horizon-client/src/game/command_blocks.rs').read_text()
     methods += '\n' + method(command_source, 'command_block_key')
@@ -66,8 +67,8 @@ use std::cell::RefCell;
 #[macro_export] macro_rules! warn { ($($arg:tt)*) => {{ let _ = format_args!($($arg)*); }}; }
 mod log { pub(crate) use crate::warn; }
 mod key_focus { pub struct Context{pub slider_edit:bool,pub typing:bool,pub rows_take_enter:bool,pub gui:(f32,f32)} }
-mod preedit { pub fn set_preedit(_: Option<()>) {} }
-mod books { pub enum BookScreen { Edit {}, View } }
+mod preedit { pub fn set_preedit(_: Option<()>) {} pub fn mark_committed() {} }
+mod books { pub enum BookScreen { Edit { signing:bool }, View } }
 mod osk { pub enum Output { Text(String), Backspace, Enter, Close } }
 #[derive(Default, PartialEq)] enum Screen { #[default] Playing, Chat, CommandBlock, WorldOptions, Creative, Inventory, Options, Social, DebugOptions, BlockEditor, Win }
 #[derive(Clone, Copy, PartialEq)] enum KeyCode { Backspace, Enter }
@@ -103,6 +104,9 @@ struct Renderer{current:bool} impl Renderer{fn presentation_current(&self)->bool
  dialog: bool, dialog_text: bool, dialog_lines: bool, recipe: bool, station: bool, command: String, submitted: bool, block_typing: bool, key_code_calls: usize, title_text: String,
 }
 impl Game {
+ fn prompt_open(&self)->bool{self.dialog_open()}
+ // No native mod text-field extension is installed in this fixture.
+ fn type_text_field_input(&mut self,_:&str)->Option<Result<(),String>>{None}
  fn content_reload_busy(&self)->bool{self.transaction_busy}
  fn new() -> Self { Self { ios: true, window: Some(Window::default()), ..Self::default() } }
  fn requests(&self) -> Vec<bool> { self.window.as_ref().unwrap().requests.borrow().clone() }

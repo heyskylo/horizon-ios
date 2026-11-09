@@ -405,7 +405,7 @@ impl Gpu {
             weather: false,
             hand: false,
         };
-        let post = PackPost::new(
+        let post = PackPost::test_new(
             &self.device,
             &self.queue,
             &self.adapter,

@@ -349,6 +349,10 @@ fn leave_block_raw_query_uses_non_mob_presence_and_snapshot_identity() {
                 position: at,
                 yaw: 0.0,
                 pitch: 0.0,
+                item_transformation: None,
+                interaction: None,
+                knot_check: None,
+                eye: None,
             }),
             "player" | "waiting_player" | "dead_player" | "expired_player" | "spectator" => {
                 let g = &mut game.lan.as_mut().unwrap().hub.guests[0];

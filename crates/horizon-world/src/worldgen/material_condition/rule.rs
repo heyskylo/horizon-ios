@@ -212,6 +212,17 @@ impl<R: RandomSource> CompiledRule<R> {
             }
             Self::Sequence(children) => {
                 for child in children {
+                    // A condition's test, in the loop: most children are one
+                    // condition, so this saves a call and a dispatch each.
+                    let child = match child {
+                        Self::Condition { condition, rule } => {
+                            if !condition.test(context)? {
+                                continue;
+                            }
+                            &mut **rule
+                        }
+                        child => child,
+                    };
                     if let Some(block) = child.apply(position, context)? {
                         return Ok(Some(block));
                     }
@@ -336,6 +347,40 @@ where
             }
         }
     }
+    /// `Some` when applying this rule gives `block` at every position where
+    /// none of its ore veins places one: the rule is that block alone, or ore
+    /// veins and then it. Each vein begins with its first density, and a
+    /// density that is not positive returns `None` before any random is drawn
+    /// or another density is read, so a position every vein misses there gives
+    /// exactly `block`.
+    fn fill(&self) -> Option<SurfaceFill> {
+        let (block, veins) = match self {
+            Self::Block(block) => (*block, &[][..]),
+            Self::Sequence(children) => {
+                let (last, veins) = children.split_last()?;
+                match last {
+                    Self::Block(block) => (*block, veins),
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        };
+        if veins.len() > SurfaceFill::MAX_VEINS {
+            return None;
+        }
+        let mut fill = SurfaceFill {
+            block,
+            veins: [0; SurfaceFill::MAX_VEINS],
+            vein_count: veins.len(),
+        };
+        for (slot, vein) in fill.veins.iter_mut().zip(veins) {
+            let Self::OreVein { densities, .. } = vein else {
+                return None;
+            };
+            *slot = densities[0];
+        }
+        Some(fill)
+    }
     /// Whether applying this rule never gives `None` (only an error).
     fn always_produces(&self) -> bool {
         match self {
@@ -421,16 +466,59 @@ pub struct SurfaceVariants {
     /// The first y of each band after the first, ascending.
     starts: Vec<i32>,
     /// Per band (two per band, below then above the surface, when
-    /// `surface`): the variant's rule index once made, `Some(None)` when it
-    /// gives no block.
-    rules: Vec<Option<Option<usize>>>,
+    /// `surface`): the variant once made, `Some(None)` when it gives no block.
+    rules: Vec<Option<Option<BandRule>>>,
+    /// The run fills the variants' `BandRule::Fill` refer to.
+    fills: Vec<SurfaceFill>,
     pub surface: bool,
+}
+/// One band's specialised rule, as `build_surface_shared` applies it.
+#[derive(Clone, Copy, Debug)]
+pub enum BandRule {
+    /// Apply this rule at each position.
+    Rule(usize),
+    /// Apply this rule at each position, except that a whole run of blocks it
+    /// gives one block wherever none of its ore veins places one may be
+    /// written at once (`MaterialConditions::veins_miss`).
+    Fill(usize, usize),
+}
+impl BandRule {
+    /// The rule to apply at one position.
+    pub fn rule(self) -> usize {
+        match self {
+            Self::Rule(rule) | Self::Fill(rule, _) => rule,
+        }
+    }
+}
+/// A rule that gives one block wherever none of its ore veins places one, and
+/// the veins that can stop it: `BandRule::Fill`'s run fill, tested through
+/// `MaterialConditions::veins_miss`.
+#[derive(Clone, Copy, Debug)]
+pub struct SurfaceFill {
+    /// The block of every position no vein places one at.
+    pub block: BlockStateId,
+    /// The veins' first density bindings, in application order.
+    pub veins: [usize; Self::MAX_VEINS],
+    pub vein_count: usize,
+}
+impl SurfaceFill {
+    /// Most veins one run fill tests.
+    pub const MAX_VEINS: usize = 4;
+    /// The veins' density bindings.
+    #[inline]
+    pub fn veins(&self) -> &[usize] {
+        &self.veins[..self.vein_count]
+    }
 }
 impl SurfaceVariants {
     /// The band holding `y`.
     #[inline]
     pub fn band(&self, y: i32) -> usize {
         self.starts.partition_point(|&start| start <= y)
+    }
+    /// The run fill `BandRule::Fill` index refers to.
+    pub fn fill(&self, index: usize) -> &SurfaceFill {
+        &self.fills[index]
     }
     /// The inclusive y bounds of `band`.
     pub fn band_bounds(&self, band: usize) -> [i32; 2] {
@@ -462,20 +550,21 @@ where
         Ok(SurfaceVariants {
             base: index,
             rules: vec![None; (starts.len() + 1) * sides],
+            fills: Vec::new(),
             starts,
             surface,
         })
     }
-    /// The rule index of the variant for `band`, `above` the preliminary
-    /// surface (ignored unless `variants.surface`), or `None` when it gives
-    /// no block at any position of the band.
+    /// The variant for `band`, `above` the preliminary surface (ignored unless
+    /// `variants.surface`), or `None` when it gives no block at any position
+    /// of the band.
     #[inline]
     pub fn surface_variant(
         &mut self,
         variants: &mut SurfaceVariants,
         band: usize,
         above: bool,
-    ) -> Option<usize> {
+    ) -> Option<BandRule> {
         let slot = if variants.surface {
             band * 2 + usize::from(above)
         } else {
@@ -493,7 +582,7 @@ where
         band: usize,
         above: bool,
         slot: usize,
-    ) -> Option<usize> {
+    ) -> Option<BandRule> {
         let [low, high] = variants.band_bounds(band);
         let facts = Facts {
             low,
@@ -503,12 +592,35 @@ where
         let rule = match self.rules[variants.base].specialize(facts) {
             CompiledRule::Empty => None,
             rule => {
+                let index = self.rules.len();
+                let fill = rule.fill().map(|fill| {
+                    variants.fills.push(fill);
+                    variants.fills.len() - 1
+                });
                 self.rules.push(rule);
-                Some(self.rules.len() - 1)
+                Some(match fill {
+                    Some(fill) => BandRule::Fill(index, fill),
+                    None => BandRule::Rule(index),
+                })
             }
         };
         variants.rules[slot] = Some(rule);
         rule
+    }
+    /// Whether every ore vein of `fill` places nothing at `position`: each
+    /// begins with a density test, and a density that is not positive returns
+    /// `None` before any random is drawn or another density is read.
+    pub fn veins_miss(
+        &mut self,
+        fill: &SurfaceFill,
+        position: BlockPos,
+    ) -> Result<bool, MaterialRuleError> {
+        for &index in fill.veins() {
+            if self.context.surface.density(index, position)? > 0.0 {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 }
 /// A world's surface rule compiled once for every chunk of a generator

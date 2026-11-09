@@ -84,7 +84,13 @@ def walk(x, ground):
 
 
 def arena(floor):
-    return ['step setup', 'cmd Alice time set 1000', 'cmd Alice kill @e[type=!player]',
+    # The previous case's cow drops its loot as /kill runs, after the selector picked the cow, and its corpse stays
+    # for 20 ticks (LivingEntity.tickDeath), still moving: the items, or the corpse once the fill below removes the
+    # carpet or slab under it, hit the ground while the next case measures, at a wall-clock moment (item-stone,
+    # item-carpet and item-slab flaked on vanilla's side, 2026-11-07). The second /kill removes the items, and 25
+    # server ticks let the corpse go before the arena changes.
+    return ['step setup', 'cmd Alice time set 1000', 'cmd Alice kill @e[type=!player]', 'cmd Alice kill @e[type=item]',
+            'ticks 25',
             'cmd Alice fill -3 -61 -3 8 -61 5 minecraft:stone', 'cmd Alice fill -3 -60 -3 8 -57 5 minecraft:air',
             *[f'cmd Alice {command}' for command in FLOORS[floor][1]]]
 
@@ -150,6 +156,23 @@ for floor_name in ('stone', 'wool'):
 for floor_name in ('stone-edge', 'wool-edge'):
     CASES[f'jump-{floor_name}'] = player_case(f'jump-{floor_name}', floor_name, jump)
     CASES[f'cow-{floor_name}'] = entity_case(f'cow-{floor_name}', floor_name, COW)
+
+
+# Entity.kill emits ENTITY_DIE after removal; wool stacks dampen it at the
+# source (ItemEntity.dampensVibrations), regardless of the floor material.
+for name, kind, nbt in (
+        ('stone-item', 'item', '{Item:{id:"minecraft:stone",count:1},NoGravity:1b}'),
+        ('wool-item', 'item', '{Item:{id:"minecraft:white_wool",count:1},NoGravity:1b}'),
+        ('red-wool-item', 'item', '{Item:{id:"minecraft:red_wool",count:1},NoGravity:1b}'),
+        ('cushion', 'cushion', '{}'),
+        ('crystal', 'end_crystal', '{Invulnerable:1b}'),
+        ('marker', 'marker', '{}')):
+    case = f'kill-{name}'
+    CASES[case] = [*arena('stone'), f'cmd Alice tp @s {FAR} 0 0',
+                   f'cmd Alice summon minecraft:{kind} 0.5 -60 0.5 {nbt}', 'ticks 10',
+                   *sensor(), 'ticks 5', f'step {case}', FREQUENCY,
+                   f'cmd Alice kill @e[type=minecraft:{kind}]', 'ticks 12', FREQUENCY, PHASE,
+                   'step setup']
 
 
 def run_side(label, server_command, client_command, build, world):

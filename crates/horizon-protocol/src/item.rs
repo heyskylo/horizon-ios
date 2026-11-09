@@ -13,6 +13,13 @@ use std::sync::Arc;
 pub mod custom;
 mod hash;
 mod skip;
+mod trim;
+pub(crate) mod v1_20_3;
+pub(crate) mod v1_20_5;
+mod v1_21_1;
+mod v1_21_4;
+mod v1_21_5;
+pub use trim::{TrimHolder, TrimMaterial, TrimPattern};
 
 pub use hash::{Names, NoNames};
 
@@ -62,17 +69,26 @@ pub mod component {
     pub const LORE: i32 = 11;
     pub const RARITY: i32 = 12;
     pub const ENCHANTMENTS: i32 = 13;
+    /// `AdventureModePredicate`: the blocks an adventure player may place on.
+    pub const CAN_PLACE_ON: i32 = 14;
     /// `AdventureModePredicate`: the blocks an adventure player may break.
     pub const CAN_BREAK: i32 = 15;
+    /// `ItemAttributeModifiers`: a list of entries, each with a display from 1.21.6 on.
+    pub const ATTRIBUTE_MODIFIERS: i32 = 16;
     pub const CUSTOM_MODEL_DATA: i32 = 17;
     pub const TOOLTIP_DISPLAY: i32 = 18;
     pub const REPAIR_COST: i32 = 19;
     pub const CREATIVE_SLOT_LOCK: i32 = 20;
     pub const ENCHANTMENT_GLINT_OVERRIDE: i32 = 21;
+    /// `Consumable.STREAM_CODEC`: consumeSeconds first.
+    pub const CONSUMABLE: i32 = 24;
     /// `AttackRange`: six floats, in the record's field order.
     pub const ATTACK_RANGE: i32 = 30;
     pub const EQUIPPABLE: i32 = 32;
     pub const GLIDER: i32 = 34;
+    /// `DeathProtection`: the `death_effects` a stack runs when it saves its holder.
+    pub const DEATH_PROTECTION: i32 = 36;
+    pub const BLOCKS_ATTACKS: i32 = 37;
     pub const STORED_ENCHANTMENTS: i32 = 45;
     pub const PROFILE: i32 = 72;
     pub const BANNER_PATTERNS: i32 = 74;
@@ -89,6 +105,7 @@ pub mod component {
     pub const TRIM: i32 = 58;
     pub const INSTRUMENT: i32 = 63;
     pub const PROVIDES_TRIM_MATERIAL: i32 = 64;
+    pub const PROVIDES_BANNER_PATTERNS: i32 = 67;
     pub const DAMAGE_TYPE: i32 = 8;
     pub const CHICKEN_VARIANT: i32 = 104;
     pub const ZOMBIE_NAUTILUS_VARIANT: i32 = 106;
@@ -180,10 +197,15 @@ pub enum Component {
         tracked: bool,
     },
     /// `ArmorTrim` naming its material and pattern by registry id (`trim_material`,
-    /// `trim_pattern`); a trim with a direct holder stays [`Component::Raw`].
+    /// `trim_pattern`); direct holders use [`Component::TrimDirect`].
     Trim {
         material: i32,
         pattern: i32,
+    },
+    /// ArmorTrim with a direct holder. Named-only trims keep `Trim` unchanged.
+    TrimDirect {
+        material: TrimHolder<TrimMaterial>,
+        pattern: TrimHolder<TrimPattern>,
     },
     /// `SuspiciousStewEffects`: each entry's `minecraft:mob_effect` id and
     /// duration in ticks.
@@ -305,6 +327,15 @@ impl SkinPatch {
 }
 impl Component {
     pub(crate) fn read(kind: i32, r: &mut Reader) -> Result<Self> {
+        if kind == component::CONTAINER && ids::quirks().count_first_templates {
+            return Ok(Self::Raw(read_legacy_container(r)?));
+        }
+        if kind == component::PROFILE && ids::quirks().optional_profile_fields {
+            return read_optional_profile(r).map(Self::Profile);
+        }
+        if let Some(bytes) = v1_21_5::read(kind, r)? {
+            return Ok(Self::Raw(bytes));
+        }
         use component::*;
         Ok(match kind {
             MAX_STACK_SIZE
@@ -434,6 +465,14 @@ impl Component {
                 })
             }
             CUSTOM_MODEL_DATA => {
+                if ids::quirks().integer_custom_model_data {
+                    return Ok(Self::CustomModelData {
+                        floats: vec![r.varint()? as f32],
+                        flags: Vec::new(),
+                        strings: Vec::new(),
+                        colors: Vec::new(),
+                    });
+                }
                 let n = r.count(r.remaining())?;
                 let floats = (0..n).map(|_| r.f32()).collect::<Result<_>>()?;
                 let n = r.count(r.remaining())?;
@@ -484,19 +523,14 @@ impl Component {
                     tracked: r.bool()?,
                 }
             }
-            // ArmorTrim.STREAM_CODEC: two holders, each a reference's id plus
-            // one. A direct material or pattern has no registry name: read past.
             TRIM => {
-                let start = r.position();
-                skip::component(TRIM, r)?;
-                let bytes = r.since(start);
-                let mut ids = Reader::new(bytes);
-                match (ids.varint(), ids.varint()) {
-                    (Ok(material @ 1..), Ok(pattern @ 1..)) if ids.remaining() == 0 => Self::Trim {
-                        material: material - 1,
-                        pattern: pattern - 1,
-                    },
-                    _ => Self::Raw(bytes.to_vec()),
+                let material = TrimHolder::read(r, TrimMaterial::read)?;
+                let pattern = TrimHolder::read(r, TrimPattern::read)?;
+                match (material, pattern) {
+                    (TrimHolder::Id(material), TrimHolder::Id(pattern)) => {
+                        Self::Trim { material, pattern }
+                    }
+                    (material, pattern) => Self::TrimDirect { material, pattern },
                 }
             }
             // InstrumentComponent.STREAM_CODEC: a holder, a reference's id plus one.
@@ -548,7 +582,7 @@ impl Component {
     /// registry references (`None` when one is direct).
     fn banner_layers(bytes: &[u8]) -> Option<Vec<(i32, i32)>> {
         let mut r = Reader::new(bytes);
-        let n = r.count(r.remaining()).ok()?;
+        let n = r.count(r.remaining() / 2).ok()?;
         let mut layers = Vec::with_capacity(n);
         for _ in 0..n {
             let pattern = r.varint().ok()?;
@@ -562,7 +596,16 @@ impl Component {
     }
     pub(crate) fn write(&self, kind: i32, w: &mut Writer) {
         match self {
-            Self::Raw(bytes) => w.bytes(bytes),
+            Self::Raw(bytes) => {
+                let legacy = if kind == component::CONTAINER
+                    && matches!(ids::active(),Some((ids,ids::Way::Down)) if ids.quirks.count_first_templates)
+                {
+                    write_legacy_container(bytes).ok()
+                } else {
+                    v1_21_5::write(kind, bytes)
+                };
+                w.bytes(legacy.as_deref().unwrap_or(bytes));
+            }
             Self::BannerPatterns(layers) => {
                 w.varint(layers.len() as i32);
                 for (pattern, color) in layers {
@@ -573,6 +616,10 @@ impl Component {
             Self::Trim { material, pattern } => {
                 w.varint(material + 1);
                 w.varint(pattern + 1);
+            }
+            Self::TrimDirect { material, pattern } => {
+                material.write(w, TrimMaterial::write);
+                pattern.write(w, TrimPattern::write);
             }
             Self::Instrument(id) => w.varint(id + 1),
             Self::PaintingVariant(id) => w.varint(id + 1),
@@ -616,6 +663,11 @@ impl Component {
                 }
             }
             Self::Profile(p) => {
+                if matches!(ids::active(),Some((ids,ids::Way::Down)) if ids.quirks.optional_profile_fields)
+                {
+                    write_optional_profile(p, w);
+                    return;
+                }
                 w.u8(0);
                 w.bool(p.name.is_some());
                 if let Some(name) = &p.name {
@@ -642,6 +694,11 @@ impl Component {
                 strings,
                 colors,
             } => {
+                if matches!(ids::active(),Some((ids,ids::Way::Down)) if ids.quirks.integer_custom_model_data)
+                {
+                    w.varint(floats.first().copied().unwrap_or(0.0) as i32);
+                    return;
+                }
                 w.varint(floats.len() as i32);
                 floats.iter().for_each(|f| w.f32(*f));
                 w.varint(flags.len() as i32);
@@ -653,8 +710,15 @@ impl Component {
             }
             Self::TooltipDisplay { hide, hidden } => {
                 w.bool(*hide);
-                w.varint(hidden.len() as i32);
-                hidden.iter().for_each(|h| w.varint(ids::component(*h)));
+                // Without the components an older client being written for lacks.
+                let kept = || {
+                    hidden
+                        .iter()
+                        .map(|h| ids::component(*h))
+                        .filter(|h| *h >= 0)
+                };
+                w.varint(kept().count() as i32);
+                kept().for_each(|h| w.varint(h));
             }
             Self::Stacks(stacks) => {
                 w.varint(stacks.len() as i32);
@@ -713,6 +777,80 @@ impl Component {
             }
         }
     }
+}
+
+fn read_optional_profile(r: &mut Reader) -> Result<Profile> {
+    let name = if r.bool()? { Some(r.string(16)?) } else { None };
+    let id = if r.bool()? { Some(r.uuid()?) } else { None };
+    let n = r.count(16)?;
+    let mut properties = Vec::with_capacity(n);
+    for _ in 0..n {
+        let name = r.string(64)?;
+        let value = r.string(32767)?;
+        let signature = if r.bool()? {
+            Some(r.string(32767)?)
+        } else {
+            None
+        };
+        properties.push((name, value, signature));
+    }
+    Ok(Profile {
+        name,
+        id,
+        properties,
+        skin: SkinPatch::default(),
+    })
+}
+fn write_optional_profile(p: &Profile, w: &mut Writer) {
+    w.bool(p.name.is_some());
+    if let Some(name) = &p.name {
+        w.string(name);
+    }
+    w.bool(p.id.is_some());
+    if let Some(id) = p.id {
+        w.uuid(id);
+    }
+    w.varint(p.properties.len() as i32);
+    for (name, value, signature) in &p.properties {
+        w.string(name);
+        w.string(value);
+        w.bool(signature.is_some());
+        if let Some(signature) = signature {
+            w.string(signature);
+        }
+    }
+}
+fn read_legacy_container(r: &mut Reader) -> Result<Vec<u8>> {
+    let n = r.count(256)?;
+    let mut w = Writer::new();
+    w.varint(n as i32);
+    for _ in 0..n {
+        let stack = Slot::read(r)?;
+        w.bool(stack.is_some());
+        if let Some(stack) = stack {
+            let _pinned = ids::unrenumbered();
+            Template::write(&stack, &mut w);
+        }
+    }
+    Ok(w.data)
+}
+fn write_legacy_container(bytes: &[u8]) -> Result<Vec<u8>> {
+    let mut r = Reader::new(bytes);
+    let mut w = Writer::new();
+    let n = r.count(256)?;
+    w.varint(n as i32);
+    for _ in 0..n {
+        let stack = if r.bool()? {
+            Some({
+                let _pinned = ids::unrenumbered();
+                Template::read(&mut r)?
+            })
+        } else {
+            None
+        };
+        write_slot(stack.as_ref(), &mut w);
+    }
+    Ok(w.data)
 }
 
 /// A component patch as `DelimitedSlot` writes it (both counts, then each
@@ -974,21 +1112,133 @@ impl Codec<Option<Stack>> for Slot {
         read_stack(r, false)
     }
     fn write(v: &Option<Stack>, w: &mut Writer) {
-        let Some(s) = v else {
-            w.varint(0);
-            return;
-        };
-        w.varint(s.count);
-        w.varint(ids::item(s.item));
-        w.varint(s.added.len() as i32);
-        w.varint(s.removed.len() as i32);
-        for (kind, c) in &s.added {
-            w.varint(ids::component(*kind));
-            c.write(*kind, w);
+        write_slot(v.as_ref(), w);
+    }
+}
+fn write_slot(v: Option<&Stack>, w: &mut Writer) {
+    if v1_20_3::writing() {
+        v1_20_3::write_stack(v, w);
+        return;
+    }
+    if v1_21_1::writing() {
+        v1_21_1::write_stack(v, w);
+        return;
+    }
+    if v1_21_4::writing() {
+        v1_21_4::write_stack(v, w);
+        return;
+    }
+    // An item an older client has no stand-in for reaches it as nothing.
+    let item = v.map_or(-1, |s| ids::item(s.item));
+    let Some(s) = v.filter(|_| item >= 0) else {
+        w.varint(0);
+        return;
+    };
+    w.varint(s.count);
+    w.varint(item);
+    write_patch(s, w);
+}
+
+/// A component value as the version being written for reads it. Values kept as their pinned bytes that hold
+/// items (a pot's sides, a container's slots, a use remainder) are read again and written with that
+/// version's item ids, and a pot's sides as 26.2's item ids when it reads them so
+/// ([`ids::Quirks::pot_decorations_are_items`]). Written as they are when nothing is renumbered.
+fn write_value(kind: i32, c: &Component, w: &mut Writer) {
+    use component::*;
+    let quirks = ids::quirks_written();
+    let renumbered = matches!(ids::active(), Some((_, ids::Way::Down)));
+    let held = match kind {
+        POT_DECORATIONS | USE_REMAINDER | SULFUR_CUBE_CONTENT => true,
+        // Before 26.1 these hold ItemStacks, written by another codec.
+        CONTAINER => !quirks.stacks_in_components,
+        _ => false,
+    };
+    if !renumbered || !held {
+        return c.write(kind, w);
+    }
+    let pinned = {
+        let _pinned = ids::pinned();
+        let mut b = Writer::new();
+        c.write(kind, &mut b);
+        b.data
+    };
+    match value_down(kind, quirks, &pinned) {
+        Ok(bytes) => w.bytes(&bytes),
+        Err(_) => w.bytes(&pinned),
+    }
+}
+
+/// A stack template as the pinned version wrote it.
+fn read_pinned(r: &mut Reader) -> Result<Stack> {
+    let _pinned = ids::pinned();
+    Template::read(r)
+}
+
+/// The pinned bytes of an item-holding component (see [`write_value`]) in the numbering written now.
+fn value_down(kind: i32, quirks: ids::Quirks, pinned: &[u8]) -> Result<Vec<u8>> {
+    use component::*;
+    let mut r = Reader::new(pinned);
+    let mut w = Writer::new();
+    match kind {
+        // Back, left, right, front: each an optional template of one item.
+        POT_DECORATIONS => {
+            let mut sides = Vec::with_capacity(4);
+            for _ in 0..4 {
+                sides.push(if r.bool()? {
+                    Some(read_pinned(&mut r)?)
+                } else {
+                    None
+                });
+            }
+            if quirks.pot_decorations_are_items {
+                // ByteBufCodecs.registry(ITEM).apply(list(4)): a brick for an undecorated side.
+                w.varint(4);
+                for side in &sides {
+                    w.varint(ids::item(side.as_ref().map_or(BRICK, |s| s.item)));
+                }
+            } else {
+                for side in &sides {
+                    w.bool(side.is_some());
+                    if let Some(s) = side {
+                        Template::write(s, &mut w);
+                    }
+                }
+            }
         }
-        for kind in &s.removed {
-            w.varint(ids::component(*kind));
+        CONTAINER => {
+            let n = r.count(256)?;
+            w.varint(n as i32);
+            for _ in 0..n {
+                let slot = r.bool()?;
+                w.bool(slot);
+                if slot {
+                    Template::write(&read_pinned(&mut r)?, &mut w);
+                }
+            }
         }
+        _ => {
+            let stack = read_pinned(&mut r)?;
+            if quirks.stacks_in_components {
+                Slot::write(&Some(stack), &mut w);
+            } else {
+                Template::write(&stack, &mut w);
+            }
+        }
+    }
+    Ok(w.data)
+}
+
+/// A stack's components, without those an older client being written for lacks.
+fn write_patch(s: &Stack, w: &mut Writer) {
+    let has = |kind: i32| ids::component(kind) >= 0;
+    w.varint(s.added.iter().filter(|(k, _)| has(*k)).count() as i32);
+    w.varint(s.removed.iter().filter(|k| has(**k)).count() as i32);
+    for (kind, c) in s.added.iter().filter(|(k, _)| has(*k)) {
+        w.varint(ids::component(*kind));
+        write_value(*kind, c, w);
+    }
+    for kind in s.removed.iter().filter(|k| has(**k)) {
+        w.varint(ids::component(*kind));
     }
 }
 
@@ -996,6 +1246,15 @@ impl Codec<Option<Stack>> for Slot {
 /// has a length in front (DataComponentPatch.DELIMITED_STREAM_CODEC). The
 /// patch is also kept, in the delimited form, for [`Stack::wire`].
 fn read_stack(r: &mut Reader, delimited: bool) -> Result<Option<Stack>> {
+    if v1_20_3::reading() {
+        return v1_20_3::read_stack(r);
+    }
+    if v1_21_1::reading() {
+        return v1_21_1::read_stack(r);
+    }
+    if v1_21_4::reading() {
+        return v1_21_4::read_stack(r);
+    }
     let count = r.varint()?;
     if count <= 0 {
         return Ok(None);
@@ -1042,7 +1301,8 @@ fn read_stack(r: &mut Reader, delimited: bool) -> Result<Option<Stack>> {
         count,
         added,
         removed,
-        wire: WirePatch(wire),
+        // Adapter bytes may still contain older ids; rebuild from normalized values.
+        wire: WirePatch(wire.filter(|_| ids::active().is_none())),
     }))
 }
 
@@ -1055,6 +1315,18 @@ impl Codec<Option<Stack>> for DelimitedSlot {
         read_stack(r, true)
     }
     fn write(v: &Option<Stack>, w: &mut Writer) {
+        if v1_20_3::writing() {
+            v1_20_3::write_stack(v.as_ref(), w);
+            return;
+        }
+        if v1_21_1::writing() {
+            v1_21_1::write_stack(v.as_ref(), w);
+            return;
+        }
+        if v1_21_4::writing() {
+            v1_21_4::write_stack(v.as_ref(), w);
+            return;
+        }
         let Some(s) = v else {
             w.varint(0);
             return;
@@ -1074,7 +1346,7 @@ impl Codec<Option<Stack>> for DelimitedSlot {
         for (kind, c) in &s.added {
             w.varint(ids::component(*kind));
             let mut value = Writer::new();
-            c.write(*kind, &mut value);
+            write_value(*kind, c, &mut value);
             w.byte_array(&value.data);
         }
         for kind in &s.removed {
@@ -1087,6 +1359,9 @@ impl Codec<Option<Stack>> for DelimitedSlot {
 pub struct Template;
 impl Codec<Stack> for Template {
     fn read(r: &mut Reader) -> Result<Stack> {
+        if ids::quirks().count_first_templates {
+            return read_stack(r, false)?.ok_or_else(|| crate::Error::new("empty item template"));
+        }
         let item = ids::item(r.varint()?);
         let count = r.varint()?;
         let positive = r.count(65536)?;
@@ -1108,17 +1383,13 @@ impl Codec<Stack> for Template {
         })
     }
     fn write(s: &Stack, w: &mut Writer) {
+        if matches!(ids::active(),Some((ids,ids::Way::Down)) if ids.quirks.count_first_templates) {
+            write_slot(Some(s), w);
+            return;
+        }
         w.varint(ids::item(s.item));
         w.varint(s.count);
-        w.varint(s.added.len() as i32);
-        w.varint(s.removed.len() as i32);
-        for (kind, c) in &s.added {
-            w.varint(ids::component(*kind));
-            c.write(*kind, w);
-        }
-        for kind in &s.removed {
-            w.varint(ids::component(*kind));
-        }
+        write_patch(s, w);
     }
 }
 
@@ -1218,6 +1489,11 @@ mod tests {
         potion.extend([0, 1, 0, 0, 0, 1].repeat(200_000));
         potion.extend([0, 1, 0, 0, 0, 0, 0]);
         assert!(read_on_network_stack(potion).is_err());
+        // A can_break predicate whose exact component matcher holds another can_break, 200,000 deep.
+        let mut predicate = vec![1, 1, 1, 0, component::CAN_BREAK as u8];
+        predicate.extend([1, 0, 0, 0, 1, component::CAN_BREAK as u8].repeat(200_000));
+        predicate.extend([0]);
+        assert!(read_on_network_stack(predicate).is_err());
     }
 
     #[test]
@@ -1512,6 +1788,47 @@ mod tests {
     }
 
     #[test]
+    fn direct_trim_decodes_complete_official_inventory_stack_payload() {
+        // Slot portion of our actual Java26.3 ClientboundContainerSetSlotPacket;
+        // complete packet and official client decode retained with H284 proof.
+        let hex = "01bd080200000a0300046b6565700000011c003a000e6d696e6563726166743a676f6c6408000f496e6c696e65206d6174657269616c000f6d696e6563726166743a636f61737408000e496e6c696e65207061747465726e00";
+        let bytes: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        let mut reader = Reader::new(&bytes);
+        let stack = Slot::read(&mut reader).unwrap();
+        assert_eq!(reader.remaining(), 0);
+        let component = stack.as_ref().unwrap().component(component::TRIM).unwrap();
+        assert_eq!(
+            component,
+            &Component::TrimDirect {
+                material: TrimHolder::Direct(TrimMaterial {
+                    palette_id: "minecraft:gold".into(),
+                    description: Tag::String("Inline material".into()),
+                }),
+                pattern: TrimHolder::Direct(TrimPattern {
+                    asset_id: "minecraft:coast".into(),
+                    description: Tag::String("Inline pattern".into()),
+                    decal: false,
+                }),
+            }
+        );
+        let mut writer = Writer::new();
+        Slot::write(&stack, &mut writer);
+        assert_eq!(writer.data, bytes);
+        // Existing direct HashOps path is reused unchanged.
+        let mut raw = Writer::new();
+        component.write(component::TRIM, &mut raw);
+        let code = component.code(component::TRIM, &NoNames);
+        assert!(code.is_some());
+        assert_eq!(
+            code,
+            Component::Raw(raw.data).code(component::TRIM, &NoNames)
+        );
+    }
+
+    #[test]
     fn components_read_past_keep_their_bytes() {
         // Vanilla 26.3's encoding (tools/test_item_wire_parity.py) of a chestplate's
         // armour trim (decoded: both holders are references), a banner's patterns
@@ -1553,6 +1870,47 @@ mod tests {
             let mut w = Writer::new();
             Slot::write(&stack, &mut w);
             assert_eq!(w.data, bytes, "component {kind}");
+        }
+    }
+
+    #[test]
+    fn negative_holder_ids_and_holder_set_sizes_are_refused() {
+        // Vanilla 26.3's ByteBufCodecs.holder looks a nonzero id up with
+        // `byIdOrThrow(id - 1)`, and holderSet sizes its list with `new ArrayList(size)`:
+        // neither takes a negative value. `1` is a valid value at the same place.
+        let slot = |kind: i32, component: &[u8]| {
+            // Count 1, item 1, one added component, none removed.
+            let mut w = Writer::new();
+            for v in [1, 1, 1, 0, kind] {
+                w.varint(v);
+            }
+            w.data.extend_from_slice(component);
+            let mut r = Reader::new(&w.data);
+            Slot::read(&mut r).map(|stack| (stack, r.remaining()))
+        };
+        for (value, valid) in [(1, true), (-1, false), (i32::MIN, false)] {
+            let mut v = Writer::new();
+            v.varint(value);
+            // kinetic_weapon: default fields, then a sound holder (`value`) and no hit sound.
+            let mut kinetic = vec![10, 0, 0, 0, 0, 0, 0, 0, 0, 0x3f, 0x80, 0, 0, 1];
+            kinetic.extend_from_slice(&v.data);
+            kinetic.push(0);
+            // can_break: one predicate whose blocks are a holder set (`value`, an empty
+            // list when 1), with no properties, NBT or component matchers.
+            let mut can_break = vec![1, 1];
+            can_break.extend_from_slice(&v.data);
+            can_break.extend([0, 0, 0, 0]);
+            for (kind, bytes) in [(39, kinetic), (component::CAN_BREAK, can_break)] {
+                let read = slot(kind, &bytes);
+                if valid {
+                    assert!(
+                        matches!(read, Ok((Some(_), 0))),
+                        "component {kind}: {read:?}"
+                    );
+                } else {
+                    assert!(read.is_err(), "component {kind} with {value}: {read:?}");
+                }
+            }
         }
     }
 

@@ -22,7 +22,7 @@ STUBS = r'''
 #![allow(dead_code)]
 use std::collections::HashMap;
 #[derive(Clone,Copy)]struct EntityRef{epoch:u64,id:u32}impl EntityRef{fn new(epoch:u64,id:u32)->Self{Self{epoch,id}}fn epoch(self)->u64{self.epoch}fn id(self)->u32{self.id}}
-#[derive(Clone,Copy)]enum Target{Player,Guest(u32),Mob(u32),Item(u32),Orb(u32),Projectile(u32),Stand(u32),Frame(u32),Painting(u32),Boat(u32),Cart(u32),Other(u32),Fangs(u32),Crystal(u32),Dragon(u32),Tnt(u32),Falling(u32),Rocket(u32),Trident(u32),Spawner(u32),Cloud(u32)}
+#[derive(Clone,Copy)]enum Target{Player,Guest(u32),Mob(u32),Item(u32),Orb(u32),Projectile(u32),Stand(u32),Cushion(u32),Frame(u32),Painting(u32),Boat(u32),Cart(u32),Other(u32),Fangs(u32),Crystal(u32),Dragon(u32),Tnt(u32),Falling(u32),Rocket(u32),Trident(u32),Spawner(u32),Cloud(u32)}
 struct Lifecycle;impl Lifecycle{fn epoch(&self)->Option<u64>{Some(1)}}
 struct Guest{placed:bool,entity_id:i32,conn:u32,uuid:u128}struct Hub{guests:Vec<Guest>}struct Lan{hub:Hub}
 struct Mob{id:u32,removed:bool}struct Name(String);impl Name{fn plain(&self)->String{self.0.clone()}}

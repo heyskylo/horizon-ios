@@ -775,7 +775,7 @@ impl B {
                 let w = cx.w;
                 let in_reach = w
                     .target_info(target)
-                    .is_some_and(|t| m.within_melee_range(&t));
+                    .is_some_and(|t| m.within_melee_range(w, &t));
                 if !super::creaking::can_move(m) || !in_reach || !visible_contains(m, w, target) {
                     return false;
                 }
@@ -1099,7 +1099,7 @@ fn tracker_visible(m: &mut Mob, w: &MobWorld, t: Tracker) -> bool {
 /// ranged weapon: `Mob.isWithinMeleeAttackRange`.
 fn within_attack_range(m: &Mob, w: &MobWorld, target: Who) -> bool {
     w.target_info(target)
-        .is_some_and(|t| m.within_melee_range(&t))
+        .is_some_and(|t| m.within_melee_range(w, &t))
 }
 
 // ---- The breeze's behaviours --------------------------------------------

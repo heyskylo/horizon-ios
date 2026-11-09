@@ -650,7 +650,8 @@ impl PackAtlas {
         let columns = self.columns;
         let (cell, side, scale) = if flat {
             (
-                "uvec2 hz_rect = hz_sprite_rects[hz_layer];\n    \
+                "uvec2 hz_rect = uvec2(0u, 1u);\n    \
+                 if (hz_layer < uint(hz_sprite_rects.length())) hz_rect = hz_sprite_rects[hz_layer];\n    \
                  hz_cell = vec2(float(hz_rect.x & 65535u), float(hz_rect.x >> 16u)) / float(hz_rect.y);\n    "
                     .to_owned(),
                 "float(hz_rect.y)",
@@ -738,6 +739,10 @@ impl PackAtlas {
             ("mc_Entity", "hz_mc_entity"),
             ("at_midBlock", "vec4(hz_mid_block, hz_emission)"),
             ("mc_midTexCoord", "vec4(hz_mid_uv, 0.0, 1.0)"),
+            (
+                "horizonTier",
+                "float(15u - (uint(round(hz_v_color.a * 255.0)) & 15u))",
+            ),
             ("at_tangent", "hz_tangent"),
             ("vaPosition", "hz_Vertex.xyz"),
             ("vaUV0", "hz_MultiTexCoord0.xy"),
@@ -760,6 +765,9 @@ impl PackAtlas {
             alpha_test: None,
             item_id_declared: false,
             far_depth: false,
+            paged_maps: false,
+            water_mask: false,
+            water_patches: false,
         }
     }
 }
@@ -1158,3 +1166,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "pack_atlas/source_ownership_test.rs"]
+mod source_ownership_test;

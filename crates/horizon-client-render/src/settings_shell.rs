@@ -1,14 +1,25 @@
-//! What Horizon's searchable settings screens share (`graphics_ui`, `controller_ui`): the frame's
-//! geometry, its list of pages, groups and rows, and how the keyboard moves through them. Which
-//! settings a screen has, and what they do, stay in that screen; the look comes from
-//! `graphics_style`.
+//! What Horizon's searchable settings screens share: the frame's geometry, its list of pages,
+//! groups and rows, and how the keyboard moves through them. Which settings a screen has, and what
+//! they do, stay in that screen; the look comes from `graphics_style`.
+//!
+//! A new screen implements [`Screen`], describing its rows from the settings, and [`Shell`] does
+//! everything else: drawing, clicks, one scroll path, a controller's focus and its declared
+//! buttons, keys and each row's description (`extras_ui` is the smallest; `graphics_ui` has
+//! pages, sliders, costs and Undo; `controller_ui` has bindings, [`Value::Binding`], whose wait
+//! for a button or a key the shell runs; `shader_ui` has pages read from a shader pack, rows that
+//! link to pages out of the page list, and Apply). A page list with more pages than the column
+//! has room for collapses into one `‹ Name ›` row (`hud_kit::tabs`), leaving none out.
 use crate::{
     graphics_style as style,
     hud::{HudAtlas, HudBatch},
+    hud_kit::tabs,
     lang,
+    pad_glyph::{self, Glyph},
+    settings::Settings,
     text::Text,
     ui,
 };
+use std::rc::Rc;
 
 /// The screen's parts in GUI pixels. Down the left: the mark, the search
 /// field, the page list, and Undo and Done at the foot. On the right: the
@@ -25,7 +36,28 @@ pub(crate) struct Columns {
     pub(crate) list_w: f32,
     pub(crate) top: f32,
     pub(crate) bottom: f32,
+    /// The lines the strip has for a description (`with_note_lines`).
+    note_lines: usize,
 }
+/// The lines of description a strip has unless its screen asks for more.
+const NOTE_LINES: usize = 2;
+/// The height of a line of description.
+const NOTE_LINE_H: f32 = 10.0;
+/// The strip's text from its left edge, and its first line (the name) from its top.
+const DOCK_INSET: f32 = 12.0;
+const DOCK_NAME_Y: f32 = 8.0;
+/// A cost's square before the name: its side, how far down it sits, and the name after it.
+const COST_SQUARE: f32 = 4.0;
+const COST_SQUARE_Y: f32 = 10.0;
+const COST_NAME_X: f32 = 8.0;
+/// What the strip keeps clear at its right of a name with its cost.
+const COST_LINE_SLACK: f32 = 32.0;
+/// A taller strip leaves the list at least this high.
+const MIN_LIST_H: f32 = 60.0;
+/// From one place in the page list to the next.
+const PAGE_STEP: f32 = 18.0;
+/// Between the foot's buttons, over and beside one another, and over them.
+const FOOT_GAP: f32 = 4.0;
 impl Columns {
     pub(crate) fn of(w: f32, h: f32) -> Self {
         let side_w = style::CONTROL_W;
@@ -47,7 +79,21 @@ impl Columns {
             list_w: pw - 16.0 - style::SCROLLER_W - 2.0,
             top: side_y + 30.0,
             bottom: plate[1] + plate[3] - 6.0,
+            note_lines: NOTE_LINES,
         }
+    }
+    /// The strip grown up over the plate for `wanted` lines of description, as far as the list
+    /// keeps its height.
+    pub(crate) fn with_note_lines(mut self, wanted: usize) -> Self {
+        let spare = ((self.bottom - self.top - MIN_LIST_H) / NOTE_LINE_H).max(0.0) as usize;
+        let grown = wanted.saturating_sub(NOTE_LINES).min(spare);
+        let extra = grown as f32 * NOTE_LINE_H;
+        self.dock[1] -= extra;
+        self.dock[3] += extra;
+        self.plate[3] -= extra;
+        self.bottom -= extra;
+        self.note_lines = NOTE_LINES + grown;
+        self
     }
     /// The search field, under the mark.
     pub(crate) fn search(&self) -> [f32; 4] {
@@ -70,14 +116,20 @@ impl Columns {
     pub(crate) fn bar_x(&self) -> f32 {
         self.plate[0] + self.plate[2] - 8.0 - style::SCROLLER_W
     }
-    /// A page in the page list, under the search field.
+    /// The `i`th place in the page list, under the search field: a page, or a line naming the
+    /// pages under it.
     pub(crate) fn page(&self, i: usize) -> [f32; 4] {
         [
             self.side_x,
-            self.side_y + 56.0 + i as f32 * 18.0,
+            self.side_y + 56.0 + i as f32 * PAGE_STEP,
             style::CONTROL_W,
             16.0,
         ]
+    }
+    /// How many places the page list has room for, from its first down to above Undo.
+    pub(crate) fn page_room(&self) -> usize {
+        let room = self.button(1)[1] - FOOT_GAP - self.page(0)[1];
+        (room / PAGE_STEP).floor().max(0.0) as usize
     }
     /// Done (`0`), and Undo over it (`1`): under the page list, level with the strip.
     pub(crate) fn button(&self, i: usize) -> [f32; 4] {
@@ -85,7 +137,7 @@ impl Columns {
         let y = if i == 0 {
             foot
         } else {
-            foot - 4.0 - style::BUTTON_H
+            foot - FOOT_GAP - style::BUTTON_H
         };
         [self.side_x, y, style::CONTROL_W, style::BUTTON_H]
     }
@@ -169,6 +221,11 @@ impl<P: Copy, S: Copy> Lines<P, S> {
             self.y += style::ROW;
         }
         self.y += style::GROUP_GAP;
+    }
+    /// A group of rows under its page's own name (`list`'s `page_name`), for pages named at run
+    /// time, such as a resource pack's config entries (`pack_options_ui`).
+    pub(crate) fn titled(&mut self, page: P, rows: Vec<S>) {
+        self.group(page, "", rows);
     }
     /// The lines and the content's height.
     pub(crate) fn finish(self) -> (Vec<Line<P, S>>, f32) {
@@ -292,14 +349,15 @@ pub(crate) fn plate(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, head
 }
 
 /// The list, clipped to its view: each group's panel, then its names and rows on it. `row`
-/// draws a setting at its `y`.
+/// draws a setting at its `y`; `page_name` names a page, and a group without a name of its own
+/// (`Lines::titled`), in the player's language.
 pub(crate) fn list<P: Copy, S: Copy>(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
     cols: &Columns,
     lines: &[Line<P, S>],
     scroll: f32,
-    page_name: impl Fn(P) -> &'static str,
+    page_name: impl Fn(P) -> String,
     mut row: impl FnMut(&mut HudBatch, S, f32),
 ) {
     let start = batch.vertices.len();
@@ -325,10 +383,11 @@ pub(crate) fn list<P: Copy, S: Copy>(
         }
         let Some(setting) = line.setting else {
             let (name, color, dy) = match line.group {
-                Some((name, _)) => (name, style::MUTED, 3.0),
+                Some(("", _)) => (page_name(line.page), style::MUTED, 3.0),
+                Some((name, _)) => (lang::get(name), style::MUTED, 3.0),
                 None => (page_name(line.page), style::ACCENT, 4.0),
             };
-            let name = Text::literal(lang::get(name));
+            let name = Text::literal(name);
             batch.text_styled(atlas, &name, cols.list_x + 2.0, y + dy, color, true);
             continue;
         };
@@ -409,6 +468,9 @@ pub(crate) struct RowView<'a> {
     pub(crate) focused: bool,
     /// Its slider is being dragged.
     pub(crate) held: bool,
+    /// A key binding, drawn as a button rather than a value between arrows: whether it waits for
+    /// its key.
+    pub(crate) key: Option<bool>,
 }
 
 /// A setting's row at `y`, its name on the left and its control on the right.
@@ -423,6 +485,7 @@ pub(crate) fn row(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, y: f32
         hover,
         focused,
         held,
+        key,
     } = view;
     let rect = cols.row(y);
     let (tx, tw) = cols.track();
@@ -490,6 +553,15 @@ pub(crate) fn row(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, y: f32
                     batch.text_styled(atlas, &value, start, ty, soft, true);
                 }
             }
+            (None, None) if key.is_some() => {
+                let value = Text::literal(value);
+                let value = match key {
+                    Some(true) => value.with_color(crate::text::YELLOW),
+                    _ => value,
+                };
+                let chip = [start, y + 3.0, vw + 18.0, 14.0];
+                style::button(batch, atlas, chip, &value, (lit, live, false));
+            }
             (None, None) => {
                 let value = Text::literal(value);
                 style::cycler(
@@ -513,6 +585,303 @@ pub(crate) fn row(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, y: f32
             style::WHITE,
         );
     }
+}
+
+/// A binding's reset button, at the end of its row at `y`.
+fn reset_rect(cols: &Columns, y: f32) -> [f32; 4] {
+    let right = cols.list_x + cols.list_w - RESET_INSET;
+    [right - RESET_W, y + RESET_INSET, RESET_W, style::CONTROL_H]
+}
+
+/// What a row takes the focus and a press on: all of it but a binding's reset.
+fn row_rect<R>(row: &Row<R>, cols: &Columns, y: f32) -> [f32; 4] {
+    let resets = row.binding().is_some_and(|b| b.reset.shown());
+    short_of_reset(cols, y, resets)
+}
+/// The row at `y`, short of its reset button where it has one.
+fn short_of_reset(cols: &Columns, y: f32, resets: bool) -> [f32; 4] {
+    let [x, y, w, h] = cols.row(y);
+    let w = if resets { w - RESET_W - RESET_GAP } else { w };
+    [x, y, w, h]
+}
+
+/// A row's lit background while it is pointed at or focused.
+fn lit(batch: &mut HudBatch, atlas: &HudAtlas, [x, y, w, _]: [f32; 4]) {
+    style::fill(
+        batch,
+        atlas,
+        [x + 2.0, y + 1.0, w - 4.0, style::ROW - 2.0],
+        style::HOVER,
+    );
+}
+
+/// A value to read ([`Value::Read`]) at `y`: its name, and the value at the right, cut short to
+/// fit. `(label, name, value)`; `(hover, focused)`.
+fn read_row(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    cols: &Columns,
+    y: f32,
+    (label, name, value): (&str, &str, &str),
+    (hover, focused): (bool, bool),
+) {
+    let rect = cols.row(y);
+    crate::widgets::record(label, rect, true);
+    crate::widgets::narratable(|| {
+        crate::widgets::Narratable::button(label.to_owned(), rect, true)
+            .hovered(hover)
+            .focused(focused)
+    });
+    crate::widgets::target(rect);
+    if hover || focused {
+        lit(batch, atlas, rect);
+    }
+    let ty = y + ((style::ROW - 8.0) / 2.0).floor();
+    let left = rect[0] + style::INSET;
+    let name_w = atlas.font.width(name);
+    let shown = Text::literal(name.to_owned());
+    batch.text_styled(atlas, &shown, left, ty, style::WHITE, true);
+    let room = rect[2] - 2.0 * style::INSET - name_w - 8.0;
+    let value = style::fit(atlas, value, room);
+    let vx = rect[0] + rect[2] - style::INSET - atlas.font.width(&value);
+    batch.text_styled(atlas, &Text::literal(value), vx, ty, style::SOFT, true);
+    if focused {
+        style::ring(
+            batch,
+            atlas,
+            [rect[0] + 1.0, y, rect[2] - 2.0, style::ROW],
+            style::WHITE,
+        );
+    }
+}
+
+/// A controller binding's row as the shell reads it ([`Shown::Pad`]).
+struct PadRow<'a> {
+    /// The whole caption, for the narrator and the widget tree.
+    label: &'a str,
+    name: &'a str,
+    /// What the strip says, for the narrator.
+    hint: &'a str,
+    glyph: Option<Glyph>,
+    waits: bool,
+    shared: bool,
+    reset: Reset,
+    live: bool,
+    /// The row and its reset: pointed at, focused.
+    hover: (bool, bool),
+    focus: (bool, bool),
+}
+
+/// A controller binding's row at `y`: its name, a chip with the bound button's art ("Not Bound"
+/// while nothing is), marked "> <" in yellow while it waits and "[ ]" while its button does
+/// something else too, and its reset at the end.
+fn pad_row(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, y: f32, view: &PadRow) {
+    let &PadRow {
+        label,
+        name,
+        hint,
+        glyph,
+        waits,
+        shared,
+        reset,
+        live,
+        hover: (hover, reset_hover),
+        focus: (focused, reset_focused),
+    } = view;
+    let rect = short_of_reset(cols, y, reset.shown());
+    if live && (hover || focused) {
+        lit(batch, atlas, rect);
+    }
+    crate::widgets::widget_cursor(hover, live);
+    crate::widgets::record(label, rect, live);
+    crate::widgets::narratable(|| {
+        let mut n = crate::widgets::Narratable::button(label.to_owned(), rect, live)
+            .hovered(hover)
+            .focused(focused);
+        n.hint = Some(hint.to_owned());
+        n
+    });
+    if live {
+        crate::widgets::target(rect);
+    }
+    // The chip: the button's art, or its name where there is no art or nothing is bound.
+    let art = glyph.filter(|g| pad_glyph::art(atlas, *g).is_some());
+    let text = match glyph {
+        Some(g) => g.label().to_owned(),
+        None => lang::get(NOT_BOUND),
+    };
+    let inner = match art {
+        Some(g) => pad_glyph::width(atlas, g),
+        None => atlas.font.width(&text),
+    };
+    let marks = match (waits, shared) {
+        (true, _) => Some((">", "<")),
+        (false, true) => Some(("[", "]")),
+        (false, false) => None,
+    };
+    let mark_w = marks.map_or(0.0, |(open, close)| {
+        atlas.font.width(open) + atlas.font.width(close) + 2.0 * PAD_MARK_GAP
+    });
+    let chip_w = (inner + mark_w + PAD_CHIP_PAD).max(PAD_CHIP_W);
+    let chip = [
+        rect[0] + rect[2] - chip_w - 2.0,
+        y + (style::ROW - style::CONTROL_H) / 2.0,
+        chip_w,
+        style::CONTROL_H,
+    ];
+    // Text in the chip only where there is no art, yellow with its marks.
+    let face = match (art, marks) {
+        (Some(_), _) => Text::literal(String::new()),
+        (None, Some(_)) => Text::literal(text).with_color(crate::text::YELLOW),
+        (None, None) => Text::literal(text),
+    };
+    style::button(batch, atlas, chip, &face, (live && hover, live, false));
+    let ty = y + ((style::ROW - 8.0) / 2.0).floor();
+    let middle = chip[0] + chip[2] / 2.0;
+    if let Some(g) = art {
+        pad_glyph::draw(batch, atlas, g, (middle - inner / 2.0 + 1.0).floor(), ty);
+    }
+    if let Some((open, close)) = marks {
+        let yellow = |mark: &str| Text::literal(mark.to_owned()).with_color(crate::text::YELLOW);
+        let left = middle - inner / 2.0 - PAD_MARK_GAP - atlas.font.width(open);
+        batch.text_styled(atlas, &yellow(open), left.floor(), ty, style::WHITE, true);
+        let right = middle + inner / 2.0 + PAD_MARK_GAP;
+        batch.text_styled(atlas, &yellow(close), right.ceil(), ty, style::WHITE, true);
+    }
+    let left = rect[0] + style::INSET;
+    let color = if live { style::WHITE } else { style::MUTED };
+    let shown = Text::literal(style::fit(atlas, name, chip[0] - 6.0 - left));
+    batch.text_styled(atlas, &shown, left, ty, color, true);
+    if focused {
+        style::ring(batch, atlas, rect, style::WHITE);
+    }
+    if !reset.shown() {
+        return;
+    }
+    // The reset: a target only where it would do something.
+    let resets = live && reset == Reset::Changed;
+    let reset = reset_rect(cols, y);
+    let reset_label = lang::get("controls.reset");
+    let reset_hover = resets && reset_hover;
+    crate::widgets::widget_cursor(reset_hover, resets);
+    crate::widgets::record(&reset_label, reset, resets);
+    crate::widgets::narratable(|| {
+        let what = lang::tr("narrator.controls.reset", &[&name]);
+        crate::widgets::Narratable::button(what, reset, resets)
+            .hovered(reset_hover)
+            .focused(reset_focused)
+    });
+    if resets {
+        crate::widgets::target(reset);
+    }
+    let shown = Text::literal(reset_label);
+    style::button(batch, atlas, reset, &shown, (reset_hover, resets, false));
+    if reset_focused {
+        style::ring(batch, atlas, reset, style::WHITE);
+    }
+}
+
+/// Lines a screen shows under its page list (`Screen::side`), from the place of the `below`th page.
+fn side_lines(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    cols: &Columns,
+    below: usize,
+    lines: &[String],
+) {
+    let [x, y, w, _] = cols.page(below);
+    for (i, line) in lines.iter().enumerate() {
+        let rect = [
+            x + SIDE_INSET,
+            y + SIDE_INSET + i as f32 * SIDE_LINE_H,
+            w - 2.0 * SIDE_INSET,
+            8.0,
+        ];
+        crate::widgets::record(line, rect, false);
+        let shown = Text::literal(style::fit(atlas, line, rect[2]));
+        batch.text_styled(atlas, &shown, rect[0], rect[1], style::MUTED, true);
+    }
+}
+/// A line under the page list: its inset, and its height.
+const SIDE_INSET: f32 = 2.0;
+const SIDE_LINE_H: f32 = 10.0;
+/// A line naming a section of the page list, from the top of its place.
+const HEADING_Y: f32 = 6.0;
+/// What the narrator and the widget tree call the collapsed row's arrows: vanilla's words.
+const PREVIOUS_PAGE: &str = "spectatorMenu.previous_page";
+const NEXT_PAGE: &str = "spectatorMenu.next_page";
+
+/// What a place in the page list is: a page, or, in its collapsed row, the shown page's name or
+/// an arrow to the page before or after it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Part {
+    Tab,
+    Shown,
+    Prev,
+    Next,
+}
+
+/// The page list as laid out (`Shell::page_list`).
+#[derive(Clone, Debug)]
+pub(crate) struct PageList<P> {
+    /// Where each page is picked, and as what.
+    places: Vec<(P, [f32; 4], Part)>,
+    /// The lines naming a section, and where.
+    headings: Vec<(String, [f32; 4])>,
+    /// The last section collapsed into one row, when the pages don't all fit, and its page.
+    strip: Option<(tabs::Strip, P)>,
+    /// The page it lights.
+    lit: Option<P>,
+    /// How many places it takes down the column.
+    used: usize,
+}
+impl<P> Default for PageList<P> {
+    fn default() -> Self {
+        Self {
+            places: Vec::new(),
+            headings: Vec::new(),
+            strip: None,
+            lit: None,
+            used: 0,
+        }
+    }
+}
+
+/// A place to pick in the collapsed row: the shown page's name, or an arrow to the page before
+/// or after, for the pointer, the keyboard, a controller's focus and its bumpers (a `Tab` target,
+/// lit for the open page), and the widget tree and narrator under `name`. The row draws the text
+/// (`tabs::draw`); focused, `ring` is drawn round.
+fn strip_place(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    (rect, ring): ([f32; 4], [f32; 4]),
+    name: &str,
+    (has, open, focused): (bool, bool, bool),
+    cursor: (f32, f32),
+) {
+    let [x, y, w, h] = rect;
+    crate::widgets::record(name, rect, has);
+    let hover = has && ui::hovered(cursor, x, y, w, h);
+    crate::widgets::narratable(|| {
+        crate::widgets::Narratable::button(name.to_owned(), rect, has)
+            .hovered(hover)
+            .focused(focused)
+    });
+    crate::widgets::widget_cursor(hover, has);
+    if has {
+        crate::widgets::target_as(rect, crate::widgets::Kind::Tab(open));
+    }
+    if focused {
+        style::ring(batch, atlas, ring, style::WHITE);
+    }
+}
+
+/// A line naming the section of the page list under it, at the place `rect`.
+fn heading(batch: &mut HudBatch, atlas: &HudAtlas, text: &str, [x, y, w, _]: [f32; 4]) {
+    let rect = [x + SIDE_INSET, y + HEADING_Y, w - 2.0 * SIDE_INSET, 8.0];
+    crate::widgets::record(text, rect, false);
+    let shown = Text::literal(style::fit(atlas, text, rect[2]));
+    batch.text_styled(atlas, &shown, rect[0], rect[1], style::MUTED, true);
 }
 
 /// Vanilla's scroller, inside the panel's right edge, sized as `ui::Scroll` drags it.
@@ -545,6 +914,11 @@ pub(crate) fn scroller(
     style::scroller(batch, atlas, track, [x, y, style::SCROLLER_W, bar]);
 }
 
+/// The last line that fits of a description with more to say: it doesn't just stop.
+fn cut_off(line: &str) -> String {
+    format!("{}…", line.trim_end())
+}
+
 /// The strip's text under its first line.
 pub(crate) fn dock_note(
     batch: &mut HudBatch,
@@ -555,12 +929,15 @@ pub(crate) fn dock_note(
 ) {
     let [x, y, w, _] = cols.dock;
     let lines = atlas.font.split(&Text::literal(text), w - 24.0);
-    for (i, line) in lines.iter().take(2).enumerate() {
+    let cut = lines.len() > cols.note_lines;
+    for (i, line) in lines.iter().take(cols.note_lines).enumerate() {
+        let marked =
+            (cut && i + 1 == cols.note_lines).then(|| Text::literal(cut_off(&line.plain())));
         batch.text_styled(
             atlas,
-            line,
+            marked.as_ref().unwrap_or(line),
             x + 12.0,
-            y + 20.0 + i as f32 * 10.0,
+            y + 20.0 + i as f32 * NOTE_LINE_H,
             color,
             true,
         );
@@ -574,7 +951,22 @@ pub(crate) fn foot_button(
     rect: [f32; 4],
     label: &Text,
     cursor: (f32, f32),
+    flags: (bool, bool),
+) {
+    foot_button_with_room(batch, atlas, rect, label, cursor, flags, 0.0);
+}
+
+/// A foot button whose label leaves `room` at its left for a controller's glyph: a button that
+/// declared its job gets one, as vanilla's do (`ui::action_button`), which a half-width Undo or
+/// Apply needs.
+fn foot_button_with_room(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    rect: [f32; 4],
+    label: &Text,
+    cursor: (f32, f32),
     (focused, primary): (bool, bool),
+    room: f32,
 ) {
     let [x, y, w, h] = rect;
     let hovered = ui::hovered(cursor, x, y, w, h);
@@ -587,7 +979,7 @@ pub(crate) fn foot_button(
     });
     crate::widgets::widget_cursor(hovered, true);
     crate::widgets::target(rect);
-    style::button(batch, atlas, rect, label, (hover, true, primary));
+    style::button_with_room(batch, atlas, rect, label, (hover, true, primary), room);
 }
 
 /// Of the rows (their target, `y` and whether they can take the focus), those the keys reach.
@@ -673,4 +1065,2546 @@ pub(crate) fn scroll_into_view(
         scroll.amount += y + h - cols.bottom;
     }
     scroll.clamp(cols.top, cols.bottom, content);
+}
+
+// ---- A screen on the shell: it describes its rows, the shell does the rest ----
+
+/// Pixels the list moves per wheel step or stick notch (`AbstractScrollArea`'s rate).
+const SCROLL_RATE: f32 = 18.0;
+
+/// A row's value, which says how the shell draws and drives it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Value {
+    /// A tick box.
+    Switch(bool),
+    /// A value stepped between `<` `>`, as it reads now: a press steps it on, a Shift press back,
+    /// and focused, Left and Right do the same.
+    Choice(String),
+    /// A slider: left and right step it (`steps`: its stops, else a pixel of the track), a press
+    /// on the track sets it (a controller's focus does the same).
+    Slider {
+        position: f32,
+        steps: Option<u32>,
+        text: String,
+    },
+    /// A binding: a press makes the host wait for a key or a controller button
+    /// ([`Output::Bind`]), and the row shows what it is bound to now ([`Binding`]).
+    Binding(Binding),
+    /// A value to read beside the name, which the focus reaches (unlike `Note`), so the strip and
+    /// the narrator say what it is; nothing presses it.
+    Read(String),
+    /// A button across the row.
+    Press,
+    /// A line to read, which no focus reaches (unlike `Read`) and nothing presses.
+    Note,
+}
+
+/// What a binding row waits for once pressed, by the name the host binds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Capture {
+    /// A key or a mouse button, as on Key Binds (`OptionsUi::selected_key`): Escape unbinds.
+    Key(&'static str),
+    /// A controller button for a gameplay action (`OptionsUi::selected_pad_action`): the game binds
+    /// the next button pressed, Start cancels, and the keyboard's Escape unbinds, as on Key Binds.
+    Pad(&'static str),
+}
+
+/// What a binding row is bound to now.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Shown {
+    /// The key's name, as Key Binds shows it.
+    Key(String),
+    /// The controller button's glyph, drawn as its art; `None` while nothing is bound. `cancel`
+    /// is the button that cancels the wait (`MenuJob::Start`), named in the strip meanwhile.
+    Pad { glyph: Option<Glyph>, cancel: Glyph },
+}
+
+/// A binding row's value ([`Value::Binding`]). The screen says what it binds and what it is bound
+/// to; the shell starts the wait, shows it ("> A <"), draws the button, says in the strip that
+/// it isn't bound or what else its button does, and draws the row's reset.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Binding {
+    pub(crate) capture: Capture,
+    pub(crate) shown: Shown,
+    /// What else the same button does, by name: shown in the strip, and the button in yellow.
+    pub(crate) shared: Vec<String>,
+    /// Its reset button at the row's end (`Screen::reset`).
+    pub(crate) reset: Reset,
+}
+/// A binding row's reset button.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reset {
+    /// The row has none (a key, as Key Binds lists it).
+    None,
+    /// Greyed: the binding is its default already.
+    Default,
+    /// Live: the binding differs from its default.
+    Changed,
+}
+impl Reset {
+    /// The row has a reset button, live or not.
+    fn shown(self) -> bool {
+        self != Reset::None
+    }
+}
+impl Binding {
+    /// A key's binding, as Key Binds lists it: no reset of its own.
+    pub(crate) fn key(name: &'static str, shown: String) -> Self {
+        Self {
+            capture: Capture::Key(name),
+            shown: Shown::Key(shown),
+            shared: Vec::new(),
+            reset: Reset::None,
+        }
+    }
+    /// What it reads as, for the narrator and the widget tree: a pad's shared button in brackets,
+    /// as the row draws it in yellow.
+    fn text(&self) -> String {
+        match &self.shown {
+            Shown::Key(text) => text.clone(),
+            Shown::Pad { glyph, .. } => {
+                let name = glyph.map_or_else(|| lang::get(NOT_BOUND), |g| g.label().to_owned());
+                if self.shared.is_empty() {
+                    name
+                } else {
+                    format!("[ {name} ]")
+                }
+            }
+        }
+    }
+    /// What the strip says about it while `waiting`, else when it isn't bound or shares its
+    /// button; `None` leaves the row's own description.
+    fn note(&self, waiting: bool) -> Option<String> {
+        match (&self.shown, waiting) {
+            (Shown::Pad { cancel, .. }, true) => Some(lang::tr(WAITING_PAD, &[&cancel.label()])),
+            (Shown::Pad { glyph: None, .. }, false) => Some(lang::get(UNBOUND)),
+            _ if !self.shared.is_empty() => Some(lang::tr(SHARED, &[&self.shared.join(", ")])),
+            _ => None,
+        }
+    }
+}
+/// Vanilla's word for a key bound to nothing.
+const NOT_BOUND: &str = "key.keyboard.unknown";
+/// The strip while a controller button is awaited, naming the one that cancels.
+const WAITING_PAD: &str = "Press the button for this. %s cancels.";
+/// The strip over a binding with no button.
+const UNBOUND: &str = "Not bound: press this row, then the button that should do it.";
+/// The strip over a binding whose button does other things too.
+const SHARED: &str = "This button also does: %s";
+/// A pad binding's chip, at least: wide enough for most labels in vanilla's font.
+const PAD_CHIP_W: f32 = 56.0;
+/// A pad binding's chip around its art or text, and the room for the marks ("> <", "[ ]").
+const PAD_CHIP_PAD: f32 = 8.0;
+/// Clear of the art's edge, which its sprite draws past (`pad_glyph::rect`).
+const PAD_MARK_GAP: f32 = 5.0;
+/// A binding's reset button at the row's end, and the gap left before it.
+const RESET_W: f32 = 36.0;
+const RESET_GAP: f32 = 4.0;
+/// The reset button's inset from the list's right edge.
+const RESET_INSET: f32 = 2.0;
+
+/// A row as a screen describes it, built afresh from the settings each time it is read.
+#[derive(Clone, Debug)]
+pub(crate) struct Row<R> {
+    pub(crate) id: R,
+    pub(crate) name: String,
+    pub(crate) value: Value,
+    /// What it does: found by the search, and shown in the strip.
+    pub(crate) about: String,
+    /// What the chosen value does, for a row whose values each do something different: shown in
+    /// the strip instead of `about`.
+    pub(crate) chosen: Option<String>,
+    /// Can be used now (a setting of a switch that is off can't).
+    pub(crate) live: bool,
+    /// Why it can't be used now: shown in the strip, greyed, instead of what it does.
+    pub(crate) why: Option<String>,
+    /// What it costs, beside its name in the strip.
+    pub(crate) cost: Option<style::Cost>,
+}
+impl<R> Row<R> {
+    pub(crate) fn new(id: R, name: String, value: Value) -> Self {
+        Self {
+            id,
+            name,
+            value,
+            about: String::new(),
+            chosen: None,
+            live: true,
+            why: None,
+            cost: None,
+        }
+    }
+    pub(crate) fn about(mut self, about: String) -> Self {
+        self.about = about;
+        self
+    }
+    pub(crate) fn live(mut self, live: bool) -> Self {
+        self.live = live;
+        self
+    }
+    /// Greyed, saying why, while there is a reason it can't be used.
+    pub(crate) fn blocked(mut self, why: Option<String>) -> Self {
+        self.live = why.is_none();
+        self.why = why;
+        self
+    }
+    pub(crate) fn cost(mut self, cost: style::Cost) -> Self {
+        self.cost = Some(cost);
+        self
+    }
+    /// Its whole caption ("Name: value"), for the narrator and the widget tree.
+    fn label(&self, value: Option<&str>) -> String {
+        match value {
+            Some(value) => Text::option_name_value(
+                Text::literal(self.name.clone()),
+                Text::literal(value.to_owned()),
+            )
+            .plain(),
+            None => self.name.clone(),
+        }
+    }
+    /// What the strip says about it.
+    fn described(&self) -> &str {
+        self.chosen.as_deref().unwrap_or(&self.about)
+    }
+    /// Its value as text, where it has one.
+    fn value_text(&self) -> Option<String> {
+        match &self.value {
+            Value::Switch(on) => Some(if *on {
+                lang::get_or("On", "On")
+            } else {
+                lang::get_or("Off", "Off")
+            }),
+            Value::Choice(text) | Value::Slider { text, .. } | Value::Read(text) => {
+                Some(text.clone())
+            }
+            Value::Binding(binding) => Some(binding.text()),
+            Value::Press | Value::Note => None,
+        }
+    }
+    /// Its binding, for a binding row.
+    fn binding(&self) -> Option<&Binding> {
+        match &self.value {
+            Value::Binding(binding) => Some(binding),
+            _ => None,
+        }
+    }
+}
+
+/// Rows under a group's name (a language key).
+pub(crate) struct Group<R> {
+    pub(crate) name: &'static str,
+    pub(crate) rows: Vec<Row<R>>,
+}
+
+/// A page of a screen. A screen of one page shows no page list.
+pub(crate) struct Sheet<P, R> {
+    pub(crate) id: P,
+    pub(crate) name: String,
+    /// What the page holds, in the strip while no row is pointed at.
+    pub(crate) about: String,
+    pub(crate) groups: Vec<Group<R>>,
+    /// In the page list. A page out of it opens from a row that links to it (`Screen::link`),
+    /// and the list lights the page that link was followed from.
+    pub(crate) listed: bool,
+    /// A line in the page list over this page, starting a section of it ("BSL settings"). When the
+    /// pages don't fit, the last section collapses into one row.
+    pub(crate) heading: Option<String>,
+}
+impl<P, R> Sheet<P, R> {
+    /// A page in the page list, with no line over it.
+    pub(crate) fn new(id: P, name: String, about: String, groups: Vec<Group<R>>) -> Self {
+        Self {
+            id,
+            name,
+            about,
+            groups,
+            listed: true,
+            heading: None,
+        }
+    }
+}
+
+/// What the host of a screen does after an interaction.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Output {
+    /// Passed on to the game as it is.
+    Event(crate::options_ui::Event),
+    /// Wait for what a binding row binds: a key or a mouse button, or a controller button.
+    Bind(Capture),
+    /// Open another options page over this one.
+    Push(crate::options_ui::Page),
+    /// Leave the screen.
+    Done,
+}
+const CLICK: Output = Output::Event(crate::options_ui::Event::ButtonClick);
+/// The foot's buttons, by their language keys.
+const UNDO: &str = "Undo";
+const APPLY: &str = "Apply";
+const DONE: &str = "Done";
+const DRAGGED: Output = Output::Event(crate::options_ui::Event::SliderDrag);
+
+/// What a settings screen says. To add one: describe its pages here, keep a [`Shell`] of it on
+/// `OptionsUi`, and name it in `OptionsUi::shell` and `shell_mut`, which every input path goes
+/// through: it can't take the wheel and miss the stick.
+pub(crate) trait Screen {
+    type Page: Copy + PartialEq;
+    type Row: Copy + PartialEq;
+    /// The language key of the name under the mark.
+    fn title(&self) -> &'static str;
+    /// The lines of description the strip should hold.
+    fn note_lines(&self) -> usize {
+        NOTE_LINES
+    }
+    fn sheets(&self, s: &Settings) -> Vec<Sheet<Self::Page, Self::Row>>;
+    /// A fingerprint ([`stamp_of`]) of what `sheets` reads that can change while the screen is
+    /// open, besides through `press`, `slide` and `wheel_step` (the shell builds again after
+    /// those): the rows are built again only when it changes, or the search, the page, the size or
+    /// the language does.
+    fn stamp(&self, s: &Settings) -> u64;
+    /// A row was pressed (`back`: Shift held); the shell has played the click.
+    fn press(&mut self, s: &mut Settings, row: Self::Row, back: bool) -> Vec<Output>;
+    /// A slider row moved to `position`.
+    fn slide(&mut self, _s: &mut Settings, _row: Self::Row, _position: f32) {}
+    /// A slider let go of, or stepped by a key: what its change does now that it is done (a
+    /// Horizon shader pack saves its options once a drag, not on every move).
+    fn slider_released(&mut self) -> Vec<Output> {
+        Vec::new()
+    }
+    /// The page a row opens, for a row that links to one: the shell opens it, and Escape goes
+    /// back to the page the link was on.
+    fn link(&self, _row: Self::Row) -> Option<Self::Page> {
+        None
+    }
+    /// The wheel over a row, with the "Scroll wheel changes settings" extra on: `None` leaves it
+    /// to scroll the list.
+    fn wheel_step(
+        &mut self,
+        _s: &mut Settings,
+        _row: Self::Row,
+        _back: bool,
+    ) -> Option<Vec<Output>> {
+        None
+    }
+    /// A binding row's reset was pressed: its binding goes back to its default.
+    fn reset(&mut self, _s: &mut Settings, _row: Self::Row) -> Vec<Output> {
+        Vec::new()
+    }
+    /// Lines under the page list: whose settings these are, say.
+    fn side(&self) -> Vec<String> {
+        Vec::new()
+    }
+    /// Whether the screen has Undo, which puts back what it changed (`undo`) since it opened.
+    fn undoes(&self) -> bool {
+        false
+    }
+    /// Undo: put back, from the settings as the screen opened (`before`), what it changes, and say
+    /// what else that does (besides the click and `Event::Changed`).
+    fn undo(&mut self, _s: &mut Settings, _before: &Settings) -> Vec<Output> {
+        Vec::new()
+    }
+    /// Whether changes wait for Apply, which the foot shows while they do.
+    fn pending(&self, _s: &Settings) -> bool {
+        false
+    }
+    /// Apply: what the changes that wait for it do now.
+    fn apply(&mut self, _s: &mut Settings) -> Vec<Output> {
+        Vec::new()
+    }
+    /// Whether what a row did (its outputs) is a change Undo puts back.
+    fn changes(&self, outputs: &[Output]) -> bool {
+        changes_settings(outputs)
+    }
+    /// Whether what the screen changes differs now from `before`, for a screen that can tell:
+    /// Undo then shows exactly while it would do something, a binding the host made (the game
+    /// binds a controller button) included, and a value stepped back isn't a change. `None`
+    /// leaves it to `changes`.
+    fn differs(&self, _s: &Settings, _before: &Settings) -> Option<bool> {
+        None
+    }
+}
+
+/// Whether `outputs` say a setting changed, or a key is being bound to one.
+pub(crate) fn changes_settings(outputs: &[Output]) -> bool {
+    use crate::options_ui::Event;
+    let changed = |output: &Output| {
+        matches!(
+            output,
+            Output::Bind(_) | Output::Event(Event::Changed | Event::SliderDrag)
+        )
+    };
+    outputs.iter().any(changed)
+}
+
+/// A fingerprint of `parts` for [`Screen::stamp`]: their `Debug` text, hashed as it is written,
+/// without keeping it.
+pub(crate) fn stamp_of(parts: &impl std::fmt::Debug) -> u64 {
+    use std::{fmt::Write, hash::Hasher};
+    struct Hashing(std::collections::hash_map::DefaultHasher);
+    impl Write for Hashing {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            self.0.write(text.as_bytes());
+            Ok(())
+        }
+    }
+    let mut hashing = Hashing(Default::default());
+    // Writing into a hasher can't fail.
+    let _ = write!(hashing, "{parts:?}");
+    hashing.0.finish()
+}
+
+/// A [`Shell`] of any screen, as `OptionsUi` drives it.
+pub(crate) trait Hosted {
+    /// The screen opens, afresh.
+    fn open(&mut self);
+    /// `waiting`: the binding the host waits on.
+    fn draw(
+        &mut self,
+        s: &Settings,
+        batch: &mut HudBatch,
+        atlas: &HudAtlas,
+        cursor: (f32, f32),
+        in_world: bool,
+        waiting: Option<Capture>,
+    );
+    /// A press (or a drag with `drag`) at `at`.
+    fn click(
+        &mut self,
+        s: &mut Settings,
+        at: (f32, f32),
+        size: (f32, f32),
+        drag: bool,
+        right: bool,
+        shift: bool,
+    ) -> Vec<Output>;
+    /// Lets go of a slider or the scrollbar: for a slider (it plays its click), what its change
+    /// does now (`Screen::slider_released`).
+    fn release(&mut self) -> Option<Vec<Output>>;
+    /// A controller's or the keyboard's focus is on the row at `rect`: if the list hides part of
+    /// it, it scrolls all into view (`AbstractSelectionList.setSelected`). How far the row moved
+    /// down, when it moved.
+    fn reveal(&mut self, s: &Settings, size: (f32, f32), rect: [f32; 4]) -> Option<f32>;
+    /// The mouse wheel at `at`: it scrolls, unless the row under it takes the step (`wheel_step`).
+    fn wheel(
+        &mut self,
+        s: &mut Settings,
+        size: (f32, f32),
+        at: (f32, f32),
+        amount: f32,
+    ) -> Vec<Output>;
+    /// The one way a list scrolls: the wheel, a right stick and a D-pad past the view's edge.
+    fn scroll(&mut self, s: &Settings, size: (f32, f32), amount: f32);
+    /// Typing in the search field, Tab and the arrows between controls, Left and Right on a
+    /// slider or a choice, Enter or Space to press, Escape to leave.
+    fn key(
+        &mut self,
+        s: &mut Settings,
+        key: winit::keyboard::KeyCode,
+        text: Option<&str>,
+        shift: bool,
+        size: (f32, f32),
+    ) -> Vec<Output>;
+    /// Whether the search field takes the keys.
+    fn typing(&self) -> bool;
+    /// The active search field in GUI pixels, for mobile touch/IME routing.
+    fn focused_rect(&self) -> Option<[f32; 4]>;
+    /// A key or the pad moved the focus away: the search field stops taking the keys.
+    fn blur_search(&mut self);
+    /// Nothing has the focus: a touch moved off it, say.
+    #[allow(dead_code)] // For #11846's `OptionsUi::touch_start`, which cleared Graphics' focus.
+    fn clear_focus(&mut self);
+    /// Text typed into the search field (the keyboard, a controller's on-screen keyboard).
+    fn type_text(&mut self, text: &str);
+    /// Ctrl+A/C/V/X in the search field.
+    fn shortcut(
+        &mut self,
+        shortcut: crate::clipboard::EditShortcut,
+        clipboard: &mut dyn crate::clipboard::Clipboard,
+    ) -> bool;
+}
+
+/// What the keyboard or a controller can focus.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Target<P, R> {
+    Row(R),
+    /// A binding row's reset button.
+    Reset(R),
+    Page(P),
+    Search,
+    Undo,
+    Apply,
+    Done,
+}
+
+/// A page as the page list and the strip read it.
+struct PageOf<P> {
+    id: P,
+    name: String,
+    /// What it holds.
+    about: String,
+    listed: bool,
+    heading: Option<String>,
+}
+
+/// A screen as this moment's settings describe it, laid out.
+struct View<P, R> {
+    cols: Columns,
+    /// Every page.
+    pages: Vec<PageOf<P>>,
+    rows: Vec<Row<R>>,
+    /// The list; a line's setting is an index into `rows`.
+    lines: Vec<Line<P, usize>>,
+    content: f32,
+}
+
+/// What a [`View`] was built for: when any of it changes, the rows are built again.
+#[derive(PartialEq)]
+struct Built<P, R> {
+    stamp: u64,
+    /// Which language the rows' text is in (`lang::generation`).
+    language: u64,
+    size: (f32, f32),
+    query: String,
+    page: Option<P>,
+    /// While searching, the rows the focus and a drag keep in the list.
+    kept: (Option<R>, Option<R>),
+}
+
+/// A screen on the shell, with all that isn't the screen's: where the list is, what has the focus,
+/// what is held and what is searched.
+pub(crate) struct Shell<S: Screen> {
+    pub(crate) screen: S,
+    scroll: ui::Scroll,
+    dragging: Option<S::Row>,
+    focus: Option<Target<S::Page, S::Row>>,
+    /// The focus came from this screen's keys, so it shows. A click only leaves it for the next
+    /// key to go on from: a controller presses with a click and moves its own focus, which would
+    /// leave this one lit on the row it pressed.
+    keyed: bool,
+    /// Left and Right move the focused slider rather than the focus.
+    can_change_value: bool,
+    search: ui::EditBox,
+    /// The page the plate shows, alone, while nothing is searched; `None` is the first.
+    page: Option<S::Page>,
+    /// While searching, the page last picked in the page list: current until the list scrolls.
+    picked: Option<S::Page>,
+    waiting: Option<Capture>,
+    /// The rows as last built, and what for.
+    built: Option<(Built<S::Page, S::Row>, Rc<View<S::Page, S::Row>>)>,
+    /// The settings as the screen found them, for Undo (`Screen::undoes`), and whether it
+    /// changed them since.
+    before: Option<Box<Settings>>,
+    changed: bool,
+    /// The pages links were followed from, to go back to with Escape (`Screen::link`).
+    path: Vec<S::Page>,
+    /// Changes wait for Apply (`Screen::pending`).
+    pending: bool,
+    /// The page list as last drawn: what a press or a key picks is what is on the screen (the
+    /// collapsed row's arrows sit either side of a name as wide as the font draws it).
+    drawn: Option<PageList<S::Page>>,
+}
+impl<S: Screen + Default> Default for Shell<S> {
+    fn default() -> Self {
+        let mut search = ui::EditBox::new(0.0, 0.0, 0.0, 8.0);
+        search.bordered = false;
+        search.focused = false;
+        search.message = lang::get("Search options");
+        Self {
+            screen: S::default(),
+            scroll: ui::Scroll::default(),
+            dragging: None,
+            focus: None,
+            keyed: false,
+            can_change_value: false,
+            search,
+            page: None,
+            picked: None,
+            waiting: None,
+            built: None,
+            before: None,
+            changed: false,
+            path: Vec::new(),
+            pending: false,
+            drawn: None,
+        }
+    }
+}
+impl<S: Screen> Shell<S> {
+    fn query(&self) -> String {
+        self.search.value.trim().to_lowercase()
+    }
+    fn shows_focus(&self, target: Target<S::Page, S::Row>) -> bool {
+        self.keyed && self.focus == Some(target)
+    }
+    /// The screen's rows now, built again only when what they were built for changed
+    /// ([`Built`]). The scroll is kept within them.
+    fn view(&mut self, s: &Settings, size: (f32, f32)) -> Rc<View<S::Page, S::Row>> {
+        let query = self.query();
+        let searching = !query.is_empty();
+        let focused = match self.focus {
+            Some(Target::Row(row)) if searching => Some(row),
+            _ => None,
+        };
+        let key = Built {
+            stamp: self.screen.stamp(s),
+            language: lang::generation(),
+            size,
+            query,
+            page: self.page,
+            kept: (focused, self.dragging.filter(|_| searching)),
+        };
+        let view = match &self.built {
+            Some((built, view)) if *built == key => view.clone(),
+            _ => {
+                let view = Rc::new(self.build(s, size));
+                self.built = Some((key, view.clone()));
+                view
+            }
+        };
+        self.scroll
+            .clamp(view.cols.top, view.cols.bottom, view.content);
+        // A page gone (another shader pack has fewer screens): the first page opens.
+        if let Some(page) = self.page
+            && !view.pages.iter().any(|p| p.id == page)
+        {
+            self.page = None;
+            self.path.clear();
+        }
+        view
+    }
+    /// A row may read otherwise now: the screen changed something.
+    fn rebuild(&mut self) {
+        self.built = None;
+    }
+    /// A row did `outputs`: it reads anew, and Undo has something to put back if they changed it.
+    fn did(&mut self, outputs: &[Output]) {
+        self.rebuild();
+        // Only a screen with Undo has something for it to put back.
+        if self.screen.undoes() && self.screen.changes(outputs) {
+            self.changed = true;
+        }
+    }
+    /// Remember the settings before the first change, for Undo, and ask a screen that can tell
+    /// whether they differ now (`Screen::differs`).
+    fn keep(&mut self, s: &Settings) {
+        self.pending = self.screen.pending(s);
+        if !self.screen.undoes() {
+            return;
+        }
+        let before = self.before.get_or_insert_with(|| Box::new(s.clone()));
+        if let Some(differs) = self.screen.differs(s, before) {
+            self.changed = differs;
+        }
+    }
+    /// Undo, gone once it has put the settings back.
+    fn undo(&mut self, s: &mut Settings) -> Vec<Output> {
+        let mut outputs = vec![CLICK, Output::Event(crate::options_ui::Event::Changed)];
+        if let Some(before) = self.before.take() {
+            outputs.extend(self.screen.undo(s, &before));
+            self.before = Some(before);
+        }
+        self.changed = false;
+        self.rebuild();
+        outputs
+    }
+    /// Apply, which stays while the screen says changes wait for it.
+    fn apply(&mut self, s: &mut Settings) -> Vec<Output> {
+        let mut outputs = vec![CLICK];
+        outputs.extend(self.screen.apply(s));
+        self.rebuild();
+        outputs
+    }
+    /// Open at `page`.
+    pub(crate) fn show(&mut self, page: S::Page) {
+        self.page = Some(page);
+        self.path.clear();
+    }
+    /// Follow `row`'s link to `page`: it opens alone, and Escape comes back to the page the row
+    /// is on (while searching, the page it was found on).
+    fn follow(&mut self, row: S::Row, page: S::Page) -> Vec<Output> {
+        let on = self.built.as_ref().and_then(|(_, view)| {
+            let mut lines = view.lines.iter();
+            let line = lines.find(|l| l.setting.is_some_and(|i| view.rows[i].id == row));
+            line.map(|l| l.page)
+        });
+        if let Some(from) = on.or(self.page) {
+            self.path.push(from);
+        }
+        self.page = Some(page);
+        self.scroll.amount = 0.0;
+        self.search.set_value("");
+        self.picked = None;
+        self.focus = None;
+        self.can_change_value = false;
+        self.rebuild();
+        vec![CLICK]
+    }
+    /// The screen's rows: the open page's or, while searching, every page's whose name or
+    /// description has the search in it, under their pages' names. The row being changed stays
+    /// whatever it reads now.
+    fn build(&self, s: &Settings, (w, h): (f32, f32)) -> View<S::Page, S::Row> {
+        let cols = Columns::of(w, h).with_note_lines(self.screen.note_lines());
+        let query = self.query();
+        let sheets = self.screen.sheets(s);
+        let open = self
+            .page
+            .filter(|&page| sheets.iter().any(|sheet| sheet.id == page));
+        let open = open.or(sheets.first().map(|sheet| sheet.id));
+        let mut pages = Vec::new();
+        let mut rows = Vec::new();
+        let mut lines = Lines::new();
+        for sheet in sheets {
+            pages.push(PageOf {
+                id: sheet.id,
+                name: sheet.name,
+                about: sheet.about,
+                listed: sheet.listed,
+                heading: sheet.heading,
+            });
+            if query.is_empty() && open != Some(sheet.id) {
+                continue;
+            }
+            let mut titled = query.is_empty();
+            for group in sheet.groups {
+                let mut indices = Vec::new();
+                for row in group.rows {
+                    if query.is_empty()
+                        || self.focus == Some(Target::Row(row.id))
+                        || self.dragging == Some(row.id)
+                        || row.name.to_lowercase().contains(&query)
+                        || row.about.to_lowercase().contains(&query)
+                    {
+                        indices.push(rows.len());
+                        rows.push(row);
+                    }
+                }
+                if indices.is_empty() {
+                    continue;
+                }
+                if !std::mem::replace(&mut titled, true) {
+                    lines.page(sheet.id);
+                }
+                lines.group(sheet.id, group.name, indices);
+            }
+        }
+        let (lines, content) = lines.finish();
+        View {
+            cols,
+            pages,
+            rows,
+            lines,
+            content,
+        }
+    }
+    /// Whether the page list's `page` has anything to show.
+    fn has(&self, page: S::Page, view: &View<S::Page, S::Row>) -> bool {
+        self.query().is_empty() || view.lines.iter().any(|l| l.page == page)
+    }
+    /// Whether the screen has a page list: two pages or more in it.
+    fn has_list(view: &View<S::Page, S::Row>) -> bool {
+        view.pages.iter().filter(|p| p.listed).count() > 1
+    }
+    /// The page the page list lights: the one the plate shows or, for a page out of the list, the
+    /// one its link was followed from.
+    fn lit(&self, view: &View<S::Page, S::Row>) -> Option<S::Page> {
+        let listed = |page| view.pages.iter().any(|p| p.id == page && p.listed);
+        let current = self.current(view)?;
+        if listed(current) {
+            return Some(current);
+        }
+        self.path.iter().rev().copied().find(|&page| listed(page))
+    }
+    /// The page list laid out: its pages one under another while they fit, each section under
+    /// its line; past that, the last section collapses into one row, `‹ Name ›` with a pip per
+    /// page, rather than leaving some out. Without the atlas, the font that lays the row out, it
+    /// doesn't collapse.
+    fn page_list(
+        &self,
+        view: &View<S::Page, S::Row>,
+        atlas: Option<&HudAtlas>,
+    ) -> PageList<S::Page> {
+        if !Self::has_list(view) {
+            return PageList::default();
+        }
+        let cols = &view.cols;
+        let listed: Vec<&PageOf<S::Page>> = view.pages.iter().filter(|p| p.listed).collect();
+        let headings = listed.iter().filter(|p| p.heading.is_some()).count();
+        let section = listed
+            .iter()
+            .rposition(|p| p.heading.is_some())
+            .unwrap_or(0);
+        let collapse = atlas.filter(|_| listed.len() + headings > cols.page_room());
+        let mut list = PageList {
+            lit: self.lit(view),
+            ..PageList::default()
+        };
+        for (i, page) in listed.iter().enumerate() {
+            if let Some(text) = &page.heading {
+                list.headings.push((text.clone(), cols.page(list.used)));
+                list.used += 1;
+            }
+            if collapse.is_some() && i >= section {
+                break;
+            }
+            list.places.push((page.id, cols.page(list.used), Part::Tab));
+            list.used += 1;
+        }
+        let Some(atlas) = collapse else {
+            return list;
+        };
+        let pages: Vec<S::Page> = listed[section..].iter().map(|p| p.id).collect();
+        let names: Vec<String> = listed[section..].iter().map(|p| p.name.clone()).collect();
+        let shown = pages.iter().position(|&p| Some(p) == list.lit).unwrap_or(0);
+        let row = cols.page(list.used);
+        list.used += 1;
+        let mut strip = tabs::collapsed(atlas, &names, shown, row);
+        // While searching, the arrows skip the pages with no matches.
+        let prev = pages[..shown].iter().rev().find(|&&p| self.has(p, view));
+        let next = pages[shown + 1..].iter().find(|&&p| self.has(p, view));
+        (strip.has_prev, strip.has_next) = (prev.is_some(), next.is_some());
+        let [x, y, w, h] = row;
+        let [nx, _, nw, _] = strip.label_area;
+        // Either side of the name, as far as the row's ends, the page before and the one after.
+        if let Some(&prev) = prev {
+            list.places.push((prev, [x, y, nx - x, h], Part::Prev));
+        }
+        list.places
+            .push((pages[shown], [nx, y, nw, h], Part::Shown));
+        if let Some(&next) = next {
+            let after = nx + nw;
+            list.places
+                .push((next, [after, y, x + w - after, h], Part::Next));
+        }
+        list.strip = Some((strip, pages[shown]));
+        list
+    }
+    /// The page list as drawn, else laid out without collapsing (nothing drawn yet).
+    fn places(&self, view: &View<S::Page, S::Row>) -> PageList<S::Page> {
+        (self.drawn.clone()).unwrap_or_else(|| self.page_list(view, None))
+    }
+    /// The page list: each section's line, the collapsed row and each place to pick a page.
+    fn draw_pages(
+        &self,
+        batch: &mut HudBatch,
+        atlas: &HudAtlas,
+        view: &View<S::Page, S::Row>,
+        list: &PageList<S::Page>,
+        cursor: (f32, f32),
+    ) {
+        for (text, rect) in &list.headings {
+            heading(batch, atlas, text, *rect);
+        }
+        if let Some((strip, shown)) = &list.strip {
+            // The row's page is open: lit as the list's open page is.
+            if list.lit == Some(*shown) {
+                let row @ [x, y, _, h] = strip.area;
+                style::fill(batch, atlas, row, style::OPEN);
+                style::fill(batch, atlas, [x, y, 2.0, h], style::ACCENT);
+            }
+            tabs::draw(batch, atlas, strip);
+        }
+        let name_of = |page| {
+            view.pages
+                .iter()
+                .find(|p| p.id == page)
+                .map(|p| p.name.clone())
+        };
+        for &(page, rect, part) in &list.places {
+            let flags = (
+                self.has(page, view),
+                list.lit == Some(page),
+                self.shows_focus(Target::Page(page)),
+            );
+            let name = match part {
+                Part::Prev => lang::get(PREVIOUS_PAGE),
+                Part::Next => lang::get(NEXT_PAGE),
+                Part::Tab | Part::Shown => name_of(page).unwrap_or_default(),
+            };
+            match (part, &list.strip) {
+                (Part::Tab, _) => page_tab(batch, atlas, rect, &name, flags, cursor),
+                // The shown page's ring goes round the whole row, as a listed page's does.
+                (Part::Shown, Some((strip, _))) => {
+                    strip_place(batch, atlas, (rect, strip.area), &name, flags, cursor)
+                }
+                _ => strip_place(batch, atlas, (rect, rect), &name, flags, cursor),
+            }
+        }
+    }
+    /// The foot's buttons: Undo while there is something to undo and Apply while changes wait for
+    /// it, side by side over Done.
+    fn foot(&self, cols: &Columns) -> Vec<(Target<S::Page, S::Row>, [f32; 4])> {
+        let shown = [(self.changed, Target::Undo), (self.pending, Target::Apply)];
+        let over: Vec<_> = shown.into_iter().filter(|s| s.0).map(|s| s.1).collect();
+        let [x, y, w, h] = cols.button(1);
+        let n = over.len().max(1) as f32;
+        let each = ((w - FOOT_GAP * (n - 1.0)) / n).floor();
+        let mut foot: Vec<_> = (over.into_iter().enumerate())
+            .map(|(i, t)| (t, [x + i as f32 * (each + FOOT_GAP), y, each, h]))
+            .collect();
+        foot.push((Target::Done, cols.button(0)));
+        foot
+    }
+    /// The page the plate shows: the open one or, while searching, the one picked, else the
+    /// topmost line's.
+    fn current(&self, view: &View<S::Page, S::Row>) -> Option<S::Page> {
+        if self.query().is_empty() {
+            return self.page.or(view.pages.first().map(|p| p.id));
+        }
+        self.picked.or_else(|| {
+            let line = view.lines.iter().find(|l| l.y + l.h() > self.scroll.amount);
+            line.map(|l| l.page)
+        })
+    }
+    /// Pick `page`: the plate shows it alone or, while searching, scrolls to its matches.
+    fn pick(&mut self, page: S::Page, view: &View<S::Page, S::Row>) {
+        self.page = Some(page);
+        self.path.clear();
+        self.scroll.amount = 0.0;
+        if self.query().is_empty() {
+            return;
+        }
+        if let Some(line) = view.lines.iter().find(|l| l.page == page) {
+            self.scroll.amount = line.y;
+            let cols = &view.cols;
+            self.scroll.clamp(cols.top, cols.bottom, view.content);
+            self.picked = Some(page);
+        }
+    }
+    /// Each row with where it is now.
+    fn placed<'a>(
+        &self,
+        view: &'a View<S::Page, S::Row>,
+    ) -> impl Iterator<Item = (&'a Row<S::Row>, f32)> + use<'a, S> {
+        let (top, scroll) = (view.cols.top, self.scroll.amount);
+        let lines = view.lines.iter();
+        lines.filter_map(move |l| Some((&view.rows[l.setting?], top + l.y - scroll)))
+    }
+    /// The row under the pointer, inside the list's view, and where it is.
+    fn row_at<'a>(
+        &self,
+        view: &'a View<S::Page, S::Row>,
+        (x, y): (f32, f32),
+    ) -> Option<(&'a Row<S::Row>, f32)> {
+        let cols = &view.cols;
+        if y < cols.top || y >= cols.bottom {
+            return None;
+        }
+        let mut placed = self.placed(view);
+        placed.find(|&(_, ry)| {
+            let [rx, ry, rw, rh] = cols.row(ry);
+            ui::hovered((x, y), rx, ry, rw, rh)
+        })
+    }
+    /// Press `row`: `track` is where on its slider's track (`None` from the keyboard, or off it).
+    fn activate(
+        &mut self,
+        s: &mut Settings,
+        row: &Row<S::Row>,
+        back: bool,
+        track: Option<f32>,
+    ) -> Vec<Output> {
+        if let Some(page) = self.screen.link(row.id) {
+            return self.follow(row.id, page);
+        }
+        match row.value {
+            Value::Note | Value::Read(_) => Vec::new(),
+            // The shell, not the screen, starts the wait.
+            Value::Binding(ref binding) => {
+                self.can_change_value = false;
+                let outputs = vec![CLICK, Output::Bind(binding.capture)];
+                self.did(&outputs);
+                outputs
+            }
+            Value::Slider { .. } => {
+                self.can_change_value = true;
+                let Some(position) = track else {
+                    return Vec::new();
+                };
+                self.dragging = Some(row.id);
+                self.screen.slide(s, row.id, position);
+                self.did(&[DRAGGED]);
+                vec![DRAGGED]
+            }
+            _ => {
+                self.can_change_value = false;
+                let mut outputs = vec![CLICK];
+                outputs.extend(self.screen.press(s, row.id, back));
+                self.did(&outputs);
+                outputs
+            }
+        }
+    }
+    /// What Tab steps through, in order, with where each is on screen (`reach`).
+    fn focusables(
+        &self,
+        view: &View<S::Page, S::Row>,
+        near: bool,
+    ) -> Vec<(Target<S::Page, S::Row>, [f32; 4])> {
+        let cols = &view.cols;
+        let mut out = vec![(Target::Search, cols.search())];
+        for (page, rect, _) in self.places(view).places {
+            if self.has(page, view) {
+                out.push((Target::Page(page), rect));
+            }
+        }
+        let rows: Vec<(&Row<S::Row>, f32, bool)> = self
+            .placed(view)
+            .map(|(row, y)| (row, y, row.live))
+            .collect();
+        for &(row, y, live) in &rows[reach(&rows, cols, near)] {
+            if !live {
+                continue;
+            }
+            out.push((Target::Row(row.id), row_rect(row, cols, y)));
+            // A binding's reset, right of it, only while it would do something.
+            if row.binding().is_some_and(|b| b.reset == Reset::Changed) {
+                out.push((Target::Reset(row.id), reset_rect(cols, y)));
+            }
+        }
+        out.extend(self.foot(cols));
+        out
+    }
+    /// Where Down from the search field goes on a screen with no page list, whose foot is under the
+    /// field instead: the first row to use that is all in view.
+    fn first_row(
+        &self,
+        view: &View<S::Page, S::Row>,
+    ) -> Option<(Target<S::Page, S::Row>, [f32; 4])> {
+        if Self::has_list(view) {
+            return None;
+        }
+        let cols = &view.cols;
+        let mut placed = self.placed(view);
+        let first = placed.find(|&(row, y)| {
+            row.live && row.value != Value::Note && y >= cols.top && y + style::ROW <= cols.bottom
+        });
+        first.map(|(row, y)| (Target::Row(row.id), cols.row(y)))
+    }
+    /// Focus `target`, scrolling its row into the list's view.
+    fn focus_on(
+        &mut self,
+        (target, rect): (Target<S::Page, S::Row>, [f32; 4]),
+        view: &View<S::Page, S::Row>,
+    ) {
+        self.focus = Some(target);
+        let row = |id| view.rows.iter().find(|r| r.id == id);
+        self.can_change_value = matches!(target, Target::Row(id)
+            if row(id).is_some_and(|r| matches!(r.value, Value::Slider { .. })));
+        if matches!(target, Target::Row(_) | Target::Reset(_)) {
+            scroll_into_view(&mut self.scroll, rect, &view.cols, view.content);
+            self.picked = None;
+        }
+    }
+    /// A binding row's reset: the binding goes back to its default and, as the reset goes away
+    /// with it, the focus to its row.
+    fn reset(&mut self, s: &mut Settings, row: S::Row) -> Vec<Output> {
+        let mut outputs = vec![CLICK];
+        outputs.extend(self.screen.reset(s, row));
+        self.did(&outputs);
+        self.focus = Some(Target::Row(row));
+        outputs
+    }
+    /// The search changed: the list starts over at its top.
+    fn searched(&mut self) {
+        self.scroll.amount = 0.0;
+        self.picked = None;
+    }
+    /// What the strip and the narrator say about `row`: a binding's wait, its missing button or
+    /// its shared one, else what the row does.
+    fn strip_text(&self, row: &Row<S::Row>) -> String {
+        let note = row.binding().and_then(|b| b.note(self.waits(row)));
+        note.unwrap_or_else(|| row.described().to_owned())
+    }
+    /// Whether the host waits on `row`'s binding.
+    fn waits(&self, row: &Row<S::Row>) -> bool {
+        row.binding()
+            .is_some_and(|b| self.waiting == Some(b.capture))
+    }
+    /// A row of the list at `y`; `pointer`: the cursor, while it is over the list.
+    fn draw_row(
+        &self,
+        batch: &mut HudBatch,
+        atlas: &HudAtlas,
+        cols: &Columns,
+        row: &Row<S::Row>,
+        y: f32,
+        pointer: Option<(f32, f32)>,
+    ) {
+        if row.value == Value::Note {
+            let rect = cols.row(y);
+            crate::widgets::record(&row.name, rect, false);
+            crate::widgets::narratable(|| crate::widgets::Narratable::text(row.name.clone(), rect));
+            let ty = y + ((style::ROW - 8.0) / 2.0).floor();
+            let name = Text::literal(style::fit(atlas, &row.name, rect[2] - 2.0 * style::INSET));
+            batch.text_styled(atlas, &name, rect[0] + style::INSET, ty, style::MUTED, true);
+            return;
+        }
+        let over = |[x, y, w, h]: [f32; 4]| pointer.is_some_and(|at| ui::hovered(at, x, y, w, h));
+        let hover = over(row_rect(row, cols, y));
+        let waits = self.waits(row);
+        let value = row
+            .value_text()
+            .map(|text| if waits { format!("> {text} <") } else { text });
+        let label = row.label(value.as_deref());
+        let focused = self.shows_focus(Target::Row(row.id));
+        let hint = self.strip_text(row);
+        if let Value::Read(value) = &row.value {
+            let view = (label.as_str(), row.name.as_str(), value.as_str());
+            read_row(batch, atlas, cols, y, view, (hover, focused));
+            crate::widgets::last_narratable(|n| n.hint = Some(hint.clone()));
+            return;
+        }
+        if let Some(binding) = row.binding()
+            && let Shown::Pad { glyph, .. } = binding.shown
+        {
+            let view = PadRow {
+                label: &label,
+                name: &row.name,
+                hint: &hint,
+                glyph,
+                waits,
+                shared: !binding.shared.is_empty(),
+                reset: binding.reset,
+                live: row.live,
+                hover: (hover, over(reset_rect(cols, y))),
+                focus: (focused, self.shows_focus(Target::Reset(row.id))),
+            };
+            pad_row(batch, atlas, cols, y, &view);
+            return;
+        }
+        let view = RowView {
+            label: &label,
+            name: &row.name,
+            value: value.as_deref(),
+            switch: match row.value {
+                Value::Switch(on) => Some(on),
+                _ => None,
+            },
+            slider: match row.value {
+                Value::Slider { position, .. } => Some(position),
+                _ => None,
+            },
+            live: row.live,
+            hover,
+            focused,
+            held: self.dragging == Some(row.id),
+            key: row.binding().map(|_| waits),
+        };
+        self::row(batch, atlas, cols, y, &view);
+        if row.live && matches!(row.value, Value::Choice(_)) {
+            crate::widgets::steps_value(cols.row(y));
+        }
+        crate::widgets::last_narratable(|n| n.hint = Some(hint.clone()));
+    }
+    /// The strip under the plate: the hovered or focused row's name and what it does; with none,
+    /// what the open page holds.
+    fn draw_dock(
+        &self,
+        batch: &mut HudBatch,
+        atlas: &HudAtlas,
+        view: &View<S::Page, S::Row>,
+        described: Option<usize>,
+        current: Option<S::Page>,
+    ) {
+        let cols = &view.cols;
+        let [x, y, w, _] = cols.dock;
+        let left = x + DOCK_INSET;
+        let top = y + DOCK_NAME_Y;
+        style::panel(batch, atlas, cols.dock);
+        let row = described.map(|i| &view.rows[i]);
+        let why = row.and_then(|row| row.why.as_deref().filter(|_| !row.live));
+        let said = row.map(|row| self.strip_text(row));
+        let (name, about) = match (row, &said) {
+            (Some(row), Some(said)) => (row.name.as_str(), why.unwrap_or(said)),
+            _ => {
+                let Some(page) = view.pages.iter().find(|p| Some(p.id) == current) else {
+                    return;
+                };
+                (page.name.as_str(), page.about.as_str())
+            }
+        };
+        match row.and_then(|row| row.cost) {
+            // Its cost in its colour, after a square of it.
+            Some(cost) => {
+                let line = format!("{name} · {}", lang::get(cost.label()));
+                let line = style::fit(atlas, &line, w - COST_LINE_SLACK);
+                let line = Text::literal(line).with_color(cost.rgb());
+                let square = [left, y + COST_SQUARE_Y, COST_SQUARE, COST_SQUARE];
+                style::fill(batch, atlas, square, style::cost_color(cost));
+                let after = left + COST_NAME_X;
+                batch.text_styled(atlas, &line, after, top, style::WHITE, true);
+            }
+            None => {
+                let name = Text::literal(name.to_owned());
+                batch.text_styled(atlas, &name, left, top, style::WHITE, true);
+            }
+        }
+        // Labelled for the widget tree: what the strip says is what a test or an agent reads.
+        crate::widgets::record(about, cols.dock, false);
+        let color = if why.is_some() {
+            style::MUTED
+        } else {
+            style::GREY
+        };
+        dock_note(batch, atlas, cols, about.to_owned(), color);
+    }
+}
+impl<S: Screen + Default> Hosted for Shell<S> {
+    fn open(&mut self) {
+        *self = Self::default();
+    }
+    fn draw(
+        &mut self,
+        s: &Settings,
+        batch: &mut HudBatch,
+        atlas: &HudAtlas,
+        cursor: (f32, f32),
+        in_world: bool,
+        waiting: Option<Capture>,
+    ) {
+        self.waiting = waiting;
+        self.keep(s);
+        let view = self.view(s, (batch.width, batch.height));
+        let cols = view.cols;
+        backdrop(batch, atlas, in_world);
+        let current = self.current(&view);
+        self::mark(batch, atlas, &cols, &lang::get(self.screen.title()));
+        let pages = self.page_list(&view, Some(atlas));
+        self.draw_pages(batch, atlas, &view, &pages, cursor);
+        side_lines(batch, atlas, &cols, pages.used, &self.screen.side());
+        self.drawn = Some(pages);
+        let focused = self.focus == Some(Target::Search);
+        search_field(&mut self.search, batch, atlas, &cols, cursor, focused);
+        let name_of = |page| {
+            view.pages
+                .iter()
+                .find(|p| p.id == page)
+                .map(|p| p.name.clone())
+        };
+        let query = self.search.value.trim();
+        let heading = if query.is_empty() {
+            current.and_then(name_of).unwrap_or_default()
+        } else {
+            lang::get("Results for \"%s\"").replace("%s", query)
+        };
+        self::plate(batch, atlas, &cols, &heading);
+        let over_list = cursor.1 >= cols.top && cursor.1 < cols.bottom;
+        let mut described = None;
+        let mut waiting = None;
+        self::list(
+            batch,
+            atlas,
+            &cols,
+            &view.lines,
+            self.scroll.amount,
+            |page| name_of(page).unwrap_or_default(),
+            |batch, i, y| {
+                let row = &view.rows[i];
+                let [rx, ry, rw, rh] = cols.row(y);
+                let hover = over_list && ui::hovered(cursor, rx, ry, rw, rh);
+                let focused = self.shows_focus(Target::Row(row.id))
+                    || self.shows_focus(Target::Reset(row.id));
+                // A wait is what the strip says; then the pointer's row wins over the keyboard's.
+                if self.waits(row) {
+                    waiting = Some(i);
+                }
+                if hover || self.dragging == Some(row.id) || (focused && described.is_none()) {
+                    described = Some(i);
+                }
+                self.draw_row(batch, atlas, &cols, row, y, over_list.then_some(cursor));
+            },
+        );
+        scroller(batch, atlas, &cols, view.content, self.scroll.amount);
+        if let Some((_, row)) = self.first_row(&view) {
+            crate::widgets::focus_link(cols.search(), true, row);
+        }
+        self.draw_dock(batch, atlas, &view, waiting.or(described), current);
+        // Undo and Apply, over Done, only once there is something for them to do. A controller's
+        // X presses Apply where there is one, else Undo.
+        for (target, rect) in self.foot(&cols) {
+            use crate::widgets::Action as Declared;
+            let (label, declared, primary) = match target {
+                Target::Undo => (UNDO, (!self.pending).then_some(Declared::Apply), false),
+                Target::Apply => (APPLY, Some(Declared::Apply), true),
+                _ => (DONE, Some(Declared::Done), true),
+            };
+            let label = Text::literal(lang::get(label));
+            let flags = (self.shows_focus(target), primary);
+            let room = match declared {
+                Some(declared) => {
+                    crate::widgets::declare_action(declared, rect, true);
+                    crate::widgets::action_glyph_room()
+                }
+                None => 0.0,
+            };
+            foot_button_with_room(batch, atlas, rect, &label, cursor, flags, room);
+        }
+    }
+    fn click(
+        &mut self,
+        s: &mut Settings,
+        (x, y): (f32, f32),
+        size: (f32, f32),
+        drag: bool,
+        right: bool,
+        shift: bool,
+    ) -> Vec<Output> {
+        self.keep(s);
+        let view = self.view(s, size);
+        let cols = view.cols;
+        let at = |[rx, ry, rw, rh]: [f32; 4]| ui::hovered((x, y), rx, ry, rw, rh);
+        if !drag {
+            self.keyed = false;
+        }
+        if drag {
+            if self.scroll.held() && !cols.scrolls() {
+                self.scroll.release();
+            }
+            if self.scroll.held() {
+                self.picked = None;
+                self.scroll.drag(y, cols.top, cols.bottom, view.content);
+                return Vec::new();
+            }
+            if let Some(row) = self.dragging {
+                self.screen.slide(s, row, cols.slider_at(x));
+                self.did(&[DRAGGED]);
+                return vec![DRAGGED];
+            }
+            return Vec::new();
+        }
+        // The right button presses nothing, as on vanilla's `CycleButton`.
+        if right {
+            return Vec::new();
+        }
+        if cols.scrolls()
+            && self
+                .scroll
+                .press((x, y), cols.bar_x(), cols.top, cols.bottom, view.content)
+        {
+            return Vec::new();
+        }
+        if at(cols.search()) {
+            if !self.search.value.is_empty() && at(cols.clear()) {
+                self.search.set_value("");
+                self.searched();
+                return vec![CLICK];
+            }
+            self.focus = Some(Target::Search);
+            self.search.reset_blink();
+            self.search.move_cursor_to_end(false);
+            return Vec::new();
+        }
+        if self.focus == Some(Target::Search) {
+            self.focus = None;
+        }
+        for (target, rect) in self.foot(&cols) {
+            if !at(rect) {
+                continue;
+            }
+            return match target {
+                // Undo goes away with the change it undid, and Apply with the changes it applied.
+                Target::Undo => {
+                    self.focus = None;
+                    self.undo(s)
+                }
+                Target::Apply => {
+                    self.focus = None;
+                    self.apply(s)
+                }
+                _ => {
+                    self.focus = Some(Target::Done);
+                    vec![CLICK, Output::Done]
+                }
+            };
+        }
+        for (page, rect, _) in self.places(&view).places {
+            if at(rect) && self.has(page, &view) {
+                self.focus = Some(Target::Page(page));
+                self.pick(page, &view);
+                return vec![CLICK];
+            }
+        }
+        let Some((row, row_y)) = self.row_at(&view, (x, y)).filter(|(row, _)| row.live) else {
+            return Vec::new();
+        };
+        self.focus = Some(Target::Row(row.id));
+        if row.binding().is_some_and(|b| b.reset == Reset::Changed) && at(reset_rect(&cols, row_y))
+        {
+            return self.reset(s, row.id);
+        }
+        // A press on the track sets the value there; on the name, only focuses.
+        let track = (x >= cols.track().0).then(|| cols.slider_at(x));
+        self.activate(s, row, shift, track)
+    }
+    fn release(&mut self) -> Option<Vec<Output>> {
+        self.scroll.release();
+        self.dragging.take()?;
+        Some(self.screen.slider_released())
+    }
+    fn reveal(&mut self, s: &Settings, size: (f32, f32), [x, y, w, h]: [f32; 4]) -> Option<f32> {
+        let view = self.view(s, size);
+        let cols = &view.cols;
+        let middle = (x + w / 2.0, y + h / 2.0);
+        let (_, row_y) = self.placed(&view).find(|&(_, ry)| {
+            let [rx, ry, rw, rh] = cols.row(ry);
+            ui::hovered(middle, rx, ry, rw, rh)
+        })?;
+        let before = self.scroll.amount;
+        scroll_into_view(&mut self.scroll, cols.row(row_y), cols, view.content);
+        let moved = before - self.scroll.amount;
+        (moved != 0.0).then(|| {
+            self.picked = None;
+            moved
+        })
+    }
+    fn wheel(
+        &mut self,
+        s: &mut Settings,
+        size: (f32, f32),
+        at: (f32, f32),
+        amount: f32,
+    ) -> Vec<Output> {
+        if amount != 0.0 && s.extras.wheel_cycles_settings {
+            let view = self.view(s, size);
+            if let Some((row, _)) = self.row_at(&view, at).filter(|(row, _)| row.live)
+                && let Some(outputs) = self.screen.wheel_step(s, row.id, amount > 0.0)
+            {
+                self.did(&outputs);
+                return outputs;
+            }
+        }
+        self.scroll(s, size, amount);
+        Vec::new()
+    }
+    fn scroll(&mut self, s: &Settings, size: (f32, f32), amount: f32) {
+        let view = self.view(s, size);
+        let cols = &view.cols;
+        self.picked = None;
+        self.scroll
+            .wheel(amount, SCROLL_RATE, cols.top, cols.bottom, view.content);
+    }
+    fn key(
+        &mut self,
+        s: &mut Settings,
+        key: winit::keyboard::KeyCode,
+        text: Option<&str>,
+        shift: bool,
+        size: (f32, f32),
+    ) -> Vec<Output> {
+        use winit::keyboard::KeyCode as K;
+        self.keep(s);
+        if key == K::Escape {
+            self.can_change_value = false;
+            // Back out of a page a link opened, then out of the screen.
+            if let Some(from) = self.path.pop() {
+                self.page = Some(from);
+                self.scroll.amount = 0.0;
+                self.focus = None;
+                return Vec::new();
+            }
+            return vec![Output::Done];
+        }
+        if self.typing() && !matches!(key, K::Tab | K::ArrowDown | K::Enter | K::NumpadEnter) {
+            let before = self.search.value.clone();
+            if !self.search.key(key, false, shift)
+                && let Some(t) = text
+            {
+                let typed: String = t.chars().filter(|c| !c.is_control()).collect();
+                self.type_text(&typed);
+            }
+            if self.search.value != before {
+                self.searched();
+            }
+            return Vec::new();
+        }
+        let view = self.view(s, size);
+        let focusables = self.focusables(&view, key != K::Tab);
+        let current = self
+            .focus
+            .and_then(|f| focusables.iter().position(|&(t, _)| t == f));
+        if key == K::Tab {
+            let next = tab_step(focusables.len(), current, shift);
+            self.keyed = true;
+            self.focus_on(focusables[next], &view);
+            return Vec::new();
+        }
+        if key == K::ArrowDown
+            && self.focus == Some(Target::Search)
+            && let Some(first) = self.first_row(&view)
+        {
+            self.keyed = true;
+            self.focus_on(first, &view);
+            return Vec::new();
+        }
+        let focused = view
+            .rows
+            .iter()
+            .find(|r| Some(Target::Row(r.id)) == self.focus);
+        if matches!(key, K::ArrowLeft | K::ArrowRight)
+            && self.can_change_value
+            && let Some(row) = focused
+            && row.live
+            && let Value::Slider {
+                position, steps, ..
+            } = row.value
+        {
+            let width = view.cols.track().1 + 8.0;
+            let next = slider_step(position, steps, width, key == K::ArrowRight);
+            self.screen.slide(s, row.id, next);
+            self.did(&[DRAGGED]);
+            let mut outputs = vec![DRAGGED];
+            outputs.extend(self.screen.slider_released());
+            return outputs;
+        }
+        // A choice's `<` `>`: Left steps it back and Right on, as a Shift press and a press.
+        if matches!(key, K::ArrowLeft | K::ArrowRight)
+            && let Some(row) = focused
+            && row.live
+            && matches!(row.value, Value::Choice(_))
+        {
+            return self.activate(s, row, key == K::ArrowLeft, None);
+        }
+        if matches!(
+            key,
+            K::ArrowUp | K::ArrowDown | K::ArrowLeft | K::ArrowRight
+        ) {
+            let is_row = |t| matches!(t, Target::Row(_));
+            if let Some(next) = arrow_step(&focusables, current, key, &view.cols, is_row) {
+                self.keyed = true;
+                self.focus_on(focusables[next], &view);
+                self.can_change_value = false;
+            }
+            return Vec::new();
+        }
+        if !matches!(key, K::Space | K::Enter | K::NumpadEnter) {
+            return Vec::new();
+        }
+        match self.focus {
+            Some(Target::Page(page)) => {
+                self.pick(page, &view);
+                vec![CLICK]
+            }
+            Some(Target::Row(_)) => match focused {
+                // A row greyed out while focused does nothing.
+                Some(row) if !row.live => Vec::new(),
+                Some(Row {
+                    value: Value::Slider { .. },
+                    ..
+                }) => {
+                    self.can_change_value = !self.can_change_value;
+                    Vec::new()
+                }
+                Some(row) => self.activate(s, row, shift, None),
+                None => Vec::new(),
+            },
+            Some(Target::Reset(row)) => self.reset(s, row),
+            Some(Target::Undo) => {
+                // Undo goes away with the change it undid: Done has the focus.
+                self.focus = Some(Target::Done);
+                self.undo(s)
+            }
+            Some(Target::Apply) => {
+                self.focus = Some(Target::Done);
+                self.apply(s)
+            }
+            Some(Target::Done) => vec![CLICK, Output::Done],
+            Some(Target::Search) | None => Vec::new(),
+        }
+    }
+    fn typing(&self) -> bool {
+        self.focus == Some(Target::Search)
+    }
+    fn focused_rect(&self) -> Option<[f32; 4]> {
+        self.typing().then_some([
+            self.search.x,
+            self.search.y,
+            self.search.width,
+            self.search.height,
+        ])
+    }
+    fn blur_search(&mut self) {
+        if self.typing() {
+            self.focus = None;
+        }
+    }
+    fn clear_focus(&mut self) {
+        self.focus = None;
+        self.can_change_value = false;
+    }
+    fn type_text(&mut self, text: &str) {
+        if !text.is_empty() {
+            self.search.insert_text(text);
+            self.searched();
+        }
+    }
+    fn shortcut(
+        &mut self,
+        shortcut: crate::clipboard::EditShortcut,
+        clipboard: &mut dyn crate::clipboard::Clipboard,
+    ) -> bool {
+        if !self.typing() {
+            return false;
+        }
+        let before = self.search.value.clone();
+        self.search.shortcut(shortcut, clipboard);
+        if self.search.value != before {
+            self.searched();
+        }
+        // Whatever it did: the key is the field's, not something to type.
+        true
+    }
+}
+
+#[cfg(test)]
+impl<S: Screen> Shell<S> {
+    /// A point on `row`, scrolled into view.
+    pub(crate) fn point_at(&mut self, s: &Settings, size: (f32, f32), row: S::Row) -> (f32, f32) {
+        let view = self.view(s, size);
+        let place = |shell: &Self, view| {
+            let mut placed = shell.placed(view);
+            placed.find(|(r, _)| r.id == row).map(|(_, y)| y).unwrap()
+        };
+        let rect = view.cols.row(place(self, &view));
+        scroll_into_view(&mut self.scroll, rect, &view.cols, view.content);
+        (
+            view.cols.list_x + 4.0,
+            place(self, &view) + style::ROW / 2.0,
+        )
+    }
+    pub(crate) fn scroll_amount(&self) -> f32 {
+        self.scroll.amount
+    }
+    /// What the shell's own focus is on.
+    pub(crate) fn focused(&self) -> Option<Target<S::Page, S::Row>> {
+        self.focus
+    }
+    /// Put the focus there, as a key would.
+    pub(crate) fn set_focus(&mut self, focus: Option<Target<S::Page, S::Row>>) {
+        self.focus = focus;
+        self.keyed = true;
+    }
+    /// Left and Right move the focused slider.
+    pub(crate) fn changes_value(&self) -> bool {
+        self.can_change_value
+    }
+    /// Undo shows: the screen changed something since it opened.
+    pub(crate) fn changed(&self) -> bool {
+        self.changed
+    }
+    /// The scrollbar is held.
+    pub(crate) fn scroller_held(&self) -> bool {
+        self.scroll.held()
+    }
+    /// What the search field holds now, set as typing would.
+    pub(crate) fn set_search(&mut self, text: &str) {
+        self.search.set_value(text);
+        self.searched();
+    }
+    /// The page shown while nothing is searched, as opened or picked.
+    pub(crate) fn open_page(&self) -> Option<S::Page> {
+        self.page
+    }
+    /// The list's lines, in order, and its content's height.
+    pub(crate) fn lines_at(
+        &mut self,
+        s: &Settings,
+        size: (f32, f32),
+    ) -> (Vec<Line<S::Page, usize>>, f32) {
+        let view = self.view(s, size);
+        (view.lines.clone(), view.content)
+    }
+    /// Each row of the list, in order, with its page.
+    pub(crate) fn listed(&mut self, s: &Settings, size: (f32, f32)) -> Vec<(S::Page, S::Row)> {
+        let view = self.view(s, size);
+        let lines = view.lines.iter();
+        lines
+            .filter_map(|l| Some((l.page, view.rows[l.setting?].id)))
+            .collect()
+    }
+    /// The page the plate is headed with.
+    pub(crate) fn current_page(&mut self, s: &Settings, size: (f32, f32)) -> Option<S::Page> {
+        let view = self.view(s, size);
+        self.current(&view)
+    }
+    /// Whether `row` is all in the list's view now.
+    pub(crate) fn in_view(&mut self, s: &Settings, size: (f32, f32), row: S::Row) -> bool {
+        let view = self.view(s, size);
+        let cols = view.cols;
+        let mut placed = self.placed(&view);
+        placed.any(|(r, y)| r.id == row && y >= cols.top && y + style::ROW <= cols.bottom)
+    }
+    /// Whether Tab reaches `row` now.
+    pub(crate) fn tab_reaches(&mut self, s: &Settings, size: (f32, f32), row: S::Row) -> bool {
+        let view = self.view(s, size);
+        let focusables = self.focusables(&view, false);
+        focusables.iter().any(|(t, _)| *t == Target::Row(row))
+    }
+    /// The row the shell's own focus is on.
+    pub(crate) fn focused_row(&self) -> Option<S::Row> {
+        match self.focus {
+            Some(Target::Row(row)) => Some(row),
+            _ => None,
+        }
+    }
+    /// The names of the rows the list has now.
+    pub(crate) fn row_names(&mut self, s: &Settings) -> Vec<String> {
+        let view = self.view(s, (854.0, 480.0));
+        view.rows.iter().map(|r| r.name.clone()).collect()
+    }
+    /// The captions of the rows the list has now, as the widget tree reads them.
+    pub(crate) fn row_labels(&mut self, s: &Settings) -> Vec<String> {
+        let view = self.view(s, (854.0, 480.0));
+        let rows = view.rows.iter();
+        rows.map(|r| r.label(r.value_text().as_deref())).collect()
+    }
+    /// The page list as last drawn: each place to pick a page.
+    pub(crate) fn page_places(&self) -> Vec<(S::Page, [f32; 4], Part)> {
+        self.drawn
+            .as_ref()
+            .map_or_else(Vec::new, |d| d.places.clone())
+    }
+    /// The collapsed row as last drawn, if the pages didn't fit: whether there is a page before
+    /// and after the one it shows.
+    pub(crate) fn strip_ends(&self) -> Option<(bool, bool)> {
+        let strip = self.drawn.as_ref()?.strip.as_ref()?;
+        Some((strip.0.has_prev, strip.0.has_next))
+    }
+    /// The page the page list lit, as last drawn.
+    pub(crate) fn lit_page(&self) -> Option<S::Page> {
+        self.drawn.as_ref()?.lit
+    }
+    /// The foot's buttons now, in order, with where they are.
+    pub(crate) fn foot_at(
+        &mut self,
+        s: &Settings,
+        size: (f32, f32),
+    ) -> Vec<(Target<S::Page, S::Row>, [f32; 4])> {
+        self.keep(s);
+        let view = self.view(s, size);
+        self.foot(&view.cols)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::options_ui::Event;
+    use winit::keyboard::KeyCode as K;
+
+    const SIZE: (f32, f32) = (854.0, 480.0);
+    const SHORT: (f32, f32) = (480.0, 240.0);
+    const CHANGED: Output = Output::Event(Event::Changed);
+
+    /// A screen with what Extras doesn't have: two pages, a slider, a value with descriptions of
+    /// its own, and a row a wheel steps.
+    #[derive(Default)]
+    struct Probe {
+        slider: f32,
+        choice: usize,
+        pressed: Vec<(u32, bool)>,
+        /// How many times its rows were built.
+        built: std::cell::Cell<usize>,
+    }
+    const CHOICES: [(&str, &str); 2] = [("Red", "Paints it red."), ("Blue", "Paints it blue.")];
+    const SLIDER: u32 = 0;
+    const CHOICE: u32 = 1;
+    const FIRST_FILLER: u32 = 10;
+    const FILLERS: u32 = 40;
+    const GREY: u32 = 100;
+    const WHY: &str = "Not here.";
+    impl Screen for Probe {
+        type Page = u8;
+        type Row = u32;
+        fn title(&self) -> &'static str {
+            "Probe"
+        }
+        /// Its rows read the field of view, besides its own state.
+        fn stamp(&self, s: &Settings) -> u64 {
+            stamp_of(&s.fov)
+        }
+        fn sheets(&self, s: &Settings) -> Vec<Sheet<u8, u32>> {
+            self.built.set(self.built.get() + 1);
+            let (value, chosen) = CHOICES[self.choice];
+            let mut rows = vec![
+                Row::new(
+                    SLIDER,
+                    "Level".to_owned(),
+                    Value::Slider {
+                        position: self.slider,
+                        steps: Some(10),
+                        text: s.fov.to_string(),
+                    },
+                ),
+                Row {
+                    chosen: Some(chosen.to_owned()),
+                    ..Row::new(CHOICE, "Paint".to_owned(), Value::Choice(value.to_owned()))
+                        .about("Picks a colour.".to_owned())
+                },
+                Row::new(GREY, "Greyed".to_owned(), Value::Press)
+                    .about("Does a thing.".to_owned())
+                    .blocked(Some(WHY.to_owned())),
+            ];
+            rows.extend((0..FILLERS).map(|i| {
+                Row::new(FIRST_FILLER + i, format!("Filler {i}"), Value::Press)
+                    .about("Does nothing.".to_owned())
+            }));
+            let elsewhere = vec![Row::new(99, "Elsewhere".to_owned(), Value::Press)];
+            vec![
+                Sheet::new(
+                    0,
+                    "One".to_owned(),
+                    "The first.".to_owned(),
+                    vec![Group { name: "G", rows }],
+                ),
+                Sheet::new(
+                    1,
+                    "Two".to_owned(),
+                    "The second.".to_owned(),
+                    vec![Group {
+                        name: "H",
+                        rows: elsewhere,
+                    }],
+                ),
+            ]
+        }
+        fn press(&mut self, s: &mut Settings, row: u32, back: bool) -> Vec<Output> {
+            self.pressed.push((row, back));
+            match row {
+                CHOICE => self.choice = (self.choice + 1) % CHOICES.len(),
+                FIRST_FILLER => s.fov += 1.0,
+                _ => {}
+            }
+            vec![CHANGED]
+        }
+        fn undoes(&self) -> bool {
+            true
+        }
+        fn undo(&mut self, s: &mut Settings, before: &Settings) -> Vec<Output> {
+            s.fov = before.fov;
+            Vec::new()
+        }
+        fn slide(&mut self, _: &mut Settings, _: u32, position: f32) {
+            self.slider = position;
+        }
+        fn wheel_step(&mut self, _: &mut Settings, row: u32, _: bool) -> Option<Vec<Output>> {
+            (row == CHOICE).then(|| {
+                self.choice = (self.choice + 1) % CHOICES.len();
+                vec![CHANGED]
+            })
+        }
+    }
+
+    fn middle_of(shell: &mut Shell<Probe>, row: u32, size: (f32, f32)) -> (f32, f32) {
+        shell.point_at(&Settings::default(), size, row)
+    }
+
+    fn atlas() -> HudAtlas {
+        HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap()
+    }
+
+    /// What one frame asks of a screen: a draw, then the stick's scroll, an arrow key and the wheel
+    /// away from any row, at the size it was drawn at.
+    fn frame(shell: &mut Shell<Probe>, s: &mut Settings, atlas: &HudAtlas) -> (f32, f32) {
+        let mut batch = HudBatch::new([1708, 960]);
+        shell.draw(s, &mut batch, atlas, (0.0, 0.0), false, None);
+        let size = (batch.width, batch.height);
+        shell.scroll(s, size, -1.0);
+        shell.key(s, K::ArrowDown, None, false, size);
+        shell.wheel(s, size, (0.0, 0.0), 1.0);
+        size
+    }
+
+    #[test]
+    fn rows_are_built_once_and_again_only_when_what_they_read_changes() {
+        let atlas = atlas();
+        let mut s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        let built = |shell: &Shell<Probe>| shell.screen.built.get();
+        let reads = |shell: &mut Shell<Probe>, s: &Settings, size, end: &str| {
+            let view = shell.view(s, size);
+            let mut labels = view.rows.iter().map(|r| r.label(r.value_text().as_deref()));
+            labels.any(|label| label.ends_with(end))
+        };
+        // Each of the four built them before: now the first frame builds them once, the next none.
+        let size = frame(&mut shell, &mut s, &atlas);
+        assert_eq!(built(&shell), 1);
+        frame(&mut shell, &mut s, &atlas);
+        assert_eq!(built(&shell), 1);
+        // A press changes the screen's own state: its row reads the new value.
+        let at = middle_of(&mut shell, CHOICE, size);
+        shell.click(&mut s, at, size, false, false, false);
+        assert!(reads(&mut shell, &s, size, "Blue"));
+        // A setting changed elsewhere (a key bound, a command) shows on the next frame.
+        s.fov = 90.0;
+        frame(&mut shell, &mut s, &atlas);
+        assert!(reads(&mut shell, &s, size, "90"));
+        let before = built(&shell);
+        frame(&mut shell, &mut s, &atlas);
+        assert_eq!(built(&shell), before);
+        // Searching, and another size, build them again.
+        shell.type_text("filler");
+        shell.view(&s, size);
+        assert_eq!(built(&shell), before + 1);
+        shell.view(&s, SHORT);
+        assert_eq!(built(&shell), before + 2);
+        // So does another language, and coming back from it.
+        lang::scoped(lang::Language::load(&[], "de_de"), || shell.view(&s, SHORT));
+        assert_eq!(built(&shell), before + 3);
+        shell.view(&s, SHORT);
+        assert_eq!(built(&shell), before + 4);
+    }
+
+    #[test]
+    fn a_row_the_list_hides_part_of_scrolls_into_view_when_focused_and_then_takes_a_press() {
+        let mut s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        let cols = Columns::of(SHORT.0, SHORT.1);
+        // A filler far down, scrolled to just over the bottom: its middle is under the list's edge.
+        let cut = FIRST_FILLER + 20;
+        let view = shell.view(&s, SHORT);
+        let (_, y) = shell.placed(&view).find(|(r, _)| r.id == cut).unwrap();
+        shell.scroll.amount = y - cols.bottom + style::ROW / 2.0 - 1.0;
+        let rect = cols.row(y - shell.scroll.amount);
+        assert!(
+            rect[1] + rect[3] / 2.0 >= cols.bottom,
+            "the row's middle is hidden"
+        );
+        let moved = Hosted::reveal(&mut shell, &s, SHORT, rect).unwrap();
+        let shown = [rect[0], rect[1] + moved, rect[2], rect[3]];
+        assert!(moved < 0.0 && shown[1] + shown[3] <= cols.bottom);
+        // All in view, it stays put.
+        assert_eq!(Hosted::reveal(&mut shell, &s, SHORT, shown), None);
+        let middle = (shown[0] + 4.0, shown[1] + shown[3] / 2.0);
+        assert_eq!(
+            shell.click(&mut s, middle, SHORT, false, false, false),
+            vec![CLICK, CHANGED]
+        );
+        assert_eq!(shell.screen.pressed, [(cut, false)]);
+    }
+
+    #[test]
+    fn undo_appears_after_a_change_and_puts_back_what_the_screen_opened_with() {
+        let mut s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        let undo = Columns::of(SIZE.0, SIZE.1).button(1);
+        let on_undo = (undo[0] + 2.0, undo[1] + 2.0);
+        // Nothing changed: there is no Undo to press.
+        assert!(
+            shell
+                .click(&mut s, on_undo, SIZE, false, false, false)
+                .is_empty()
+        );
+        let at = middle_of(&mut shell, FIRST_FILLER, SIZE);
+        shell.click(&mut s, at, SIZE, false, false, false);
+        assert_eq!(s.fov, 71.0);
+        // Another option changed meanwhile isn't the screen's to put back.
+        s.chat_opacity = 0.25;
+        assert_eq!(
+            shell.click(&mut s, on_undo, SIZE, false, false, false),
+            vec![CLICK, CHANGED]
+        );
+        assert_eq!((s.fov, s.chat_opacity), (70.0, 0.25));
+        assert!(
+            shell
+                .click(&mut s, on_undo, SIZE, false, false, false)
+                .is_empty()
+        );
+        // From the keyboard: Tab reaches it, Enter undoes and leaves the focus on Done.
+        shell.click(&mut s, at, SIZE, false, false, false);
+        let reached = (0..100).any(|_| {
+            shell.key(&mut s, K::Tab, None, false, SIZE);
+            shell.focus == Some(Target::Undo)
+        });
+        assert!(reached);
+        assert_eq!(
+            shell.key(&mut s, K::Enter, None, false, SIZE),
+            vec![CLICK, CHANGED]
+        );
+        assert_eq!(s.fov, 70.0);
+        assert_eq!(shell.focus, Some(Target::Done));
+    }
+
+    #[test]
+    fn the_strip_says_why_a_greyed_row_cant_be_used() {
+        let atlas = atlas();
+        let s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        let mut batch = HudBatch::new([1708, 960]);
+        let size = (batch.width, batch.height);
+        let strip = |batch: &mut HudBatch, shell: &mut Shell<Probe>, at| {
+            shell.draw(&s, batch, &atlas, at, false, None);
+            crate::widgets::end_frame(crate::widgets::generation() + 1);
+            let dock = Columns::of(size.0, size.1).dock;
+            let labelled = crate::widgets::last_labelled();
+            let found = labelled.iter().find(|w| [w.x, w.y, w.w, w.h] == dock);
+            found.map(|w| w.label.clone())
+        };
+        let grey = middle_of(&mut shell, GREY, size);
+        assert_eq!(strip(&mut batch, &mut shell, grey).as_deref(), Some(WHY));
+        let choice = middle_of(&mut shell, CHOICE, size);
+        assert_eq!(
+            strip(&mut batch, &mut shell, choice).as_deref(),
+            Some(CHOICES[0].1)
+        );
+    }
+
+    #[test]
+    fn growing_the_window_keeps_the_scroll_within_the_list() {
+        let s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        shell.scroll(&s, SIZE, -1000.0);
+        assert!(shell.scroll.amount > 0.0);
+        let tall = (SIZE.0, 4000.0);
+        let view = shell.view(&s, tall);
+        assert_eq!(shell.scroll.amount, 0.0);
+        let first = shell.placed(&view).next().map(|(_, y)| y).unwrap();
+        assert!(first >= view.cols.top);
+    }
+
+    #[test]
+    fn one_scroll_path_moves_the_list_for_wheel_and_stick_alike() {
+        let mut s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        let rate = SCROLL_RATE;
+        // The wheel away from any row, and `scroll`, which a stick and a D-pad use.
+        shell.wheel(&mut s, SIZE, (0.0, 0.0), -1.0);
+        assert_eq!(shell.scroll.amount, rate);
+        shell.scroll(&s, SIZE, -2.0);
+        assert_eq!(shell.scroll.amount, 3.0 * rate);
+        shell.scroll(&s, SIZE, 100.0);
+        assert_eq!(shell.scroll.amount, 0.0);
+    }
+
+    #[test]
+    fn the_wheel_steps_a_row_only_with_the_extra_on_and_only_where_the_screen_says() {
+        let mut s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        let over_choice = middle_of(&mut shell, CHOICE, SIZE);
+        shell.wheel(&mut s, SIZE, over_choice, -1.0);
+        assert_eq!(shell.screen.choice, 0);
+        assert_eq!(shell.scroll.amount, SCROLL_RATE);
+        s.extras.wheel_cycles_settings = true;
+        shell.scroll.amount = 0.0;
+        let outputs = shell.wheel(&mut s, SIZE, over_choice, -1.0);
+        assert_eq!(outputs, vec![CHANGED]);
+        assert_eq!(shell.screen.choice, 1);
+        assert_eq!(shell.scroll.amount, 0.0);
+        // A row the screen doesn't step scrolls, the greyed one too.
+        let over_grey = middle_of(&mut shell, GREY, SIZE);
+        assert!(shell.wheel(&mut s, SIZE, over_grey, -1.0).is_empty());
+        assert_eq!(shell.scroll.amount, SCROLL_RATE);
+    }
+
+    #[test]
+    fn a_row_says_what_its_chosen_value_does_and_is_found_by_what_it_does() {
+        let mut s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        let about = |shell: &mut Shell<Probe>, s: &Settings| {
+            let view = shell.view(s, SIZE);
+            let row = view.rows.iter().find(|r| r.id == CHOICE).unwrap();
+            row.described().to_owned()
+        };
+        assert_eq!(about(&mut shell, &s), "Paints it red.");
+        let at = middle_of(&mut shell, CHOICE, SIZE);
+        shell.click(&mut s, at, SIZE, false, false, false);
+        assert_eq!(about(&mut shell, &s), "Paints it blue.");
+        // The search reads the row's own description, on every page.
+        shell.type_text("colour");
+        let view = shell.view(&s, SIZE);
+        let found: Vec<u32> = view.rows.iter().map(|r| r.id).collect();
+        assert!(found.contains(&CHOICE) && !found.contains(&99));
+        shell.search.set_value("elsewhere");
+        shell.focus = None;
+        let view = shell.view(&s, SIZE);
+        assert_eq!(view.rows.iter().map(|r| r.id).collect::<Vec<_>>(), [99]);
+    }
+
+    #[test]
+    fn a_press_on_the_track_slides_and_on_the_name_only_focuses() {
+        let mut s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        let at = middle_of(&mut shell, SLIDER, SIZE);
+        assert!(
+            shell
+                .click(&mut s, at, SIZE, false, false, false)
+                .is_empty()
+        );
+        assert_eq!(shell.screen.slider, 0.0);
+        let (track, width) = Columns::of(SIZE.0, SIZE.1).track();
+        let mid = (track + width / 2.0, at.1);
+        assert_eq!(
+            shell.click(&mut s, mid, SIZE, false, false, false),
+            vec![DRAGGED]
+        );
+        assert_eq!(shell.screen.slider, 0.5);
+        let end = (track + width, at.1);
+        assert_eq!(
+            shell.click(&mut s, end, SIZE, true, false, false),
+            vec![DRAGGED]
+        );
+        assert_eq!(shell.screen.slider, 1.0);
+        assert!(shell.release().is_some());
+        assert!(shell.release().is_none());
+    }
+
+    #[test]
+    fn the_keyboard_walks_the_live_rows_past_the_view_and_presses_them() {
+        let mut s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        let mut key = |shell: &mut Shell<Probe>, k| shell.key(&mut s, k, None, false, SHORT);
+        // Tab: the search, the two pages, then the first row.
+        for _ in 0..4 {
+            key(&mut shell, K::Tab);
+        }
+        assert_eq!(shell.focus, Some(Target::Row(SLIDER)));
+        // A slider Tab reaches changes with the arrows, in its steps.
+        key(&mut shell, K::ArrowRight);
+        assert!((shell.screen.slider - 0.1).abs() < f32::EPSILON);
+        // The arrows go on past the greyed row and rows out of view, which scroll in.
+        key(&mut shell, K::ArrowDown);
+        assert_eq!(shell.focus, Some(Target::Row(CHOICE)));
+        key(&mut shell, K::ArrowDown);
+        assert_eq!(shell.focus, Some(Target::Row(FIRST_FILLER)));
+        for _ in 0..30 {
+            key(&mut shell, K::ArrowDown);
+        }
+        assert_eq!(shell.focus, Some(Target::Row(FIRST_FILLER + 30)));
+        assert!(shell.scroll.amount > 0.0);
+        assert_eq!(key(&mut shell, K::Enter), vec![CLICK, CHANGED]);
+        assert_eq!(shell.screen.pressed, [(FIRST_FILLER + 30, false)]);
+        assert_eq!(key(&mut shell, K::Escape), vec![Output::Done]);
+    }
+
+    #[test]
+    fn left_and_right_step_a_focused_choice_and_leave_other_rows() {
+        let mut s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        let mut key = |shell: &mut Shell<Probe>, k| shell.key(&mut s, k, None, false, SIZE);
+        shell.set_focus(Some(Target::Row(CHOICE)));
+        // Right is a press, Left a Shift press: the screen's own way back, and the focus stays.
+        assert_eq!(key(&mut shell, K::ArrowRight), vec![CLICK, CHANGED]);
+        assert_eq!(key(&mut shell, K::ArrowLeft), vec![CLICK, CHANGED]);
+        assert_eq!(shell.screen.pressed, [(CHOICE, false), (CHOICE, true)]);
+        assert_eq!(shell.focus, Some(Target::Row(CHOICE)));
+        assert!(shell.changed);
+        // A row that isn't a choice: Left goes to the page list, as before.
+        shell.set_focus(Some(Target::Row(FIRST_FILLER)));
+        assert!(key(&mut shell, K::ArrowLeft).is_empty());
+        assert!(matches!(shell.focus, Some(Target::Page(_))));
+        assert_eq!(shell.screen.pressed.len(), 2);
+    }
+
+    #[test]
+    fn a_drawn_choice_tells_the_pad_its_arrows_step_it() {
+        let atlas = atlas();
+        let s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        let mut batch = HudBatch::new([1708, 960]);
+        shell.draw(&s, &mut batch, &atlas, (0.0, 0.0), false, None);
+        crate::widgets::end_frame(u64::MAX);
+        let view = shell.view(&s, (batch.width, batch.height));
+        let rect_of = |id| {
+            let mut placed = shell.placed(&view);
+            view.cols.row(placed.find(|(r, _)| r.id == id).unwrap().1)
+        };
+        assert!(crate::widgets::last_steps_value(rect_of(CHOICE)));
+        assert!(!crate::widgets::last_steps_value(rect_of(SLIDER)));
+        assert!(!crate::widgets::last_steps_value(rect_of(FIRST_FILLER)));
+    }
+
+    /// A controller presses with a click, then moves its own focus: only keys show this one.
+    #[test]
+    fn leaving_the_search_field_gives_the_keys_back() {
+        let mut s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        let view = shell.view(&s, SIZE);
+        let [x, y, w, h] = view.cols.search();
+        shell.click(
+            &mut s,
+            (x + w / 2.0, y + h / 2.0),
+            SIZE,
+            false,
+            false,
+            false,
+        );
+        assert!(shell.typing());
+        Hosted::blur_search(&mut shell);
+        assert!(!shell.typing());
+        // Another focus isn't dropped.
+        let at = middle_of(&mut shell, FIRST_FILLER, SIZE);
+        shell.click(&mut s, at, SIZE, false, false, false);
+        Hosted::blur_search(&mut shell);
+        shell.key(&mut s, K::ArrowDown, None, false, SIZE);
+        assert!(shell.shows_focus(Target::Row(FIRST_FILLER + 1)));
+    }
+
+    #[test]
+    fn a_key_that_moves_nothing_shows_no_focus() {
+        let mut s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        let at = middle_of(&mut shell, FIRST_FILLER, SIZE);
+        shell.click(&mut s, at, SIZE, false, false, false);
+        shell.key(&mut s, K::ShiftLeft, None, false, SIZE);
+        assert!(!shell.shows_focus(Target::Row(FIRST_FILLER)));
+    }
+
+    #[test]
+    fn a_cut_description_says_so() {
+        assert_eq!(cut_off("off, it never "), "off, it never…");
+    }
+
+    #[test]
+    fn a_click_leaves_no_focus_showing_until_a_key_moves_it() {
+        let mut s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        let at = middle_of(&mut shell, FIRST_FILLER, SIZE);
+        shell.click(&mut s, at, SIZE, false, false, false);
+        assert!(!shell.shows_focus(Target::Row(FIRST_FILLER)));
+        // The next key goes on from the row clicked, and shows where it went.
+        shell.key(&mut s, K::ArrowDown, None, false, SIZE);
+        assert!(shell.shows_focus(Target::Row(FIRST_FILLER + 1)));
+    }
+
+    #[test]
+    fn a_taller_strip_takes_from_the_list_as_far_as_the_list_keeps_its_height() {
+        let (wide, base) = (
+            Columns::of(480.0, 270.0).with_note_lines(4),
+            Columns::of(480.0, 270.0),
+        );
+        assert_eq!(wide.note_lines, 4);
+        assert_eq!(wide.bottom, base.bottom - 2.0 * NOTE_LINE_H);
+        assert_eq!(wide.dock[1] + wide.dock[3], base.dock[1] + base.dock[3]);
+        assert_eq!(wide.button(0), base.button(0));
+        // A 720p window at scale 4 has room for one more line, not two.
+        let short = Columns::of(320.0, 180.0).with_note_lines(4);
+        assert_eq!(short.note_lines, 3);
+        assert!(short.bottom - short.top >= MIN_LIST_H);
+    }
+
+    #[test]
+    fn shift_presses_a_row_backwards() {
+        let mut s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        let at = middle_of(&mut shell, FIRST_FILLER, SIZE);
+        shell.click(&mut s, at, SIZE, false, false, true);
+        // The right button is not a press.
+        shell.click(&mut s, at, SIZE, false, true, false);
+        assert_eq!(shell.screen.pressed, [(FIRST_FILLER, true)]);
+    }
+
+    #[test]
+    fn a_click_on_a_greyed_row_does_nothing_and_done_leaves() {
+        let mut s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        let at = middle_of(&mut shell, GREY, SIZE);
+        assert!(
+            shell
+                .click(&mut s, at, SIZE, false, false, false)
+                .is_empty()
+        );
+        assert!(shell.screen.pressed.is_empty());
+        let [x, y, w, h] = Columns::of(SIZE.0, SIZE.1).button(0);
+        let at = (x + w / 2.0, y + h / 2.0);
+        assert_eq!(
+            shell.click(&mut s, at, SIZE, false, false, false),
+            vec![CLICK, Output::Done]
+        );
+    }
+
+    #[test]
+    fn a_page_picked_shows_alone() {
+        let mut s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        let [x, y, w, h] = Columns::of(SIZE.0, SIZE.1).page(1);
+        let at = (x + w / 2.0, y + h / 2.0);
+        assert_eq!(
+            shell.click(&mut s, at, SIZE, false, false, false),
+            vec![CLICK]
+        );
+        let view = shell.view(&s, SIZE);
+        assert_eq!(view.rows.iter().map(|r| r.id).collect::<Vec<_>>(), [99]);
+    }
+
+    /// A screen with more pages than a short view's page list has room for: a page of its own,
+    /// then a section of `PAGES` under a line, one more page out of the list that the section's
+    /// first page links to, and a change that waits for Apply.
+    #[derive(Default)]
+    struct Pages {
+        pending: bool,
+        applied: usize,
+    }
+    const PAGES: u8 = 12;
+    const HOME: u8 = 0;
+    const DEEP: u8 = 100;
+    const LINK: u32 = 1000;
+    const WAITS: u32 = 1001;
+    const SECTION: &str = "Section";
+    impl Screen for Pages {
+        type Page = u8;
+        type Row = u32;
+        fn title(&self) -> &'static str {
+            "Pages"
+        }
+        fn stamp(&self, _: &Settings) -> u64 {
+            stamp_of(&self.pending)
+        }
+        fn sheets(&self, _: &Settings) -> Vec<Sheet<u8, u32>> {
+            let page = |id: u8, name: String, rows| {
+                Sheet::new(id, name, String::new(), vec![Group { name: "G", rows }])
+            };
+            let change = Row::new(WAITS, "Change".to_owned(), Value::Press);
+            let mut sheets = vec![page(HOME, "Home".to_owned(), vec![change])];
+            for i in 1..=PAGES {
+                let mut rows = vec![Row::new(u32::from(i), format!("Row {i}"), Value::Press)];
+                if i == 1 {
+                    rows.push(Row::new(LINK, "Deeper...".to_owned(), Value::Press));
+                }
+                let mut sheet = page(i, format!("Page {i}"), rows);
+                sheet.heading = (i == 1).then(|| SECTION.to_owned());
+                sheets.push(sheet);
+            }
+            let deep = Row::new(u32::from(DEEP), "Deep".to_owned(), Value::Press);
+            let mut deeper = page(DEEP, "Deeper".to_owned(), vec![deep]);
+            deeper.listed = false;
+            sheets.push(deeper);
+            sheets
+        }
+        fn press(&mut self, _: &mut Settings, row: u32, _: bool) -> Vec<Output> {
+            self.pending |= row == WAITS;
+            vec![CHANGED]
+        }
+        fn link(&self, row: u32) -> Option<u8> {
+            (row == LINK).then_some(DEEP)
+        }
+        fn undoes(&self) -> bool {
+            true
+        }
+        fn pending(&self, _: &Settings) -> bool {
+            self.pending
+        }
+        fn apply(&mut self, _: &mut Settings) -> Vec<Output> {
+            self.pending = false;
+            self.applied += 1;
+            vec![CHANGED]
+        }
+    }
+
+    /// A window of 854x960 (427x480 GUI px at its automatic scale) and one of 854x480 (427x240:
+    /// the page list has room for six places).
+    const TALL: [u32; 2] = [854, 960];
+    const SHORT_WINDOW: [u32; 2] = [854, 480];
+
+    /// One frame of `shell` in a window of `window`; the GUI size it was drawn at.
+    fn drawn<S: Screen + Default>(
+        shell: &mut Shell<S>,
+        s: &Settings,
+        window: [u32; 2],
+    ) -> (f32, f32) {
+        let mut batch = HudBatch::new(window);
+        shell.draw(s, &mut batch, &atlas(), (0.0, 0.0), false, None);
+        crate::widgets::end_frame(crate::widgets::generation() + 1);
+        (batch.width, batch.height)
+    }
+
+    fn middle([x, y, w, h]: [f32; 4]) -> (f32, f32) {
+        (x + w / 2.0, y + h / 2.0)
+    }
+
+    #[test]
+    fn pages_that_fit_are_listed_and_more_collapse_into_one_row_leaving_none_out() {
+        let s = Settings::default();
+        let mut shell = Shell::<Pages>::default();
+        // Tall enough: each page under the last, the deeper page left out as it is in no list.
+        drawn(&mut shell, &s, TALL);
+        let tall = shell.page_places();
+        let pages: Vec<u8> = tall.iter().map(|p| p.0).collect();
+        assert_eq!(pages, (HOME..=PAGES).collect::<Vec<_>>());
+        assert!(tall.iter().all(|p| p.2 == Part::Tab));
+        assert!(tall.windows(2).all(|p| p[1].1[1] > p[0].1[1]));
+        assert_eq!(shell.strip_ends(), None);
+        // Short: the first page, then the section in one row, its first page between nothing and
+        // its next. Every place is inside the column, the row's on one line under the section's.
+        let size = drawn(&mut shell, &s, SHORT_WINDOW);
+        let short = shell.page_places();
+        let parts: Vec<(u8, Part)> = short.iter().map(|p| (p.0, p.2)).collect();
+        assert_eq!(
+            parts,
+            [(HOME, Part::Tab), (1, Part::Shown), (2, Part::Next)]
+        );
+        assert_eq!(shell.strip_ends(), Some((false, true)));
+        let cols = Columns::of(size.0, size.1);
+        for (_, [x, _, w, _], _) in &short {
+            assert!(*x >= cols.side_x && x + w <= cols.side_x + style::CONTROL_W);
+        }
+        assert_eq!(short[1].1[1], short[2].1[1]);
+        assert_eq!(short[1].1[1], cols.page(2)[1]);
+        // The line naming the section stays over it.
+        let labelled = crate::widgets::last_labelled();
+        let line = labelled.iter().find(|w| w.label == SECTION).unwrap();
+        assert!(line.y > cols.page(1)[1] && line.y < cols.page(2)[1]);
+    }
+
+    #[test]
+    fn the_collapsed_rows_arrows_walk_every_page_and_its_ends_go_no_further() {
+        let mut s = Settings::default();
+        let mut shell = Shell::<Pages>::default();
+        shell.show(1);
+        let mut seen = vec![1];
+        let size = loop {
+            let size = drawn(&mut shell, &s, SHORT_WINDOW);
+            let places = shell.page_places();
+            let Some(&(next, rect, _)) = places.iter().find(|p| p.2 == Part::Next) else {
+                break size;
+            };
+            assert_eq!(
+                shell.click(&mut s, middle(rect), size, false, false, false),
+                [CLICK]
+            );
+            assert_eq!(shell.open_page(), Some(next));
+            seen.push(next);
+        };
+        assert_eq!(seen, (1..=PAGES).collect::<Vec<_>>());
+        assert_eq!(shell.strip_ends(), Some((true, false)));
+        // At the last page, the right of the row picks nothing: its arrow is dimmed.
+        let cols = Columns::of(size.0, size.1);
+        let [x, y, w, h] = cols.page(2);
+        assert!(
+            shell
+                .click(
+                    &mut s,
+                    (x + w - 2.0, y + h / 2.0),
+                    size,
+                    false,
+                    false,
+                    false
+                )
+                .is_empty()
+        );
+        assert_eq!(shell.open_page(), Some(PAGES));
+        // The page before it from the keyboard: Enter on its arrow opens it, and the focus follows
+        // it to the middle of the row.
+        let before = shell
+            .page_places()
+            .iter()
+            .find(|p| p.0 == PAGES - 1)
+            .unwrap()
+            .2;
+        assert_eq!(before, Part::Prev);
+        shell.set_focus(Some(Target::Page(PAGES - 1)));
+        assert_eq!(shell.key(&mut s, K::Enter, None, false, size), [CLICK]);
+        drawn(&mut shell, &s, SHORT_WINDOW);
+        let now = shell
+            .page_places()
+            .iter()
+            .find(|p| p.0 == PAGES - 1)
+            .unwrap()
+            .2;
+        assert_eq!(now, Part::Shown);
+    }
+
+    #[test]
+    fn while_searching_the_collapsed_rows_arrows_skip_pages_without_matches() {
+        let mut s = Settings::default();
+        let mut shell = Shell::<Pages>::default();
+        // Rows 1, 10, 11 and 12: none before the first. The first page stays, as it has no match.
+        shell.set_search("row 1");
+        let size = drawn(&mut shell, &s, SHORT_WINDOW);
+        let pages =
+            |shell: &Shell<Pages>| shell.page_places().iter().map(|p| p.0).collect::<Vec<_>>();
+        assert_eq!(pages(&shell), [HOME, 1, 10]);
+        assert_eq!(shell.strip_ends(), Some((false, true)));
+        // Its arrow goes to the next match, which has the first one before it and the last after.
+        let next = shell.page_places()[2].1;
+        shell.click(&mut s, middle(next), size, false, false, false);
+        drawn(&mut shell, &s, SHORT_WINDOW);
+        assert_eq!(pages(&shell), [HOME, 1, 10, 11]);
+        assert_eq!(shell.strip_ends(), Some((true, true)));
+    }
+
+    #[test]
+    fn a_controllers_bumpers_find_the_collapsed_rows_parts_as_tabs() {
+        let s = Settings::default();
+        let mut shell = Shell::<Pages>::default();
+        shell.show(5);
+        drawn(&mut shell, &s, SHORT_WINDOW);
+        let tabs: Vec<(f32, bool)> = crate::widgets::last_targets()
+            .into_iter()
+            .filter_map(|t| match t.kind {
+                crate::widgets::Kind::Tab(open) => Some((t.rect[0], open)),
+                _ => None,
+            })
+            .collect();
+        // The first page, the page before, the open one (lit) and the one after.
+        assert_eq!(tabs.len(), 4, "{tabs:?}");
+        assert_eq!(tabs.iter().filter(|t| t.1).count(), 1);
+        let (before, open, after) = (tabs[1].0, tabs[2], tabs[3].0);
+        assert!(open.1 && before < open.0 && open.0 < after);
+        // The arrows are vanilla's Previous Page and Next Page to the narrator.
+        let labels = crate::widgets::last_labelled();
+        let named = |key| {
+            labels
+                .iter()
+                .any(|w| w.label == lang::get(key) && w.enabled)
+        };
+        assert!(named(PREVIOUS_PAGE) && named(NEXT_PAGE));
+    }
+
+    #[test]
+    fn a_link_opens_a_page_out_of_the_list_and_escape_comes_back_to_the_links_page() {
+        let mut s = Settings::default();
+        let mut shell = Shell::<Pages>::default();
+        // Found by the search from another page: back is the page the link is on.
+        shell.show(HOME);
+        shell.set_search("deeper");
+        let at = shell.point_at(&s, SIZE, LINK);
+        assert_eq!(shell.click(&mut s, at, SIZE, false, false, false), [CLICK]);
+        // The page opens alone, the search cleared; the list lights the page the link was on.
+        assert_eq!(shell.open_page(), Some(DEEP));
+        assert_eq!(shell.listed(&s, SIZE), [(DEEP, u32::from(DEEP))]);
+        drawn(&mut shell, &s, TALL);
+        assert_eq!(shell.lit_page(), Some(1));
+        assert!(shell.key(&mut s, K::Escape, None, false, SIZE).is_empty());
+        assert_eq!(shell.open_page(), Some(1));
+        assert_eq!(
+            shell.key(&mut s, K::Escape, None, false, SIZE),
+            [Output::Done]
+        );
+    }
+
+    #[test]
+    fn apply_shows_beside_undo_while_changes_wait_and_goes_with_them() {
+        let mut s = Settings::default();
+        let mut shell = Shell::<Pages>::default();
+        let done = Columns::of(SIZE.0, SIZE.1).button(0);
+        assert_eq!(shell.foot_at(&s, SIZE), [(Target::Done, done)]);
+        let at = shell.point_at(&s, SIZE, WAITS);
+        shell.click(&mut s, at, SIZE, false, false, false);
+        let foot = shell.foot_at(&s, SIZE);
+        let targets: Vec<_> = foot.iter().map(|f| f.0).collect();
+        assert_eq!(targets, [Target::Undo, Target::Apply, Target::Done]);
+        // Side by side over Done, as wide as it together.
+        let ([ux, uy, uw, _], [ax, ay, aw, _]) = (foot[0].1, foot[1].1);
+        assert_eq!((uy, ay), (foot[2].1[1] - FOOT_GAP - style::BUTTON_H, uy));
+        assert!(ux + uw < ax && ax + aw == done[0] + done[2] && ux == done[0]);
+        assert_eq!(
+            shell.click(&mut s, middle(foot[1].1), SIZE, false, false, false),
+            [CLICK, CHANGED]
+        );
+        assert_eq!(shell.screen.applied, 1);
+        let targets: Vec<_> = shell.foot_at(&s, SIZE).iter().map(|f| f.0).collect();
+        assert_eq!(targets, [Target::Undo, Target::Done]);
+    }
+
+    #[test]
+    fn the_right_button_steps_no_choice_as_vanillas_cycle_button() {
+        let mut s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        let choice = middle_of(&mut shell, CHOICE, SIZE);
+        assert!(
+            shell
+                .click(&mut s, choice, SIZE, false, true, false)
+                .is_empty()
+        );
+        assert!(shell.screen.pressed.is_empty());
+    }
 }

@@ -71,6 +71,7 @@ def generate(command, build):
             console(server, cmd, ack)
     finally:
         server.stop()
+    (directory / 'finished').touch()
     return directory / 'world'
 
 
@@ -290,7 +291,8 @@ def main():
     _, build, java, native, client = net.sides(args.build_name, args.binary.resolve() if args.binary else None)
     (build / 'program.json').write_text(json.dumps(PROGRAM, indent=2, sort_keys=True) + '\n')
     world = build / 'generate/world'
-    if not world.exists():
+    # A generate step that died leaves a world that must not be reused.
+    if not (build / 'generate/finished').exists():
         world = generate(java, build)
     reference = args.reference
     for side in (['java', 'native'] if args.side == 'both' else [args.side]):

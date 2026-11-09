@@ -8,7 +8,7 @@ from test_mobile_command_keyboard import method
 ROOT = Path(__file__).resolve().parents[1]
 
 def program():
-    game = (ROOT / 'crates/horizon-client/src/game.rs').read_text()
+    game = (ROOT / 'crates/horizon-client/src/game/play_input.rs').read_text()
     pad = (ROOT / 'crates/horizon-client/src/game/pad.rs').read_text()
     touch = (ROOT / 'crates/horizon-client/src/game/touch.rs').read_text()
     buttons = (ROOT / 'crates/horizon-client-input/src/gamepad.rs').read_text()
@@ -35,7 +35,7 @@ type Result<T> = std::result::Result<T,String>;
 trait EventLoopCtl {} struct Loop; impl EventLoopCtl for Loop {}
 #[macro_export] macro_rules! warn { ($($arg:tt)*) => {{ let _ = format_args!($($arg)*); }}; }
 mod log {pub(crate) use crate::warn;}
-#[derive(Default)]struct Menu{armed:Option<()>,osk:Option<()>}
+#[derive(Default)]struct Menu{armed:Option<()>,osk:Option<()>,trigger:Option<()>}
 struct Pad{reload_pending:bool,edges:Edges,state:PadState,menu:Menu,blocked_sticks:[bool;2],late_releases:Vec<Button>,actions:[Vec<&'static str>;16],held_drop:Option<()>,drop_stack:bool,in_use:bool}
 impl Default for Pad {fn default()->Self{Self{reload_pending:false,edges:Edges::default(),state:PadState::default(),menu:Menu::default(),blocked_sticks:[false;2],late_releases:vec![],actions:std::array::from_fn(|_|vec![]),held_drop:None,drop_stack:false,in_use:false}}}
 #[derive(Default)]struct Touch{menu:Option<()>,fingers:touch::Touches,late:Vec<()>,holding:Option<()>}
@@ -58,6 +58,7 @@ impl Game{
  fn cancel_emote_controller(&mut self){self.emote=false;}
  fn suspend_system_keyboard(&mut self){self.ime=false;}
  fn pad_output_off(&mut self){}
+ fn direct_craft_stop(&mut self){}
  fn pad_cancel_menu(&mut self,_:&dyn EventLoopCtl){assert!(self.pad.menu.armed.is_none());}
  fn pad_button_logged(&mut self,_:&dyn EventLoopCtl,b:Button,down:bool){assert!(!down);assert!(self.pad.menu.armed.is_none());self.releases.push(b);}
  fn pad_action(&mut self,a:&'static str,down:bool)->Result<()>{self.actions.push((a,down));Ok(())}

@@ -247,65 +247,47 @@ fn load_convert(input: &[char]) -> Result<String, Malformed> {
 
 fn save_convert(s: &str, escape_space: bool, esc_unicode: bool) -> String {
     let mut out = String::with_capacity(s.len() * 2);
-    for (index, c) in s.encode_utf16().enumerate() {
-        if c > 61 && c < 127 {
-            if c == u16::from(b'\\') {
+    // A Rust `str` is valid UTF-8, so its UTF-16 units always pair up and one char at a time writes
+    // what Java's per-`char` loop writes: a NUL stays a character of the value instead of acting as
+    // a marker, and a character past U+FFFF is escaped as the pair of units Java escapes it as.
+    for (index, c) in s.chars().enumerate() {
+        let code = c as u32;
+        if code > 61 && code < 127 {
+            if c == '\\' {
                 out.push_str("\\\\");
             } else {
-                out.push(char::from(c as u8));
+                out.push(c);
             }
             continue;
         }
         match c {
-            0x20 => {
+            ' ' => {
                 if index == 0 || escape_space {
                     out.push('\\');
                 }
                 out.push(' ');
             }
-            0x09 => out.push_str("\\t"),
-            0x0a => out.push_str("\\n"),
-            0x0d => out.push_str("\\r"),
-            0x0c => out.push_str("\\f"),
-            0x3d | 0x3a | 0x23 | 0x21 => {
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\u{c}' => out.push_str("\\f"),
+            '=' | ':' | '#' | '!' => {
                 out.push('\\');
-                out.push(char::from(c as u8));
+                out.push(c);
             }
             _ => {
-                if (!(0x20..=0x7e).contains(&c)) && esc_unicode {
-                    out.push_str(&format!("\\u{c:04X}"));
+                if !(0x20..=0x7e).contains(&code) && esc_unicode {
+                    let mut units = [0u16; 2];
+                    for unit in c.encode_utf16(&mut units).iter() {
+                        out.push_str(&format!("\\u{unit:04X}"));
+                    }
                 } else {
-                    push_unit(&mut out, c);
+                    out.push(c);
                 }
             }
         }
     }
-    fix_surrogates(out)
-}
-
-/// Units are pushed one at a time; surrogate halves are joined afterwards.
-fn push_unit(out: &mut String, unit: u16) {
-    match char::from_u32(u32::from(unit)) {
-        Some(c) => out.push(c),
-        None => out.push_str(&format!("\u{0}{unit:04x}\u{0}")),
-    }
-}
-fn fix_surrogates(s: String) -> String {
-    if !s.contains('\u{0}') {
-        return s;
-    }
-    let mut units: Vec<u16> = Vec::new();
-    let mut parts = s.split('\u{0}');
-    let mut odd = false;
-    for part in parts.by_ref() {
-        if odd {
-            units.push(u16::from_str_radix(part, 16).unwrap_or(0xfffd));
-        } else {
-            units.extend(part.encode_utf16());
-        }
-        odd = !odd;
-    }
-    String::from_utf16_lossy(&units)
+    out
 }
 
 /// Properties.writeComments.
@@ -437,6 +419,22 @@ mod tests {
                 .replace('\n', line_separator())
         );
         assert!(p.store(None, "D", true).contains("b\\ key=\\u00E9"));
+    }
+    #[test]
+    fn a_nul_and_a_non_bmp_character_are_written_as_java_writes_them() {
+        // `\u0000` is a character of the value, not a marker of any kind, and the Writer variant
+        // (escUnicode off) writes it as it is.
+        let p = load("k=\\u0000\\uD83D\\uDE00x");
+        assert_eq!(p.get("k"), Some("\u{0}\u{1F600}x"));
+        assert_eq!(
+            p.store(None, "D", false),
+            format!("#D{nl}k=\u{0}\u{1F600}x{nl}", nl = line_separator())
+        );
+        // With escapes on, the NUL and both halves of the pair are `\u` escapes, upper-case hex.
+        assert!(
+            p.store(None, "D", true)
+                .contains("k=\\u0000\\uD83D\\uDE00x")
+        );
     }
     #[test]
     fn dates() {

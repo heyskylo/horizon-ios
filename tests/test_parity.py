@@ -5,20 +5,23 @@ from pathlib import Path
 README = Path(__file__).resolve().parents[1] / 'README.md'
 
 
-class ParityTests(unittest.TestCase):
-    def test_readme_percentage_matches_table(self):
+class ParityTableTests(unittest.TestCase):
+    def test_every_row_has_a_score(self):
         text = README.read_text()
-        heading = re.search(r'^### Java parity: (\d+)%$', text, re.MULTILINE)
+        heading = re.search(r'^### What the harnesses compare$', text, re.MULTILINE)
         if heading is None:
             self.assertNotRegex(text, r'badge/vanilla%20parity-\d+%25-')
-            self.skipTest('This README publishes no numeric Java parity claim')
+            self.skipTest('Mobile README publishes no numeric harness table')
         table = text[heading.end():].split('| Subsystem | Score | Main gaps |', 1)[1].split('\n\n', 1)[0]
-        scores = [float(score) for score in re.findall(r'^\| [^|]+ \| (0|0\.25|0\.5|0\.75|1) \| [^|]+ \|$', table, re.MULTILINE)]
+        scores = re.findall(r'^\| [^|]+ \| (0|0\.25|0\.5|0\.75|1) \| [^|]+ \|$', table, re.MULTILINE)
+        self.assertGreater(len(scores), 0)
         self.assertEqual(len(scores), table.count('\n|') - 1, 'Every row needs a score of 0, 0.25, 0.5, 0.75 or 1')
-        self.assertEqual(int(heading.group(1)), round(sum(scores) * 100 / len(scores)))
-        badge = re.search(r'badge/vanilla%20parity-(\d+)%25-', text)
-        self.assertIsNotNone(badge, 'README parity badge is missing')
-        self.assertEqual(badge.group(1), heading.group(1), 'The parity badge must match the table')
+
+    def test_no_parity_percentage(self):
+        # Decided 2026-11-09: the README describes what the harnesses compare, never a parity percentage.
+        text = README.read_text()
+        self.assertNotIn('badge/vanilla%20parity-', text)
+        self.assertNotRegex(text, r'(?i)parity:? \d+%')
 
 
 if __name__ == '__main__':

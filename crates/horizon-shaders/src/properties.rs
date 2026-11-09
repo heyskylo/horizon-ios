@@ -357,6 +357,12 @@ mod tests {
         let properties = Properties::from_pack(&pack, "world0", &macros);
         assert!(properties.get("image.volume").is_some());
         assert!(properties.get("bad").is_none());
+        let shared = properties.option_macros.as_ref().unwrap();
+        assert!(!shared.is_defined("IS_IRIS"));
+        assert!(!shared.is_defined("IRIS_VERSION"));
+        assert!(!shared.is_defined("IRIS_FEATURE_COMPUTE_SHADERS"));
+        assert!(!shared.is_defined("VERTEX_ONLY"));
+        assert!(shared.is_defined("VOXELS"));
         let raw_switches = std::collections::BTreeSet::from(["VOXELS".into()]);
         assert!(properties.program_enabled("world0", "shadowcomp", &macros, &raw_switches));
         macros.define("MC_OS_MAC", "");

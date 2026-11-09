@@ -3,13 +3,17 @@
 use super::{Dim, Game};
 use horizon_client::assets::Properties;
 use horizon_client::camera::NearPlane;
-use horizon_client::fog::{FogData, FogInputs, FogType, fog_type, update_rain_fog};
+use horizon_client::fog::{
+    FogData, FogInputs, FogType, fog_type, settle_rain_fog, update_rain_fog,
+};
 use horizon_client::{
     animate_tick::{AnimateContext, animate_tick, campfire_particles, marker_particle_target},
     biome::Biomes,
     blocks::{BlockFacts, Fluid},
     containers::BlockEntity,
-    particles::{ParticleLevel, ParticleOptions, ParticleType},
+    mobs::Mob,
+    motion::PlayerMotion,
+    particles::{ParticleLevel, ParticleOptions, ParticleType, TrackingBody, TrackingTarget},
     world::World,
 };
 use horizon_client::{
@@ -18,6 +22,23 @@ use horizon_client::{
 };
 use horizon_core::random::{LegacyRandom, RandomSource};
 use horizon_world::{heightmap::HeightmapType, worldgen::terrain::TerrainBlockStates};
+
+pub(super) fn player_tracking_body(player: &PlayerMotion) -> TrackingBody {
+    TrackingBody {
+        feet: [player.position.x, player.position.y, player.position.z],
+        width: f64::from(player.dimensions.width),
+        height: f64::from(player.dimensions.height),
+    }
+}
+
+pub(super) fn mob_tracking_body(mob: &Mob) -> TrackingBody {
+    let (width, height, _) = mob.dims();
+    TrackingBody {
+        feet: [mob.position.x, mob.position.y, mob.position.z],
+        width,
+        height,
+    }
+}
 
 /// `getHeight(Heightmap.Types.MOTION_BLOCKING, x, z)` from the chunk's
 /// heightmap: one above the highest block in `blocks_motion_in_heightmap` or
@@ -337,12 +358,32 @@ impl Game<'_> {
             first_person: self.camera_type.first_person(),
             scoping: self.scoping(),
             game_time_delta: 0.0,
-            equipment: match &self.armor[0] {
-                Some(stack) if &*stack.item == "minecraft:carved_pumpkin" => {
-                    vec!["misc/pumpkinblur".to_owned()]
+            // Each worn stack's own `equippable` camera overlay, in
+            // `EquipmentSlot` order, when it is worn in that slot.
+            equipment: [
+                (self.inventory[self.selected].as_ref(), "mainhand"),
+                (self.armor[3].as_ref(), "feet"),
+                (self.armor[2].as_ref(), "legs"),
+                (self.armor[1].as_ref(), "chest"),
+                (self.armor[0].as_ref(), "head"),
+                (self.offhand.as_ref(), "offhand"),
+            ]
+            .into_iter()
+            .filter_map(|(stack, slot)| {
+                let e = horizon_client::item_sync::equippable(stack?, self.res.items())?;
+                if e.slot != slot {
+                    return None;
                 }
-                _ => Vec::new(),
-            },
+                let overlay = e.camera_overlay?;
+                // `withPath(p -> "textures/" + p + ".png")`: the GUI atlas
+                // names vanilla's textures without the namespace.
+                Some(
+                    overlay
+                        .strip_prefix("minecraft:")
+                        .map_or_else(|| overlay.clone(), str::to_owned),
+                )
+            })
+            .collect(),
             ticks_frozen: p.ticks_frozen,
             percent_frozen: p.percent_frozen(),
             partial,
@@ -390,7 +431,45 @@ impl Game<'_> {
             self.texture_ticks += 1;
         }
     }
+    /// What `AtmosphericFogEnvironment.updateRainFogState` reads at the eye: the rain, the sky
+    /// light and whether the biome has precipitation.
+    fn rain_fog_inputs(&self, eye: [f64; 3]) -> (f32, u8, bool) {
+        let b = [
+            eye[0].floor() as i32,
+            eye[1].floor() as i32,
+            eye[2].floor() as i32,
+        ];
+        let rain = self.view_weather(1.0).0;
+        let biome = self
+            .world
+            .chunks
+            .get(&(b[0] >> 4, b[2] >> 4))
+            .map_or(0, |c| c.biome(b[0], b[1], b[2]));
+        let rains = world_biomes!(self).get(biome).precipitation;
+        (rain, self.world.light(b[0], b[1], b[2]) >> 4, rains)
+    }
+    /// Under `HORIZON_STILL` a frozen client's rain fog sits at its level, as the rain does: it
+    /// eases only in `tick_particles`, which waits for the world.
+    pub(super) fn settle_rain_fog(&mut self) {
+        if let Some(e) = self.eye_position() {
+            let (rain, sky_light, rains) = self.rain_fog_inputs(e);
+            settle_rain_fog(&mut self.fog, rain, sky_light, rains);
+        }
+    }
+    pub(super) fn remote_tracking_body(
+        &mut self,
+        id: i32,
+    ) -> Option<(TrackingTarget, TrackingBody)> {
+        if self.remote.as_ref().is_some_and(|r| r.entity_id == id) {
+            let player = self.player.as_ref()?;
+            return Some((TrackingTarget::LocalPlayer, player_tracking_body(player)));
+        }
+        let mob = self.mob_index.get(&self.mobs, id as u32)?;
+        Some((TrackingTarget::Entity(id), mob_tracking_body(mob)))
+    }
+
     pub(super) fn tick_particles(&mut self) {
+        let mut laps = horizon_client::spans::laps();
         let eye = self.eye_position();
         if let Some(e) = eye {
             let brightness = self.eye_brightness(e);
@@ -406,27 +485,11 @@ impl Game<'_> {
             // LocalPlayer water vision and AtmosphericFogEnvironment rain fog.
             let in_water =
                 fog_type(&self.world, self.res.facts(), e, &self.near_plane()) == FogType::Water;
-            self.fog.tick(in_water);
-            let b = [
-                e[0].floor() as i32,
-                e[1].floor() as i32,
-                e[2].floor() as i32,
-            ];
-            let rain = self.view_weather(1.0).0;
-            let biome = self
-                .world
-                .chunks
-                .get(&(b[0] >> 4, b[2] >> 4))
-                .map_or(0, |c| c.biome(b[0], b[1], b[2]));
-            let rains = world_biomes!(self).get(biome).precipitation;
-            update_rain_fog(
-                &mut self.fog,
-                rain,
-                self.world.light(b[0], b[1], b[2]) >> 4,
-                rains,
-                1.0,
-            );
+            self.fog.tick(in_water, self.spectator());
+            let (rain, sky_light, rains) = self.rain_fog_inputs(e);
+            update_rain_fog(&mut self.fog, rain, sky_light, rains, 1.0);
         }
+        laps.lap("tp_fx");
         self.particles.particle_level = self.settings.particles;
         if let Some(e) = eye {
             self.particles.camera = e;
@@ -493,7 +556,14 @@ impl Game<'_> {
                 e[1].floor() as i32,
                 e[2].floor() as i32,
             ];
+            laps.lap("tp_ctx");
+            self.particles
+                .set_polytone(self.pack.polytone_particles.clone());
+            if let Some(registry) = &self.pack.polytone_particles {
+                registry.set_biomes(biomes);
+            }
             animate_tick(self.res.animate(), &mut self.particles, &ctx, block);
+            laps.lap("tp_animate");
             // The Horizon Weather option off means no rain visuals or sounds at all.
             if rain > 0.0 && self.settings.horizon.weather {
                 // ClientLevel.tickWeatherEffects: rain splashes within the weather
@@ -584,6 +654,7 @@ impl Game<'_> {
                 },
             );
         }
+        laps.lap("tp_rain_campfire");
         // SpellParticle.isCloseToScopingPlayer: the eye of a local player looking
         // through a spyglass in first person.
         let scope_eye = self
@@ -607,8 +678,41 @@ impl Game<'_> {
                 .as_ref()
                 .map(|p| ([p.position.x, p.position.y, p.position.z], p.velocity.y)),
         };
-        self.particles.tick(&level);
+        laps.lap("tp_level");
+        // Resource packs' Polytone entity emitters on the player (#11486): fog, dust and
+        // weather around them; nothing without such a pack.
+        if let Some(p) = &self.player {
+            let feet = [p.position.x, p.position.y, p.position.z];
+            self.particles
+                .polytone_entity(&level, "minecraft:player", feet);
+        }
+        let player = self.player.as_ref();
+        let mobs = &self.mobs;
+        let mob_index = &mut self.mob_index;
+        let lan = self.lan.as_ref();
+        let dimension = self.dim.id();
+        self.particles.tick_tracking(&level, |target| match target {
+            TrackingTarget::LocalPlayer => player.map(player_tracking_body),
+            TrackingTarget::Entity(id) => {
+                if let Some(guest) = lan.and_then(|host| {
+                    host.hub
+                        .guests
+                        .iter()
+                        .find(|guest| guest.entity_id == id && guest.dimension == dimension)
+                }) {
+                    let dimensions = guest.dimensions();
+                    return Some(TrackingBody {
+                        feet: guest.position,
+                        width: f64::from(dimensions.width),
+                        height: f64::from(dimensions.height),
+                    });
+                }
+                mob_index.get(mobs, id as u32).map(mob_tracking_body)
+            }
+        });
+        laps.lap("tp_engine");
         self.tick_pickups();
+        laps.lap("tp_pickups");
         let camera = self.particles.camera;
         for (name, at, volume, pitch, delayed) in std::mem::take(&mut self.particles.sounds) {
             if delayed {

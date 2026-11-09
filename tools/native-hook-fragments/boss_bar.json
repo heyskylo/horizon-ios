@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "boss_bar",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_boss_bar"
+    }
+  ],
+  "rust_summary": "boss bars for one player (`native_boss_bar`, `NativeBossBar`), as Bukkit's `BossBar.addPlayer`.",
+  "doc_summary": "`native_boss_bar(uuid, id, bar)` (`host.boss_bar`) shows one player a `NativeBossBar` (name, progress, colour, overlay, flags) under a mod's id, changes it, or takes it away (None), as Bukkit's `BossBar.addPlayer`/`removePlayer`; kept by UUID while they are off. Bundles need \"hooks\": @API:boss_bar@."
+}

@@ -22,6 +22,13 @@ import sys
 import unicodedata
 from pathlib import Path
 
+# Before the fontTools imports: a machine without fontTools still gets the usage, not a traceback.
+if __name__ == "__main__" and (
+    len(sys.argv) != 3 or any(argument.startswith("-") for argument in sys.argv[1:])
+):
+    sys.exit(__doc__ + "\nUsage: python3 tools/bake_bricolage.py "
+             "'BricolageGrotesque[opsz,wdth,wght].ttf' 'Geist[wght].ttf'")
+
 from fontTools.pens.boundsPen import BoundsPen
 from fontTools.pens.recordingPen import DecomposingRecordingPen
 from fontTools.pens.transformPen import TransformPen

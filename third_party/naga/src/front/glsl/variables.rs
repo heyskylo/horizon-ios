@@ -7,8 +7,9 @@ use super::{
     Frontend, Result, Span,
 };
 use crate::{
-    AddressSpace, Binding, BuiltIn, Constant, Expression, GlobalVariable, Handle, LocalVariable,
-    Override, ResourceBinding, Scalar, ShaderStage, SwizzleComponent, Type, TypeInner, VectorSize,
+    AddressSpace, Binding, BuiltIn, Constant, Expression, GlobalVariable, Handle, Interpolation,
+    LocalVariable, Override, ResourceBinding, Scalar, ScalarKind, ShaderStage, SwizzleComponent,
+    Type, TypeInner, VectorSize,
 };
 
 pub struct VarDeclaration<'a, 'key> {
@@ -475,6 +476,27 @@ impl Frontend {
                 };
 
                 binding.apply_default_interpolation(&ctx.module.types[ty].inner);
+                // An integer varying only travels flat. A fragment input must say so in GLSL,
+                // but a vertex output may leave it out (GLSL 4.30 on: only the fragment
+                // stage's qualifier counts), so it is flat by default where it is interpolated.
+                let interpolated = match self.meta.stage {
+                    ShaderStage::Vertex => !input,
+                    ShaderStage::Fragment => input,
+                    _ => false,
+                };
+                let integer = matches!(
+                    ctx.module.types[ty].inner.scalar_kind(),
+                    Some(ScalarKind::Sint | ScalarKind::Uint)
+                );
+                if let Binding::Location {
+                    interpolation: ref mut interpolation @ None,
+                    ..
+                } = binding
+                {
+                    if interpolated && integer {
+                        *interpolation = Some(Interpolation::Flat);
+                    }
+                }
 
                 let idx = self.entry_args.len();
                 self.entry_args.push(EntryArg {

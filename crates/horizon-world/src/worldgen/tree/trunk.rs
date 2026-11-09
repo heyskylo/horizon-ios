@@ -103,10 +103,10 @@ impl TrunkPlacer {
             "minecraft:cherry_trunk_placer" => {
                 let start: Object =
                     serde_json::from_str(required(&object, "branch_start_offset_from_top")?.get())?;
-                if let Some(kind) = optional(&start, "type") {
-                    if serde_json::from_str::<String>(kind.get())? != "minecraft:uniform" {
-                        return Err(DecodeError::Field("cherry branch start type"));
-                    }
+                if let Some(kind) = optional(&start, "type")
+                    && serde_json::from_str::<String>(kind.get())? != "minecraft:uniform"
+                {
+                    return Err(DecodeError::Field("cherry branch start type"));
                 }
                 let min = int_range(required(&start, "min_inclusive")?, "branch start", -16, 0)?;
                 let max = int_range(required(&start, "max_inclusive")?, "branch start", -16, 0)?;

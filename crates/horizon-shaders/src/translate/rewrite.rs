@@ -98,6 +98,20 @@ impl Stage<'_> {
         if self.tokens.iter().any(|t| DEPTH_NAMES.contains(t)) {
             p.push_str(DEPTH_FILTER);
         }
+        if self.paged_maps && self.tokens.iter().any(|t| PAGED_NAMES.contains(t)) {
+            p.push_str(PAGED_READ);
+        }
+        // Helpers for the integer samplers declared, where a texture call could read one.
+        if self.tokens.iter().any(|t| integer_call(t).is_some()) {
+            let mut types: Vec<_> = self
+                .tokens
+                .iter()
+                .filter_map(|t| integer_sampler(t))
+                .collect();
+            types.sort_unstable();
+            types.dedup();
+            p.push_str(&integer_texture(&types));
+        }
         if self.query_lod {
             p.push_str(&query_lod());
         }
@@ -199,6 +213,15 @@ impl Stage<'_> {
             let k = DEPTH_NAMES.iter().position(|&n| n == name)?;
             (sampler_ty.get(name) == Some(&"sampler2D") && !params.contains_key(name))
                 .then(|| format!("hz_depth_linear.{}", ['x', 'y', 'z', 'w'][k]))
+        };
+        // `normals` or `specular` as declared, when they are paged maps (`PAGED_READ`).
+        let paged = |j: usize, params: &HashMap<String, String>, hidden: &[(&str, usize, i32)]| {
+            let name = self.tokens[j];
+            self.paged_maps
+                && PAGED_NAMES.contains(&name)
+                && sampler_ty.get(name) == Some(&"sampler2D")
+                && !params.contains_key(name)
+                && !hidden.iter().any(|&(h, from, _)| h == name && j >= from)
         };
         // The pack's functions given one of them as a whole sampler argument, and where: those
         // parameters carry its `hz_depth_linear` component too (`hz_l_`, -1 for other samplers).
@@ -447,12 +470,11 @@ impl Stage<'_> {
             // `T x[] = T[](a, b)`: naga gives unsized arrays no size, so the count is written in.
             if t == "["
                 && let Some(close) = next(i).filter(|&j| self.tokens[j] == "]")
+                && let Some(n) = self.array_length(close)
             {
-                if let Some(n) = self.array_length(close) {
-                    write!(out, "[{n}]").unwrap();
-                    skip_until = close + 1;
-                    continue;
-                }
+                write!(out, "[{n}]").unwrap();
+                skip_until = close + 1;
+                continue;
             }
             if !is_ident(t) {
                 out.push_str(t);
@@ -468,19 +490,21 @@ impl Stage<'_> {
                 continue;
             }
             // A function definition's sampler parameters: `sampler2D s` → `texture2D s, sampler hz_s_s`.
-            if depth == 0 && is_sampler_type(t) && calls.len() == 1 {
-                if let Some(n) = next(i).filter(|&n| is_ident(self.tokens[n])) {
-                    let name = self.tokens[n];
-                    let (texture, sampler) = split_sampler(t);
-                    write!(out, "{texture} {name}, {sampler} hz_s_{name}").unwrap();
-                    if t == "sampler2D" && depth_params.contains(&(calls[0].0, calls[0].2)) {
-                        write!(out, ", float hz_l_{name}").unwrap();
-                        depth_scope.push(name);
-                    }
-                    params.insert(name.to_owned(), t.to_owned());
-                    skip_until = n + 1;
-                    continue;
+            if depth == 0
+                && is_sampler_type(t)
+                && calls.len() == 1
+                && let Some(n) = next(i).filter(|&n| is_ident(self.tokens[n]))
+            {
+                let name = self.tokens[n];
+                let (texture, sampler) = split_sampler(t);
+                write!(out, "{texture} {name}, {sampler} hz_s_{name}").unwrap();
+                if t == "sampler2D" && depth_params.contains(&(calls[0].0, calls[0].2)) {
+                    write!(out, ", float hz_l_{name}").unwrap();
+                    depth_scope.push(name);
                 }
+                params.insert(name.to_owned(), t.to_owned());
+                skip_until = n + 1;
+                continue;
             }
             // `float specular`: a variable of the same name as a sampler or a sampler parameter,
             // from the end of its initializer to the function's end; `.specular` a member.
@@ -535,6 +559,30 @@ impl Stage<'_> {
                 && let Some(flag) = depth_flag(i, &params, &hidden, &depth_scope)
             {
                 write!(out, "{t}, hz_s_{t}, {flag}").unwrap();
+                continue;
+            }
+            if sampler.is_some()
+                && calls
+                    .last()
+                    .is_some_and(|&(callee, _, arg)| arg == 0 && paged_call(callee).is_some())
+                && prev(i).is_some_and(|j| self.tokens[j] == "(")
+                && next(i).is_some_and(|j| self.tokens[j] == ",")
+                && paged(i, &params, &hidden)
+            {
+                write!(out, "{t}, hz_s_{t}").unwrap();
+                continue;
+            }
+            // An integer sampler sampled as a float one is (`integer_call`): our helper takes its
+            // texture and sampler.
+            if let Some(ty) = sampler
+                && integer_sampler(ty).is_some()
+                && calls
+                    .last()
+                    .is_some_and(|&(callee, _, arg)| arg == 0 && integer_call(callee).is_some())
+                && prev(i).is_some_and(|j| self.tokens[j] == "(")
+                && next(i).is_some_and(|j| self.tokens[j] == ",")
+            {
+                write!(out, "{t}, hz_s_{t}").unwrap();
                 continue;
             }
             if let Some(ty) = sampler {
@@ -599,6 +647,32 @@ impl Stage<'_> {
                 && let Some(helper) = depth_call(t, depth_scope.contains(&self.tokens[a]))
                 && next(a).is_some_and(|j| self.tokens[j] == ",")
                 && depth_flag(a, &params, &hidden, &depth_scope).is_some()
+            {
+                out.push_str(helper);
+                continue;
+            }
+            if called
+                && let Some(helper) = paged_call(t)
+                && let Some(a) = next(i).and_then(next)
+                && next(a).is_some_and(|j| self.tokens[j] == ",")
+                && paged(a, &params, &hidden)
+            {
+                out.push_str(helper);
+                continue;
+            }
+            if called
+                && let Some(helper) = integer_call(t)
+                && let Some(a) = next(i).and_then(next)
+                && next(a).is_some_and(|j| self.tokens[j] == ",")
+                && !hidden
+                    .iter()
+                    .any(|&(h, from, _)| h == self.tokens[a] && a >= from)
+                && params
+                    .get(self.tokens[a])
+                    .map(String::as_str)
+                    .or_else(|| sampler_ty.get(self.tokens[a]).copied())
+                    .and_then(integer_sampler)
+                    .is_some()
             {
                 out.push_str(helper);
                 continue;
@@ -969,6 +1043,112 @@ fn trinary(name: &str) -> String {
     }
     p
 }
+
+/// An integer sampler type's texture type and dimension count (`usampler2D` → `utexture2D`, 2).
+fn integer_sampler(ty: &str) -> Option<(&'static str, usize)> {
+    Some(match ty {
+        "usampler2D" => ("utexture2D", 2),
+        "isampler2D" => ("itexture2D", 2),
+        "usampler3D" => ("utexture3D", 3),
+        "isampler3D" => ("itexture3D", 3),
+        _ => return None,
+    })
+}
+
+/// The helper standing for a filtered read of an integer sampler (`integer_texture`).
+fn integer_call(callee: &str) -> Option<&'static str> {
+    Some(match callee {
+        "texture" | "texture2D" | "texture3D" => "hz_integerTexture",
+        "textureLod" | "texture2DLod" | "texture3DLod" => "hz_integerTextureLod",
+        _ => return None,
+    })
+}
+
+/// `texture` and `textureLod` of an integer sampler: GL drivers read an integer texture with
+/// nearest filtering (a linear filter would leave it incomplete), so the texel the point falls
+/// in, the edge texel past the edges. wgpu filters only float textures, so `texelFetch` it is.
+/// A bias changes nothing; `textureLod` reads the level it names.
+fn integer_texture(types: &[(&str, usize)]) -> String {
+    let mut out = String::new();
+    for &(ty, dims) in types {
+        let sampler = ty.replacen("texture", "sampler", 1);
+        let result = if ty.starts_with('u') {
+            "uvec4"
+        } else {
+            "ivec4"
+        };
+        let (fv, iv) = (format!("vec{dims}"), format!("ivec{dims}"));
+        let read = |level: &str| {
+            format!(
+                "{iv} size = textureSize({sampler}(t, s), {level}); \
+                 return texelFetch({sampler}(t, s), clamp({iv}(floor(p * {fv}(size))), {iv}(0), size - 1), {level});"
+            )
+        };
+        let lod = read("int(l)");
+        let base = read("0");
+        writeln!(
+            out,
+            "{result} hz_integerTexture({ty} t, sampler s, {fv} p) {{ {base} }}"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "{result} hz_integerTexture({ty} t, sampler s, {fv} p, float b) {{ {base} }}"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "{result} hz_integerTextureLod({ty} t, sampler s, {fv} p, float l) {{ {lod} }}"
+        )
+        .unwrap();
+    }
+    out
+}
+
+/// The material maps a gbuffers program of the shared atlas reads as paged maps.
+const PAGED_NAMES: [&str; 2] = ["normals", "specular"];
+
+/// The helper standing for a texture call on a paged map (`PAGED_READ`): a plain read, with a
+/// bias, at a level or with gradients.
+fn paged_call(callee: &str) -> Option<&'static str> {
+    matches!(
+        callee,
+        "texture2D"
+            | "texture"
+            | "texture2DLod"
+            | "texture2DLodARB"
+            | "textureLod"
+            | "texture2DGrad"
+            | "texture2DGradARB"
+            | "textureGrad"
+    )
+    .then_some("hz_pagedTexture")
+}
+
+/// A read of a paged map (`horizon-client-render`'s `paged_maps.rs`): texel 0 holds the atlas's
+/// size (16 bits a side), texel 1 the map's value where the atlas has none, then one texel per
+/// 16x16 page of the atlas, row by row: 0 for none, else its page in the pool (24 bits, plus one),
+/// whose pages follow the table's rows (rounded up to a page) in rows of the map's width. The
+/// nearest texel of the point, at the one level the map has: a bias, level or gradients change
+/// nothing. A 1x1 texture (no maps bound) is read as it is.
+const PAGED_READ: &str = "vec4 hz_pagedRead(texture2D t, sampler s, vec2 p) {\n\
+    \x20   int w = textureSize(sampler2D(t, s), 0).x;\n\
+    \x20   if (w < 16) return texelFetch(sampler2D(t, s), ivec2(0), 0);\n\
+    \x20   ivec4 h = ivec4(round(texelFetch(sampler2D(t, s), ivec2(0), 0) * 255.0));\n\
+    \x20   ivec2 size = max(ivec2(h.x | h.y << 8, h.z | h.w << 8), ivec2(1));\n\
+    \x20   ivec2 texel = clamp(ivec2(floor(p * vec2(size))), ivec2(0), size - 1);\n\
+    \x20   ivec2 pages = (size + 15) >> 4;\n\
+    \x20   int entry = 2 + (texel.y >> 4) * pages.x + (texel.x >> 4);\n\
+    \x20   ivec4 e = ivec4(round(texelFetch(sampler2D(t, s), ivec2(entry % w, entry / w), 0) * 255.0));\n\
+    \x20   int k = e.x | e.y << 8 | e.z << 16;\n\
+    \x20   if (k == 0) return texelFetch(sampler2D(t, s), ivec2(1, 0), 0);\n\
+    \x20   int rows = ((2 + pages.x * pages.y + w - 1) / w + 15) & ~15;\n\
+    \x20   int perRow = w >> 4;\n\
+    \x20   ivec2 at = ivec2((k - 1) % perRow, (k - 1) / perRow) * 16 + ivec2(0, rows) + (texel & 15);\n\
+    \x20   return texelFetch(sampler2D(t, s), at, 0);\n}\n\
+    vec4 hz_pagedTexture(texture2D t, sampler s, vec2 p) { return hz_pagedRead(t, s, p); }\n\
+    vec4 hz_pagedTexture(texture2D t, sampler s, vec2 p, float b) { return hz_pagedRead(t, s, p); }\n\
+    vec4 hz_pagedTexture(texture2D t, sampler s, vec2 p, vec2 dx, vec2 dy) { return hz_pagedRead(t, s, p); }\n";
 
 /// The depth samplers a plain `sampler2D` can name: `hz_depth_linear`'s x, y, z and w.
 const DEPTH_NAMES: [&str; 4] = ["shadowtex0", "shadowtex1", "shadow", "watershadow"];
