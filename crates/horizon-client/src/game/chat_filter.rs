@@ -319,13 +319,15 @@ impl Game<'_> {
                 let (time, from) = mute_time(words);
                 vec![self.mute(host, name, time, reason(from), by)]
             }
-            ["tempmute", name, time, ..] => match horizon_server_files::duration::parse_duration(time) {
-                Some(ms) => vec![self.mute(host, name, Some(ms), reason(3), by)],
-                None => vec![Reply::translated(
-                    "horizon.moderation.invalid_duration",
-                    &[Text::literal(*time)],
-                )],
-            },
+            ["tempmute", name, time, ..] => {
+                match horizon_server_files::duration::parse_duration(time) {
+                    Some(ms) => vec![self.mute(host, name, Some(ms), reason(3), by)],
+                    None => vec![Reply::translated(
+                        "horizon.moderation.invalid_duration",
+                        &[Text::literal(*time)],
+                    )],
+                }
+            }
             ["mute", ..] => vec![Reply::translated("horizon.moderation.usage.mute", &[])],
             ["tempmute", ..] => vec![Reply::translated("horizon.moderation.usage.tempmute", &[])],
             ["unmute", ..] => vec![Reply::translated("horizon.moderation.usage.unmute", &[])],
