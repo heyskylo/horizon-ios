@@ -34,7 +34,7 @@ const HINT: u32 = 0xAA_AAAA;
 
 /// The open screen: its search box and the list's scroll.
 pub(super) struct DebugOptionsUi {
-    search: EditBox,
+    pub(super) search: EditBox,
     scroll: Scroll,
 }
 
@@ -143,11 +143,11 @@ impl Game<'_> {
             _ => {}
         }
     }
-    /// `Screen.onClose`: back to the game.
+    /// `Screen.onClose`: back to the title when no level is open, otherwise the game.
     pub(super) fn close_debug_options(&mut self) {
         self.debug_options = None;
         self.screen = Screen::Playing;
-        self.capture(true);
+        self.capture(self.title.is_none());
     }
     /// The header's title row and warning (`init`'s vertical layout,
     /// centred in the header): the title's x, the row's top, the warning's
@@ -211,14 +211,15 @@ impl Game<'_> {
             .map_or([w as u32, h as u32], |r| [r.config.width, r.config.height]);
         self.draw_debug_overlay_under(batch, size);
         let atlas = &self.gui.atlas;
-        ui::menu_background(batch, atlas, 0.0, 0.0, w, h, true);
+        let in_world = self.player.is_some();
+        ui::menu_background(batch, atlas, 0.0, 0.0, w, h, in_world);
         let reduced = self.reduced_debug_info();
         let rows = rows(&s.search.value);
         let (top, bottom) = (HEADER, h - FOOTER);
         let content = content_height(rows.len());
         s.scroll.clamp(top, bottom, content);
         // The list: background, rows clipped to it, separators, scrollbar.
-        ui::list_background(batch, atlas, top, bottom, true);
+        ui::list_background(batch, atlas, top, bottom, in_world);
         let first = batch.vertices.len();
         let left = row_left(w);
         let inside = self.cursor.1 >= top && self.cursor.1 < bottom;
@@ -265,7 +266,7 @@ impl Game<'_> {
             }
         }
         batch.clip_since(first, 0.0, top, w, bottom);
-        ui::separators(batch, atlas, top, bottom, true);
+        ui::separators(batch, atlas, top, bottom, in_world);
         ui::scrollbar(
             batch,
             atlas,
@@ -508,7 +509,7 @@ impl Game<'_> {
 /// options screen over `screen`, closing it first. `Screen
 /// .canInterruptWithAnotherScreen` defaults to `shouldCloseOnEsc`, so every
 /// screen Escape closes yields; the death screen and the level teardown keep
-/// theirs, and the title never reaches the debug keys. The text-box screens
+/// theirs; the title explicitly allows interruption. The text-box screens
 /// (chat, options, sign, book, the search tabs) do not reach it either: a
 /// focused box takes every key press first. A playing overlay (a dialog, a
 /// prompt) keeps its own Esc. The credits' close is fallible and this path is
@@ -536,7 +537,8 @@ fn debug_options_interrupts(screen: Screen, playing_overlay: bool) -> bool {
         | Screen::Dead
         | Screen::Win
         | Screen::DebugOptions
-        | Screen::HudEditor => false,
+        | Screen::HudEditor
+        | Screen::Studio => false,
     }
 }
 
@@ -610,5 +612,161 @@ mod tests {
                 screen.id()
             );
         }
+    }
+
+    fn title_game() -> Game<'static> {
+        use super::super::*;
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
+        );
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = execution_role::ExecutionRole::IntegratedServer;
+        let res: &'static _ = Box::leak(Box::new(loaded.resources));
+        let mut game = Game::new(
+            res,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.title = Some(Title::new(std::path::PathBuf::from("saves"), &root));
+        game
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn title_debug_overlay_draws_without_a_level() {
+        use horizon_client::debug_keys::KeyAction;
+        let mut game = title_game();
+        assert!(game.player.is_none() && game.renderer.is_none() && game.integrated.is_none());
+        game.debug_key(KeyCode::F3, KeyAction::Press);
+        game.debug_key(KeyCode::F3, KeyAction::Release);
+        assert!(
+            game.debug,
+            "the ordinary F3 toggle already reaches the title"
+        );
+        let mut overlay = HudBatch::new([1280, 720]);
+        game.draw_debug_overlay_under(&mut overlay, [1280, 720]);
+        assert!(
+            !overlay.vertices.is_empty(),
+            "F3 must paint even without a level"
+        );
+        assert!(game.title.is_some());
+        // Gui treats the title as an open screen even when F1 hides the HUD.
+        game.ui.hide_gui = true;
+        let mut hidden_hud = HudBatch::new([1280, 720]);
+        game.draw_debug_overlay_under(&mut hidden_hud, [1280, 720]);
+        assert!(!hidden_hud.vertices.is_empty());
+        game.debug_key(KeyCode::F3, KeyAction::Press);
+        game.debug_key(KeyCode::F3, KeyAction::Release);
+        assert!(!game.debug);
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn title_debug_options_open_draw_and_return_without_a_level() {
+        use horizon_client::debug_keys::KeyAction;
+        let mut game = title_game();
+        let original_title = game.title.as_ref().unwrap().screen_key();
+        assert!(!game.captured);
+        game.debug_key(KeyCode::F3, KeyAction::Press);
+        game.debug_key(KeyCode::F6, KeyAction::Press);
+        assert!(
+            game.screen == Screen::DebugOptions,
+            "F3+F6 must open over the title"
+        );
+        assert!(game.debug_options.is_some());
+        // RedrawRequested only updates the world, spawns a player and ticks
+        // gameplay when title.is_none(). Keep that no-level sentinel intact.
+        assert!(
+            game.title.is_some(),
+            "F6 must not enable the world-entry gates"
+        );
+        assert!(
+            !game.title_input_active(),
+            "the covered title must not take input"
+        );
+        assert!(
+            game.shows_panorama(),
+            "the level-less options retain the panorama"
+        );
+        assert!(game.player.is_none() && game.renderer.is_none() && game.integrated.is_none());
+        let frame = game.hud([1280, 720]);
+        assert!(
+            !frame.vertices.is_empty(),
+            "the actual debug options screen must paint"
+        );
+        assert!(
+            game.title.is_some(),
+            "drawing options must keep world entry disabled"
+        );
+        horizon_client::widgets::end_frame(1);
+        assert!(
+            horizon_client::widgets::last().iter().any(|w| {
+                w.label == horizon_client::lang::get(Profile::Performance.translation_key())
+            }),
+            "debug options buttons, rather than title buttons, must be visible"
+        );
+        game.debug_options.as_mut().unwrap().search.focused = true;
+        assert!(
+            game.text_field_focused(),
+            "the covered title must not hide search focus"
+        );
+        game.ime_commit("fps");
+        assert_eq!(game.debug_options.as_ref().unwrap().search.value, "fps");
+        game.debug_options.as_mut().unwrap().search.focused = false;
+        game.debug_key(KeyCode::F6, KeyAction::Release);
+        game.debug_key(KeyCode::F6, KeyAction::Press);
+        assert!(game.screen == Screen::Playing);
+        assert!(game.title.is_some() && game.debug_options.is_none());
+        assert_eq!(game.title.as_ref().unwrap().screen_key(), original_title);
+        assert!(
+            !game.captured,
+            "closing a title screen must not capture the pointer"
+        );
+        game.debug_key(KeyCode::F6, KeyAction::Release);
+        game.debug_key(KeyCode::F3, KeyAction::Release);
+        assert!(
+            !game.debug,
+            "a used debug combination does not toggle the overlay"
+        );
+        game.debug_key(KeyCode::F3, KeyAction::Press);
+        game.debug_key(KeyCode::F6, KeyAction::Press);
+        let (w, h) = game.gui_size();
+        let (xs, y) = footer(w, h);
+        game.cursor = (xs[3] + 1.0, y + 1.0);
+        game.debug_options_click();
+        assert!(game.title.is_some() && game.debug_options.is_none());
+        assert!(
+            !game.captured,
+            "Done also returns without grabbing the pointer"
+        );
+        assert!(game.screen == Screen::Playing);
+        game.title.as_mut().unwrap().mode = horizon_client::title::Mode::Select {
+            worlds: Vec::new(),
+            selected: None,
+        };
+        let selection = game.title.as_ref().unwrap().screen_key();
+        game.debug_key(KeyCode::F6, KeyAction::Release);
+        game.debug_key(KeyCode::F6, KeyAction::Press);
+        assert!(game.debug_options.is_none());
+        assert_eq!(game.title.as_ref().unwrap().screen_key(), selection);
     }
 }

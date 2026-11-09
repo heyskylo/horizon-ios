@@ -23,7 +23,6 @@ fn pushed(velocity: [f64; 3], kick: [f32; 3]) -> Option<[f64; 3]> {
     }))
 }
 
-#[allow(dead_code)]
 impl Game<'_> {
     /// For a client mod: a push added to the local player's velocity, in blocks a tick, as an
     /// explosion's knockback is (the window's player moves itself, as vanilla's client does). Each component is

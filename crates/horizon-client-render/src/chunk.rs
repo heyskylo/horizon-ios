@@ -357,6 +357,24 @@ impl Light {
     }
     /// The smallest form of packed light per block.
     pub fn packed(light: Box<[u8; 4096]>) -> Self {
+        match Self::classify(&light) {
+            (false, false, first) => Self::Uniform(first),
+            (true, false, first) => Self::Sky(Self::pack_layer(&light, 4), first & 15),
+            (false, true, first) => Self::Block(Self::pack_layer(&light, 0), first >> 4),
+            (true, true, _) => Self::Full(light),
+        }
+    }
+    /// The smallest form of packed light per block, allocating a 4 KiB box only
+    /// when both sky and block light vary within the section.
+    pub fn from_slice(light: &[u8; 4096]) -> Self {
+        match Self::classify(light) {
+            (false, false, first) => Self::Uniform(first),
+            (true, false, first) => Self::Sky(Self::pack_layer(light, 4), first & 15),
+            (false, true, first) => Self::Block(Self::pack_layer(light, 0), first >> 4),
+            (true, true, _) => Self::Full(Box::new(*light)),
+        }
+    }
+    fn classify(light: &[u8; 4096]) -> (bool, bool, u8) {
         let first = light[0];
         let (mut sky_varies, mut block_varies) = (false, false);
         for &v in light.iter() {
@@ -364,19 +382,14 @@ impl Light {
             sky_varies |= d & 0xF0 != 0;
             block_varies |= d & 15 != 0;
         }
-        let layer = |shift: u32| {
-            let mut layer = Box::new([0u8; 2048]);
-            for (out, pair) in layer.iter_mut().zip(light.as_chunks::<2>().0) {
-                *out = (pair[0] >> shift & 15) | (pair[1] >> shift & 15) << 4;
-            }
-            layer
-        };
-        match (sky_varies, block_varies) {
-            (false, false) => Self::Uniform(first),
-            (true, false) => Self::Sky(layer(4), first & 15),
-            (false, true) => Self::Block(layer(0), first >> 4),
-            (true, true) => Self::Full(light),
+        (sky_varies, block_varies, first)
+    }
+    fn pack_layer(light: &[u8; 4096], shift: u32) -> Box<[u8; 2048]> {
+        let mut layer = Box::new([0u8; 2048]);
+        for (out, pair) in layer.iter_mut().zip(light.as_chunks::<2>().0) {
+            *out = (pair[0] >> shift & 15) | (pair[1] >> shift & 15) << 4;
         }
+        layer
     }
     /// The packed light of blocks `at..at + out.len()`, into `out`.
     #[inline]
@@ -576,7 +589,7 @@ pub struct Chunk {
     /// Block entities read from a save, moved into the world on arrival.
     pub block_entities: Vec<((i32, i32, i32), block_entity::BlockEntity)>,
     /// `CustomName` of the container block entities (shown as the screen title).
-    pub block_names: Vec<((i32, i32, i32), String)>,
+    pub block_names: Vec<((i32, i32, i32), Tag)>,
     /// Generation postprocessing marks (ProtoChunk.postProcessing) as world
     /// positions, applied once by LevelChunk.postProcessGeneration.
     pub postprocess: Vec<[i32; 3]>,
@@ -618,6 +631,14 @@ impl Chunk {
             postprocess: Vec::new(),
             saved: None,
             entities: Vec::new(),
+        }
+    }
+    /// The original `structures.starts`, including starts with unknown pieces.
+    pub fn saved_structure_starts(&self) -> Option<&horizon_world::nbt::Compound> {
+        let structures = self.saved.as_ref()?.root.get(&"structures".into())?;
+        match structures.get("starts")? {
+            horizon_world::nbt::Tag::Compound(starts) => Some(starts),
+            _ => None,
         }
     }
     /// The minimum block Y of the column.
@@ -850,7 +871,10 @@ impl RolledLoot {
     /// Puts the loot table back in place of `Items` while they are still the
     /// roll; false once the container holds anything else.
     pub fn restore(&self, map: &mut Compound) -> bool {
-        if map.get(&"Items".into()) != Some(&self.items) {
+        // An empty shulker box saves no `Items`, which matches an empty roll.
+        let saved = map.get(&"Items".into());
+        let empty = matches!(&self.items, Tag::List(l) if l.is_empty());
+        if saved != Some(&self.items) && !(saved.is_none() && empty) {
             return false;
         }
         map.remove(&"Items".into());

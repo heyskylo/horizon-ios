@@ -10,6 +10,7 @@ use horizon_client::{
     items::ItemStack,
     mobs::Who,
     projectiles::{Projectile, ProjectileKind},
+    random_source,
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
 
@@ -342,12 +343,8 @@ impl Game<'_> {
             if rocket {
                 let at = Vec3::new(eye[0], eye[1] - f64::from(0.15f32), eye[2]);
                 let mut shot = Projectile::new(ProjectileKind::Snowball, at, None);
-                shot.shoot(
-                    &mut super::dispenser::entity_random(),
-                    dir.to_array(),
-                    power,
-                    1.0,
-                );
+                shot.shoot(&mut random_source::entity(), dir.to_array(), power, 1.0);
+                // Its first tick posts the shot (Projectile.tick).
                 self.launch_angled_rocket(at, shot.velocity, ammo, Some(Who::Player));
             }
             if !rocket {
@@ -382,7 +379,7 @@ impl Game<'_> {
                 );
                 self.native_entity_shoot_bow(player, &name, projectile, power as f32);
             }
-            self.player_projectile_shot();
+            // Ordinary arrows post from ArrowState on their first tick.
             let pitch = if index == 0 {
                 1.0
             } else {
@@ -492,8 +489,8 @@ mod tests {
 
     /// `AbstractArrow`'s constructor runs `EnchantmentHelper.onProjectileSpawned`
     /// for the weapon the arrow is fired from, bow or crossbow, so a Flame
-    /// crossbow shoots burning arrows: Flame's 5 second ignite, 100 ticks, on
-    /// every arrow of a Multishot volley (#10482).
+    /// crossbow shoots burning arrows: Flame's `Ignite(constant(100))` is 100
+    /// seconds, 2000 ticks, on every arrow of a Multishot volley (#10482).
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn a_flame_crossbow_shoots_burning_arrows() {
@@ -516,10 +513,10 @@ mod tests {
                 .collect()
         };
         assert_eq!(shoot(&[], 1), vec![0]);
-        assert_eq!(shoot(&["minecraft:flame"], 1), vec![100]);
+        assert_eq!(shoot(&["minecraft:flame"], 1), vec![2000]);
         assert_eq!(
             shoot(&["minecraft:flame", "minecraft:multishot"], 3),
-            vec![100; 3]
+            vec![2000; 3]
         );
     }
 

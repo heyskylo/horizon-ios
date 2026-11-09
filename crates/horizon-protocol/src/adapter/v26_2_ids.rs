@@ -200,6 +200,15 @@ pub const SOUND_EVENT_SUBSTITUTES: &[(u16, u16, u16)] = &[
 ];
 /// Every table above, as the adapter reads them.
 pub const IDS: super::ids::Ids = super::ids::Ids {
+    dropped_components: DROPPED_COMPONENTS,
+    substitutes: super::ids::Substitutes {
+        block_state: BLOCK_STATE_SUBSTITUTES,
+        block: BLOCK_SUBSTITUTES,
+        item: ITEM_SUBSTITUTES,
+        entity_type: ENTITY_TYPE_SUBSTITUTES,
+        particle_type: PARTICLE_TYPE_SUBSTITUTES,
+        sound_event: SOUND_EVENT_SUBSTITUTES,
+    },
     quirks: super::ids::Quirks::NONE,
     states: (OLD_STATES, PINNED_STATES),
     block_state: super::ids::Remap::Runs {
@@ -261,15 +270,6 @@ pub const IDS: super::ids::Ids = super::ids::Ids {
     position_source_type: super::ids::Remap::Same,
     consume_effect_type: super::ids::Remap::Same,
     enchantment_effect_component_type: super::ids::Remap::Same,
-    dropped_components: DROPPED_COMPONENTS,
     // Not a registry: set by hand where a version numbers EntityDataSerializers differently.
     entity_data_serializer: super::ids::Remap::Same,
-    substitutes: super::ids::Substitutes {
-        block_state: BLOCK_STATE_SUBSTITUTES,
-        block: BLOCK_SUBSTITUTES,
-        item: ITEM_SUBSTITUTES,
-        entity_type: ENTITY_TYPE_SUBSTITUTES,
-        particle_type: PARTICLE_TYPE_SUBSTITUTES,
-        sound_event: SOUND_EVENT_SUBSTITUTES,
-    },
 };

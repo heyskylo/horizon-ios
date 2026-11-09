@@ -23,17 +23,18 @@ mod fixes_flat;
 mod fixes_legacy;
 mod fixes_mid;
 mod fixes_old;
-mod flat_tables;
 mod items;
 pub mod json;
 pub mod progress;
 pub mod schema;
+mod tables;
 mod text;
 pub mod world_upgrader;
 
 use crate::nbt::Tag;
 use dynamic::{as_str, string};
 use schema::{Key, Ty, key, walk};
+pub use tables::{available as tables_available, set_resources};
 
 /// The DataVersion of the game.
 pub const CURRENT: i32 = crate::DATA_VERSION;
@@ -305,6 +306,31 @@ pub fn update_chunk_to(tag: &mut Tag, dimension: &str, generator: Option<&str>, 
     update(Ty::Chunk, tag, version, to);
     dynamic::remove(tag, "__context");
     dynamic::set(tag, "DataVersion", Tag::Int(to));
+}
+
+/// The DataVersion of 1.13, the flattening: block states written before it carry 1.12 names and properties.
+pub const FLATTENING: i32 = 1519;
+
+/// A block state, `name` with `props` (`key`, `value`), as written at `data_version`, upgraded as the datafixers
+/// do it: a state from before the flattening comes out with its 1.13 name and properties (the table of
+/// `BlockStateData`); any other, or one the table doesn't know, is returned as it is. The numeric block ids of
+/// the oldest chunks are not read here. API @API:upgrade_block_state@.
+pub fn native_upgrade_block_state(
+    name: &str,
+    props: &[(String, String)],
+    data_version: i32,
+) -> (String, Vec<(String, String)>) {
+    if data_version >= FLATTENING {
+        return (name.to_owned(), props.to_vec());
+    }
+    let mut sorted = props.to_vec();
+    sorted.sort();
+    let old = block_state_data::State {
+        name: name.to_owned(),
+        props: sorted,
+    };
+    let new = block_state_data::upgrade_state(&old);
+    (new.name, new.props)
 }
 
 /// `SimpleRegionStorage.upgradeChunkTag` for entity chunks (default version -1)

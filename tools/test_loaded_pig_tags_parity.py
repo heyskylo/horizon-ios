@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Actual pig Tags load/save/mutation proof; complete raw list order is diagnostic.
 
-Admit fresh Java with --reference-only --work-dir REF. Reuse exact REF bytes for
-both normal binaries with --reference-dir REF --binary GAME --work-dir NEW_OUT.
+A plain run (tools/parity.py) runs fresh Java and this checkout's game and compares them.
+To compare archived binaries: admit fresh Java with --reference-only --work-dir REF, then
+reuse exact REF bytes for each with --reference-dir REF --binary GAME --work-dir NEW_OUT.
 No output masks, ordering normalization or synthetic tag observer are applied.
 """
 import json
@@ -89,7 +90,6 @@ def main():
         sys.argv.append("--allow-gaps")
     folder = Path(sys.argv[sys.argv.index("--work-dir") + 1]).resolve()
     if reference is None:
-        assert "--reference-only" in sys.argv, "admit fresh Java, then reuse its frozen reference"
         runner.main()
     else:
         assert "--reference-only" not in sys.argv

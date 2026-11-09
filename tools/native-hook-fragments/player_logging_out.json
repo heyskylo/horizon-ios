@@ -1,0 +1,15 @@
+{
+  "hooks": [
+    {
+      "name": "player_logging_out",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_player_logging_out",
+      "neoforge": "none (Bukkit's PlayerQuitEvent; NeoForge's PlayerLoggedOutEvent comes after the removal)",
+      "side": "server",
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "a player leaving while still in their level, before they are saved and removed (`native_player_logging_out`).",
+  "doc_summary": "a player leaving the server while still present: `native_player_logging_out(player, name)` is heard once their connection is gone but before their menu closes and they are saved and removed, still in their level and in `native_server_players`, with no state swapped in, so the UUID helpers and `native_run_command` reach them (Bukkit's `PlayerQuitEvent`). A death a mod causes there (`kill <name>`) happens at once, with its drops where they stood. Not heard when the server stops. Bundles that use it need `\"hooks\": @API:player_logging_out@`."
+}

@@ -79,7 +79,7 @@ impl Launcher {
                 })),
             );
         }
-        let wide = self.window_width >= 1200.;
+        let wide = self.window_width >= crate::glass_home::SIDE_BY_SIDE;
         let header = if wide {
             div()
                 .flex()
@@ -129,6 +129,11 @@ impl Launcher {
         let java = self.mods.java_for(self.mods.kind).is_some();
         let registry = self.mods.source == SourceId::Horizon && !java;
         let everything = self.mods.everything;
+        let works_on = self.mods.browse.filters.works_on;
+        let instance_name = self
+            .selected_instance()
+            .map(|i| i.name.clone())
+            .unwrap_or_default();
         let extras = div()
             .flex()
             .flex_col()
@@ -153,6 +158,33 @@ impl Launcher {
                         .child(ui::text(13., FontWeight::NORMAL, 0.7).child(tr("Show everything")))
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.mods.everything = !this.mods.everything;
+                            this.mods_search(0);
+                            cx.notify();
+                        })),
+                )
+            })
+            .when(registry, |d| {
+                d.child(
+                    div()
+                        .id("mods-works-on")
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .cursor_pointer()
+                        .child(ui::toggle(
+                            "mods-works-on-switch",
+                            works_on,
+                            ui::look().accent,
+                            ui::look().on_accent,
+                            &t,
+                        ))
+                        .child(ui::text(13., FontWeight::NORMAL, 0.7).child(trf(
+                            "Only what works on {instance}",
+                            &[("instance", &instance_name)],
+                        )))
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            let filters = &mut this.mods.browse.filters;
+                            filters.works_on = !filters.works_on;
                             this.mods_search(0);
                             cx.notify();
                         })),
@@ -389,8 +421,13 @@ impl Launcher {
                 .child(line);
         }
         let picked = self.mods_picked().map(|p| p.id.clone());
-        let mut list = div().flex().flex_col();
-        for i in 0..self.mods.results.len() {
+        // Registry pages add up behind More: only the rows near the view are built (`cull`).
+        let (rows, scroll) = (
+            self.mods.results_list.clone(),
+            self.content_scroll.handle.clone(),
+        );
+        let total = self.mods.results.len();
+        let row = |i: usize| {
             let p = self.mods.results[i].clone();
             let icon = self.mods_icon(&p, 40.);
             let m = &self.mods;
@@ -434,7 +471,12 @@ impl Launcher {
             };
             // The registry's rows end with downloads, the others' with how they run (`compat`).
             let right = if p.source == SourceId::Horizon {
-                ui::text(13., FontWeight::NORMAL, 0.5).child(count(p.downloads).to_uppercase())
+                ui::text(13., FontWeight::NORMAL, 0.5)
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .children(super::mods_page::github_stars(&p.id, &t))
+                    .child(count(p.downloads).to_uppercase())
             } else {
                 let support = m.support(&p);
                 let tone = match support {
@@ -447,62 +489,76 @@ impl Launcher {
                     .child(tr(support.label()))
             };
             let id = p.id.clone();
-            list = list.child(
-                ui::row(
-                    SharedString::from(format!("mods-row-{}", p.id)),
-                    picked.as_deref() == Some(p.id.as_str()),
-                    12.,
-                    &t,
-                )
-                .px(px(12.))
-                .py(px(10.))
-                .child(
-                    div()
-                        .flex_none()
-                        .size(px(40.))
-                        .rounded(px(8.))
-                        .overflow_hidden()
-                        .child(icon),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .child(
-                            div()
-                                .flex()
-                                .items_baseline()
-                                .gap(px(8.))
-                                .min_w_0()
-                                .child(
-                                    ui::text(14., FontWeight::MEDIUM, ink::FULL)
-                                        .truncate()
-                                        .child(p.title.clone()),
-                                )
-                                .child(ui::text(13., FontWeight::NORMAL, 0.5).truncate().child(
-                                    match p.kind {
-                                        PackKind::Mod | PackKind::Shader => p.author.clone(),
-                                        _ => tr(kind_name(p.kind)).to_string(),
-                                    },
-                                )),
-                        )
-                        .child(
-                            ui::text(13., FontWeight::NORMAL, 0.6)
-                                .truncate()
-                                .child(p.summary.clone()),
-                        ),
-                )
-                .child(right.flex_none())
-                .child(action)
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.mods.picked = Some(id.clone());
-                    this.mods.confirm_remove = None;
-                    cx.notify();
-                })),
-            );
-        }
+            ui::row(
+                SharedString::from(format!("mods-row-{}", p.id)),
+                picked.as_deref() == Some(p.id.as_str()),
+                12.,
+                &t,
+            )
+            .px(px(12.))
+            .py(px(10.))
+            .child(
+                div()
+                    .flex_none()
+                    .size(px(40.))
+                    .rounded(px(8.))
+                    .overflow_hidden()
+                    .child(icon),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .flex()
+                            .items_baseline()
+                            .gap(px(8.))
+                            .min_w_0()
+                            .child(
+                                ui::text(14., FontWeight::MEDIUM, ink::FULL)
+                                    .truncate()
+                                    .child(p.title.clone()),
+                            )
+                            .child(ui::text(13., FontWeight::NORMAL, 0.5).truncate().child(
+                                match p.kind {
+                                    PackKind::Mod | PackKind::Shader => p.author.clone(),
+                                    _ => tr(kind_name(p.kind)).to_string(),
+                                },
+                            )),
+                    )
+                    .child(
+                        ui::text(13., FontWeight::NORMAL, 0.6)
+                            .truncate()
+                            .child(p.summary.clone()),
+                    )
+                    .children(
+                        m.works
+                            .get(&p.id)
+                            .filter(|_| p.source == SourceId::Horizon)
+                            .map(|(works, line)| {
+                                ui::text(12., FontWeight::NORMAL, ink::FULL)
+                                    .truncate()
+                                    .text_color(if *works { ui::live() } else { white(0.4) })
+                                    .child(line.clone())
+                            }),
+                    ),
+            )
+            .child(right.flex_none())
+            .child(action)
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.mods.picked = Some(id.clone());
+                this.mods.confirm_remove = None;
+                cx.notify();
+            }))
+        };
+        let mut list =
+            div()
+                .flex()
+                .flex_col()
+                .child(rows.column(&scroll, total, 0., |_| false, row));
         if self.mods.more {
             let searching = self.mods.searching;
             let offset = self.mods.results.len();

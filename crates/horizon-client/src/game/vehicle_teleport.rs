@@ -257,6 +257,10 @@ impl Game<'_> {
             }
             game.prepare_vehicle_transition(root);
             game.teleport_to_in_level(target, at, rotation, turn_riders);
+            // teleportCrossDimension: the new entity's teleportSetPosition takes
+            // the transition's motion, which /tp's teleportTo makes zero. (The
+            // ground flag performTeleport then sets lands on the old entity.)
+            game.teleport_stops(target);
             let mounts: Vec<_> = game.mobs.iter().map(|m| (m.id, m.extra.mount)).collect();
             let tree = super::persist::vehicle_tree(root, &mounts);
             let tag = game.vehicle_tree_nbt(root).ok_or("missing vehicle tree")?;
@@ -339,6 +343,7 @@ impl Game<'_> {
                         at,
                         rotation: Some(rotation),
                         vehicle: game.vehicle_by_uuid(mount),
+                        cause: None,
                     });
             }
             game.native_joins_flush(false, 0);

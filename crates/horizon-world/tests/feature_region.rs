@@ -58,13 +58,13 @@ fn registry() -> BlockRegistry {
                     .iter()
                     .map(|name| {
                         let mut tag = Tag::compound([("id", Tag::String((*name).into()))]);
-                        if *name == "minecraft:water" {
-                            if let Tag::Compound(entries) = &mut tag {
-                                entries.insert(
-                                    "properties".into(),
-                                    Tag::compound([("level", Tag::String("0".into()))]),
-                                );
-                            }
+                        if *name == "minecraft:water"
+                            && let Tag::Compound(entries) = &mut tag
+                        {
+                            entries.insert(
+                                "properties".into(),
+                                Tag::compound([("level", Tag::String("0".into()))]),
+                            );
                         }
                         tag
                     })

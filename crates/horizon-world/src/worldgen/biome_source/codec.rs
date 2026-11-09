@@ -150,10 +150,10 @@ impl BiomeSourceCatalog {
             }
             "minecraft:multi_noise" => {
                 // mapEither prefers a successful inline list, then tries preset.
-                if let Some(raw) = optional(&object, "biomes") {
-                    if let Ok(value) = self.inline(raw) {
-                        return Ok(value);
-                    }
+                if let Some(raw) = optional(&object, "biomes")
+                    && let Ok(value) = self.inline(raw)
+                {
+                    return Ok(value);
                 }
                 let raw = required(&object, "preset")?;
                 if raw.get().starts_with('"') {

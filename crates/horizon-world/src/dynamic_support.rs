@@ -203,19 +203,22 @@ impl DynamicSupport {
 }
 /// Shared no-context support and context-selected stable scaffold geometry.
 pub(crate) fn scaffolding_stable_shape() -> VoxelShape {
+    scaffolding_stable_shape_ref().clone()
+}
+/// Borrowed form of [`scaffolding_stable_shape`] for hot paths that must not
+/// touch the shape's reference counts.
+pub(crate) fn scaffolding_stable_shape_ref() -> &'static VoxelShape {
     static SHAPE: OnceLock<VoxelShape> = OnceLock::new();
-    SHAPE
-        .get_or_init(|| {
-            let mut legs = VoxelShape::empty();
-            for [x, z] in [[0.0, 0.0], [0.875, 0.0], [0.875, 0.875], [0.0, 0.875]] {
-                let leg = box_shape([x, 0.0, z], [x + 0.125, 1.0, z + 0.125]);
-                legs = legs.join(&leg, ShapeOp::OR).expect("bounded scaffold legs");
-            }
-            column(16.0, 14.0, 16.0)
-                .join(&legs, ShapeOp::OR)
-                .expect("bounded scaffold support")
-        })
-        .clone()
+    SHAPE.get_or_init(|| {
+        let mut legs = VoxelShape::empty();
+        for [x, z] in [[0.0, 0.0], [0.875, 0.0], [0.875, 0.875], [0.0, 0.875]] {
+            let leg = box_shape([x, 0.0, z], [x + 0.125, 1.0, z + 0.125]);
+            legs = legs.join(&leg, ShapeOp::OR).expect("bounded scaffold legs");
+        }
+        column(16.0, 14.0, 16.0)
+            .join(&legs, ShapeOp::OR)
+            .expect("bounded scaffold support")
+    })
 }
 
 fn box_shape(min: [f64; 3], max: [f64; 3]) -> VoxelShape {

@@ -8,7 +8,7 @@ net/minecraft/commands/execution/tasks/ExecuteCommand#execute	port	crates/horizo
 IsolatedCall.execute	inline	crates/horizon-client/src/game/functions.rs::Game::run_function	the new depth and the isolated return slot are set up in run_function; if function reaches it through call_function_ref
 CommandFunction.shouldConcatenateNextLine	inline	crates/horizon-client-render/src/datapack.rs::parse_function	the trailing-backslash join is the continuation loop in parse_function
 CommandFunction.checkCommandLineLength	missing		minor: no 2,000,000-character limit on a command line; a longer line is not refused
-CommandFunction.parseCommand	missing		minor: lines are parsed when they run (execute_line), not when the datapack loads; a syntax error fails at run time
+CommandFunction.parseCommand	port	crates/horizon-client/src/game/functions.rs::Game::admit_store	ordinary lines compile at function permission against actual and candidate registries before the file is admitted; macro lines remain deferred
 FunctionBuilder.addCommand	inline	crates/horizon-client-render/src/datapack.rs::parse_function	plain lines are collected in parse_function
 FunctionBuilder.getArgumentIndex	inline	crates/horizon-client-render/src/datapack.rs::parse_function	macro parameter names are collected in order without duplicates; names, not indices
 FunctionBuilder.convertToIndices	inline	crates/horizon-client-render/src/datapack.rs::Function::instantiate	parameters are looked up by name in instantiate; there is no index list

@@ -37,6 +37,7 @@ and some are waiting for Ludovic:
 | Fork pull requests need approval | **Live**: every outside contributor's workflows wait for a maintainer's approval. |
 | Private vulnerability reporting | **Live** (see the end of this page). |
 | Signed checksums on releases | **Live** for new releases (#1011): the `release` environment holds the key, and its public half is in `release-keys.txt` (#1023). Releases from before then are unsigned. |
+| Signed prebuilt native-mod builds | **Being built** (#11859): horizon-mods' `native-builds` environment (deployable from `main` only) holds `NATIVE_BUILD_SIGNING_KEY`, a key of its own, never the release key, because the registry compiles other people's code there. Its public half is in `native-build-keys.txt`. Each signature covers the build's request key (target, base commit, each mod's file SHA-256), its target and the archive's SHA-256 (`horizon_release_sign::native_build`), so it can't pass for another set's file or for a release. `tools/ci/sign_native_build.sh` signs with OpenSSL. |
 | Launchers and servers checking signatures | **Not yet**: #1014 waits as a draft until a signed stable game release and a signed launcher release exist. Until then they trust GitHub's checksum, as before. |
 | Smoke test and release-blocker before publishing | **Live**: since 2026-10-23 every release is the latest at once (one channel, Ludovic's decision), so it is published only after its smoke test passed and while no `release-blocker` is open. The 6-hour beta of the old Alpha, then stable flow (#1012) is gone. |
 | Reports marked suspicious | **Partly**: the scan of Discord for agents does it. Kira's issues do it once its pull request merges. |
@@ -115,11 +116,12 @@ and some are waiting for Ludovic:
   (#1024), which removes anything a pull request left in the work folder by accident, but
   not a deliberate attack. The protection is review: only agents and maintainers push to this repository, and a
   maintainer reads a fork's change before labelling it.
-- **The first install** with `install.sh` checks the signature when OpenSSL 3 is installed: it verifies
-  `SHA256SUMS.sig` (a Nightly's `SHA256SUMS.v2.sig`, for its own version) against the release key built into the
-  script, then the archive against `SHA256SUMS`. With
-  an older OpenSSL, LibreSSL (what macOS ships) or none, it says so and checks only the SHA-256 GitHub
-  publishes. `install.ps1` still checks only that SHA-256. Every update after that checks the signature.
+- **The first install** with `install.sh` or `install.ps1` checks the signature when OpenSSL 3 is installed: it
+  verifies `SHA256SUMS.sig` (a Nightly's `SHA256SUMS.v2.sig`, for its own version) against the release key built
+  into the script, then the archive against `SHA256SUMS`. `install.ps1` looks for OpenSSL on the PATH and in Git
+  for Windows, which ships it; Windows itself can't check Ed25519. With an older OpenSSL, LibreSSL (what macOS
+  ships) or none, the script says so and checks only the SHA-256 GitHub publishes. Every update after that checks
+  the signature.
 
 ## Reporting a security problem
 

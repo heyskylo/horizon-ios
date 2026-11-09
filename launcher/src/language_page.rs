@@ -146,9 +146,7 @@ impl Launcher {
                                 .text_color(t.ink)
                                 .child(choice_name(choice)),
                         )
-                        .when(chosen, |d| {
-                            d.child(div().size(px(6.)).rounded_full().bg(t.accent))
-                        })
+                        .when(chosen, |d| d.child(div().size(px(6.)).bg(t.accent)))
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.pick_language(choice, cx)
                         })),

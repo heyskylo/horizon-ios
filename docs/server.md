@@ -6,8 +6,9 @@ panel and a control API to manage it. At the same view and simulation distance a
 should beat vanilla, Paper and Fabric + Lithium on TPS/MSPT, RAM, CPU, chunk generation and start time.
 Gameplay stays vanilla: there are no Paper-style rule changes unless the owner turns one on.
 
-This page covers what the server does today (measured), the design of `horizon-server`, and what ships for the
-first working version (2026-10-23). The owner's guide is [docs/hosting.md](hosting.md).
+This page is the design of `horizon-server` and the engine it runs; the section numbers are cited from the code.
+The owner's guide is [hosting.md](hosting.md); every command, `server.toml` key and API route is in the generated
+[api/server-reference.md](api/server-reference.md).
 
 ## 1. Today
 
@@ -40,71 +41,13 @@ The dedicated server is the game itself, run headless:
   player of the lower-case name; an online server answers "That player does not exist".
   `tools/test_user_cache_parity.py` checks this against vanilla, with a mock profile service.
 
-### Measured (2026-10-16, Mac mini M4 Pro, main at bd8dff20, release build)
+### Scale
 
-The server ran in a scratch folder with `online-mode=false`, `level-seed=12345` and view and simulation
-distance 10. The vanilla server was the pinned 26.3 `server.jar` on Java 25 with `-Xmx4G`.
-
-| | Horizon (`horizon-client --dedicated`) | Vanilla 26.3 |
-|---|---|---|
-| Start, new world (wall clock, to `Done`) | 11.4 s (`Done (9.762s)`) | 12.5 s (`Done (2.066s)`, includes the bundler's first unpack) |
-| Start, existing world (wall clock) | **5.8 s** (resources load in 1.6 s) | 10.7 s (`Done (0.446s)`: the JVM and DataFixerUpper take the rest) |
-| RAM, idle with nobody online (RSS) | 1.40–1.51 GB | **0.93–0.97 GB** |
-| CPU, idle with nobody online | 1.2 % of one core | **0.6 %** |
-| `stop` to exit | 0.6 s | 0.6 s |
-| What has to be installed | one 46.8 MB binary + 589 MB of prepared resources | Java 25 + the 62 MB jar |
-| Crates linked | 384 (wgpu, winit, cpal, gilrs, arboard, naga…) | n/a |
-
-On Linux the full game loads `libasound.so.2` (cpal) and `libudev.so.1` (gilrs) at startup. wgpu, winit
-and the Wayland/X11 libraries are loaded only when a window opens. The server build (`horizon-engine`,
-section 3) is the same program built without its `audio` and `controllers` features, so it needs neither
-library, and a minimal server image runs it as it is.
-
-The two clear losses are RAM and idle CPU. The dedicated server loads everything the client needs to draw
-(the HUD atlas, item renderer, block-entity models, panorama, fog and music tables, entity models), and it
-builds the meshing tables at startup. None of these are used without a window. Loading them is startup work,
-not tick cost, so it is in scope here (see section 9).
-
-### Joining it
-
-- **Horizon client:** works. A headless Horizon client (`--server 127.0.0.1:PORT`, the harness mode) logged
-  in, received its 49 chunks at render distance 2, chatted, saw `/list`, and left. The server's log matched
-  vanilla's lines (`logged in with entity id`, `joined the game`, `[Not Secure] <Tester> …`, `lost connection:
-  Disconnected`, `left the game`).
-- **Vanilla 26.3 client:** checked by `tools/test_dedicated_server_parity.py`. VanillaProtocolClient, a
-  headless client built from vanilla's own codecs, pings and joins Horizon's server and vanilla's from the
-  same world copy. It compares every login, configuration and play packet up to the first chunk batch, the
-  chunk bytes, chat, `/list`, failing commands, the console lines and the files left behind. Result on main:
-  see "Harnesses on main" below.
-- **The real vanilla 26.3 client** (`tools/vanilla_client.py`, from the owner's own files, dev-only) joins
-  too. On 2026-10-18 it joined the server build of the game (`horizon-engine`, section 3) on the Mac mini:
-  `python3 tools/vanilla_client.py --name Vanilla --join localhost:PORT`. It logged in, drew the terrain
-  around spawn and stayed connected for four minutes, with no warning or error on the server. The tool
-  runs on Linux under vscreen and on macOS from the logged-in screen session, even a locked one, with vsync
-  off.
-
-### What fails or is missing
-
-| Area | Status |
-|---|---|
-| `online-mode=true` | **Works** (ServerLoginPacketListenerImpl): a 1024-bit RSA key pair at start ("Generating keypair"), the encryption request, the shared secret and challenge, AES/CFB8, and the session service's `hasJoined` check (with the address when `prevent-proxy-connections` is on), with vanilla's log lines and messages. `test_online_mode_parity.py` runs the same logins against vanilla's server and Horizon's with a mock session service. |
-| Secure chat | **Works** (`SignedMessageChain`, `LastSeenMessagesValidator`, `MessageSignatureCache`): the chat session update and its profile key, checked against the services' `playerCertificateKeys`; signed chat, `say`, `me` and `msg`, relayed with their signatures and last-seen lists; `enforce-secure-profile` (with `online-mode`) refuses unsigned chat; and vanilla's log lines (`[Not Secure]`, the decoder's warnings, the kicks). Offline servers and players without a chat session chat unsigned, as on vanilla. `test_secure_chat_parity.py` runs the same signed and unsigned players against vanilla's server and Horizon's, with test keys and a mock services server. |
-| Nether and End | **Works**: the server holds a level per dimension, and each player is in its own (portals, `execute in … tp`, respawn). `test_server_dimension_players_parity.py` checks it against vanilla. How it works, its cost and what's left: [server-levels.md](server-levels.md). |
-| Refused logins | Logged as vanilla does: `Disconnecting <name> (/address): <reason>`, then `<name> (/address) lost connection: <reason>`, and the session errors (`Username '<name>' tried to join with an invalid session`, `Couldn't verify username because servers are unavailable`). |
-| Gameplay for remote players | Checked against vanilla's server with a vanilla-codec client (#484, `tools/test_dedicated_server_parity.py`): a right click with an item on a block uses it once, a dead player's commands run, players on a team without friendly fire don't hurt each other, and a player's projectiles are theirs (their ender pearl takes them). A player's arrow, snowball or egg hits other players like vanilla's, refused by the `pvp` game rule and by teams without friendly fire (`tools/lan_e2e.py` `arrows`; also checked on a dedicated server with two protocol clients, #5785). The recipe book, status effects and block sync while digging (#500) work. Left: a mob a guest kills counts in the host's statistics and advancements, not the guest's (`mob_died` runs as the host). |
-| Defaults that surprise owners | `white-list=true` is vanilla 26.3's default, so a fresh server refuses everyone until they are added. That matches vanilla, so the first-run flow (section 3) asks about the whitelist up front. |
-| Management | Only stdin. There is no service, no backups, no status beyond `list`, no restart after a crash, and a server can't be managed while it runs in the background. |
-| Packaging | The server is the full game client. Resources come from `horizon-prepare`, which needs a JDK and the official launcher's client install, both awkward on a headless VPS. |
-| Tick times | The dedicated loop never recorded its tick times in the game clock (only the windowed loop did), so `/tick query` on a dedicated server reported 0 ms. Fixed in PR 2b, which the benchmark needs (section 9). |
-| Scale | Measured against vanilla on equal work (section 9, `benchmarks/server-equal-work-2026-10-17/`): 20 TPS up to 50 bots, 9 to 11 TPS at 100, where vanilla's watchdog stops it. Horizon is ahead with few players and when exploring; with 25 to 50 players near spawn vanilla's tick is shorter. |
-
-### Harnesses on main
-
-On the tip of the code PRs (2a to 3, rebased on b4ad6538), `tools/parity.py dedicated_server online_mode
-server_files server_player_combat server_player_damage` passed all five. That includes the vanilla protocol
-client joining Horizon's server and vanilla's from the same world. The full `--changed origin/main` set
-(309 harnesses, since the PRs touch the client crate) had passed 60 of 60 when it was stopped for disk
-space; CI runs it on every pull request.
+Measured against vanilla on equal work (section 9): 20 TPS up to 50 bots, 9 to 11 TPS at 100, where vanilla's
+watchdog stops it. Horizon is ahead with few players and when exploring; with 25 to 50 players near spawn
+vanilla's tick is shorter. What the dedicated server checks against vanilla (online mode, secure chat,
+dimensions, remote players' gameplay) is in its harnesses: `python3 tools/parity.py dedicated_server online_mode
+secure_chat server_dimension_players server_player_combat server_player_damage`.
 
 ## 2. Architecture: a supervisor and an engine
 
@@ -156,6 +99,7 @@ max_expect_seconds = 60      # the longest the proxy may ask for
 max_expected = 64            # players waited for at once
 max_freeze_seconds = 30      # the longest a player stays frozen while it is handed over
 max_hold_seconds = 60        # the longest a player arriving from another server is held before it is dropped
+stop_wait_seconds = 10       # a stop with players on waits this long for the proxy to move them out (0 to 60; 0: no wait)
 ```
 
 The supervisor passes the section to the engine as `--transfers expect_seconds=10,...`, beside
@@ -181,23 +125,32 @@ dashes in an answer (`123e4567-e89b-12d3-a456-426614174000`). A hand-over id is 
 `transfer-status` is what a proxy reads before it sends players to a server. It names no player and changes nothing:
 
 ```json
-{"ok": true, "players": 12, "held": 1, "expected": 2, "frozen": 0, "online": 13, "max_players": 20, "full": false}
+{"ok": true, "players": 12, "held": 1, "expected": 2, "frozen": 0, "online": 13, "max_players": 20, "full": false, "stopping": false}
 ```
 
 `players` are the players placed in the world (a player a `moved` release took out is no longer counted), `held`
 the logins held for a hand-over, `expected` the expectations still alive, and `frozen` the players this server is
 handing over. `online` is what the player limit counts: the placed and the held players and the logins still
 joining. `full` is `online` at `max_players` or above: an ordinary login, held or not, is then refused as
-`multiplayer.disconnect.server_full`, unless the player is an operator with `bypassesPlayerLimit`. A proxy asks it
-often, so it writes nothing to the log.
+`multiplayer.disconnect.server_full`, unless the player is an operator with `bypassesPlayerLimit`. `player-expect`
+counts the expected players too: it is refused once `online` and `expected` reach `max_players`. `stopping` is true
+once the server has begun to stop, and no player is taken in any more. A proxy asks it often, so it writes nothing to
+the log.
 
 `player-expect <uuid> [seconds]` tells the target server that the player is about to log in: within
 `expect_seconds` by default, `max_expect_seconds` at most (a longer time is cut to it), and at most
 `max_expected` players are expected at once. The reply is `{"ok": true, "renewed": false, "ttl_seconds": 10}`;
 asking again for the same player renews the time and says `"renewed": true`. It is refused for a missing or
-malformed id, a time that is not a whole number of seconds above zero, a player already connected, and a full
-table. The player's next login uses the expectation up as it starts, once the bans, the whitelist and the player
-limit let it in, so a login still in configuration when the time runs out (a resource pack prompt) keeps it. A
+malformed id, a time that is not a whole number of seconds above zero, a player already connected, a full table,
+a full server (`{"error": "the server is full"}`) and a server that is stopping (`{"error": "the server is
+stopping"}`). Each expectation holds a place until it is used up or runs out: once the places the player limit
+counts and those of the other expected players reach `max-players`, a new one is refused as a login would be, so two
+proxies sending players at once do not fill the server past its limit. As at login, an operator with
+`bypassesPlayerLimit` is never refused as full. The places are held against other expectations only: an ordinary
+login (one nobody expected) sees the vanilla limit alone, so it can take a place an expected player was counting on.
+That player's login is then refused as `server_full`, and the proxy aborts the hand-over on the source, where the
+player goes on as it was. `full` in `transfer-status` is likewise the vanilla condition alone. The player's next
+login uses the expectation up as it starts, once the bans, the whitelist and the player limit let it in, so a login still in configuration when the time runs out (a resource pack prompt) keeps it. A
 login that then fails before it reaches play (its connection drops in configuration, or the client refuses a
 required pack) gives the expectation back with its own deadline, so the proxy's next attempt within that time is
 still expected. An expectation no login used is reported in the log when its time runs out.
@@ -423,6 +376,32 @@ Every step that is not taken in time is undone by itself: an expectation after `
 `max_hold_seconds`, a freeze after `max_freeze_seconds`, each with a warning in the log. A `moved` that comes after
 the freeze ran out is refused, so the proxy must confirm and release within `max_freeze_seconds` of the export.
 
+**A server that stops.** From the `/stop` command (the console's, a player's or the control endpoint's) or a stop
+signal on, `player-expect`, `player-import` and `player-confirm` are refused `{"error": "the server is stopping"}`: a
+player must not arrive on a server that is about to close. The proxy drops the held player there and aborts on the
+source. A retry after the commit is still answered, and `player-export`, `player-release` and `player-drop` stay
+open: they are the way out.
+
+With players placed, the stop then waits `stop_wait_seconds` (10 by default; 0 stops at once, as vanilla does) so a
+proxy can move them out first. A proxy that moves them one at a time, as Meridian's `evacuate` does, takes about
+2 s a player over a real network (1.4 to 2.3 s measured): 10 s is room for about four, and a fuller server needs
+more (60 at most, about 25 players). The log says `Stopping in 10 s: a proxy may move the players out first`, and
+horizon-server sends `server/stopping` on the management protocol then, for a stop from the game as for its own.
+During the wait every login is refused as `multiplayer.disconnect.server_shutdown`, and the server ticks on and
+answers the proxy. The wait ends as soon as no player is placed, at `stop_wait_seconds` when no hand-over is frozen,
+and at the latest a freeze's length later, so a hand-over started in time finishes (the `N s` of the log line is
+then longer); the whole wait is cut at 90 s, which leaves the saves time before horizon-server kills a game that has
+not stopped within 120 s, so `stop_wait_seconds` and `max_freeze_seconds` may add up to 90 at most when the stop
+waits. A freeze lasts `max_freeze_seconds` worth of ticks (20 a second), so its length in time is reckoned at the
+tick length of the moment, the rate's or longer when the server is slower than its rate: at 10 ticks a second it
+lasts twice as long. `player-export ... freeze` is refused (`no hand-over starts this late`) once a freeze that
+starts then would end past the limit, unless the player is frozen already: a hand-over the limit cut would leave
+the player saved by the source after the target placed it. That holds at the tick rate of the moment the freeze
+starts: a server that slows down after it can still reach the limit with it. A hand-over still frozen at the limit
+is logged as a warning, and its player saved here. Then the stop goes on as vanilla's (`Stopping server`, the
+saves, the kicks). A second `stop` during the wait stops at once, with the saves; a second stop signal ends the
+process, as without `[transfer]`.
+
 **In the log.** Each `player-*` request writes one line with what became of it: `INFO` and what it did
 (`player-import Alex (<uuid>): ok, parts inventory,experience, placed false, announced true, recentered false,
 hand-over <id>`), or `WARN` and the reason it was refused (`player-export Alex (<uuid>): refused: that player is
@@ -448,7 +427,8 @@ game built in `Game::new`, the integrated server on its own thread. On that base
 **Binaries.** The release archives hold `horizon-client`, `horizon-ctl`, `horizon-prepare` and
 `horizon-server`. On Linux the release also has `horizon-server-linux-x86_64.tar.gz`: `horizon-server`,
 `horizon-prepare` and `horizon-engine`, the game built with `--no-default-features` (no sound, no
-controllers), which links neither `libasound.so.2` nor `libudev.so.1`. `release.yml` builds it after the
+controllers, no Discord presence, Play with Friends or "I'm playing" ping: the `discord`, `friends` and
+`heartbeat` features), which links neither `libasound.so.2` nor `libudev.so.1`. `release.yml` builds it after the
 client archive (`xtask package-server`) and fails if `tools/check_imports.py --server` finds either library;
 CI lints the same build. `horizon-server` runs `horizon-engine` when it is beside it or on the PATH, else
 `horizon-client`. Build it yourself with `cargo build --release -p horizon-client --no-default-features`
@@ -487,8 +467,9 @@ comes out of the headless-engine work.
 - Linux and macOS:
   `curl -fsSL https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.sh | sh`
   The script picks the release archive for the OS and architecture (on Linux x86_64 the server archive,
-  on macOS arm64 the game's), downloads it from GitHub Releases, and checks it against the SHA-256 GitHub
-  publishes for each asset. It never asks for sudo. Options: `--version vX.Y.Z`, `--dir` (default
+  on macOS arm64 the game's), downloads it from GitHub Releases, and checks it against the release's signed
+  `SHA256SUMS` when OpenSSL 3 is installed, else against the SHA-256 GitHub publishes for each asset
+  (docs/security.md). It never asks for sudo. Options: `--version vX.Y.Z`, `--dir` (default
   `~/.local/share/horizon`), `--bin` (default `~/.local/bin`), and `--archive FILE` to install an archive
   already on the machine (a build of your own; no download and no checksum).
   A Linux release from before the server archive installs the full game, which links ALSA's and udev's
@@ -499,7 +480,8 @@ comes out of the headless-engine work.
 - Windows:
   `irm https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.ps1 | iex`
   The script does the same into `%LOCALAPPDATA%\Horizon` (`-Version`, `-Dir`), with junctions instead of
-  links (no admin rights), and adds `bin` to the user's PATH.
+  links (no admin rights), and adds `bin` to the user's PATH. It finds OpenSSL 3 on the PATH or in Git for
+  Windows to check the signature.
 - **Layout.** Each release goes to `<dir>/releases/<tag>` and `<dir>/current` points at the one in use, so an
   update or a rollback is one link. `<bin>/horizon-server` and `<bin>/horizon-prepare` are two-line launchers
   that run `current`. The prepared game files live in `<dir>/game-files/horizon-client` and each release's
@@ -681,7 +663,8 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   `HttpOnly; SameSite=Strict` session cookie. Anyone who can read the server folder can manage the server,
   and no one else can. Sessions end when the supervisor stops.
 - **Protection.** The `Host` header must name the panel itself: its address, `localhost` on loopback, or a
-  tailnet name (a MagicDNS short name or `*.ts.net`). That stops DNS rebinding. Changes (POST, PATCH, DELETE) need
+  tailnet name (a MagicDNS short name or `*.ts.net`); bound to every interface (`0.0.0.0` or `::`), any IP
+  address with the panel's port. That stops DNS rebinding. Changes (POST, PATCH, DELETE) need
   the `X-Horizon: 1` header, which stops CSRF. After 10 failed logins in a minute, logins are refused for a
   while. The page is served with a strict Content-Security-Policy (nothing from elsewhere) and can't be
   framed.
@@ -816,9 +799,10 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   - notifications: the supervisor pushes them to every connected client as vanilla's `JsonRpcNotificationService`
     does (a JSON-RPC request without an `id`, its one parameter in an array), through a queue and a thread so a slow
     client never holds the game's output. Built: `server/started` (the game's `Done`) and `server/stopping`
-    (when the supervisor or the game's own `stop` begins the shutdown, once per run), `server/saving` and
-    `server/saved` (around every world save of the running game: `save-all`, the autosave, the pause when
-    empty; a save the game makes while it stops is after the last one the supervisor hears of), and
+    (when the supervisor or the game's own `stop` begins the shutdown, once per run; with `[transfer]` on and
+    players placed, at the start of the wait, `Stopping in N s`, so a proxy has that long to move them),
+    `server/saving` and `server/saved` (around every world save of the running game: `save-all`, the autosave, the
+    pause when empty; a save the game makes while it stops is after the last one the supervisor hears of), and
     `players/joined` and `players/left` (from the game's typed events, within a quarter of a second), and
     `operators/*`, `allowlist/*`, `bans/*` and `ip_bans/*` `added`/`removed`: each of the game's lists tells a
     watcher what `add`, `remove` and `clear` do, as vanilla's `StoredUserList` tells its `NotificationService`,
@@ -886,123 +870,5 @@ reproducible by anyone, and show the same gameplay on both sides.
   machine, commit, Java version, settings and every run) and prints a comparison table. Results are
   published like the client benchmark, with the machine, the versions and the exact commands. TPS is derived
   from `/tick query`'s average (20 while it fits in 50 ms), since the command reports times, not the rate.
-- **First run (PR 5,** on a busy shared Mac mini, so the numbers are noisy). With 1 bot Horizon ticks in
-  3.5 ms against vanilla's 11.2 ms and uses 1.6 GB against 3.6 GB. At 10 and 25 `mixed` bots Horizon falls
-  to about 10 TPS where vanilla keeps 20, and at 50 both land at about 15 TPS. The work isn't equal yet:
-  - Vanilla pulls fast players back when it lags (`moved too quickly`), which Horizon never does, so
-    vanilla's `explore` bots generated less terrain.
-  - Vanilla's chunk sending yields under load.
-  - Horizon sent each nearby `walk` bot 1.5–4 times as many chunks.
-
-  Horizon sent 2–4 times the chunks per second in every multi-bot run.
-- **Equal-work run (2026-10-17,** `benchmarks/server-equal-work-2026-10-17/`, on the ThinkPad with the bots
-  on the Mac mini). Horizon now checks moves and paces chunks as vanilla does (#586), the bots wait for the
-  chunk they stand in, an `--explore-speed` pass keeps both servers at the same rate, and vanilla runs with
-  `gamerule locator_bar false` (Horizon had no locator bar when this ran; since #692, merged the same day,
-  it sends one to vanilla clients). Results:
-  - Memory: Horizon's RSS is 1.9 to 2.6 times smaller in every run (vanilla's heap is fixed at 4 GB).
-  - Walking near spawn: Horizon's tick is shorter with 1 and 10 bots (5.5 against 18.3 ms, 11.5 against
-    16.8), and longer with 25 and 50 (20.7 against 16.0, 31.4 against 20.5). Both keep 20 TPS up to 50.
-  - Exploring at the same rate: Horizon's tick is about half of vanilla's (13.5 against 29.2 ms at 10 bots,
-    20.2 against 37.0 at 25).
-  - At 100 bots: vanilla's watchdog stops it in every pass; Horizon runs at 9 to 11 TPS.
-
-  Two server costs were found and fixed on the way: every chunk section was encoded once per player (#623),
-  and every packet woke its connection's writer thread (#649). Together they took the 50-bot walking tick
-  from 281 ms to 31 ms. At 25 walking bots most of what remains is the engine's streaming and block entity
-  ticks, both of which grow with players (the README has the profile).
-- **Mixed bots, as installed (2026-10-18,** `benchmarks/server-mixed-2026-10-18/`, the first published
-  run for the working version). It used the v2026.10.18.15 release as `install.sh` installs it, against
-  vanilla 26.3, with 1, 10, 25 and 50 `mixed` bots and vanilla's default game rules on both (Horizon has
-  the locator bar now). The servers ran on the ThinkPad and the bots on the Mac mini. Results:
-  - Both kept 20 TPS in every run.
-  - Horizon's RSS was 3.7 to 5.2 times smaller (1.0 GB against 4.0 GB at 50).
-  - Horizon's average tick was shorter with 1, 10 and 25 bots (2.4 against 17.9 ms, 12.4 against 34.5,
-    24.0 against 31.6) and longer with 50 (35.2 against 29.7). Its P99 was lower at every count.
-  - Horizon also did more work: it kept up with the exploring bots, so it generated 1.9 to 2.9 times
-    the new terrain a second.
-- **Mixed bots, equal work (2026-10-18,** `benchmarks/server-equal-mixed-2026-10-18/`). This is the same
-  run with the load made equal. The explore bots fly at 0.8 blocks a second, so every bot follows the same
-  path on both servers and none waits for terrain. A 300-second warm-up lets both finish the bots' first
-  views before the measurement. `server_bench.py` now prints a work table that compares each count's chunks
-  a second across servers and flags a run that isn't equal. Horizon ran as `horizon-engine`, the server
-  build, installed from its archive. Results, on the ThinkPad again (the desktop didn't wake):
-  - The work was equal at 1 and 10 bots. At 25 the chunks sent a second were equal (158.6 against 157.6),
-    and vanilla still sent 2.5 more first-time chunks a second while it caught up.
-  - Tick: 1.8 against 11.3 ms at 1 bot, 4.7 against 34.3 at 10, 11.7 against 50.5 at 25 (vanilla 19.8 TPS).
-    At 50 Horizon ran at 23.8 ms. Vanilla's watchdog stopped its server 30 s after the last bot joined (a
-    60-second tick). This is one pass, to repeat on a bigger machine.
-  - Horizon's RSS was 4.1 to 4.9 times smaller (1.03 GB at 50).
-  - Served in full, vanilla's walking bots got 5400 to 6100 chunks each, against 640 to 1100 in the first
-    run. That is why vanilla held 50 bots there and not here.
-- **Four servers, equal work (2026-10-19,** `benchmarks/server-four-way-2026-10-19/`). The same load
-  against vanilla, Paper (build 205, its defaults except the connection throttle, which refused bots that
-  share an address) and vanilla on Fabric with Lithium. Horizon was release v2026.10.19, which spawns mobs
-  and ticks blocks around every player as vanilla does (#950, #931), so it now does vanilla's work away
-  from spawn too. Results, on the ThinkPad (the desktop didn't wake):
-  - The work was equal on all four at every count (chunks a second within 4 %).
-  - Horizon's RSS was 3.8 to 4.8 times smaller (0.72 to 1.11 GB). It started in 8.2 to 8.5 s, against
-    14.7 to 22.4 s for the Java servers. From 10 bots up it used the least CPU.
-  - Average tick: Paper was ahead of Horizon at every count (10.3 against 13.7 ms at 1 bot, 28.3 against
-    30.9 at 25, 46.9 against 47.8 at 50). Fabric + Lithium was ahead at 1 and 10 bots (12.5 and 20.2
-    against 13.7 and 22.9), behind at 25, and fell to 17.2 TPS at 50. Vanilla was slowest, and its
-    watchdog stopped it at 50.
-  - Horizon's P99 was the lowest from 10 bots up (73 ms at 50, against Paper's 110 and Fabric's 174), and
-    its worst single P99 the lowest at every count.
-- **Ownership.** perf-server-1 owns making the tick faster. This work only measures it, files what it finds,
-  and fixes startup, RAM and packaging.
-
-## 10. Working version for 2026-10-23
-
-Goal: `horizon-server` installs with one command, starts from a clean config, serves Horizon and vanilla 26.3
-clients, backs up and restores, has a CLI and a basic web panel, and has a first published benchmark against
-vanilla.
-
-**In:**
-
-1. `horizon-server` crate and binary, `horizon-server-files` (the vanilla files, moved out of the client
-   unchanged), `server.toml` with import, the CLI (`init`, `run`, `start`, `stop`, `status`, `cmd`, `op`,
-   `whitelist`, `backup`, `backups`, `restore`, `logs`), crash restart, and the engine status endpoint.
-2. `install.sh` and `install.ps1`, the Dockerfile, systemd and launchd units, `service install`, and the server
-   archive in the release.
-3. The web panel MVP: status, live TPS/MSPT/RAM/CPU, players, console, backups and login links.
-4. `horizon-bots` and `tools/server_bench.py`, with a first run against vanilla (1/10/25/50 bots, `mixed`)
-   published in `benchmarks/`: done, `benchmarks/server-mixed-2026-10-18/`, and with equal work
-   `benchmarks/server-equal-mixed-2026-10-18/` (section 9).
-5. Small engine fixes found on the way: logging refused logins (vanilla's lines).
-
-**Where it stands (2026-10-16):** items 1 to 4 are built and in review (section 11). What's left for the 23rd:
-run the Dockerfile and `install.ps1` once on a machine that has Docker and on Windows; publish a release
-that holds `horizon-server`, so the installers have something to install; a clean benchmark run on a quiet
-machine, then published in `benchmarks/`; and item 5.
-
-**Out (next):**
-
-- the Nether and End for remote players;
-- the headless engine and its RAM win;
-- a server-only prepare without a JDK;
-- a Windows service, hot reload, modpacks in the panel;
-
-Online mode works, so a public server can check accounts. An offline server should still run only on a
-LAN, a tailnet, or behind a whitelist.
-
-## 11. Pull requests
-
-In order, each one small and shippable alone:
-
-1. **This design** (docs only).
-2. **`horizon-server`**, stacked in three parts:
-   - a. The crate, the vanilla files moved out of the client unchanged (`horizon-server-files`),
-     `server.toml` with import, `init`, `run` (crash restart, clean stop on Ctrl-C and SIGTERM), and `op`
-     and `whitelist` for a stopped server: #551.
-   - b. The control API on 127.0.0.1 with its token, `start`, `stop`, `restart`, `status`, `cmd` and
-     `logs`, plus the engine status endpoint. That endpoint is about 30 additive lines in
-     `game/dedicated.rs` plus a new `game/dedicated/status.rs`. perf-ticks-2's branches touch
-     `dedicated.rs` elsewhere (`listen: true`), so the edits don't overlap. It also makes the dedicated loop
-     record its tick times, so `/tick query` reports them: #552.
-   - c. Backups, restore and automatic backups: #553.
-3. **Install scripts, Docker and services** (`service install`), and `horizon-server` in the releases: #554.
-4. **Web panel MVP:** #555.
-5. **Bots and the first benchmark against vanilla:** #556.
-
-Each PR is stacked on the one before. Merging them in order keeps every step shippable alone.
+- **Results.** The latest comparison (Horizon, Pumpkin and vanilla under the same bots) is
+  [performance/server-vs-pumpkin.md](performance/server-vs-pumpkin.md); `tools/server_bench.py` reruns it.

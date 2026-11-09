@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class RenderHandHookTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_each_hand_can_be_cancelled(self):
-        source = (ROOT / "crates/horizon-client/src/game.rs").read_text()
+        source = (ROOT / "crates/horizon-client/src/game/frame_geometry.rs").read_text()
         start = source.index("            let mut canceled = false;", source.index("fn hand_geometry("))
         # The pose hook after it (render_hand_pose) is not part of the cancellation dispatch.
         end = source.index("            let (mut x, mut y, mut z, mut pitch", start)

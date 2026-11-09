@@ -3,7 +3,7 @@ name = "horizon-client-input"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-rust-version = "1.90"
+rust-version.workspace = true
 description = "The client's input layer: key bindings and their names, mouse, controllers, clipboard and window options"
 
 [dependencies]
@@ -13,11 +13,9 @@ winit = "0.30.13"
 horizon-theme = { path = "../horizon-theme" }
 png = "0.18"
 arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
-# The DualSense's trigger effects (the `controllers` feature).
-horizon-dualsense = { path = "../horizon-dualsense", optional = true }
 
 [features]
-controllers = ["dep:horizon-dualsense"]
+controllers = []
 
 [lints]
 workspace = true

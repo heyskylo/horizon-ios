@@ -16,8 +16,9 @@ pub struct Issue {
 /// Labels every website report gets.
 pub const LABELS: [&str; 2] = ["bug", "from-website"];
 
-/// Text people wrote, safe in an issue: no HTML, no `@` mentions, no `#12` or issue-URL cross-references,
-/// no closing keywords, no code spans to break out of. The same rules as Kira's `neutralise`.
+/// Text people wrote, safe in an issue: no HTML, no `@` mentions, no `#12`, `GH-12` or issue-URL
+/// cross-references, no closing keywords, no code spans to break out of. The same rules as Kira's
+/// `neutralise`.
 pub fn neutralise(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let chars: Vec<char> = text.chars().collect();
@@ -35,6 +36,13 @@ pub fn neutralise(text: &str) -> String {
                 out.push(c);
                 out.push('\u{200b}');
             }
+            // GitHub also links `GH-12` (either case) to issue 12: a zero-width space after `GH`.
+            'g' | 'G' if word_start && gh_reference(&chars[i..]) => {
+                out.push(c);
+                out.push(chars[i + 1]);
+                out.push('\u{200b}');
+                i += 1;
+            }
             _ if word_start && closing_keyword(&chars[i..]) => {
                 out.push(c);
                 out.push('\u{200b}');
@@ -45,6 +53,11 @@ pub fn neutralise(text: &str) -> String {
     }
     // github.com/owner/repo/issues/12 links cross-reference the issue: shown, not linked.
     out.replace("github.com/", "github.com\u{200b}/")
+}
+
+/// Whether `rest` starts with `GH-` and a digit, as GitHub's issue autolink reads it.
+fn gh_reference(rest: &[char]) -> bool {
+    matches!(rest, [_, 'h' | 'H', '-', d, ..] if d.is_ascii_digit())
 }
 
 fn closing_keyword(rest: &[char]) -> bool {

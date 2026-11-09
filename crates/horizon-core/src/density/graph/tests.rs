@@ -150,7 +150,7 @@ fn end_islands_use_the_world_seed_independently_of_the_noise_algorithm() {
         sampler
             .sample_volume(&mut SamplerContext::default(), &mut output, volume)
             .unwrap();
-        for column in output[..volume.size()].chunks_exact(4) {
+        for column in output[..volume.size()].as_chunks::<4>().0 {
             assert!(column.iter().all(|&value| value == column[0]));
         }
         assert_eq!(output[volume.size()], 17.0);
@@ -321,8 +321,8 @@ fn spline_coordinates_share_bulk_evaluation_after_graph_rewriting() {
         .sample_volume(&mut SamplerContext::default(), &mut output, volume)
         .unwrap();
     assert_eq!(trace.0.lock().unwrap().len(), 1);
-    for column in output.chunks_exact(3) {
-        assert_eq!(column, [2.0, 3.0, 4.0]);
+    for column in output.as_chunks::<3>().0 {
+        assert_eq!(*column, [2.0, 3.0, 4.0]);
     }
 }
 
@@ -544,8 +544,8 @@ fn compiler_reduces_uniform_axes_and_preserves_strided_vertical_samples() {
         *trace.0.lock().unwrap(),
         vec![DensityVolume::new([1, 4, 1], [0, -7, 0], [2, 3, 5]).unwrap()]
     );
-    for column in output[..volume.size()].chunks_exact(4) {
-        assert_eq!(column, [-7.0, -4.0, -1.0, 2.0]);
+    for column in output[..volume.size()].as_chunks::<4>().0 {
+        assert_eq!(*column, [-7.0, -4.0, -1.0, 2.0]);
     }
     assert_eq!(output[volume.size()], 17.0);
     assert_eq!(compiler.graph().domain_axes(root), Ok(2));

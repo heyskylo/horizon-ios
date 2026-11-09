@@ -32,7 +32,6 @@ pub struct NativeStructureBlock {
 }
 
 // Native mods use this; nothing in Horizon does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// For a server mod: structure template `id` (`mymod:hut`, found as
     /// `StructureTemplateManager.get` finds it: the world's saved structures,
@@ -105,7 +104,7 @@ fn placements(
             NativeStructureBlock {
                 pos: std::array::from_fn(|i| relative[i] + at[i]),
                 state: transforms.rotate(transforms.mirror(block.state, mirror), rotation),
-                nbt: block.nbt.clone(),
+                nbt: block.nbt.as_deref().cloned(),
             }
         })
         .collect();

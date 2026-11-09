@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "mob_attack", "target": "horizon_client::game::native_npcs::Game<'_>::native_mob_attack"}
+  ],
+  "rust_summary": "a mob's own attack on a mob or a player of its level (`native_mob_attack`, `Mob.doHurtTarget`).",
+  "doc_summary": "`native_mob_attack(dimension, mob, target)`, a mob's own attack (`Mob.doHurtTarget`: attack damage, weapon, enchantments, knockback, the species' extras) on a living mob or a server's player of its level, from any server hook, with no reach check or swing, as vanilla's attack goal checks and swings first. Bundles need \"hooks\": @API:npc_mob_attack@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_npcs.rs"
+  ]
+}

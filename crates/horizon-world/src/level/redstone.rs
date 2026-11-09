@@ -461,9 +461,13 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             // Vanilla iterates a HashSet of the position and its six
             // neighbours; BlockPos hash order is reproduced below.
             let wire = self.b.named.redstone_wire;
-            let mut targets: Vec<BlockPos> = std::iter::once(pos)
-                .chain(Direction::ALL.map(|d| rel(pos, d)))
-                .collect();
+            // `pos` and its six neighbours are always distinct, so keep this
+            // tiny HashSet iteration equivalent on the stack. The old path
+            // allocated three Vecs (the input, deduplication scratch and the
+            // sorted output) for every wire update.
+            let mut targets = [BlockPos::default(); 7];
+            targets[0] = pos;
+            targets[1..].copy_from_slice(&Direction::ALL.map(|d| rel(pos, d)));
             java_hash_set_order(&mut targets);
             for target_pos in targets {
                 self.update_neighbors_at(target_pos, wire);
@@ -862,6 +866,14 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
 
     // ---- buttons, levers, plates ----
 
+    /// The signal a button, lever or plate at `pos` changes to: `new`, or what the level
+    /// makes of it (`LevelAccess::redstone_change`), within 0 to 15.
+    fn redstone_signal(&self, pos: BlockPos, old: i32, new: i32) -> i32 {
+        let mut signal = new;
+        self.level.redstone_change(pos, old, &mut signal);
+        signal.clamp(0, 15)
+    }
+
     /// `ButtonBlock/LeverBlock.updateNeighbours`.
     pub(crate) fn attached_update_neighbours(&mut self, pos: BlockPos, state: BlockStateId) {
         let front = self.face_attached_connected(state).opposite();
@@ -907,10 +919,12 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let data = b.data(state);
         if data.is(Class::WeightedPressurePlate) {
             let max = data.max_weight.max(1);
-            let count = (self
-                .level
-                .count_entities(area, super::EntityQuery::Everything)
-                as i32)
+            let count = (self.level.count_entities_at(
+                pos,
+                b.table.name(state),
+                area,
+                super::EntityQuery::Everything,
+            ) as i32)
                 .min(max);
             if count > 0 {
                 (count.min(max) as f32 / max as f32 * 15.0).ceil() as i32
@@ -923,7 +937,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             } else {
                 super::EntityQuery::Everything
             };
-            if self.level.count_entities(area, query) > 0 {
+            if self
+                .level
+                .count_entities_at(pos, b.table.name(state), area, query)
+                > 0
+            {
                 15
             } else {
                 0
@@ -938,7 +956,14 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         old_signal: i32,
     ) {
         let b = self.b;
-        let signal = self.plate_signal_strength(pos, state);
+        let mut signal = self.plate_signal_strength(pos, state);
+        if old_signal != signal {
+            signal = self.redstone_signal(pos, old_signal, signal);
+            // A plate that is only on or off is on at full strength.
+            if signal > 0 && !b.instance_of(state, Class::WeightedPressurePlate) {
+                signal = 15;
+            }
+        }
         let was = old_signal > 0;
         let is = signal > 0;
         let block = b.block(state);
@@ -972,6 +997,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// `ButtonBlock.press`.
     pub(crate) fn button_press(&mut self, pos: BlockPos, state: BlockStateId) {
         let b = self.b;
+        // The level may keep the button up: then the press does nothing.
+        if self.redstone_signal(pos, 0, 15) == 0 {
+            return;
+        }
         self.set_block_and_update(pos, b.table.set_bool(state, b.props.powered, true));
         self.attached_update_neighbours(pos, state);
         let data = b.data(state);
@@ -994,12 +1023,18 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     pub(crate) fn button_check_pressed(&mut self, pos: BlockPos, state: BlockStateId) {
         let b = self.b;
         let data = b.data(state);
-        let should_be_pressed = data.set_type.as_ref().is_some_and(|s| s.arrows)
+        let mut should_be_pressed = data.set_type.as_ref().is_some_and(|s| s.arrows)
             && self
                 .level
                 .count_entities(self.button_bounds(pos, state), super::EntityQuery::Arrows)
                 > 0;
         let was_pressed = b.table.bool(state, b.props.powered);
+        if should_be_pressed != was_pressed {
+            // The level may hold the button down (its release is then scheduled again) or up.
+            let signal = |pressed: bool| if pressed { 15 } else { 0 };
+            should_be_pressed =
+                self.redstone_signal(pos, signal(was_pressed), signal(should_be_pressed)) > 0;
+        }
         if should_be_pressed != was_pressed {
             self.set_block_and_update(
                 pos,
@@ -1088,6 +1123,15 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// `LeverBlock.pull`.
     pub(crate) fn lever_pull(&mut self, pos: BlockPos, state: BlockStateId) {
         let b = self.b;
+        // The level may keep the lever as it is: then the pull does nothing.
+        let old = if b.table.bool(state, b.props.powered) {
+            15
+        } else {
+            0
+        };
+        if (self.redstone_signal(pos, old, 15 - old) > 0) == (old > 0) {
+            return;
+        }
         let state = b.table.cycle(state, b.props.powered);
         self.set_block_and_update(pos, state);
         self.attached_update_neighbours(pos, state);
@@ -1477,31 +1521,58 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     }
 }
 
-/// Order `positions` as a `java.util.HashSet<BlockPos>` of capacity 16 would
-/// iterate them (bucket index of the spread hash, then insertion order).
-fn java_hash_set_order(positions: &mut Vec<BlockPos>) {
+/// Order the seven distinct positions as a `java.util.HashSet<BlockPos>` of
+/// capacity 16 would iterate them (bucket index of the spread hash, then
+/// insertion order).
+fn java_hash_set_order(positions: &mut [BlockPos; 7]) {
     fn hash(pos: BlockPos) -> i32 {
         // Vec3i.hashCode: (y + z * 31) * 31 + x
         (pos.y.wrapping_add(pos.z.wrapping_mul(31)))
             .wrapping_mul(31)
             .wrapping_add(pos.x)
     }
-    let mut unique: Vec<BlockPos> = Vec::new();
-    for pos in positions.iter() {
-        if !unique.contains(pos) {
-            unique.push(*pos);
-        }
-    }
     let buckets = 16;
     let bucket = |pos: BlockPos| {
         let h = hash(pos);
         ((h ^ ((h as u32) >> 16) as i32) & (buckets - 1)) as usize
     };
-    let mut ordered: Vec<(usize, usize, BlockPos)> = unique
-        .iter()
-        .enumerate()
-        .map(|(i, p)| (bucket(*p), i, *p))
-        .collect();
-    ordered.sort_by_key(|(b, i, _)| (*b, *i));
-    *positions = ordered.into_iter().map(|(_, _, p)| p).collect();
+    let mut ordered: [(usize, usize, BlockPos); 7] =
+        std::array::from_fn(|i| (bucket(positions[i]), i, positions[i]));
+    ordered.sort_unstable_by_key(|(b, i, _)| (*b, *i));
+    for (position, (_, _, ordered_position)) in positions.iter_mut().zip(ordered) {
+        *position = ordered_position;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::java_hash_set_order;
+    use horizon_core::position::BlockPos;
+
+    #[test]
+    fn hash_set_order_matches_vanilla_bucket_and_insertion_order() {
+        let origin = BlockPos::new(0, 0, 0);
+        let mut positions = [
+            origin,
+            BlockPos::new(0, -1, 0),
+            BlockPos::new(0, 1, 0),
+            BlockPos::new(0, 0, -1),
+            BlockPos::new(0, 0, 1),
+            BlockPos::new(-1, 0, 0),
+            BlockPos::new(1, 0, 0),
+        ];
+        java_hash_set_order(&mut positions);
+        assert_eq!(
+            positions,
+            [
+                origin,
+                BlockPos::new(0, 0, -1),
+                BlockPos::new(-1, 0, 0),
+                BlockPos::new(0, 0, 1),
+                BlockPos::new(1, 0, 0),
+                BlockPos::new(0, -1, 0),
+                BlockPos::new(0, 1, 0),
+            ]
+        );
+    }
 }

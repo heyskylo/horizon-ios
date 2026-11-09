@@ -50,11 +50,110 @@ struct TaaResources {
     uniform: wgpu::Buffer,
 }
 
+/// One frame handed to an upscaler backend: the jittered world at `render_size` and what
+/// it needs to rebuild it at `output_size`. The motion is the camera's alone (`reproject`);
+/// objects that move on their own carry no motion vectors yet.
+// Only TAA reads it so far; a vendor backend reads the rest (#12918).
+#[allow(dead_code)]
+pub(super) struct UpscaleFrame<'a> {
+    /// The world's colour, rendered with this frame's jitter.
+    pub color: &'a wgpu::TextureView,
+    /// The world's depth, at `render_size`.
+    pub depth: &'a wgpu::TextureView,
+    pub render_size: [u32; 2],
+    pub output_size: [u32; 2],
+    /// The jitter in clip space, as added to the projection.
+    pub jitter_clip: [f32; 2],
+    /// The same jitter in rendered pixels, y down.
+    pub jitter_pixels: [f32; 2],
+    /// This frame's unjittered clip space to the previous frame's.
+    pub reproject: [[f32; 4]; 4],
+    /// The history is unusable: a cut, a resize, a frame without the upscaler.
+    pub reset: bool,
+    /// Frames jittered so far.
+    pub index: u32,
+}
+
+/// Something that turns the jittered low-resolution world into the output picture.
+/// TAA (`TaaResources`) is the only backend; `Target` is the per-size state a backend
+/// keeps beside the world target (TAA's history textures).
+pub(super) trait UpscalerBackend {
+    type Target;
+    /// The name its GPU timing is shown under.
+    fn name(&self) -> &'static str;
+    /// Write this frame's output and return the bind group that shows it (`draw_onto`).
+    fn resolve<'t>(
+        &self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &UpscaleFrame<'_>,
+        target: &'t Self::Target,
+        timing: Option<&mut super::pack_timing::PassTiming>,
+    ) -> &'t wgpu::BindGroup;
+}
+
+impl UpscalerBackend for TaaResources {
+    type Target = History;
+
+    fn name(&self) -> &'static str {
+        "TAA"
+    }
+
+    fn resolve<'t>(
+        &self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &UpscaleFrame<'_>,
+        taa: &'t History,
+        timing: Option<&mut super::pack_timing::PassTiming>,
+    ) -> &'t wgpu::BindGroup {
+        // The resolve bind group already samples `frame.color` and `frame.depth`.
+        let i = (frame.index % 2) as usize;
+        let uniform = TaaUniform {
+            reproject: frame.reproject,
+            jitter: [
+                frame.jitter_clip[0],
+                frame.jitter_clip[1],
+                if frame.reset { 1.0 } else { 0.0 },
+                0.0,
+            ],
+        };
+        queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));
+        let attachments = [Some(wgpu::RenderPassColorAttachment {
+            view: &taa.history[i],
+            resolve_target: None,
+            depth_slice: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                store: wgpu::StoreOp::Store,
+            },
+        })];
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Horizon TAA"),
+            timestamp_writes: timing.and_then(|t| t.writes(self.name())),
+            color_attachments: &attachments,
+            ..Default::default()
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &taa.resolve[i], &[]);
+        pass.draw(0..3, 0..1);
+        drop(pass);
+        &taa.show[i]
+    }
+}
+
 pub struct Post {
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     copy: wgpu::RenderPipeline,
     fxaa: wgpu::RenderPipeline,
+    /// Contrast-adaptive sharpening of TAA's upscaled picture: the jittered frames are
+    /// spread over more output pixels, and the blend softens edges.
+    sharpen: wgpu::RenderPipeline,
+    /// The strength `sharpen` was built with (`set_sharpness`), and what rebuilding it takes.
+    sharpness: f32,
+    shader: wgpu::ShaderModule,
+    pipeline_layout: wgpu::PipelineLayout,
     format: wgpu::TextureFormat,
     /// World resolution relative to the window (0.5..=2.0).
     pub scale: f32,
@@ -72,6 +171,7 @@ pub struct Post {
     /// The last TAA frame's unjittered `view_proj` and camera, `None` once a frame ran without it.
     taa_previous: Option<(DMat4, DVec3)>,
     taa_this_frame: TaaUniform,
+    light_key: Option<(bool, [f32; 4], [f32; 4], [[f32; 4]; 2])>,
 }
 
 impl Post {
@@ -232,8 +332,12 @@ impl Post {
             ..Default::default()
         });
         Self {
+            shader: shader.clone(),
+            pipeline_layout: pipeline_layout.clone(),
             copy: pipeline("fs_copy", &pipeline_layout, format),
             fxaa: pipeline("fs_fxaa", &pipeline_layout, format),
+            sharpen: sharpen_pipeline(device, &shader, &pipeline_layout, format, 0.85),
+            sharpness: 0.85,
             layout,
             sampler,
             format,
@@ -247,6 +351,28 @@ impl Post {
             taa_frame: 0,
             taa_previous: None,
             taa_this_frame: bytemuck::Zeroable::zeroed(),
+            light_key: None,
+        }
+    }
+
+    // History stores baked light, so a change must reject it before jitter records the next frame.
+    pub(super) fn baked_light(
+        &mut self,
+        gain: bool,
+        settings: [f32; 4],
+        shares: [f32; 4],
+        windows: [[f32; 4]; 2],
+    ) {
+        // These uniforms do not change baked colour without gain. Keep compatibility
+        // history stable when only its final display settings change.
+        let key = Some(if gain {
+            (true, settings, shares, windows)
+        } else {
+            (false, [0.0; 4], [0.0; 4], [[0.0; 4]; 2])
+        });
+        if self.light_key != key {
+            self.taa_previous = None;
+            self.light_key = key;
         }
     }
 
@@ -257,12 +383,21 @@ impl Post {
 
     /// The world's rendered size and the size it is shown at (TAA's history).
     fn sizes(&self, window: [u32; 2]) -> ([u32; 2], [u32; 2]) {
-        let output = window.map(|v| ((v as f32 * self.scale).round() as u32).clamp(1, 8192));
         let upscale = if self.taa_on { self.upscale } else { 1.0 };
+        self.sizes_with_upscale(window, upscale)
+    }
+
+    fn sizes_with_upscale(&self, window: [u32; 2], upscale: f32) -> ([u32; 2], [u32; 2]) {
+        let output = window.map(|v| ((v as f32 * self.scale).round() as u32).clamp(1, 8192));
         (
             output.map(|v| ((v as f32 / upscale).round() as u32).max(1)),
             output,
         )
+    }
+
+    /// The next TAA frame's input size, even before its first jitter or resize.
+    pub(super) fn taa_render_size(&self, window: [u32; 2]) -> [u32; 2] {
+        self.sizes_with_upscale(window, self.upscale).0
     }
 
     /// TAA's sub-pixel jitter this frame, as a clip-space matrix to multiply into the
@@ -465,6 +600,21 @@ impl Post {
         }
     }
 
+    /// The Upscaling Sharpness setting, 0..=1: rebuilds the sharpen pipeline when it changed.
+    pub fn set_sharpness(&mut self, device: &wgpu::Device, sharpness: f32) {
+        let sharpness = sharpness.clamp(0.0, 1.0);
+        if sharpness != self.sharpness {
+            self.sharpen = sharpen_pipeline(
+                device,
+                &self.shader,
+                &self.pipeline_layout,
+                self.format,
+                sharpness,
+            );
+            self.sharpness = sharpness;
+        }
+    }
+
     /// The size of the world's own target, when it has one.
     pub fn size(&self) -> Option<[u32; 2]> {
         self.target.as_ref().map(|t| t.size)
@@ -505,28 +655,25 @@ impl Post {
             self.finish_with(encoder, screen, &target.group, timing.as_deref_mut());
             return;
         };
-        let i = (self.taa_frame % 2) as usize;
-        queue.write_buffer(&res.uniform, 0, bytemuck::bytes_of(&self.taa_this_frame));
-        let attachments = [Some(wgpu::RenderPassColorAttachment {
-            view: &taa.history[i],
-            resolve_target: None,
-            depth_slice: None,
-            ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                store: wgpu::StoreOp::Store,
-            },
-        })];
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Horizon TAA"),
-            timestamp_writes: timing.as_deref_mut().and_then(|t| t.writes("TAA")),
-            color_attachments: &attachments,
-            ..Default::default()
-        });
-        pass.set_pipeline(&res.pipeline);
-        pass.set_bind_group(0, &taa.resolve[i], &[]);
-        pass.draw(0..3, 0..1);
-        drop(pass);
-        self.finish_with(encoder, screen, &taa.show[i], timing);
+        let size = self.size().unwrap_or([1, 1]);
+        let frame = UpscaleFrame {
+            color: &target.color,
+            depth: &target.depth,
+            render_size: size,
+            output_size: taa.size,
+            jitter_clip: [self.taa_this_frame.jitter[0], self.taa_this_frame.jitter[1]],
+            jitter_pixels: self.jitter_pixels(),
+            reproject: self.taa_this_frame.reproject,
+            reset: self.taa_this_frame.jitter[2] > 0.5,
+            index: self.taa_frame,
+        };
+        let shown = res.resolve(queue, encoder, &frame, taa, timing.as_deref_mut());
+        let pipeline = if self.upscale > 1.0 {
+            &self.sharpen
+        } else {
+            &self.copy
+        };
+        self.draw_onto(encoder, screen, shown, pipeline, timing);
     }
 
     /// Draw what `group` binds (`bind`) onto `screen`.
@@ -535,6 +682,23 @@ impl Post {
         encoder: &mut wgpu::CommandEncoder,
         screen: &wgpu::TextureView,
         group: &wgpu::BindGroup,
+        timing: Option<&mut super::pack_timing::PassTiming>,
+    ) {
+        let pipeline = if self.antialias {
+            &self.fxaa
+        } else {
+            &self.copy
+        };
+        self.draw_onto(encoder, screen, group, pipeline, timing);
+    }
+
+    /// Draw what `group` binds onto `screen` through `pipeline`.
+    fn draw_onto(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        screen: &wgpu::TextureView,
+        group: &wgpu::BindGroup,
+        pipeline: &wgpu::RenderPipeline,
         timing: Option<&mut super::pack_timing::PassTiming>,
     ) {
         let attachments = [Some(wgpu::RenderPassColorAttachment {
@@ -552,14 +716,49 @@ impl Post {
             color_attachments: &attachments,
             ..Default::default()
         });
-        pass.set_pipeline(if self.antialias {
-            &self.fxaa
-        } else {
-            &self.copy
-        });
+        pass.set_pipeline(pipeline);
         pass.set_bind_group(0, group, &[]);
         pass.draw(0..3, 0..1);
     }
+}
+
+/// `fs_sharpen` at `sharpness` (its override), drawing onto `format`.
+fn sharpen_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    sharpness: f32,
+) -> wgpu::RenderPipeline {
+    let constants = [("sharpness", f64::from(sharpness))];
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Horizon sharpen"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_post"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: Default::default(),
+        depth_stencil: None,
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_sharpen"),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &constants,
+                ..Default::default()
+            },
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 /// This frame's clip space to the previous frame's, for camera-relative projections:
@@ -604,13 +803,91 @@ mod tests {
 
     #[test]
     fn jitter_stays_inside_the_pixel() {
-        for i in 1..=8 {
+        for i in 1..=128 {
             let (x, y) = (halton(i, 2), halton(i, 3));
             assert!((0.0..1.0).contains(&x) && (0.0..1.0).contains(&y));
         }
         assert_eq!(
             [halton(1, 2), halton(2, 2), halton(3, 2)],
             [0.5, 0.25, 0.75]
+        );
+    }
+
+    #[test]
+    fn culling_uses_the_next_taa_size_before_the_first_jitter_or_resize() {
+        let Some((device, _)) = test_device() else {
+            return;
+        };
+        let mut post = Post::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        assert!(!post.taa_on);
+        assert!(post.size().is_none());
+        for (window, scale, upscale, expected) in [
+            ([1280, 720], 1.0, 1.0, [1280, 720]),
+            ([1281, 721], 0.5, 2.0, [321, 181]),
+            ([3840, 2160], 0.25, 4.0, [240, 135]),
+            ([10000, 10000], 2.0, 4.0, [2048, 2048]),
+            ([0, 0], 0.5, 4.0, [1, 1]),
+        ] {
+            post.scale = scale;
+            post.upscale = upscale;
+            post.taa_on = false;
+            assert_eq!(post.taa_render_size(window), expected);
+            post.taa_on = true;
+            assert_eq!(post.sizes(window).0, expected);
+        }
+    }
+
+    #[test]
+    fn baked_light_changes_and_returning_from_a_pack_reject_taa_history() {
+        let Some((device, _)) = test_device() else {
+            eprintln!("TAA baked-light GPU skipped: no test device");
+            return;
+        };
+        let mut post = Post::new(&device, wgpu::TextureFormat::Rgba16Float);
+        post.taa = true;
+        if !post.supports_taa() {
+            eprintln!("TAA baked-light GPU skipped: TAA unsupported");
+            return;
+        }
+        let key = (
+            [5.0, 4.0, 1.0, 0.0],
+            [0.2, 0.5, 0.6, 1.0],
+            [[0.1; 4], [0.4; 4]],
+        );
+        for gain in [true, false, true] {
+            post.baked_light(gain, key.0, key.1, key.2);
+            post.jitter([32, 32], true, Mat4::IDENTITY, DVec3::ZERO);
+            assert_eq!(post.taa_this_frame.jitter[2], 1.0);
+            post.baked_light(gain, key.0, key.1, key.2);
+            post.jitter([32, 32], true, Mat4::IDENTITY, DVec3::ZERO);
+            assert_eq!(post.taa_this_frame.jitter[2], 0.0);
+        }
+        for field in 0..16 {
+            let mut changed = key;
+            match field {
+                0..=3 => changed.0[field] += 0.01,
+                4..=7 => changed.1[field - 4] += 0.01,
+                _ => changed.2[(field - 8) / 4][(field - 8) % 4] += 0.01,
+            }
+            post.baked_light(true, changed.0, changed.1, changed.2);
+            post.jitter([32, 32], true, Mat4::IDENTITY, DVec3::ZERO);
+            assert_eq!(post.taa_this_frame.jitter[2], 1.0);
+        }
+        post.baked_light(false, key.0, key.1, key.2);
+        post.jitter([32, 32], true, Mat4::IDENTITY, DVec3::ZERO);
+        assert_eq!(post.taa_this_frame.jitter[2], 1.0);
+        post.baked_light(false, [0.0; 4], [0.0; 4], [[0.0; 4]; 2]);
+        post.jitter([32, 32], true, Mat4::IDENTITY, DVec3::ZERO);
+        assert_eq!(post.taa_this_frame.jitter[2], 0.0);
+        // A pack disables TAA even when the light settings stay the same. Its first
+        // world frame after the pack is dropped must not reuse the pre-pack history.
+        post.jitter([32, 32], false, Mat4::IDENTITY, DVec3::ZERO);
+        post.jitter([32, 32], true, Mat4::IDENTITY, DVec3::ZERO);
+        assert_eq!(post.taa_this_frame.jitter[2], 1.0);
+        post.jitter([32, 32], true, Mat4::IDENTITY, DVec3::ZERO);
+        assert_eq!(post.taa_this_frame.jitter[2], 0.0);
+        eprintln!(
+            "TAA baked-light GPU checked gain, all settings/shares/windows and the first frame after a pack"
         );
     }
 

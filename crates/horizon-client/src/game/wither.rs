@@ -43,10 +43,9 @@ impl Game<'_> {
             let _ = self.level_set(pos, rose);
             return;
         }
-        self.spawn_item(
+        self.spawn_item_own(
             ItemStack::new("minecraft:wither_rose", 1),
             [m.position.x, m.position.y, m.position.z],
-            super::dispenser::new_item_motion(),
             0,
         );
     }
@@ -201,6 +200,7 @@ impl Game<'_> {
                     from: skull.from,
                     attacker_species: owner_species,
                 };
+                let mut survived_hit = false;
                 let killed = match self.mobs.iter_mut().find(|m| m.id == id) {
                     // `WitherBoss.hurtServer`: nothing from a wither friend.
                     Some(m)
@@ -212,13 +212,28 @@ impl Game<'_> {
                     }
                     Some(m) => {
                         let hit = m.damage(amount, source);
-                        if hit && m.alive() && m.species() != Species::Wither && wither_ticks > 0 {
-                            m.add_effect("minecraft:wither", wither_ticks, 1);
-                        }
+                        survived_hit = hit && m.alive();
                         hit && !m.alive()
                     }
                     None => false,
                 };
+                if survived_hit && live_owner.is_some() {
+                    self.mob_post_attack(
+                        id,
+                        live_owner,
+                        Some("minecraft:wither_skull"),
+                        Some("minecraft:wither_skull"),
+                    );
+                }
+                if survived_hit
+                    && wither_ticks > 0
+                    && let Some(m) = self
+                        .mobs
+                        .iter_mut()
+                        .find(|m| m.id == id && m.species() != Species::Wither)
+                {
+                    m.add_effect("minecraft:wither", wither_ticks, 1);
+                }
                 if killed {
                     self.heal_skull_owner(p, live_owner);
                 }
@@ -237,7 +252,13 @@ impl Game<'_> {
         ) {
             self.combat.blast_resistance_cap = Some(0.8);
         }
-        let result = self.with_hive_emptying_blast(|g| g.explode(at, 1.0));
+        let result = self.with_hive_emptying_blast(|g| {
+            g.explode(
+                at,
+                1.0,
+                super::explosion::ExplosionSource::default().with_silence(g.entity_silent(p.id)),
+            )
+        });
         self.combat.blast_resistance_cap = None;
         self.set_blast_by_player(false);
         self.combat.explosion_owner = None;

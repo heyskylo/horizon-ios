@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "right_click_block_v2",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_right_click_block_v2",
+      "neoforge": "PlayerInteractEvent.RightClickBlock (getHand)",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "a player's right click on a block with the hand that clicks, cancellable (`native_right_click_block_v2`).",
+  "doc_summary": "`native_right_click_block_v2(pos, face, hand, cancel)`: `native_right_click_block` with the hand (`Hand::Main` or `Hand::Off`, NeoForge's `PlayerInteractEvent.RightClickBlock.getHand`), asked right after v1, once per hand tried; a click v1 canceled is not asked again. Bundles need \"hooks\": @API:right_click_block_v2@."
+}

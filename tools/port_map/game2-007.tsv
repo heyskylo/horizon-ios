@@ -26,7 +26,7 @@ AbstractBoat.getControllingPassenger	inline	crates/horizon-client/src/game/boat_
 AbstractBoat.setInput	inline	crates/horizon-client/src/game/lan_vehicles.rs::Game::guest_paddle_boat	the paddle packet's flags are the controller's input
 AbstractBoat.isUnderWater	port	crates/horizon-client/src/game/boats.rs::Boat::under_water	
 AbstractBoat.modifyPassengerFluidInteractionBox	inline	crates/horizon-client/src/motion/fluids.rs::MotionWorld::interaction_box	the ridden boat (RiddenBoat) is set on clients in remote.rs and for served players in lan_actions.rs; the passenger box keeps only the part above the boat's top
-AbstractChestBoat.remove	inline	crates/horizon-client/src/game/boats.rs::Game::hurt_boat	a destroyed chest boat spills its 27 slots
+AbstractChestBoat.remove	port	crates/horizon-client/src/game/minecarts.rs::Game::drop_vehicle_contents	Containers.dropContents on every destroying removal, whatever entity_drops says: the damage path's kill or a creative player's discard, and /kill after the open menu writes its slots back; a loot table still held drops the roll made on load
 AbstractChestBoat.openCustomInventoryScreen	inline	crates/horizon-client/src/game/boats.rs::Game::interact_boat	sneaking opens the chest; gap: minor: no piglin anger
 AbstractChestBoat.createMenu	inline	crates/horizon-client/src/game/boats.rs::Game::interact_boat	the chest container is set up there; gap: minor: no spectator or loot table check
 AbstractMinecart.setInitialPos	port	crates/horizon-client/src/game/minecarts.rs::Minecart::new	spawn sets the position and its previous copy
@@ -40,10 +40,10 @@ AbstractMinecart.getCurrentBlockPosOrRailBelow	port	crates/horizon-client/src/ga
 AbstractMinecart.comeOffTrack	port	crates/horizon-client/src/game/minecarts.rs::Game::come_off_track	clamps speed, halves it on the ground, moves and drags in the air
 AbstractMinecart.move	port	crates/horizon-client/src/game/minecarts.rs::Game::move_cart	collision movement only; gap: minor: no push or pickup during the move, which push_carts and the cart tick do instead
 AbstractMinecart.applyEffectsFromBlocks	inline	crates/horizon-client/src/game/minecarts.rs::Game::cart_lava_tick	lava is applied there; gap: minor: other block effects on a cart (cobweb, berry bush) are not applied; under minecart_improvements, NewMinecartBehavior.moveAlongTrack applies block effects twice per step, and Horizon keeps the old order
-AbstractMinecart.getRedstoneDirection	skip:other		used only by the experimental NewMinecartBehavior; Horizon runs the old track behaviour
+AbstractMinecart.getRedstoneDirection	port	crates/horizon-client/src/game/minecarts.rs::Game::redstone_direction	the push a powered rail gives a resting cart: away from the powered conductor. move_along_track_new calls it when the minecart_improvements feature is on; the old track behaviour is the other path
 AbstractMinecart.applyNaturalSlowdown	port	crates/horizon-client/src/game/minecarts.rs::Game::natural_slowdown	slowdown per ride state, the furnace push and water
-AbstractMinecart.readAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::from_nbt	flipped and HasTicked read back; gap: minor: a custom display block and offset are not kept
-AbstractMinecart.addAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::to_nbt	flipped and HasTicked written; gap: minor: a custom display block and offset are not saved
+AbstractMinecart.readAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::from_nbt	flipped, HasTicked, DisplayState and DisplayOffset are read back; a DisplayState whose block no longer resolves is dropped (forget_unreadable_display)
+AbstractMinecart.addAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::to_nbt	flipped, HasTicked, DisplayState and DisplayOffset are written; the offset only when it is not the kind's default, the state only when set
 AbstractMinecart.pushOtherMinecart	port	crates/horizon-client/src/game/minecarts.rs::Game::push_from_cart	cart against cart push with the furnace case; the old-movement facing check is used
 Minecart.interact	port	crates/horizon-client/src/game/minecarts.rs::Game::interact_cart	a plain rideable cart is boarded unless sneaking or already ridden
 Minecart.activateMinecart	port	crates/horizon-client/src/game/minecarts.rs::Game::activate_cart	a powered activator rail ejects the rider and hurts a rideable cart

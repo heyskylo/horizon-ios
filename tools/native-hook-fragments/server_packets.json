@@ -1,0 +1,25 @@
+{
+  "hooks": [
+    {
+      "name": "server_packets",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_server_packets",
+      "neoforge": "none (NeoForge has no packet counting event; PacketEvents' PacketSendEvent and PacketReceiveEvent)",
+      "side": "server",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "helpers": [
+    {
+      "name": "count_packets",
+      "target": "horizon_client::game::native_diagnostics::Game<'_>::native_count_packets"
+    }
+  ],
+  "rust_summary": "each player's play packets once a tick, by id and body bytes, sent and received (`native_server_packets`), while a mod counts them (`native_count_packets`).",
+  "doc_summary": "`native_server_packets(player, packets, outbound)`, once a tick per player and way, each packet as (id, body bytes), while `native_count_packets(true)` is on (off, nothing is kept). Bundles need \"hooks\": @API:server_packets@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_diagnostics.rs"
+  ]
+}

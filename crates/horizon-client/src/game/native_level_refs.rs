@@ -9,7 +9,7 @@ use horizon_client::world::World;
 
 impl Game<'_> {
     /// The world a handle names now, or None for a stale or foreign one.
-    fn native_level_world(&self, level: LevelRef) -> Option<&World> {
+    pub(super) fn native_level_world(&self, level: LevelRef) -> Option<&World> {
         if self.remote.is_some() || self.native_lifecycle.epoch() != Some(level.epoch()) {
             return None;
         }

@@ -101,7 +101,7 @@ fn title(c: &Value, w: i32, h: i32, atlas: &HudAtlas) -> Vec<GuiDraw> {
     }
     let partial = float(c, "partial", 0.0);
     let bg = background(c);
-    let mut out = t.overlay_message(w, h, 39, partial, &atlas.font, bg);
+    let mut out = t.overlay_message(w, h, partial, &atlas.font, bg);
     out.extend(t.title(w, h, partial, &atlas.font, bg));
     out
 }
@@ -129,7 +129,7 @@ fn selected(c: &Value, w: i32, h: i32, atlas: &HudAtlas) -> Vec<GuiDraw> {
     }
     let mode = c["gameMode"].as_str().unwrap_or("survival");
     let can_hurt = mode == "survival" || mode == "adventure";
-    highlight.draw(w, h, 39, can_hurt, &atlas.font, background(c))
+    highlight.draw(w, h, can_hurt, &atlas.font, background(c))
 }
 
 fn boss(c: &Value, w: i32, h: i32, atlas: &HudAtlas) -> Vec<GuiDraw> {

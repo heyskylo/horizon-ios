@@ -23,11 +23,39 @@ pub(super) const PER_TICK: u32 = 32;
 /// The messages waiting, and what each player used of this tick's allowance.
 #[derive(Default)]
 pub(super) struct NativeNet {
+    /// What the profile helpers left for the hub (`native_profiles`).
+    pub(super) profiles: super::native_profiles::PendingProfiles,
     from_players: Vec<(u128, Message)>,
     from_counts: HashMap<u128, u32>,
     to_players: Vec<(u128, Vec<u8>)>,
     to_counts: HashMap<u128, u32>,
     pub(super) to_server: u32,
+    /// Plugin channel messages from players on channels that aren't Horizon's own, for
+    /// `native_custom_payload_from_client`: player, channel, data.
+    payloads_from: Vec<(u128, String, Vec<u8>)>,
+    /// What `native_send_custom_payload_to_player` sent this tick: player, channel, data.
+    payloads_to: Vec<(u128, String, Vec<u8>)>,
+}
+
+/// `ClientboundCustomPayloadPacket.MAX_PAYLOAD_SIZE`.
+const MAX_CLIENTBOUND_PAYLOAD: usize = 1_048_576;
+
+/// A plugin channel `namespace:path` as `Identifier` takes it, not in Horizon's own namespace.
+fn plugin_channel_ok(channel: &str) -> bool {
+    let Some((namespace, path)) = channel.split_once(':') else {
+        return false;
+    };
+    let allowed = |b: u8, slash: bool| {
+        b.is_ascii_lowercase()
+            || b.is_ascii_digit()
+            || matches!(b, b'_' | b'.' | b'-')
+            || (slash && b == b'/')
+    };
+    !namespace.is_empty()
+        && !path.is_empty()
+        && namespace != "horizon"
+        && namespace.bytes().all(|b| allowed(b, false))
+        && path.bytes().all(|b| allowed(b, true))
 }
 
 /// A message's payload as `native_net_send_*` check it.
@@ -59,9 +87,23 @@ impl Game<'_> {
         }
     }
 
+    /// A plugin channel message from `conn` on a channel that isn't Horizon's own: queued for
+    /// `run_native_net`, which hands it to `native_custom_payload_from_client`.
+    pub(super) fn guest_custom_payload(
+        &mut self,
+        host: &LanHost,
+        conn: u32,
+        channel: String,
+        data: Vec<u8>,
+    ) {
+        if let Some(player) = host.hub.guest(conn).map(|g| g.uuid) {
+            self.native_net.payloads_from.push((player, channel, data));
+        }
+    }
+
     /// Whether messages from players wait for `run_native_net`.
     pub(super) fn native_net_waiting(&self) -> bool {
-        !self.native_net.from_players.is_empty()
+        !self.native_net.from_players.is_empty() || !self.native_net.payloads_from.is_empty()
     }
 
     /// The waiting messages reach the mods, with the hub back in the game.
@@ -69,10 +111,16 @@ impl Game<'_> {
         for (player, m) in std::mem::take(&mut self.native_net.from_players) {
             self.native_net_from_client(player, &m.channel, &m.data);
         }
+        for (player, channel, data) in std::mem::take(&mut self.native_net.payloads_from) {
+            self.native_custom_payload_from_client(player, &channel, &data);
+        }
     }
 
     /// What the mods sent this tick leaves; the tick's allowances start over.
     pub(super) fn flush_native_net(&mut self, host: &mut LanHost) {
+        self.flush_native_profiles(host);
+        // The mods' kicks (native_packets.rs) leave with their messages.
+        self.flush_native_kicks(host);
         for (player, data) in std::mem::take(&mut self.native_net.to_players) {
             if let Some(g) = host
                 .hub
@@ -87,6 +135,17 @@ impl Game<'_> {
                         data,
                     }),
                 );
+            }
+        }
+        for (player, channel, data) in std::mem::take(&mut self.native_net.payloads_to) {
+            if let Some(g) = host
+                .hub
+                .guests
+                .iter()
+                .find(|g| g.placed && g.uuid == player)
+            {
+                host.hub
+                    .send_to(g.conn, &C::CustomPayload(CustomPayload { channel, data }));
             }
         }
         // The allowance is a server tick's, not a level pass's: it starts over
@@ -107,7 +166,6 @@ impl Game<'_> {
 }
 
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// Sends `data` on `channel` (`mod_id:name`, at most 30 000 bytes, at
     /// most 32 a player a tick) to `player`'s client, at the tick's end, from
@@ -129,6 +187,39 @@ impl Game<'_> {
         }
         *count += 1;
         self.native_net.to_players.push((player, payload));
+        Ok(())
+    }
+
+    /// Sends `data` on the plugin channel `channel` (`namespace:path`, not
+    /// Horizon's own `horizon:` ones, at most 1 MiB as
+    /// `ClientboundCustomPayloadPacket` takes) to `player`'s client, any
+    /// client, a vanilla one included, at the tick's end, from any server
+    /// hook (Bukkit's `Player.sendPluginMessage`). Ok means queued: a player
+    /// who isn't on by then gets nothing. Nothing counts these; the bytes
+    /// are the mod's to get right. An error on a client, and for a bad
+    /// channel or size. API @API:send_custom_payload_to_player@.
+    pub(super) fn native_send_custom_payload_to_player(
+        &mut self,
+        player: u128,
+        channel: &str,
+        data: &[u8],
+    ) -> Result<(), String> {
+        if self.remote.is_some() {
+            return Err("a client has no players to send to".into());
+        }
+        if !plugin_channel_ok(channel) {
+            return Err(format!(
+                "the channel {channel:?} is not namespace:path outside horizon:"
+            ));
+        }
+        if data.len() > MAX_CLIENTBOUND_PAYLOAD {
+            return Err(format!(
+                "the payload is past {MAX_CLIENTBOUND_PAYLOAD} bytes"
+            ));
+        }
+        self.native_net
+            .payloads_to
+            .push((player, channel.to_owned(), data.to_vec()));
         Ok(())
     }
 
@@ -187,6 +278,23 @@ impl Game<'_> {
             return Err("the Chat option blocks this message".into());
         }
         self.send_chat(message);
+        Ok(())
+    }
+
+    /// Opens the chat screen with `text` typed in and the cursor at its end,
+    /// as T and / open it (`ChatScreen` with its initial text): a command
+    /// macro can fill in `/tp ` for the player to finish. Nothing is sent; the
+    /// player edits and sends it, or presses Escape. The box keeps its limit
+    /// (256 characters) and its character filter. An error with no player in a
+    /// world, or while another screen is open. API @API:open_chat@.
+    pub(super) fn native_open_chat(&mut self, text: &str) -> Result<(), String> {
+        if self.player.is_none() {
+            return Err("no player in a world".into());
+        }
+        if self.screen != super::Screen::Playing {
+            return Err("another screen is open".into());
+        }
+        self.open_chat(text, false);
         Ok(())
     }
 

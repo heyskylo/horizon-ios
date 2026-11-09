@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "open_chat", "target": "horizon_client::game::native_net::Game<'_>::native_open_chat"}
+  ],
+  "rust_summary": "a client mod opens the chat screen with text typed in (`native_open_chat`).",
+  "doc_summary": "`native_open_chat(text)` opens the chat screen with `text` typed in for the player to finish and send, as T and / open it; nothing is sent; an error with no player in a world or while another screen is open. Bundles need \"hooks\": @API:open_chat@.",
+  "comments": ["crates/horizon-client/src/game/native_net.rs"]
+}

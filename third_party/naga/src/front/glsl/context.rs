@@ -13,7 +13,7 @@ use super::{
 use crate::{
     front::Typifier, proc::Emitter, proc::Layouter, AddressSpace, Arena, BinaryOperator, Block,
     Expression, FastHashMap, FunctionArgument, Handle, Literal, LocalVariable, RelationalFunction,
-    Scalar, Span, Statement, Type, TypeInner, VectorSize,
+    Scalar, ScalarKind, Span, Statement, Type, TypeInner, VectorSize,
 };
 
 /// The position at which an expression is, used while lowering
@@ -268,6 +268,23 @@ impl<'a> Context<'a> {
     }
 
     pub fn add_expression(&mut self, expr: Expression, meta: Span) -> Result<Handle<Expression>> {
+        if let Expression::Load { pointer } = expr {
+            if let Some((ty, count)) = self.atomic_candidate(pointer, meta)? {
+                let mut components = Vec::with_capacity(count as usize);
+                for index in 0..count {
+                    let member = self.add_expression(
+                        Expression::AccessIndex {
+                            base: pointer,
+                            index,
+                        },
+                        meta,
+                    )?;
+                    components
+                        .push(self.add_expression(Expression::Load { pointer: member }, meta)?);
+                }
+                return self.add_expression(Expression::Compose { ty, components }, meta);
+            }
+        }
         let mut eval = if self.is_const {
             crate::proc::ConstantEvaluator::for_glsl_module(
                 self.module,
@@ -530,6 +547,19 @@ impl<'a> Context<'a> {
                     meta,
                 );
             }
+        } else if let Some((_, count)) = self.atomic_candidate(pointer, meta)? {
+            for index in 0..count {
+                let dst = self.add_expression(
+                    Expression::AccessIndex {
+                        base: pointer,
+                        index,
+                    },
+                    meta,
+                )?;
+                let src =
+                    self.add_expression(Expression::AccessIndex { base: value, index }, meta)?;
+                self.lower_store(dst, src, meta)?;
+            }
         } else {
             self.emit_restart();
 
@@ -537,6 +567,60 @@ impl<'a> Context<'a> {
         }
 
         Ok(())
+    }
+
+    /// The type and member count of the struct or array `pointer` points to, when it is in a
+    /// buffer or `shared` and holds integers. An `atomic*()` call may turn those atomic once the
+    /// whole shader is parsed (`front::atomic_upgrade`), and a copy of the whole value must keep
+    /// its declared type, so it is loaded and stored member by member.
+    fn atomic_candidate(
+        &mut self,
+        pointer: Handle<Expression>,
+        meta: Span,
+    ) -> Result<Option<(Handle<Type>, u32)>> {
+        if self.is_const {
+            return Ok(None);
+        }
+        let TypeInner::Pointer { base, space } = *self.resolve_type(pointer, meta)? else {
+            return Ok(None);
+        };
+        if !matches!(
+            space,
+            AddressSpace::Storage { .. } | AddressSpace::WorkGroup
+        ) {
+            return Ok(None);
+        }
+        // shortcut: aggregates of more than 64 scalars stay whole copies (atomic members in them
+        // fail validation); split them too if a pack needs it.
+        /// Whether `ty` holds an integer scalar, and how many scalars it holds.
+        fn leaves(types: &crate::UniqueArena<Type>, ty: Handle<Type>) -> Option<(bool, u64)> {
+            Some(match types[ty].inner {
+                TypeInner::Scalar(s) => (matches!(s.kind, ScalarKind::Sint | ScalarKind::Uint), 1),
+                TypeInner::Vector { size, .. } => (false, size as u64),
+                TypeInner::Matrix { columns, rows, .. } => (false, columns as u64 * rows as u64),
+                TypeInner::Struct { ref members, .. } => {
+                    members.iter().try_fold((false, 0), |(any, sum), m| {
+                        leaves(types, m.ty).map(|(i, n)| (any | i, n.saturating_add(sum)))
+                    })?
+                }
+                TypeInner::Array {
+                    base,
+                    size: crate::ArraySize::Constant(n),
+                    ..
+                } => leaves(types, base).map(|(i, c)| (i, c.saturating_mul(n.get() as u64)))?,
+                _ => return None,
+            })
+        }
+        let types = &self.module.types;
+        let count = match types[base].inner {
+            TypeInner::Struct { ref members, .. } => members.len() as u32,
+            TypeInner::Array {
+                size: crate::ArraySize::Constant(n),
+                ..
+            } => n.get(),
+            _ => return Ok(None),
+        };
+        Ok(matches!(leaves(types, base), Some((true, n)) if n <= 64).then_some((base, count)))
     }
 
     /// Internal implementation of [`lower`](Self::lower)

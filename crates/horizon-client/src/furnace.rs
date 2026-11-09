@@ -78,9 +78,6 @@ impl FurnaceCooking for Furnace {
         if lit || has_fuel && has_ingredient {
             if let Some(ingredient) = self.items[0].clone() {
                 if let Some(recipe) = recipes.cook(self.kind.recipe_type(), &ingredient) {
-                    if self.cooking_timer == 0 {
-                        self.cooking_total = total_time(recipe.time, self.speed);
-                    }
                     let max = items.get(&recipe.result.item).map_or(64, |i| i.max_stack);
                     let can_burn = match &self.items[2] {
                         None => true,
@@ -248,6 +245,69 @@ mod tests {
         let providers = Providers::load(&root);
         let _ = fs::remove_dir_all(&root);
         (items, recipes, providers)
+    }
+
+    #[test]
+    fn loaded_totals_survive_until_actual_completion() {
+        let (items, recipes, providers) = data("loaded-total");
+        assert_eq!(
+            recipes
+                .cook(
+                    FurnaceKind::Furnace.recipe_type(),
+                    &ItemStack::new("test:ore", 3)
+                )
+                .unwrap()
+                .time,
+            200
+        );
+        // Fresh Java's five-case Game fixture independently admits the loaded
+        // zero (including a missing saved field), five and normal totals.
+        for (total, timer, completion) in [(0, 0, 1), (5, 0, 5), (200, 0, 200), (5, 1, 4)] {
+            let mut f = Furnace {
+                kind: FurnaceKind::Furnace,
+                items: [Some(ItemStack::new("test:ore", 3)), None, None],
+                lit_remaining: 20,
+                lit_total: 20,
+                cooking_timer: timer,
+                cooking_total: total,
+                speed: 1.0,
+                recipes_used: HashMap::new(),
+            };
+            for elapsed in 1..=6 {
+                let mut drops = Vec::new();
+                assert!(!f.idle());
+                assert_eq!(f.tick(&recipes, &items, &providers, &mut drops), None);
+                assert!(drops.is_empty());
+                assert_eq!((f.lit_remaining, f.lit_total), (20 - elapsed, 20));
+                assert!(f.items[1].is_none());
+                let complete = elapsed >= completion;
+                assert_eq!(
+                    f.items[0].as_ref().unwrap().count,
+                    if complete { 2 } else { 3 },
+                    "loaded {total}/{timer}, tick {elapsed}"
+                );
+                assert_eq!(
+                    f.items[2].as_ref().map(|s| (&*s.item, s.count)),
+                    if complete {
+                        Some(("test:ingot", 1))
+                    } else {
+                        None
+                    }
+                );
+                assert_eq!(f.cooking_total, if complete { 200 } else { total });
+                assert_eq!(
+                    f.cooking_timer,
+                    if complete {
+                        elapsed - completion
+                    } else {
+                        timer + elapsed
+                    }
+                );
+            }
+            // A changed input still goes through setItem's independent reset.
+            f.set_input(&recipes, Some(ItemStack::new("test:ingot", 1)));
+            assert_eq!((f.cooking_timer, f.cooking_total), (0, 200));
+        }
     }
 
     #[test]

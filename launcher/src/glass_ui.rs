@@ -94,7 +94,8 @@ pub fn flat() -> bool {
 }
 
 /// A Settings row (`SettingRow`): the name in 15 px semibold, its note in 13 px on 1.5 at 60 %,
-/// the control on the right, 40 px away; 16 px around, no fill.
+/// the control on the right, 40 px away; 16 px around, no fill. On a window too narrow for both,
+/// the control wraps under the name (12 px below it), which keeps at least 240 px.
 pub fn setting_row(
     title: impl IntoElement,
     note: Option<gpui::AnyElement>,
@@ -104,8 +105,8 @@ pub fn setting_row(
         .flex()
         .flex_wrap()
         .items_center()
-        .justify_between()
-        .gap(px(16.))
+        .gap_x(px(40.))
+        .gap_y(px(12.))
         .px(px(16.))
         .py(px(16.))
         .rounded(px(radius::LARGE))
@@ -587,9 +588,13 @@ pub fn solid(
             .items_center()
             .justify_center()
             .gap(px(8.))
-            .h(px(h))
+            // `h` is the least height: a label that wraps in a narrow button (a long translation)
+            // grows it instead of spilling out of it.
+            .min_h(px(h))
+            .py(px(4.))
             .px(px(16.))
             .rounded(px(radius::CONTROL))
+            .text_center()
             .bg(paper())
             .cursor_pointer()
             .hover(|s| s.opacity(0.9))

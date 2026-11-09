@@ -18,11 +18,25 @@ use horizon_core::{
     random::{LegacyRandom, RandomSource},
 };
 
+#[cfg(test)]
+#[path = "fall_flying_tests.rs"]
+mod fall_flying_tests;
+#[cfg(test)]
+#[path = "wet_fire_tests.rs"]
+mod wet_fire_tests;
+
 use crate::powder_snow::particle_velocity as powder_snow_particle_velocity;
 
 /// The inside-block effects of fire and lava (`InsideBlockEffectType`
-/// FIRE_IGNITE and LAVA_IGNITE): ignite, then hurt.
-fn block_contact_damage(m: &mut Mob, w: &MobWorld, fire: f32) {
+/// FIRE_IGNITE and LAVA_IGNITE): ignite, then hurt. Both are collected
+/// before either applies, so a fire hurt's teleport still leaves the lava's.
+fn block_contact_damage(
+    m: &mut Mob,
+    fire: f32,
+    lava: bool,
+    w: &MobWorld,
+    events: &mut Vec<MobEvent>,
+) {
     if fire > 0.0 && !m.kind.flags.fire_immune {
         let multiplier = m.burning_time();
         m.fire_ticks = crate::motion::environment::ignite_contact(
@@ -31,15 +45,11 @@ fn block_contact_damage(m: &mut Mob, w: &MobWorld, fire: f32) {
             &mut m.random,
             multiplier,
         );
-        m.damage(fire, Damage::of(DamageKind::InFire));
+        hurt(m, w, events, fire, Damage::of(DamageKind::InFire));
     }
-    if m.fluids.in_lava && !m.kind.flags.fire_immune {
+    if lava && !m.kind.flags.fire_immune {
         m.ignite_for_ticks(300);
-        m.damage(4.0, Damage::of(DamageKind::Lava));
-    }
-    // Entity.applyEffectsFromBlocks: rain puts the fire out afterwards.
-    if m.fire_ticks > 0 && in_rain(m, w) {
-        m.fire_ticks = 0;
+        hurt(m, w, events, 4.0, Damage::of(DamageKind::Lava));
     }
 }
 
@@ -622,6 +632,10 @@ pub fn tick(
         m.removed = true;
         return false;
     }
+    // Entity.commonTick: `invulnerableTime` counts down before setOldPosAndRot.
+    if m.invulnerable_time > 0 {
+        m.invulnerable_time -= 1;
+    }
     // `Entity.computeSpeed`: what it moved in the last tick.
     let known_speed = m.position.subtract(m.previous);
     m.previous = m.position;
@@ -658,11 +672,15 @@ pub fn tick(
     if m.species() == Species::Strider {
         super::strider::pre_tick(m, w, events);
     }
-    base_tick(m, w, events);
+    let was_on_fire = base_tick(m, w, events);
+    // LivingEntity.tick ends with currentImpulseContextResetGraceTime--.
+    if m.impulse_grace_time > 0 {
+        m.impulse_grace_time -= 1;
+    }
     if m.species() == Species::Rabbit {
         super::rabbit::base_tick(m);
     }
-    if m.death_time >= super::creaking::death_limit(m) {
+    if !m.alive() && m.death_time >= super::creaking::death_limit(m) {
         // Creaking.tickDeath: a heart's creaking crumbles away.
         if super::creaking::is_creaking(m) && super::creaking::tearing_down(m) {
             super::creaking::tear_down(m, events);
@@ -673,6 +691,9 @@ pub fn tick(
     if m.alive() {
         super::spear_use::update_using_item(m, w, known_speed, events);
     }
+    // LivingEntity.tick: detectEquipmentUpdates, a sulfur cube's body
+    // archetype modifiers.
+    super::sulfur_cube::adopt_body(m);
     // LivingEntity.tick: a sleeper whose bed is gone stands up before
     // aiStep, with or without AI.
     if super::villager::sleeping(m)
@@ -684,6 +705,7 @@ pub fn tick(
         super::villager_brain::woken(m, w.game_time);
     }
     if m.no_ai {
+        update_fall_flying(m, w, events);
         reset_effect_fall_distance(m);
         // Mob.aiStep still runs without AI (only serverAiStep is skipped),
         // so undead still burn in daylight and the endermite's life keeps
@@ -721,9 +743,9 @@ pub fn tick(
             super::equine::ai_step(m, w, events);
         }
         // LivingEntity.aiStep ends in the water's hurt with or without AI;
-        // a NoAI enderman's hurts still teleport it (Enderman.hurtServer).
+        // a NoAI enderman's or shulker's hurts still teleport it (hurtServer).
         hurt_by_water(m, w, events);
-        enderman_hurt_teleports(m, w, events);
+        hurt_teleports(m, w, events);
         // Ravager.aiStep runs outside serverAiStep: NoAI still advances
         // attack/stun/roar, including the stun-to-roar transition.
         if m.species() == Species::Ravager {
@@ -736,10 +758,22 @@ pub fn tick(
         if m.species() == Species::GlowSquid {
             aquatic::glow_squid_dark_tick(m);
         }
+        // Shulker.tick after its living tick: a NoAI shell still keeps a
+        // face and eases its lid, pushing what the lid opens into.
+        if m.species() == Species::Shulker {
+            super::shulker::shell_tick(m, w, events);
+        }
+        // TraderLlama.aiStep still calls maybeDespawn after its super step.
+        // Keep unrelated llama healing and its random draw in the AI path.
+        if m.species() == Species::TraderLlama {
+            super::caravan::trader_llama_tick(m, w);
+        }
     } else {
         ai_step(m, w, level_random, events);
     }
+    count_fall_fly_ticks(m);
     effects_from_blocks(m, w, level_random, events);
+    extinguish_if_wet(m, w, was_on_fire, events);
     if m.species() == Species::SulfurCube && m.alive() {
         // SulfurCube.doPush applies the body's contact damage even with NoAI.
         // Player contact keeps its existing player_push route.
@@ -762,31 +796,26 @@ pub fn tick(
     m.anim.end_tick(m.ai.swinging);
     tick_swing(m);
     flower_contact_effects(m, w);
-    if m.species() == Species::CopperGolem {
-        // CopperGolem.tick: updateWeathering after the living tick.
-        super::copper_golem::update_weathering(m, w, level_random, events);
-    }
-    if m.species() == Species::Strider {
-        super::strider::float(m, w);
-    }
-    if m.species() == Species::Bat {
-        super::bat::tick(m);
-    }
-    if m.species() == Species::Bee {
-        super::bee::tick(m, level_random);
-    }
-    if m.species() == Species::Allay {
-        super::allay::tick(m, w, events);
-    }
-    if m.species() == Species::Panda {
-        super::panda::tick(m, w, events);
+    // The species' own tick after the living tick, with or without AI.
+    match m.species() {
+        // CopperGolem.tick: updateWeathering.
+        Species::CopperGolem => super::copper_golem::update_weathering(m, w, level_random, events),
+        Species::Strider => super::strider::float(m, w),
+        Species::Bat => super::bat::tick(m),
+        Species::Bee => super::bee::tick(m, level_random),
+        Species::Allay => super::allay::tick(m, w, events),
+        Species::Panda => super::panda::tick(m, w, events),
+        Species::Villager => super::villager::tick(m, w.game_time),
+        _ => {}
     }
     aquatic::school_tick(m, w, level_random);
     // Dolphin.tick: after super.tick, NoAI restores the species maximum.
     if m.no_ai && m.species() == Species::Dolphin {
         m.air = m.max_air_supply();
     }
-    true
+    // TraderLlama.maybeDespawn discards the llama in its aiStep: it leaves the
+    // level's entity list in this tick, after the rest of its tick ran.
+    !(m.removed && m.species() == Species::TraderLlama)
 }
 /// `LivingEntity.aiStep` -> `Entity.applyEffectsFromBlocks` for the blocks
 /// that hurt, hold or slide a mob: the cactus (`CactusBlock.entityInside`, 1),
@@ -801,6 +830,11 @@ fn effects_from_blocks(
     level_random: &mut LegacyRandom,
     events: &mut Vec<MobEvent>,
 ) {
+    // Entity.applyEffectsFromBlocks fixes the tick's movements before
+    // stepOn: a hurt below that teleports an enderman or a shulker leaves
+    // the scan on the path it had.
+    let start = m.previous;
+    let travel = m.position.subtract(start);
     // Block.stepOn for the block under a mob on the ground (`getOnPosLegacy`):
     // MagmaBlock.stepOn's hot floor, 1 damage (a mob never sneaks).
     if m.on_ground && m.alive() {
@@ -817,7 +851,7 @@ fn effects_from_blocks(
             },
         ));
         if w.block_name(x, y, z) == "minecraft:magma_block" {
-            m.damage(1.0, Damage::of(DamageKind::HotFloor));
+            hurt(m, w, events, 1.0, Damage::of(DamageKind::HotFloor));
         }
         // TurtleEggBlock.stepOn: a mob never steps carefully, so an egg under
         // it breaks one time in a hundred (`destroyEgg`), unless it is a turtle
@@ -832,16 +866,13 @@ fn effects_from_blocks(
         }
     }
     let mut visited: Vec<[i32; 3]> = Vec::new();
-    let travel = m.position.subtract(m.previous);
     let longest = travel.x.abs().max(travel.y.abs()).max(travel.z.abs());
     let steps = ((longest / 0.2).ceil() as i32).clamp(1, 100);
     for step in 0..=steps {
         if !m.alive() {
             return;
         }
-        let at = m
-            .previous
-            .add_vector(travel.scale(f64::from(step) / f64::from(steps)));
+        let at = start.add_vector(travel.scale(f64::from(step) / f64::from(steps)));
         let b = m.bounds_at(at).deflate(Vec3::new(1e-5, 1e-5, 1e-5));
         for x in b.min_position().x.floor() as i32..=b.max_position().x.floor() as i32 {
             for y in b.min_position().y.floor() as i32..=b.max_position().y.floor() as i32 {
@@ -873,7 +904,7 @@ fn effects_from_blocks(
                     }
                     match w.block_name(x, y, z) {
                         "minecraft:cactus" => {
-                            m.damage(1.0, Damage::of(DamageKind::Cactus));
+                            hurt(m, w, events, 1.0, Damage::of(DamageKind::Cactus));
                         }
                         // CampfireBlock.entityInside: a lit campfire hurts a
                         // living entity by its fire damage (1, soul 2).
@@ -885,7 +916,7 @@ fn effects_from_blocks(
                             } else {
                                 2.0
                             };
-                            m.damage(damage, Damage::of(DamageKind::Campfire));
+                            hurt(m, w, events, damage, Damage::of(DamageKind::Campfire));
                         }
                         // WebBlock.entityInside -> makeStuckInBlock, which a
                         // spider ignores for cobwebs and a wither always.
@@ -916,7 +947,7 @@ fn effects_from_blocks(
                                 && (moved.x.abs() >= f64::from(0.003_f32)
                                     || moved.z.abs() >= f64::from(0.003_f32))
                             {
-                                m.damage(1.0, Damage::of(DamageKind::SweetBerryBush));
+                                hurt(m, w, events, 1.0, Damage::of(DamageKind::SweetBerryBush));
                             }
                         }
                         // PowderSnowBlock.entityInside: a living entity is stuck
@@ -1113,6 +1144,28 @@ fn axolotl_air_supply(m: &mut Mob, w: &MobWorld) {
         }
     }
 }
+/// `Nautilus.baseTick`: `LivingEntity.baseTick` refills the air of this
+/// water breather, then, unless it has no AI, `Nautilus.handleAirSupply`
+/// takes it back out of water, where the nautilus dries out.
+fn nautilus_air_supply(m: &mut Mob) {
+    const MAX_AIR: i32 = 300;
+    let before = m.air;
+    if m.alive() {
+        m.air = (m.air + 4).min(MAX_AIR);
+    }
+    if m.no_ai {
+        return;
+    }
+    if m.alive() && !m.fluids.in_water {
+        m.air = before - 1;
+        if m.air <= -20 {
+            m.air = 0;
+            m.damage(2.0, Damage::of(DamageKind::DryOut));
+        }
+    } else {
+        m.air = MAX_AIR;
+    }
+}
 /// `Entity.isInWall` (minus the noPhysics early-out, which the caller applies):
 /// visit every cell covered by the thin eye box and ask whether a suffocating
 /// collision shape actually intersects it. Width multiplication is a float.
@@ -1134,8 +1187,30 @@ fn in_wall(
     (c0[0]..=c1[0])
         .any(|x| (c0[1]..=c1[1]).any(|y| (c0[2]..=c1[2]).any(|z| intersects(x, y, z, &bounds))))
 }
+fn extinguish_if_wet(m: &mut Mob, w: &MobWorld, was_on_fire: bool, events: &mut Vec<MobEvent>) {
+    // Entity.applyEffectsFromBlocks snapshots burning before contact ignition.
+    // Rain also clears newly ignited fire, but only a previously burning mob
+    // plays the hiss and consumes its two pitch draws. This includes NoAI mobs.
+    if m.fire_ticks > 0 && (m.fluids.in_water || in_rain(m, w)) {
+        m.fire_ticks = 0;
+        if was_on_fire {
+            events.push(MobEvent::Sound(
+                "entity.generic.extinguish_fire",
+                [m.position.x, m.position.y, m.position.z],
+                0.7,
+                1.6 + (m.random.next_float() - m.random.next_float()) * 0.4,
+            ));
+        }
+    }
+}
+
 /// Entity.baseTick + LivingEntity.baseTick + Mob.baseTick.
-fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+/// Returns the burning state immediately before block-contact ignition.
+fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
+    // LivingEntity.baseTick refreshes a loaded sleeper before Entity.baseTick.
+    if m.first_tick {
+        super::villager::refresh_sleeping_position(m, w);
+    }
     // Entity.canSpawnSprintParticle / spawnSprintParticle (a dashing cat or
     // ocelot): a server level drops the particle, but its spot is drawn
     // from the mob's random first.
@@ -1159,33 +1234,25 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         super::undead::drowned_update_swimming(m, w);
     }
     let fire = crate::motion::environment::fire_contact(w.world, w.registry, m.bounds());
+    let contact_at = m.position;
     if fire > 0.0 {
         m.ticks_frozen = 0;
     }
-    // Fire: water or rain (Entity.isInRain) extinguishes, lava ignites,
-    // burning hurts every second.
-    if m.fire_ticks > 0 && (m.fluids.in_water || in_rain(m, w)) {
-        m.fire_ticks = 0;
-        events.push(MobEvent::Sound(
-            "entity.generic.extinguish_fire",
-            m.center(),
-            0.7,
-            1.6 + (m.random.next_float() - m.random.next_float()) * 0.4,
-        ));
-    }
+    // Entity.baseTick counts burning damage and the fire timer before
+    // Entity.applyEffectsFromBlocks extinguishes a wet mob later in the tick.
     if m.fire_ticks > 0 {
         if m.kind.flags.fire_immune {
             m.fire_ticks = 0;
         } else {
             if m.fire_ticks % 20 == 0 && !m.fluids.in_lava {
-                m.damage(1.0, Damage::of(DamageKind::OnFire));
+                hurt(m, w, events, 1.0, Damage::of(DamageKind::OnFire));
             }
             m.fire_ticks -= 1;
         }
     }
     // Entity.checkBelowWorld: LivingEntity.onBelowWorld hurts 4 a tick.
     if m.position.y < f64::from(w.world.bottom_y() - 64) {
-        m.damage(4.0, Damage::of(DamageKind::OutOfWorld));
+        hurt(m, w, events, 4.0, Damage::of(DamageKind::OutOfWorld));
     }
     m.first_tick = false;
     if m.alive() {
@@ -1225,30 +1292,44 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                 },
             )
         {
-            m.damage(1.0, Damage::of(DamageKind::InWall));
+            hurt(m, w, events, 1.0, Damage::of(DamageKind::InWall));
         }
         // Air supply and drowning (WaterAnimal.handleAirSupply for aquatic mobs).
+        // Nautilus.baseTick: NoAI skips only the custom handler; the
+        // superclass Breath/drown path must still process its air.
         if m.species() == Species::Axolotl {
             axolotl_air_supply(m, w);
+        } else if m.species() == Species::Nautilus {
+            nautilus_air_supply(m);
         } else if m.kind.flags.needs_water {
             if !m.fluids.in_water {
                 m.air -= 1;
                 if m.air == -20 {
                     m.air = 0;
-                    m.damage(2.0, Damage::of(DamageKind::Drown));
+                    hurt(m, w, events, 2.0, Damage::of(DamageKind::Drown));
                 }
             } else {
                 m.air = 300;
             }
         } else {
-            // LivingEntity.baseTick's air supply (LivingBreatheEvent): an
-            // entity with its eyes in water that can't breathe there loses
-            // air, any other gains it.
-            let drowns = m.fluids.eye_in_water && !m.kind.flags.breathes_water;
+            // LivingEntity.baseTick / MobEffectUtil: bubble columns and breathing
+            // effects protect submerged mobs. Nautilus alone holds air rather
+            // than refilling it; Water Breathing or Conduit Power still refill.
+            let submerged = m.fluids.eye_in_water
+                && w.block_name(
+                    m.position.x.floor() as i32,
+                    m.eye_y().floor() as i32,
+                    m.position.z.floor() as i32,
+                ) != "minecraft:bubble_column";
+            let water_breathing = m.has_effect("minecraft:water_breathing")
+                || m.has_effect("minecraft:conduit_power");
+            let nautilus = m.has_effect("minecraft:breath_of_the_nautilus");
+            let drowns = submerged && !m.kind.flags.breathes_water && !water_breathing && !nautilus;
+            let held = submerged && nautilus && !water_breathing;
             let vanilla = Breath {
                 can_breathe: !drowns,
                 consume: 1,
-                refill: if drowns { 0 } else { 4 },
+                refill: if drowns || held { 0 } else { 4 },
             };
             let breath = breathe(m.id, &m.kind.id, vanilla);
             if let Some(drowning) = drown(m.id, &m.kind.id, &mut m.air, breath, true) {
@@ -1257,11 +1338,11 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                     at: [m.position.x, m.position.y, m.position.z],
                 });
                 if let Some(damage) = drowning.damage {
-                    m.damage(damage, Damage::of(DamageKind::Drown));
+                    hurt(m, w, events, damage, Damage::of(DamageKind::Drown));
                 }
             }
         }
-        freeze_tick(m, w);
+        freeze_tick(m, w, events);
     }
     if m.species() == Species::Illusioner {
         super::illusioner::tick(m, events);
@@ -1276,14 +1357,27 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         m.invulnerable -= 1;
     }
     // LivingEntity.baseTick runs tickEffects after the timers count down.
-    tick_effects(m, w.mod_effects);
+    tick_effects(m, w.mod_effects, &mut |m| hurt_teleports(m, w, events));
     // Entity.applyEffectsFromBlocks runs in LivingEntity.aiStep, after
     // baseTick has counted the fire and the hurt timers down: a fire block or
     // lava ignites to the full 160 / 300 ticks and its hit lands after the
     // invulnerable time of that tick has already dropped.
-    block_contact_damage(m, w, fire);
-    // Enderman.hurtServer teleports inside the hurt (fire, lava, a block).
-    enderman_hurt_teleports(m, w, events);
+    let was_on_fire = m.fire_ticks > 0;
+    // A hurt above that teleported an enderman or a shulker (`snapTo`
+    // resets the old position) leaves aiStep's scan at the landing spot: the
+    // fire and lava there, not where the tick began.
+    let (fire, lava) = if m.position == contact_at {
+        (fire, m.fluids.in_lava)
+    } else {
+        (
+            crate::motion::environment::fire_contact(w.world, w.registry, m.bounds()),
+            touches_lava(m, w),
+        )
+    };
+    block_contact_damage(m, fire, lava, w, events);
+    // What a hurt outside the mob's own tick left (a scripted or a mob's
+    // hit) teleports before the rest of the tick, as it did inside it.
+    hurt_teleports(m, w, events);
     if !m.alive() {
         m.death_time += 1;
     }
@@ -1301,12 +1395,14 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     }
     // Entity.baseTick ends with Leashable.tickLeash.
     super::leash::tick(m, w, events);
+    was_on_fire
 }
 /// `LivingEntity.aiStep`'s "freezing" with `InsideBlockEffectType.FREEZE`:
 /// powder snow builds `ticks_frozen` up, anywhere else it melts twice as
 /// fast, and a fully frozen mob takes one freeze damage every 40 ticks.
-fn freeze_tick(m: &mut Mob, w: &MobWorld) {
+fn freeze_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     let in_snow = in_powder_snow(m, w);
+    m.in_powder_snow = in_snow;
     if !in_snow && m.ticks_frozen == 0 {
         return;
     }
@@ -1318,11 +1414,29 @@ fn freeze_tick(m: &mut Mob, w: &MobWorld) {
         m.ticks_frozen = (m.ticks_frozen - 2).max(0);
     }
     if m.age.is_multiple_of(40) && m.is_fully_frozen() && can_freeze {
-        m.damage(1.0, Damage::of(DamageKind::Freeze));
+        hurt(m, w, events, 1.0, Damage::of(DamageKind::Freeze));
     }
 }
 /// Whether the mob's box (shrunk by `1.0E-5`, as in `Entity.checkInsideBlocks`)
 /// touches powder snow.
+/// Whether the mob's box (shrunk by `1.0E-5`) touches a lava block: the
+/// LAVA_IGNITE contact read where a teleport landed, whose own fluid check
+/// (`Enderman.canRandomlyTeleportTo`, a shulker's empty spot) keeps lava
+/// from the feet.
+fn touches_lava(m: &Mob, w: &MobWorld) -> bool {
+    let b = m.bounds().deflate(Vec3::new(1e-5, 1e-5, 1e-5));
+    let (min, max) = (b.min_position(), b.max_position());
+    for x in min.x.floor() as i32..=max.x.floor() as i32 {
+        for y in min.y.floor() as i32..=max.y.floor() as i32 {
+            for z in min.z.floor() as i32..=max.z.floor() as i32 {
+                if &*w.facts.get(w.world.block(x, y, z)).name == "minecraft:lava" {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
 pub(super) fn in_powder_snow(m: &Mob, w: &MobWorld) -> bool {
     let b = m.bounds().deflate(Vec3::new(1e-5, 1e-5, 1e-5));
     let (min, max) = (b.min_position(), b.max_position());
@@ -1563,6 +1677,70 @@ fn ageable_step(
     }
 }
 
+/// `LivingEntity.updateFallFlying` on the server, which `aiStep` calls while
+/// the glide flag is set, with or without AI: a mob that cannot glide
+/// (`canGlide`: on the ground, riding, levitating, or no slot holding a
+/// glider whose next damage will not break it, `canGlideUsing`) stops
+/// gliding; else on every 20th glide tick one of its gliders, picked with
+/// `Util.getRandom` from the mob's own random, takes a point of wear.
+/// `checkFallDistanceAccumulation` and the `ELYTRA_GLIDE` game event of
+/// every 10th tick are not ported here.
+fn update_fall_flying(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+    use horizon_world::player_inventory::EquipmentSlot;
+    if !m.extra.fall_flying {
+        return;
+    }
+    let gliders: Vec<EquipmentSlot> = match w.items {
+        Some(items) => EquipmentSlot::ALL
+            .into_iter()
+            .filter(|&slot| {
+                super::finalize::equipment_stack(m, slot).is_some_and(|stack| {
+                    crate::item_sync::can_glide_using(&stack, glider_slot_name(slot), items)
+                })
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    if m.on_ground
+        || m.extra.mount.is_some()
+        || m.has_effect("minecraft:levitation")
+        || gliders.is_empty()
+    {
+        m.extra.fall_flying = false;
+        return;
+    }
+    let ticks = m.extra.fall_fly_ticks + 1;
+    if ticks % 10 == 0 && (ticks / 10) % 2 == 0 {
+        let pick = m.random.next_int_bound(gliders.len() as i32).unwrap_or(0) as usize;
+        events.push(MobEvent::GliderWear {
+            mob: m.id,
+            slot: gliders[pick],
+        });
+    }
+}
+/// `EquipmentSlot`'s serialized name, which `equippable` names its slot by.
+fn glider_slot_name(slot: horizon_world::player_inventory::EquipmentSlot) -> &'static str {
+    use horizon_world::player_inventory::EquipmentSlot as S;
+    match slot {
+        S::MainHand => "mainhand",
+        S::OffHand => "offhand",
+        S::Feet => "feet",
+        S::Legs => "legs",
+        S::Chest => "chest",
+        S::Head => "head",
+        S::Body => "body",
+        S::Saddle => "saddle",
+    }
+}
+/// `LivingEntity.tick` after `aiStep`: the glide's tick count.
+fn count_fall_fly_ticks(m: &mut Mob) {
+    m.extra.fall_fly_ticks = if m.extra.fall_flying {
+        m.extra.fall_fly_ticks + 1
+    } else {
+        0
+    };
+}
+
 /// `LivingEntity.aiStep`: both flight effects discard accumulated fall before
 /// travel, even when NoAI skips the server AI step.
 fn reset_effect_fall_distance(m: &mut Mob) {
@@ -1585,6 +1763,10 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &
     }
     if m.species() == Species::Fox {
         super::fox::pre_ai_step(m);
+    }
+    // Blaze.aiStep slows the fall before super.aiStep(), so before travel.
+    if m.species() == Species::Blaze {
+        super::nether::blaze_ai_step(m);
     }
     // AbstractHorse.aiStep: the tail swishes now and then (moveTail).
     if super::equine::is_equine(m.species()) {
@@ -1627,6 +1809,7 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &
         f64::from(m.ai.yya),
         f64::from(m.ai.zza),
     );
+    update_fall_flying(m, w, events);
     reset_effect_fall_distance(m);
     if super::equine::moved_by_client(m) {
         // LivingEntity.travelRidden: the rider's client moves it
@@ -1636,7 +1819,7 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &
         // Mannequin.isEffectiveAi: an immovable one never travels.
         m.travel(w, input, events);
         // A fall's hurt (checkFallDamage) teleports at once.
-        enderman_hurt_teleports(m, w, events);
+        hurt_teleports(m, w, events);
     }
     // LivingEntity.aiStep: applyEffectsFromBlocks follows travel.
     m.apply_effects_from_blocks(w, events);
@@ -1657,16 +1840,27 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &
 /// that hurt (`Enderman.hurtServer`), so it happens now, not next tick.
 fn hurt_by_water(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if m.kind.flags.water_sensitive && (m.fluids.in_water || in_rain(m, w)) {
-        m.damage(1.0, Damage::of(DamageKind::Drown));
-        enderman_hurt_teleports(m, w, events);
+        hurt(m, w, events, 1.0, Damage::of(DamageKind::Drown));
     }
 }
-/// The teleport `Enderman.hurtServer` makes inside a hurt, after the hurt's
-/// sound; with or without AI.
-fn enderman_hurt_teleports(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+/// A hurt the mob's own tick deals (`Entity.baseTick`, `tickEffects`, a
+/// block's touch, cramming), with the teleport `Enderman.hurtServer` or
+/// `Shulker.hurtServer` makes inside it: a second hurt of the same tick draws
+/// after the first one's teleport and sees where it landed.
+fn hurt(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>, amount: f32, source: Damage) {
+    m.damage(amount, source);
+    hurt_teleports(m, w, events);
+}
+/// The teleport `Enderman.hurtServer` or `Shulker.hurtServer` makes inside a
+/// hurt, after the hurt's sound; with or without AI.
+fn hurt_teleports(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if m.species() == Species::Enderman && m.extra.counter2 > 0 {
         events.append(&mut m.outbox);
         super::enderman::run_pending_teleports(m, w, events);
+    }
+    if m.species() == Species::Shulker && m.extra.flag {
+        events.append(&mut m.outbox);
+        super::shulker::hurt_teleport(m, w, events);
     }
 }
 impl Mob {
@@ -1753,7 +1947,7 @@ fn push_entities(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         && m.random.next_int_bound(4).unwrap_or(1) == 0
         && targets.iter().filter(|t| !t.2).count() as i64 > i64::from(limit) - 1
     {
-        m.damage(6.0, Damage::of(DamageKind::Cramming));
+        hurt(m, w, events, 6.0, Damage::of(DamageKind::Cramming));
     }
     for (who, at, _, same, vehicle) in targets {
         // Warden.doPush: touching it angers it, then the push itself.
@@ -1893,6 +2087,9 @@ fn server_ai_step(
     if m.species() == Species::Villager {
         // Villager.customServerAiStep: the brain, then the raid sound roll.
         super::villager_brain::tick(m, w, level_random, events);
+        if let Some(player) = super::villager::ext_mut(m).last_traded_player.take() {
+            events.push(MobEvent::VillagerTrade { mob: m.id, player });
+        }
         let _ = m.random.next_int_bound(100);
     }
     if m.species() == Species::Warden {
@@ -1931,7 +2128,7 @@ fn server_ai_step(
     m.jump_control_tick();
 }
 /// `Armadillo.pickNextScuteDropTime`: 5 to 10 minutes.
-fn next_scute_time(m: &mut Mob) -> i32 {
+pub(crate) fn next_scute_time(m: &mut Mob) -> i32 {
     m.random.next_int_bound(20 * 60 * 5).unwrap_or(0) + 20 * 60 * 5
 }
 /// `Armadillo.customServerAiStep`: the scute timer keeps counting down and is
@@ -2016,7 +2213,6 @@ fn species_ai_step(
         Species::Endermite => endermite_lifetime(m),
         Species::Wolf => super::tame::ai_step(m, w, events),
         Species::Cat => super::tame::cat_ai_step(m, events),
-        Species::Blaze => super::nether::blaze_ai_step(m, events),
         Species::IronGolem => super::golem::iron_ai_step(m, w),
         Species::Piglin | Species::PiglinBrute | Species::Hoglin => {
             super::piglin::ai_step(m, w, level_random, events)
@@ -2609,7 +2805,6 @@ pub fn after_hurt(m: &mut Mob, source: &Damage) {
     m.ai.no_action_time = 0;
     match m.species() {
         Species::Armadillo => super::armadillo::after_hurt(m, source),
-        Species::Shulker => super::shulker::after_hurt(m),
         Species::Warden => super::warden::hurt(m, source),
         Species::Nautilus | Species::ZombieNautilus => super::nautilus::after_hurt(m, source),
         Species::Zombie
@@ -2912,13 +3107,23 @@ fn flower_contact_effects(m: &mut Mob, w: &MobWorld) {
 
 /// MobEffect ticking for the effects mobs receive (poison, wither,
 /// regeneration), and a content mod's on a server.
-fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
+fn tick_effects(
+    m: &mut Mob,
+    mods: Option<&dyn super::ModEffectTicks>,
+    hurt_teleports: &mut dyn FnMut(&mut Mob),
+) {
     // LivingEntity.tickEffects ticks each active effect with the mob's list
     // still in place: the damage a Poison or Wither tick deals reads the
     // list it finds (Resistance softens the hit, Infested spawns silverfish,
     // a totem adds its effects to it). An effect a tick appends ticks from
     // the next tick on.
     let first = m.extra.effects.len();
+    let old_boost_amp = m
+        .extra
+        .effects
+        .iter()
+        .find(|e| e.0 == "minecraft:health_boost")
+        .map(|e| e.2);
     let mut i = 0;
     while i < m.extra.effects.len() && i < first {
         let (effect, amp) = (m.extra.effects[i].0, m.extra.effects[i].2);
@@ -2936,7 +3141,7 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
         } else {
             m.extra.effects[i].1
         };
-        let interval = |base: i32| (base >> amp.max(0)).max(1);
+        let interval = |base: i32| base.wrapping_shr(amp as u32).max(1);
         // A refused mod effect is left at 0 ticks for the retain below.
         let mut expired = false;
         match effect {
@@ -2944,10 +3149,12 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
                 if count % interval(25) == 0 && !m.kind.flags.undead && m.health > 1.0 =>
             {
                 m.damage(1.0, Damage::of(DamageKind::Magic));
+                hurt_teleports(m);
             }
             "minecraft:wither" if count % interval(40) == 0 => {
                 // WitherMobEffect.applyEffectTick: damageSources().wither().
                 m.damage(1.0, Damage::of(DamageKind::Wither));
+                hurt_teleports(m);
             }
             // InstantenousMobEffect: applied on every tick it has time left
             // (`/effect give` keeps the effect listed for its few ticks; the hit
@@ -2959,11 +3166,19 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
                     amp,
                     1.0,
                 );
+                // A harming tick's hurt teleports inside it too.
+                hurt_teleports(m);
             }
             "minecraft:regeneration"
                 if count % interval(50) == 0 && !m.kind.flags.undead && m.alive() =>
             {
                 m.heal(1.0);
+            }
+            // AbsorptionMobEffect.applyEffectTick (asked on every tick): false
+            // once the absorption is used up, so tickServer drops the effect
+            // before it counts down.
+            "minecraft:absorption" if m.absorption <= 0.0 => {
+                expired = true;
             }
             id if horizon_client_core::potions::is_mod_effect(id) => {
                 // tickServer: one with no ticks left goes unasked.
@@ -2980,20 +3195,46 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
             }
             _ => {}
         }
-        if !infinite && m.extra.effects.get(i).is_some_and(|e| e.0 == effect) {
-            let ticks = &mut m.extra.effects[i].1;
-            *ticks = if expired { 0 } else { *ticks - 1 };
+        if m.extra.effects.get(i).is_some_and(|e| e.0 == effect) {
+            if expired {
+                // Cancellation ends the instance, not just its active layer.
+                m.extra.effects[i].1 = 0;
+                m.set_effect_fallback(effect, None);
+            } else {
+                let mut active = m.effect_instance(i);
+                // Only the existing pure duration/promotion operation, after
+                // server periodic/native work; never the player action engine.
+                active.tick_client();
+                m.project_effect_instance(i, active);
+            }
         }
         i += 1;
     }
-    // AbsorptionMobEffect.removeAttributeModifiers: the hearts it gave go with it.
-    for i in 0..m.extra.effects.len() {
-        let e = m.extra.effects[i];
-        if e.0 == "minecraft:absorption" && e.1 <= 0 && e.1 != -1 {
-            m.absorption = (m.absorption - 4.0 * (e.2 + 1) as f32).max(0.0);
-        }
-    }
+    let absorption_gone = m
+        .extra
+        .effects
+        .iter()
+        .any(|e| e.0 == "minecraft:absorption" && e.1 <= 0 && e.1 != -1);
     m.extra.effects.retain(|e| e.1 > 0 || e.1 == -1);
+    // LivingEntity.onEffectsRemoved -> refreshDirtyAttributes ->
+    // onAttributeUpdated(MAX_ABSORPTION): the amount is clamped to the
+    // maximum left without the effect's modifier.
+    if absorption_gone {
+        m.absorption = m.absorption.min(super::armor::max_absorption(m));
+    }
+    // LivingEntity.onEffectsRemoved / onEffectUpdated -> refreshDirtyAttributes.
+    let new_boost_amp = m
+        .extra
+        .effects
+        .iter()
+        .find(|e| e.0 == "minecraft:health_boost")
+        .map(|e| e.2);
+    if old_boost_amp != new_boost_amp {
+        super::finalize::health_boost_changed(m);
+    }
+    m.extra
+        .effect_fallbacks
+        .retain(|h| m.extra.effects.iter().any(|e| e.0 == h.id));
     m.extra
         .hidden_effects
         .retain(|h| m.extra.effects.iter().any(|e| e.0 == *h));
@@ -3261,7 +3502,7 @@ mod poison_effect_tests {
         pig.add_effect("poison", 100, 0);
         assert_eq!(pig.extra.effects[0].0, "minecraft:poison");
         let initial_pig_health = pig.health;
-        tick_effects(&mut pig, None);
+        tick_effects(&mut pig, None, &mut |_| {});
         assert_eq!(
             pig.health,
             initial_pig_health - 1.0,
@@ -3273,11 +3514,60 @@ mod poison_effect_tests {
         let mut zombie = Mob::new(2, zombie_kind, Vec3::new(0.0, 4.0, 0.0), 0.0);
         zombie.add_effect("poison", 100, 0);
         let initial_zombie_health = zombie.health;
-        tick_effects(&mut zombie, None);
+        tick_effects(&mut zombie, None, &mut |_| {});
         assert_eq!(
             zombie.health, initial_zombie_health,
             "undead mobs are immune to poison"
         );
+    }
+
+    /// `LivingEntity.addEffect` runs `AbsorptionMobEffect.onEffectStarted` for
+    /// every effect it accepts: the same Absorption given again refills the
+    /// shield, and a weaker one still tops it up to its own level (#11386).
+    #[test]
+    fn absorption_refills_on_every_accepted_add() {
+        use std::sync::Arc;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-types.json").exists() {
+            return;
+        }
+        let data = MobTypes::load(&root).unwrap();
+        let kind = Arc::new(data.types.get("minecraft:cow").unwrap().clone());
+        let mut cow = Mob::new(1, kind, Vec3::new(0.0, 4.0, 0.0), 0.0);
+        cow.add_effect("absorption", 600, 0);
+        assert_eq!(cow.absorption, 4.0);
+        // A hit used it up.
+        cow.absorption = 0.0;
+        cow.add_effect("absorption", 600, 0);
+        assert_eq!(cow.absorption, 4.0, "the same effect again refills it");
+        cow.add_effect("absorption", 600, 2);
+        assert_eq!(cow.absorption, 12.0);
+        cow.absorption = 2.0;
+        cow.add_effect("absorption", 600, 0);
+        assert_eq!(cow.absorption, 4.0, "a weaker one tops it up to its level");
+    }
+
+    /// Instant health and harm given at amplifier 32 shift by 0, as Java's
+    /// `<<` does (#11386).
+    #[test]
+    fn instant_effects_shift_like_java_on_mobs() {
+        use std::sync::Arc;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-types.json").exists() {
+            return;
+        }
+        let data = MobTypes::load(&root).unwrap();
+        let kind = Arc::new(data.types.get("minecraft:iron_golem").unwrap().clone());
+        let mut golem = Mob::new(1, kind, Vec3::new(0.0, 4.0, 0.0), 0.0);
+        golem.attrs.max_health = 100.0;
+        golem.health = 60.0;
+        golem.add_effect("instant_health", 6, 32);
+        tick_effects(&mut golem, None, &mut |_| {});
+        assert_eq!(golem.health, 64.0);
     }
 
     /// A mob's effects act on it: instant health and harm (inverted for the
@@ -3303,16 +3593,16 @@ mod poison_effect_tests {
         // instant_health 1 heals 8 a tick, instant_damage 0 hurts 6 once (hit frames).
         let mut golem = make("minecraft:iron_golem");
         golem.add_effect("instant_health", 6, 1);
-        tick_effects(&mut golem, None);
+        tick_effects(&mut golem, None, &mut |_| {});
         assert_eq!(golem.health, 68.0);
         let mut golem = make("minecraft:iron_golem");
         golem.add_effect("instant_damage", 6, 0);
-        tick_effects(&mut golem, None);
+        tick_effects(&mut golem, None, &mut |_| {});
         assert_eq!(golem.health, 54.0);
         // The undead are healed by harm.
         let mut zombie = make("minecraft:zombie");
         zombie.add_effect("instant_damage", 6, 0);
-        tick_effects(&mut zombie, None);
+        tick_effects(&mut zombie, None, &mut |_| {});
         assert_eq!(zombie.health, 64.0);
         // Resistance V (amplifier 4) takes it all, III takes 80%.
         let mut golem = make("minecraft:iron_golem");
@@ -3358,20 +3648,22 @@ mod poison_effect_tests {
         pig.health = 20.0;
         pig.extra.effects.push(("minecraft:poison", 25, 0));
         pig.extra.effects.push(("minecraft:resistance", -1, 0));
-        tick_effects(&mut pig, None);
+        tick_effects(&mut pig, None, &mut |_| {});
         assert_eq!(pig.health, 19.2);
         // `onMobHurt` finds Infested in the same in-place list: the hurt mob
-        // leaves a silverfish call in the outbox.
-        let mut pig = Mob::new(2, pig_kind.clone(), Vec3::new(0.0, 4.0, 0.0), 0.0);
-        pig.extra.effects.push(("minecraft:poison", 25, 0));
-        pig.extra.effects.push(("minecraft:infested", -1, 0));
-        tick_effects(&mut pig, None);
-        assert!(
+        // leaves its silverfish in the outbox when its random passes the
+        // effect's 1-in-10 chance (some seed among the first hundred does).
+        let spawned = (0..100).any(|seed| {
+            let mut pig = Mob::new(2, pig_kind.clone(), Vec3::new(0.0, 4.0, 0.0), 0.0);
+            pig.extra.effects.push(("minecraft:poison", 25, 0));
+            pig.extra.effects.push(("minecraft:infested", -1, 0));
+            pig.random = horizon_core::random::LegacyRandom::new(seed);
+            tick_effects(&mut pig, None, &mut |_| {});
             pig.outbox
                 .iter()
-                .any(|e| matches!(e, MobEvent::Infested { .. })),
-            "a hurt while infested pushes Infested"
-        );
+                .any(|e| matches!(e, MobEvent::Infested { .. }))
+        });
+        assert!(spawned, "a hurt while infested pushes Infested");
     }
 
     /// `MobEffectInstance.hasRemainingDuration` is false at 0 ticks, so an effect
@@ -3390,7 +3682,7 @@ mod poison_effect_tests {
         let mut pig = Mob::new(1, pig_kind, Vec3::new(0.0, 4.0, 0.0), 0.0);
         pig.health = 20.0;
         pig.extra.effects.push(("minecraft:poison", 0, 0));
-        tick_effects(&mut pig, None);
+        tick_effects(&mut pig, None, &mut |_| {});
         assert!(pig.extra.effects.is_empty());
         // A poison with no remaining duration does not get its first tick either.
         assert_eq!(pig.health, 20.0);
@@ -3412,7 +3704,7 @@ mod poison_effect_tests {
         pig.extra
             .set_main_hand(Some("minecraft:totem_of_undying".into()));
         pig.extra.effects.push(("minecraft:instant_damage", 5, 4));
-        tick_effects(&mut pig, None);
+        tick_effects(&mut pig, None, &mut |_| {});
         assert_eq!(pig.health, 1.0);
         for effect in [
             "minecraft:regeneration",
@@ -3440,7 +3732,7 @@ mod poison_effect_tests {
         let pig_kind = Arc::new(data.types.get("minecraft:pig").unwrap().clone());
         let mut pig = Mob::new(1, pig_kind, Vec3::new(0.0, 4.0, 0.0), 0.0);
         pig.extra.effects.push(("minecraft:wither", 40, 0));
-        tick_effects(&mut pig, None);
+        tick_effects(&mut pig, None, &mut |_| {});
         assert_eq!(
             pig.last_damage.map(|(d, _)| d.kind),
             Some(DamageKind::Wither)
@@ -4014,6 +4306,124 @@ mod bed_wake_tests {
     use super::*;
     use crate::mobs::world::with_test_world;
 
+    #[test]
+    #[ignore = "needs prepared vanilla resources"]
+    fn loaded_sleeping_position_refreshes_in_actual_mob_tick() {
+        use horizon_world::nbt::Tag;
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+            );
+            let stone = registry.default_state("minecraft:stone").unwrap();
+            for x in 0..12 {
+                for z in 0..12 {
+                    world.set(x, 63, z, stone).unwrap();
+                }
+            }
+            let mut bed = registry
+                .state(registry.default_state("minecraft:red_bed").unwrap())
+                .unwrap()
+                .clone();
+            bed.properties.insert("facing".into(), "north".into());
+            bed.properties.insert("occupied".into(), "false".into());
+            for (part, z) in [("head", 0), ("foot", 1)] {
+                bed.properties.insert("part".into(), part.into());
+                world.set(0, 64, z, registry.id(&bed).unwrap()).unwrap();
+            }
+        };
+        let ran = crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+            assert_eq!(w.block_name(0, 64, 0), "minecraft:red_bed");
+            assert_eq!(w.prop(0, 64, 0, "part"), Some("head"));
+            assert_eq!(w.prop(0, 64, 0, "facing"), Some("north"));
+            let types = [(
+                "minecraft:villager".to_owned(),
+                std::sync::Arc::new(types.types["minecraft:villager"].clone()),
+            )]
+            .into_iter()
+            .collect();
+            let input = horizon_world::nbt::parse_snbt(r#"{id:"minecraft:villager",Pos:[0.5d,64.5625d,0.5d],Health:20f,NoAI:1b,NoGravity:1b,PersistenceRequired:1b,sleeping_pos:[I;0,64,0],Motion:[0d,0d,0d]}"#).unwrap().0;
+            let mut loaded =
+                crate::entity_nbt::mob_from_nbt(&input, &types, 233, Some(w.registry)).unwrap();
+            assert_eq!(
+                loaded.position,
+                Vec3::new(0.5, 64.5625, 0.5),
+                "loading alone must not perform the first-tick correction"
+            );
+            assert!(loaded.first_tick && loaded.no_ai && loaded.no_gravity);
+            assert!(super::super::villager::sleeping(&loaded));
+            assert_eq!(
+                super::super::villager::sleeping_pos(&loaded),
+                Some([0, 64, 0])
+            );
+            let mut awake_input = input.clone();
+            let Tag::Compound(ref mut fields) = awake_input else {
+                unreachable!()
+            };
+            fields.remove(&"sleeping_pos".into());
+            fields.insert(
+                "Pos".into(),
+                Tag::List(
+                    [5.5_f64, 64.0, 5.5]
+                        .map(|v| Tag::Double(v.to_bits()))
+                        .to_vec(),
+                ),
+            );
+            let mut awake =
+                crate::entity_nbt::mob_from_nbt(&awake_input, &types, 234, Some(w.registry))
+                    .unwrap();
+            let mut normal = awake.clone();
+            normal.id = 235;
+            let mut normal_events = Vec::new();
+            assert!(super::super::villager::start_sleeping(
+                &mut normal,
+                [0, 64, 0],
+                w,
+                &mut normal_events
+            ));
+            assert_eq!(normal.position, Vec3::new(0.5, 64.6875, 0.5));
+            assert!(normal_events.iter().any(|e| matches!(
+                e,
+                MobEvent::BedOccupied {
+                    pos: [0, 64, 0],
+                    occupied: true
+                }
+            )));
+            let mut random = LegacyRandom::new(0);
+            let mut loaded_events = Vec::new();
+            for n in 1..=2 {
+                assert!(loaded.tick(w, &mut random, &mut loaded_events));
+                assert_eq!(loaded.age, n);
+                assert!(!loaded.first_tick);
+                assert_eq!(
+                    loaded.position,
+                    Vec3::new(0.5, 64.6875, 0.5),
+                    "actual loaded sleeper at tick {n}"
+                );
+                assert_eq!(loaded.velocity, Vec3::ZERO);
+                assert_eq!(loaded.health, 20.0);
+                assert_eq!(
+                    super::super::villager::sleeping_pos(&loaded),
+                    Some([0, 64, 0])
+                );
+                assert!(awake.tick(w, &mut random, &mut Vec::new()));
+                assert_eq!(awake.position, Vec3::new(5.5, 64.0, 5.5));
+                assert!(!super::super::villager::sleeping(&awake));
+                assert!(normal.tick(w, &mut random, &mut normal_events));
+                assert_eq!(normal.position, Vec3::new(0.5, 64.6875, 0.5));
+                assert_eq!(normal.velocity, Vec3::ZERO);
+            }
+            assert!(
+                !loaded_events
+                    .iter()
+                    .any(|e| matches!(e, MobEvent::BedOccupied { .. })),
+                "refresh must not re-run startSleeping side effects"
+            );
+        });
+        assert!(ran, "prepared Mob/bed world must actually run");
+    }
+
     /// `LivingEntity.tick` wakes a sleeper whose bed is gone before
     /// `aiStep` — `Mob.no_ai` skips the step, not the check (#7875).
     fn no_ai_sleeper() -> Option<Mob> {
@@ -4388,7 +4798,9 @@ mod fox_screech_tests {
 
             let mut end = night.clone();
             end.daylight = true;
-            end.end = true;
+            end.dimension_type =
+                horizon_world::dimension_type::DimensionFacts::vanilla("minecraft:the_end")
+                    .unwrap();
             assert!(
                 sounds(&end, types)
                     .iter()
@@ -5227,6 +5639,125 @@ mod flight_effect_fall_tests {
 }
 
 #[cfg(test)]
+mod breathing_effect_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn breathing_effects_and_bubble_columns_preserve_mob_air() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let ran = crate::mobs::world::with_resource_test_world(
+            &root,
+            &[],
+            true,
+            true,
+            |world, registry| {
+                world
+                    .chunks
+                    .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+                for (x0, name) in [(6, "minecraft:water"), (10, "minecraft:bubble_column")] {
+                    let state = registry.default_state(name).unwrap();
+                    for x in x0..=x0 + 1 {
+                        for z in 2..=3 {
+                            for y in 63..=67 {
+                                world.set(x, y, z, state).unwrap();
+                            }
+                        }
+                    }
+                }
+                // Mixed columns distinguish the eye-block query from feet position.
+                for (x0, bubble_at_eye) in [(6, true), (10, false)] {
+                    for x in x0..=x0 + 1 {
+                        for z in 6..=7 {
+                            for y in 63..=67 {
+                                let bubble = (y >= 65) == bubble_at_eye;
+                                let name = if bubble {
+                                    "minecraft:bubble_column"
+                                } else {
+                                    "minecraft:water"
+                                };
+                                world
+                                    .set(x, y, z, registry.default_state(name).unwrap())
+                                    .unwrap();
+                            }
+                        }
+                    }
+                }
+            },
+            |world, types| {
+                let kind = Arc::new(types.types["minecraft:cow"].clone());
+                assert!(!kind.flags.needs_water && !kind.flags.breathes_water);
+                let mut rows = Vec::new();
+                let mut failures = Vec::new();
+                for (scene, x, z) in [
+                    (0, 2.5, 2.5),
+                    (1, 6.5, 2.5),
+                    (2, 10.5, 2.5),
+                    (3, 6.5, 6.5),
+                    (4, 10.5, 6.5),
+                ] {
+                    for mask in 0..8 {
+                        for air in [301, 300, 10, 0, -19, -20, -21] {
+                            let mut mob = Mob::new(1, kind.clone(), Vec3::new(x, 64.0, z), 0.0);
+                            mob.air = air;
+                            for (bit, effect) in [
+                                (1, "minecraft:water_breathing"),
+                                (2, "minecraft:conduit_power"),
+                                (4, "minecraft:breath_of_the_nautilus"),
+                            ] {
+                                if mask & bit != 0 {
+                                    mob.add_effect(effect, 100, 0);
+                                }
+                            }
+                            base_tick(&mut mob, world, &mut Vec::new());
+                            assert_eq!(
+                                mob.fluids.eye_in_water,
+                                scene != 0,
+                                "invalid fixture immersion"
+                            );
+                            rows.push(format!(
+                                "{scene} {mask} {air} {} {:08x}",
+                                mob.air,
+                                mob.health.to_bits()
+                            ));
+                            // Selected independent goldens from the pinned Cow.baseTick
+                            // oracle. The parity harness compares all 280 air/health rows.
+                            let expected = match (scene, mask, air) {
+                                (1, 1, 10)
+                                | (1, 2, 10)
+                                | (1, 5, 10)
+                                | (2, 0, 10)
+                                | (2, 4, 10)
+                                | (0, 4, 10)
+                                | (3, 0, 10) => Some((14, 10.0)),
+                                (1, 4, 10) | (4, 4, 10) => Some((10, 10.0)),
+                                (4, 0, 10) => Some((9, 10.0)),
+                                (1, 0, -19) => Some((0, 8.0)),
+                                _ => None,
+                            };
+                            if let Some(expected) = expected
+                                && (mob.air, mob.health) != expected
+                            {
+                                failures.push((scene, mask, air, mob.air, mob.health));
+                            }
+                        }
+                    }
+                }
+                if let Some(path) = std::env::var_os("HORIZON_MOB_BREATHING_OUTPUT") {
+                    std::fs::write(path, rows.join("\n") + "\n").unwrap();
+                }
+                assert!(failures.is_empty(), "mob air/health differs: {failures:?}");
+            },
+        );
+        assert!(
+            ran,
+            "prepared resources must run the production breathing fixture"
+        );
+    }
+}
+
+#[cfg(test)]
 mod dolphin_noai_air_tests {
     use super::*;
     use std::sync::Arc;
@@ -5294,6 +5825,80 @@ mod dolphin_noai_air_tests {
     #[test]
     fn normal_dolphins_keep_their_underwater_countdown() {
         check(true, false, 4800, [4799, 4798]);
+    }
+}
+
+#[cfg(test)]
+mod nautilus_noai_air_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn check(water: bool, no_ai: bool, initial: i32, expected: [i32; 2]) {
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            world
+                .chunks
+                .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+            if water {
+                let state = registry.default_state("minecraft:water").unwrap();
+                for x in 0..=4 {
+                    for z in 0..=4 {
+                        for y in 0..=8 {
+                            world.set(x, y, z, state).unwrap();
+                        }
+                    }
+                }
+            }
+        };
+        let ran = crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+            let kind = Arc::new(types.types["minecraft:nautilus"].clone());
+            assert!(kind.flags.needs_water && kind.flags.breathes_water);
+            let mut mob = Mob::new(1, kind, Vec3::new(2.5, 3.0, 2.5), 0.0);
+            mob.no_ai = no_ai;
+            mob.no_gravity = true;
+            mob.persistent = true;
+            mob.attrs.speed = 0.0;
+            mob.health = 10.0;
+            mob.air = initial;
+            let mut random = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            for (index, expected) in expected.into_iter().enumerate() {
+                assert!(tick(&mut mob, w, &mut random, &mut events));
+                assert_eq!(mob.age, (index + 1) as u32);
+                assert_eq!(mob.fluids.eye_in_water, water);
+                assert_eq!(mob.health, 10.0);
+                assert_eq!(mob.no_ai, no_ai);
+                assert_eq!(
+                    mob.air,
+                    expected,
+                    "water={water}, NoAI={no_ai}, initial={initial}, tick={}",
+                    index + 1
+                );
+            }
+        });
+        if !ran {
+            eprintln!("Prepared mob data unavailable; Nautilus full-tick coverage did not run");
+        }
+    }
+
+    /// `Nautilus.baseTick`: NoAI skips only handleAirSupply; super.baseTick
+    /// still refills a breathing mob by four, capped at300.
+    #[test]
+    fn noai_nautilus_keeps_superclass_refill_in_both_media() {
+        for water in [false, true] {
+            check(water, true, 300, [300, 300]);
+            check(water, true, 100, [104, 108]);
+        }
+    }
+
+    /// With AI, handleAirSupply still uses the pre-super air on land and
+    /// writes300 in water. The NoAI exception must not alter that policy.
+    #[test]
+    fn normal_nautilus_keeps_its_custom_handler() {
+        check(false, false, 300, [299, 298]);
+        check(false, false, 100, [99, 98]);
+        check(true, false, 300, [300, 300]);
+        check(true, false, 100, [300, 300]);
     }
 }
 
@@ -5367,5 +5972,321 @@ mod happy_ghast_ambient_tests {
             },
         );
         assert!(ran, "prepared-data callback did not run");
+    }
+}
+
+#[cfg(test)]
+mod hidden_speed_causal_tests {
+    use super::*;
+    use std::sync::Arc;
+    fn mob() -> Mob {
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.id = "minecraft:pig".into();
+        kind.species = Species::Pig;
+        Mob::new(202, Arc::new(kind), Vec3::ZERO, 0.0)
+    }
+    #[test]
+    fn zero_active_never_promotes_and_infinite_fallback_counts_once() {
+        let mut m = mob();
+        m.add_effect("speed", 200, 0);
+        m.add_effect("speed", 0, 1);
+        assert_eq!(m.extra.effect_fallbacks.len(), 1);
+        tick_effects(&mut m, None, &mut |_| {});
+        assert!(m.extra.effects.is_empty() && m.extra.effect_fallbacks.is_empty());
+        m.add_effect("speed", -1, 0);
+        m.add_effect("speed", 2, 1);
+        tick_effects(&mut m, None, &mut |_| {});
+        assert_eq!(m.extra.effects, [("minecraft:speed", 1, 1)]);
+        assert_eq!(m.extra.effect_fallbacks[0].duration, -1);
+        tick_effects(&mut m, None, &mut |_| {});
+        assert_eq!(m.extra.effects, [("minecraft:speed", -1, 0)]);
+        tick_effects(&mut m, None, &mut |_| {});
+        assert_eq!(m.extra.effects, [("minecraft:speed", -1, 0)]);
+        assert!(m.extra.effect_fallbacks.is_empty());
+    }
+    #[test]
+    fn native_cancellation_drops_the_whole_chain_before_promotion() {
+        struct Cancel(std::cell::Cell<usize>);
+        impl crate::mobs::ModEffectTicks for Cancel {
+            fn tick_mod_effect(&self, id: &str, mob: u32, count: i32, amp: i32) -> bool {
+                assert_eq!((id, mob, amp), ("h202:cancel", 202, 1));
+                assert!(count == 1 || count == 17);
+                self.0.set(self.0.get() + 1);
+                false
+            }
+        }
+        for duration in [1, -1] {
+            let mut m = mob();
+            m.age = 17;
+            m.add_effect("h202:cancel", 200, 0);
+            if duration == -1 {
+                // A loaded subtree can accompany an infinite active instance.
+                m.extra.effects[0].1 = -1;
+                let h = crate::effects::EffectInstance {
+                    id: "h202:cancel",
+                    duration: 200,
+                    amplifier: 0,
+                    ambient: false,
+                    visible: true,
+                    show_icon: true,
+                    hidden: None,
+                };
+                m.extra.effects[0].2 = 1;
+                m.extra.effect_fallbacks.push(h);
+            } else {
+                m.add_effect("h202:cancel", duration, 1);
+            }
+            let cancel = Cancel(std::cell::Cell::new(0));
+            tick_effects(&mut m, Some(&cancel), &mut |_| {});
+            assert_eq!(cancel.0.get(), 1);
+            assert!(m.extra.effects.is_empty() && m.extra.effect_fallbacks.is_empty());
+        }
+    }
+}
+
+#[cfg(test)]
+mod trader_llama_no_ai_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn eligible_trader_llama_delay_advances_in_actual_no_ai_tick() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
+        );
+        let mut differences = Vec::new();
+        let ran = crate::mobs::world::with_resource_test_world(
+            &root,
+            &[],
+            true,
+            true,
+            |_, _| {},
+            |w, types| {
+                let kind = Arc::new(types.types["minecraft:trader_llama"].clone());
+                let fresh = || {
+                    let mut mob = Mob::new(1, kind.clone(), Vec3::new(4.5, 200.0, 4.5), 0.0);
+                    mob.no_ai = true;
+                    mob.no_gravity = true;
+                    mob.silent = true;
+                    mob.extra.ints[0] = 5;
+                    mob
+                };
+                // Existing eligibility stays in the shared helper. These are focused
+                // model controls, not runtime claims about real leash/rider sessions.
+                let mut trader = Mob::new(
+                    50,
+                    Arc::new(types.types["minecraft:wandering_trader"].clone()),
+                    Vec3::new(30.5, 200.0, 30.5),
+                    0.0,
+                );
+                trader.extra.ints[5] = 13;
+                let cow = Mob::new(
+                    51,
+                    Arc::new(types.types["minecraft:cow"].clone()),
+                    Vec3::new(40.5, 200.0, 40.5),
+                    0.0,
+                );
+                let seen = [trader.seen(None), cow.seen(None)];
+                assert_eq!(seen[0].delay, 13);
+                let view = MobWorld {
+                    others: &seen,
+                    ..w.clone()
+                };
+                for guard in [
+                    "tame",
+                    "persistent",
+                    "age-lock",
+                    "rider",
+                    "other-mob-leash",
+                    "player-leash",
+                ] {
+                    let mut mob = fresh();
+                    match guard {
+                        "tame" => mob.extra.tame = true,
+                        "persistent" => mob.persistent = true,
+                        "age-lock" => mob.extra.age_locked = true,
+                        "rider" => mob.rider = Some(super::super::equine::Rider::default()),
+                        "other-mob-leash" => {
+                            mob.extra.leash = Some(super::super::leash::Holder::Mob(51))
+                        }
+                        "player-leash" => {
+                            mob.extra.leash = Some(super::super::leash::Holder::Player)
+                        }
+                        _ => unreachable!(),
+                    }
+                    super::super::caravan::trader_llama_tick(&mut mob, &view);
+                    assert_eq!(mob.extra.ints[0], 5, "{guard}");
+                    assert!(!mob.removed, "{guard}");
+                }
+                let mut linked = fresh();
+                linked.extra.leash = Some(super::super::leash::Holder::Mob(50));
+                super::super::caravan::trader_llama_tick(&mut linked, &view);
+                assert_eq!(linked.extra.ints[0], 12, "trader delay minus one");
+
+                for initial in [0, 5, 47999] {
+                    let mut mob = fresh();
+                    mob.extra.ints[0] = initial;
+                    mob.health = mob.attrs.max_health - 2.0;
+                    let health = mob.health;
+                    let steps = if initial == 0 { 1 } else { 5 };
+                    for elapsed in 1..=steps {
+                        let mut expected_random = mob.random.clone();
+                        expected_random.next_int_bound(1000).unwrap(); // Existing Mob.baseTick ambient draw only.
+                        let mut level_random = LegacyRandom::new(0);
+                        let mut events = Vec::new();
+                        tick(&mut mob, w, &mut level_random, &mut events);
+                        assert_eq!(mob.age, elapsed as u32, "actual tick reached");
+                        assert_eq!(
+                            mob.health, health,
+                            "NoAI must not run unrelated llama healing"
+                        );
+                        assert_eq!(
+                            mob.random.state(),
+                            expected_random.state(),
+                            "NoAI must not add the healing draw"
+                        );
+                        let expected = initial - elapsed;
+                        if mob.extra.ints[0] != expected || mob.removed != (expected <= 0) {
+                            differences.push((
+                                initial,
+                                elapsed,
+                                expected,
+                                mob.extra.ints[0],
+                                mob.removed,
+                            ));
+                        }
+                    }
+                }
+                // The normal-AI caller already reaches the same timer.
+                let mut normal = fresh();
+                normal.no_ai = false;
+                normal.health = normal.attrs.max_health;
+                let mut events = Vec::new();
+                tick(&mut normal, w, &mut LegacyRandom::new(0), &mut events);
+                assert_eq!(normal.extra.ints[0], 4);
+            },
+        );
+        assert!(
+            ran,
+            "prepared resources must actually admit the mob tick world"
+        );
+        assert!(
+            differences.is_empty(),
+            "NoAI trader timer mismatch: {differences:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod hurt_teleport_contact_tests {
+    use super::*;
+    use crate::mobs::world::with_built_test_world;
+    use horizon_world::registry::BlockRegistry;
+    use std::sync::Arc;
+
+    /// A stone floor over the loaded 2x2 chunks (so a teleport finds ground),
+    /// `under` below the mob's spot and `at` in it.
+    fn build(
+        under: &'static str,
+        at: &'static str,
+    ) -> impl FnOnce(&mut crate::world::World, &BlockRegistry) {
+        move |world, registry| {
+            let stone = registry.default_state("minecraft:stone").unwrap();
+            for cx in -1..1 {
+                for cz in -1..1 {
+                    world
+                        .chunks
+                        .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
+                }
+            }
+            for x in -16..16 {
+                for z in -16..16 {
+                    world.set(x, 63, z, stone).unwrap();
+                }
+            }
+            world
+                .set(0, 63, 0, registry.default_state(under).unwrap())
+                .unwrap();
+            world
+                .set(0, 64, 0, registry.default_state(at).unwrap())
+                .unwrap();
+        }
+    }
+
+    fn enderman(types: &crate::mobs::MobTypes, seed: i64) -> Mob {
+        let kind = Arc::new(types.types["minecraft:enderman"].clone());
+        let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+        register(&mut m);
+        m.random = LegacyRandom::new(seed);
+        m.on_ground = true;
+        m.stuck_multiplier = Vec3::ZERO;
+        m
+    }
+
+    /// `Entity.applyEffectsFromBlocks` fixes the tick's movements before
+    /// `stepOn`: when the magma's hurt teleports an enderman, the scan still
+    /// walks the path it had, and the cobweb it stood in still holds it.
+    #[test]
+    fn a_magma_teleport_leaves_the_block_scan_on_the_old_path() {
+        with_built_test_world(
+            &[],
+            build("minecraft:magma_block", "minecraft:cobweb"),
+            |w, types| {
+                let mut teleported = 0;
+                for seed in 0..40 {
+                    let mut m = enderman(types, seed);
+                    let mut random = LegacyRandom::new(42);
+                    let mut events = Vec::new();
+                    effects_from_blocks(&mut m, w, &mut random, &mut events);
+                    if m.position != Vec3::new(0.5, 64.0, 0.5) {
+                        teleported += 1;
+                        assert_eq!(
+                            m.stuck_multiplier,
+                            Vec3::new(0.25, f64::from(0.05_f32), 0.25),
+                            "seed {seed}: the cobweb on the old path"
+                        );
+                    }
+                }
+                assert!(teleported > 0, "some seed teleports");
+            },
+        );
+    }
+
+    /// A hurt in `baseTick` that teleports an enderman (`snapTo` resets the
+    /// old position) leaves aiStep's fire contact at the landing spot: no
+    /// fire there, so the fire timer only counts down (no re-ignite to 160).
+    #[test]
+    fn a_burning_teleport_does_not_take_the_old_spots_fire_along() {
+        with_built_test_world(
+            &[],
+            build("minecraft:stone", "minecraft:fire"),
+            |w, types| {
+                let mut teleported = 0;
+                for seed in 0..40 {
+                    let mut m = enderman(types, seed);
+                    m.fire_ticks = 20;
+                    // Whether the burning hurt's own teleport lands (one in ten
+                    // draws none, and a try can find no ground: the old spot's
+                    // fire then ignites it before the second hurt teleports it).
+                    let mut first = m.clone();
+                    let mut events = Vec::new();
+                    hurt(
+                        &mut first,
+                        w,
+                        &mut events,
+                        1.0,
+                        Damage::of(DamageKind::OnFire),
+                    );
+                    base_tick(&mut m, w, &mut events);
+                    if first.position != Vec3::new(0.5, 64.0, 0.5) {
+                        assert_eq!(m.position, first.position, "seed {seed}: the same teleport");
+                        teleported += 1;
+                        assert_eq!(m.fire_ticks, 19, "seed {seed}: no fire where it landed");
+                    }
+                }
+                assert!(teleported > 0, "some seed teleports");
+            },
+        );
     }
 }

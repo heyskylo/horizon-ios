@@ -5,11 +5,12 @@ Java (VanillaNaturalSpawnOracle) runs vanilla's NaturalSpawner on a stand-in
 ServerLevel built from each case: boxes of blocks, light and biomes, structure
 starts with their pieces, existing mobs, players, the world spawn point and
 unloaded chunks. Rust (natural_spawn_fixture) runs
-horizon_client::mobs::spawn_selection on the same world. Three modes:
+horizon_client::mobs::spawn_selection on the same world. Modes:
 
 - chunk: createState over the case's mobs (category counts, spawn potential
   charges, local caps), getFilteredSpawningCategories under the global caps,
   then spawnForChunk (local caps, getRandomPosWithin, spawnCategoryForPosition);
+- tick_chunk: the chunk pass with ServerChunkCache.tickSpawningChunk's border gate;
 - pos: spawnCategoryForPosition from a chosen start (surfaces, caves, water,
   lava, structures);
 - gen: spawnMobsForChunkGeneration.
@@ -536,6 +537,14 @@ def corpus():
             w.kv['rules'] = 0
         w.kv['chunk'] = f'{rng.randrange(-3, 3)},{rng.randrange(-3, 3)}'
         cases.append(f'gen/{k} mode=gen {w.tokens()}')
+    # Full chunks, partially covered chunks, exact/fractional edges and outside.
+    for size in (2, 16, 16.5, 32, 64):
+        for center in (0, 8, 7.75):
+            for k in range(8):
+                w = make_world(rng, k, dim='overworld', biome='minecraft:plains', ocean=False)
+                w.kv.update(borderx=center, borderz=center, bordersize=size, darken=11)
+                mode = 'tick_chunk' if k % 2 == 0 else 'pos'
+                cases.append(f'border/{size}/{center}/{k} mode={mode} cat=monster start=8,64,8 {w.tokens()}')
     return cases
 
 

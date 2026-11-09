@@ -8,9 +8,16 @@ for blocks placed where mobs and armor stands stand, for respawn anchors, for
 beds in the Nether and the End, and for doors, trapdoors and fence gates, which a
 hand opens unless their material cannot be (`BlockSetType.canOpenByHand`).
 
+Axe, hoe and shovel clicks use the data-driven `minecraft:block_transformer`
+registry (`ItemStack.useOn` -> `Item.useOn` -> `BlockTransformer.transformBlock`):
+logs stripped and copper scraped, waxed or unwaxed, a double copper chest's other
+half told of the change, copper doors and trapdoors, farmland and dirt paths, and
+the hanging roots a hoe leaves on rooted dirt's clicked face. The states those
+transforms produce are compared by `test_block_transformer_parity.py`; here the
+click that uses one is.
 
-beds in the Nether and the End, and for dragon eggs, which a click moves somewhere
-else nearby (`DragonEggBlock.useWithoutItem`).
+Dragon eggs, which a click moves somewhere else nearby
+(`DragonEggBlock.useWithoutItem`).
 
 Every case has a block at the origin, something above it, and a player three
 blocks south, survival or creative, hungry or full, sneaking or not, who
@@ -346,6 +353,34 @@ def statue_case(rng, states, case):
     case['use_item'] = use
 
 
+WAX_CHEST_FACINGS = {'north': (0, -1), 'south': (0, 1), 'west': (-1, 0), 'east': (1, 0)}
+
+
+def wax_chest_case(rng, states, case):
+    """Honeycomb on a copper chest (`HoneycombItem.useOn`), sneaking so the chest does not open:
+    a double chest's other half gets its own `block_change` and wax particles, and the clicked
+    block a second sound. Single chests and a half whose other half is gone or not copper are the
+    controls: `ChestBlock.getConnectedBlockPos` looks only at the clicked state."""
+    name = rng.choice(['copper_chest', 'exposed_copper_chest', 'weathered_copper_chest', 'oxidized_copper_chest'])
+    facing = rng.choice(list(WAX_CHEST_FACINGS))
+    own = rng.choice(['left', 'right', 'single'])
+    props = {'facing': facing, 'waterlogged': 'false'}
+    case['cells'] = [[0, 0, 0, states.get(name, type=own, **props)]]
+    if own != 'single':
+        dx, dz = WAX_CHEST_FACINGS[facing]
+        # ChestBlock.getConnectedDirection: LEFT is facing.getClockWise().
+        dx, dz = (-dz, dx) if own == 'left' else (dz, -dx)
+        other = 'right' if own == 'left' else 'left'
+        partner = rng.choices(['same', 'gone', 'plain'], (6, 1, 1))[0]
+        if partner == 'same':
+            case['cells'].append([dx, 0, dz, states.get(name, type=other, **props)])
+        elif partner == 'plain':
+            case['cells'].append([dx, 0, dz, states.get('chest', type=other, **props)])
+    case['use_item'] = {'item': d_plain(rng.choice(['honeycomb', 'honeycomb', 'honeycomb', 'stick']), rng.choice([1, 16])),
+                        'creative': rng.random() < 0.2, 'sneaking': True, 'food': 20,
+                        'face': rng.choice(['up', 'north', 'south', 'west', 'east'])}
+
+
 def timed_case(rng, states, case):
     """A repeater, a comparator or a daylight detector clicked with an empty hand, none of which may
     be turned where `Player.getAbilities().mayBuild` is false (`RepeaterBlock.useWithoutItem`,
@@ -551,13 +586,142 @@ def block_state_case(rng, states, case):
                         'creative': rng.random() < 0.7, 'sneaking': rng.random() < 0.2, 'food': 20}
 
 
-def cases(facts, count, seed):
+# Axes, hoes and shovels transform blocks through the data-driven
+# `minecraft:block_transformer` registry. `test_block_transformer_parity.py`
+# compares the states that registry produces; this compares the click that uses
+# one: the state change, the sound, the scrub particle, the wear, the statistic,
+# the `block_change` game event, the loot rooted dirt leaves on the clicked face,
+# and the second game event and particle a double copper chest's other half gets.
+AXES = ['wooden_axe', 'stone_axe', 'iron_axe', 'golden_axe', 'diamond_axe', 'netherite_axe']
+HOES = ['wooden_hoe', 'stone_hoe', 'iron_hoe', 'golden_hoe', 'diamond_hoe', 'netherite_hoe']
+SHOVELS = ['wooden_shovel', 'stone_shovel', 'iron_shovel', 'golden_shovel', 'diamond_shovel', 'netherite_shovel']
+LOGS = ['oak_log', 'spruce_log', 'birch_log', 'jungle_log', 'acacia_log', 'dark_oak_log', 'mangrove_log',
+        'cherry_log', 'pale_oak_log', 'poplar_log', 'bamboo_block', 'crimson_stem', 'warped_stem',
+        'oak_wood', 'spruce_wood', 'birch_wood', 'crimson_hyphae', 'warped_hyphae']
+COPPERS = ['exposed_copper', 'weathered_copper', 'oxidized_copper', 'exposed_cut_copper', 'weathered_cut_copper',
+           'oxidized_cut_copper', 'exposed_copper_bulb', 'weathered_copper_bulb', 'oxidized_copper_bulb',
+           'exposed_copper_grate', 'weathered_copper_grate', 'oxidized_copper_grate', 'exposed_copper_bars',
+           'weathered_copper_bars', 'oxidized_copper_bars', 'exposed_copper_chain', 'weathered_copper_chain',
+           'oxidized_copper_chain', 'exposed_lightning_rod', 'weathered_lightning_rod', 'oxidized_lightning_rod',
+           'waxed_copper_block', 'waxed_exposed_copper', 'waxed_weathered_copper', 'waxed_oxidized_copper',
+           'waxed_cut_copper', 'waxed_exposed_cut_copper', 'waxed_weathered_cut_copper', 'waxed_oxidized_cut_copper',
+           'waxed_copper_bulb', 'waxed_exposed_copper_bulb', 'waxed_weathered_copper_bulb',
+           'waxed_oxidized_copper_bulb', 'waxed_copper_grate', 'waxed_exposed_copper_grate',
+           'waxed_weathered_copper_grate', 'waxed_oxidized_copper_grate', 'waxed_copper_bars',
+           'waxed_exposed_copper_bars', 'waxed_weathered_copper_bars', 'waxed_oxidized_copper_bars',
+           'waxed_copper_chain', 'waxed_exposed_copper_chain', 'waxed_weathered_copper_chain',
+           'waxed_oxidized_copper_chain', 'waxed_lightning_rod', 'waxed_exposed_lightning_rod']
+COPPER_CHESTS = ['exposed_copper_chest', 'weathered_copper_chest', 'oxidized_copper_chest',
+                 'waxed_copper_chest', 'waxed_exposed_copper_chest', 'waxed_weathered_copper_chest',
+                 'waxed_oxidized_copper_chest']
+COPPER_DOORS = ['exposed_copper_door', 'weathered_copper_door', 'oxidized_copper_door',
+                'waxed_copper_door', 'waxed_exposed_copper_door', 'waxed_weathered_copper_door',
+                'waxed_oxidized_copper_door']
+COPPER_TRAPDOORS = ['exposed_copper_trapdoor', 'weathered_copper_trapdoor', 'oxidized_copper_trapdoor',
+                    'waxed_copper_trapdoor', 'waxed_exposed_copper_trapdoor',
+                    'waxed_weathered_copper_trapdoor', 'waxed_oxidized_copper_trapdoor']
+SOIL = {'grass_block': {'snowy': 'false'}, 'podzol': {'snowy': 'false'}, 'mycelium': {'snowy': 'false'},
+        'dirt': {}, 'coarse_dirt': {}, 'dirt_path': {}, 'rooted_dirt': {}}
+FACINGS = {'north': (0, -1), 'south': (0, 1), 'west': (-1, 0), 'east': (1, 0)}
+
+
+def damage_stack(item, damage):
+    if damage:
+        return '{id:"minecraft:%s",count:1,components:{"minecraft:damage":%d}}' % (item, damage)
+    return d_plain(item, 1)
+
+
+def transformer_case(rng, states, case):
+    """One click that uses a block transformer: an axe on a log, a copper block,
+    its door, trapdoor or chest, or a hoe or shovel on soil. The chest and door
+    clicks sneak, because their own use (opening) would otherwise take the click
+    (`suppressUsingBlock`)."""
+    kind = rng.choices(('log', 'copper', 'chest', 'door', 'trapdoor', 'soil'), (3, 4, 2, 1, 1, 3))[0]
+    creative = rng.random() < 0.15
+    damage = rng.choice([0, 0, 0, 1, 10])
+    face = rng.choice(['up', 'up', 'down', 'north', 'south', 'west', 'east'])
+    sneaking = rng.random() < 0.3
+    cells = [[0, -1, 0, states.get(rng.choice(['stone', 'dirt', 'oak_planks']))]]
+    items = []
+    if kind == 'log':
+        name = rng.choice(LOGS)
+        cells.insert(0, [0, 0, 0, states.get(name, axis=rng.choice(['x', 'y', 'z']))])
+        item = rng.choice(AXES) if rng.random() < 0.9 else rng.choice(['iron_sword', 'stick'])
+    elif kind == 'copper':
+        name = rng.choice(COPPERS)
+        cells.insert(0, [0, 0, 0, states.get(name)])
+        item = rng.choice(AXES) if rng.random() < 0.9 else 'iron_sword'
+    elif kind == 'chest':
+        name = rng.choice(COPPER_CHESTS)
+        facing = rng.choice(list(FACINGS))
+        double = rng.random() < 0.5
+        if double:
+            own = rng.choice(['left', 'right'])
+            other = 'right' if own == 'left' else 'left'
+            dx, dz = FACINGS[facing]
+            # ChestBlock.getConnectedDirection: LEFT is facing.getClockWise().
+            dx, dz = (-dz, dx) if own == 'left' else (dz, -dx)
+            cells.insert(0, [0, 0, 0, states.get(name, type=own, facing=facing, waterlogged='false')])
+            cells.insert(1, [dx, 0, dz, states.get(name, type=other, facing=facing, waterlogged='false')])
+        else:
+            cells.insert(0, [0, 0, 0, states.get(name, type='single', facing=facing, waterlogged='false')])
+        for slot in rng.sample(range(27), rng.choice([0, 1, 2])):
+            items.append([0, 0, 0, slot, d.plain(rng.choice(['stone', 'diamond', 'bread']), rng.choice([1, 3, 16]))])
+        item = rng.choice(['iron_axe', 'diamond_axe', 'netherite_axe'])
+        sneaking = True
+    elif kind == 'door':
+        name = rng.choice(COPPER_DOORS)
+        facing = rng.choice(list(FACINGS))
+        props = {'facing': facing, 'hinge': rng.choice(['left', 'right']),
+                 'open': rng.choice(['false', 'true']), 'powered': rng.choice(['false', 'true'])}
+        cells.insert(0, [0, 0, 0, states.get(name, half='lower', **props)])
+        cells.insert(1, [0, 1, 0, states.get(name, half='upper', **props)])
+        item = rng.choice(['iron_axe', 'diamond_axe'])
+        sneaking = True
+    elif kind == 'trapdoor':
+        name = rng.choice(COPPER_TRAPDOORS)
+        cells.insert(0, [0, 0, 0, states.get(name, facing=rng.choice(list(FACINGS)),
+                                              half=rng.choice(['bottom', 'top']),
+                                              open=rng.choice(['false', 'true']),
+                                              powered=rng.choice(['false', 'true']),
+                                              waterlogged=rng.choice(['false', 'true']))])
+        item = rng.choice(['iron_axe', 'diamond_axe'])
+        sneaking = True
+    else:
+        hoe = rng.random() < 0.5
+        # Rooted dirt is the one transform with a loot table, so give it a
+        # third of the hoe cases.
+        names = list(SOIL) + (['rooted_dirt'] * 3 if hoe else [])
+        name = rng.choice(names)
+        cells.insert(0, [0, 0, 0, states.get(name, **SOIL[name])])
+        above = rng.choice(['air', 'air', 'air', 'stone', 'water'])
+        if above != 'air':
+            cells.append([0, 1, 0, states.get(above)])
+        item = rng.choice(HOES if hoe else SHOVELS) if rng.random() < 0.9 else 'iron_sword'
+    case['cells'] = cells
+    case['items'] = items
+    case['use_item'] = {'item': damage_stack(item, damage), 'creative': creative, 'sneaking': sneaking,
+                        'food': 20, 'face': face}
+
+
+def cases(facts, count, seed, transformers=True):
     rng = random.Random(seed)
     states = d.States(facts)
     for n in range(count):
         case = {**h.environment(rng), 'pos': [0, 0, 0]}
         case.pop('raining', None)
         case.pop('thundering', None)
+        if rng.random() < 0.04:
+            wax_chest_case(rng, states, case)
+            case['items'] = []
+            case['mode'] = 'dispense'
+            yield case
+            continue
+        if transformers and rng.random() < 0.08:
+            transformer_case(rng, states, case)
+            case['mode'] = 'dispense'
+            yield case
+            continue
         if rng.random() < 0.08:
             wire_case(rng, states, case)
             case['items'] = []
@@ -810,6 +974,22 @@ def placement_cases(facts, count, seed):
         yield case
 
 
+def forced_respawn_cases(facts):
+    """Non-bed forced points: Block.isPossibleToRespawnInThis at feet and head.
+
+    Plants containing water are not liquid blocks; bubble columns are. Keep both
+    cases even in a small run so fluid-containing is not substituted for liquid.
+    """
+    states = d.States(facts)
+    for name in ('air', 'water', 'lava', 'bubble_column', 'kelp', 'seagrass', 'stone'):
+        for height in (0, 1):
+            cells = [[0, 0, 0, states.get('air')], [0, 1, 0, states.get('air')]]
+            cells[height][3] = states.get(name)
+            yield {**h.environment(random.Random(10044)), 'pos': [0, 0, 0],
+                   'cells': cells, 'items': [], 'mode': 'dispense',
+                   'respawn_at': {'forced': True, 'consume': False, 'yaw': 37.0}}
+
+
 def d_plain(item, count):
     return d.plain(item, count)
 
@@ -829,6 +1009,8 @@ def kind(case, facts):
 
 def main():
     parser = h.argument_parser(__doc__)
+    parser.add_argument('--no-transformers', action='store_true',
+                        help='leave out the axe, hoe and shovel transforms, as the corpus did before them')
     args = parser.parse_args()
     if args.count == 40000:
         args.count = 4000
@@ -837,9 +1019,10 @@ def main():
     resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
     work = lab.LOCAL / 'use-item-on-parity'
     work.mkdir(parents=True, exist_ok=True)
-    all_cases = [*cases(facts, args.count, args.seed), *wake_cases(facts, max(args.count // 10, 1), args.seed),
+    all_cases = [*cases(facts, args.count, args.seed, not args.no_transformers),
+                 *wake_cases(facts, max(args.count // 10, 1), args.seed),
                  *used_stat_cases(facts, max(args.count // 10, 1), args.seed),
-                 *placement_cases(facts, max(args.count // 10, 1), args.seed)]
+                 *placement_cases(facts, max(args.count // 10, 1), args.seed), *forced_respawn_cases(facts)]
     (work / 'cases.jsonl').write_text(''.join(json.dumps(case) + '\n' for case in all_cases))
     classes = work / 'classes'
     classes.mkdir(exist_ok=True)

@@ -17,7 +17,9 @@
 //! copied after the test, which tells which ones it saw: each run of a page
 //! reserves room for all of its draws, the copy packs the seen ones at its
 //! start, and the run is drawn indirectly with the count the copy reached.
+use super::SolidPipeline;
 use super::arena::GRAIN;
+use smallvec::SmallVec;
 
 /// One section draw for `flatten.wgsl`: index count, first sorted index (or
 /// `QUADS` for a solid draw; phase 2: its entry in phase 2's draws), base
@@ -86,12 +88,12 @@ pub struct Call {
 pub struct Flat {
     /// The solid draws in one pass (`fs_solid`), where the GPU doesn't hide pixels
     /// by tiles (`split_solid` in `Renderer::draw_frame`: elsewhere than Metal).
-    pub solid: wgpu::RenderPipeline,
+    pub solid: SolidPipeline,
     /// The solid draws in two passes, each over its own part of the draws (terrain.wgsl's
     /// `opaque_quad`): the quads with no cutout first, through a shader that never discards,
     /// then the rest.
-    pub solid_opaque: wgpu::RenderPipeline,
-    pub solid_cutout: wgpu::RenderPipeline,
+    pub solid_opaque: SolidPipeline,
+    pub solid_cutout: SolidPipeline,
     /// The solid draws as the water mirror's camera draws them (`fs_solid_mirror`).
     pub solid_mirror: wgpu::RenderPipeline,
     pub translucent: wgpu::RenderPipeline,
@@ -105,6 +107,8 @@ pub struct Flat {
     phase2_calls: wgpu::Buffer,
     phase2_call_capacity: u64,
     phase2_call_data: Vec<[u32; 5]>,
+    /// GPU culling's phase 2 uses indirect draws; flat draws without culling do not.
+    indirect_execution: bool,
     /// The copy of phase 2's draws, and its ranges.
     phase2_group: Option<(wgpu::BindGroup, u32)>,
     /// The layout of a page's bind group 1 (shader packs' terrain pipelines share it).
@@ -171,11 +175,22 @@ pub fn wanted(adapter: &wgpu::Adapter, device: &wgpu::Device) -> bool {
 
 /// Whether frames without a shader pack's terrain draw flat: where the backend
 /// emulates multi-draw (Metal, past `MIN_SECTIONS`), on Intel Gen11/Gen12's Vulkan
-/// driver, or with `HORIZON_FLAT_DRAWS=1`. Elsewhere per-section draws stay.
+/// driver, on Qualcomm's Adreno under DirectX 12, or with `HORIZON_FLAT_DRAWS=1`.
+/// Elsewhere per-section draws stay.
 pub fn for_vanilla(info: &wgpu::AdapterInfo) -> bool {
     std::env::var("HORIZON_FLAT_DRAWS").as_deref() == Ok("1")
         || info.backend == wgpu::Backend::Metal
         || is_broken_intel_vulkan(info)
+        || is_adreno_dx12(info)
+}
+
+/// Qualcomm's Adreno under DirectX 12 (Windows on Snapdragon, where Auto picks DirectX 12),
+/// where wgpu's indirect multi-draw is `ExecuteIndirect`: drawn flat, an X1-45 took 3-11%
+/// less GPU time a frame at render distance 12 and 3-13% less at 32 (perf_bench's four
+/// scenes, held still), from 389 sections in view up, the same picture. DXGI names
+/// Qualcomm `QCOM` (0x4D4F4351); Vulkan, 0x5143.
+pub fn is_adreno_dx12(info: &wgpu::AdapterInfo) -> bool {
+    info.backend == wgpu::Backend::Dx12 && matches!(info.vendor, 0x4d4f_4351 | 0x5143)
 }
 
 /// Intel Gen11 (Ice Lake) and Gen12 (Tiger Lake, Rocket Lake, Alder Lake,
@@ -357,12 +372,14 @@ fn plan(
 impl Flat {
     /// `pipeline(layout, label, vertex entry, fragment entry, blend, cull, pulled)` builds a
     /// terrain pipeline as the per-section ones, without the origin buffer, and without
-    /// vertex buffers when `pulled` (its vertex shader reads the page, `ARENA_BINDING`).
+    /// vertex buffers when `pulled` (its vertex shader reads the page, `ARENA_BINDING`);
+    /// `solid(layout, label, vertex entry, fragment entry)` a pulled solid one.
     pub fn new(
         device: &wgpu::Device,
         terrain_layout: &wgpu::BindGroupLayout,
         page_vertices: u64,
         min_sections: usize,
+        indirect_execution: bool,
         pipeline: impl Fn(
             &wgpu::PipelineLayout,
             &str,
@@ -372,6 +389,7 @@ impl Flat {
             Option<wgpu::Face>,
             bool,
         ) -> wgpu::RenderPipeline,
+        solid: impl Fn(&wgpu::PipelineLayout, &str, &str, &str) -> SolidPipeline,
     ) -> Self {
         let vertex = wgpu::ShaderStages::VERTEX;
         let compute = wgpu::ShaderStages::COMPUTE;
@@ -432,32 +450,23 @@ impl Flat {
         Self {
             // The solid draws read either layout of the solid quads (`mesher::packed`) from
             // the page; translucent ones keep their vertex buffer.
-            solid: pipeline(
+            solid: solid(
                 &layout,
                 "Terrain solid (flat)",
                 "vs_section_flat",
                 "fs_solid",
-                None,
-                back,
-                true,
             ),
-            solid_opaque: pipeline(
+            solid_opaque: solid(
                 &layout,
                 "Terrain solid opaque (flat)",
                 "vs_section_flat_opaque",
                 "fs_opaque",
-                None,
-                back,
-                true,
             ),
-            solid_cutout: pipeline(
+            solid_cutout: solid(
                 &layout,
                 "Terrain solid cutout (flat)",
                 "vs_section_flat_cutout",
                 "fs_solid",
-                None,
-                back,
-                true,
             ),
             // The mirror flips the winding: its solid terrain culls the front.
             solid_mirror: pipeline(
@@ -495,10 +504,16 @@ impl Flat {
                 device,
                 "Flat section draw calls, phase 2",
                 20,
-                wgpu::BufferUsages::INDIRECT | storage_usage,
+                storage_usage
+                    | if indirect_execution {
+                        wgpu::BufferUsages::INDIRECT
+                    } else {
+                        wgpu::BufferUsages::empty()
+                    },
             ),
             phase2_call_capacity: 1,
             phase2_call_data: Vec::new(),
+            indirect_execution,
             phase2_group: None,
             draw_layout,
             blocks_per_page: page_vertices.div_ceil(GRAIN),
@@ -651,6 +666,7 @@ impl Flat {
         timing: Option<&mut super::pack_timing::PassTiming>,
     ) -> bool {
         self.phase2_group = None;
+        let phase2 = phase2.filter(|_| self.indirect_execution);
         let phase1_draws = if phase2.is_some() {
             phase1_draws
         } else {
@@ -759,7 +775,12 @@ impl Flat {
                 device,
                 "Flat section draw calls, phase 2",
                 self.phase2_call_capacity * 20,
-                wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::STORAGE,
+                wgpu::BufferUsages::STORAGE
+                    | if self.indirect_execution {
+                        wgpu::BufferUsages::INDIRECT
+                    } else {
+                        wgpu::BufferUsages::empty()
+                    },
             );
         }
         if phase2_calls > 0 {
@@ -805,7 +826,7 @@ impl Flat {
             });
             self.phase2_group = Some((group, count as u32));
         }
-        let groups: Vec<(wgpu::BindGroup, u32)> = self
+        let groups: SmallVec<[(wgpu::BindGroup, u32); 8]> = self
             .segments
             .iter()
             .filter_map(|&(source, first, count)| {
@@ -1034,6 +1055,30 @@ impl Flat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adreno_draws_flat_under_dx12_only() {
+        let mut info = wgpu::AdapterInfo {
+            name: "Qualcomm(R) Adreno(TM) X1-45 GPU".into(),
+            vendor: 0x4d4f_4351,
+            device: 0,
+            device_type: wgpu::DeviceType::IntegratedGpu,
+            device_pci_bus_id: String::new(),
+            driver: "31.0.128.0".into(),
+            driver_info: String::new(),
+            backend: wgpu::Backend::Dx12,
+            subgroup_min_size: 0,
+            subgroup_max_size: 0,
+            transient_saves_memory: None,
+            limit_bucket: None,
+        };
+        assert!(is_adreno_dx12(&info));
+        info.backend = wgpu::Backend::Vulkan;
+        assert!(!is_adreno_dx12(&info));
+        info.backend = wgpu::Backend::Dx12;
+        info.vendor = 0x10de;
+        assert!(!is_adreno_dx12(&info));
+    }
 
     /// Draws as `render` writes them: solid (page, quads at a base vertex)
     /// first, then translucent (page, sorted page, count, first sorted index,

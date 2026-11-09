@@ -84,7 +84,7 @@ impl Pack {
     pub fn read(path: &Path) -> Result<Pack, String> {
         let mut files = BTreeMap::new();
         if path.is_dir() {
-            read_dir(path, "", &mut files)?;
+            read_dir(path, "", &mut files, &mut 0)?;
         } else {
             let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
             let mut zip = zip::ZipArchive::new(file)
@@ -92,17 +92,31 @@ impl Pack {
             if zip.len() > MAX_ENTRIES {
                 return Err(format!("over {MAX_ENTRIES} files in the package"));
             }
+            // The pack's total is counted while reading, not after (from_files): a zip's sizes are its
+            // own claim, and 511 files of 1 MiB of zeros take 561 KiB zipped, so checking afterwards
+            // let one upload hold 1 GiB of the registry's memory.
+            let per_file = MAX_OTHER.max(MAX_WGSL);
+            let mut total = 0u64;
             for i in 0..zip.len() {
                 let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
                 if entry.is_dir() {
                     continue;
                 }
                 let name = entry.name().map_err(|e| e.to_string())?.into_owned();
+                let room = per_file.min(MAX_TOTAL - total);
                 let mut bytes = Vec::new();
                 (&mut entry)
-                    .take(MAX_OTHER.max(MAX_WGSL) + 1)
+                    .take(room + 1)
                     .read_to_end(&mut bytes)
                     .map_err(|e| format!("{name}: {e}"))?;
+                if bytes.len() as u64 > room {
+                    return Err(if room < per_file {
+                        format!("the pack is over {} MiB", MAX_TOTAL >> 20)
+                    } else {
+                        format!("{name} is over {} KiB", per_file >> 10)
+                    });
+                }
+                total += bytes.len() as u64;
                 if files.insert(name.clone(), bytes).is_some() {
                     return Err(format!("{name} is in the package twice"));
                 }
@@ -212,7 +226,13 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-fn read_dir(dir: &Path, prefix: &str, files: &mut BTreeMap<String, Vec<u8>>) -> Result<(), String> {
+/// A folder's files, refused once they add up to more than [`MAX_TOTAL`] (`total` so far).
+fn read_dir(
+    dir: &Path,
+    prefix: &str,
+    files: &mut BTreeMap<String, Vec<u8>>,
+    total: &mut u64,
+) -> Result<(), String> {
     let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     for entry in entries {
         let entry = entry.map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -223,11 +243,15 @@ fn read_dir(dir: &Path, prefix: &str, files: &mut BTreeMap<String, Vec<u8>>) -> 
         let path = entry.path();
         let rel = format!("{prefix}{name}");
         if path.is_dir() {
-            read_dir(&path, &format!("{rel}/"), files)?;
+            read_dir(&path, &format!("{rel}/"), files, total)?;
         } else {
             let size = entry.metadata().map_err(|e| format!("{rel}: {e}"))?.len();
             if size > MAX_TOTAL {
                 return Err(format!("{rel} is over {} MiB", MAX_TOTAL >> 20));
+            }
+            *total += size;
+            if *total > MAX_TOTAL {
+                return Err(format!("the pack is over {} MiB", MAX_TOTAL >> 20));
             }
             let bytes = std::fs::read(&path).map_err(|e| format!("{rel}: {e}"))?;
             files.insert(rel, bytes);

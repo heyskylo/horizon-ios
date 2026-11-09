@@ -5,9 +5,9 @@ Hotbar.storeFrom	port	crates/horizon-client/src/game/creative_hotbar.rs::Game::h
 Hotbar.isEmpty	inline	crates/horizon-client/src/game/creative_hotbar.rs::Game::refresh_saved_hotbars	the empty creative hotbar row carries the inventory.hotbarInfo hint
 ClientMetricsSamplersProvider.registerStaticSamplers	skip:debug		F3 metrics samplers
 ClientMetricsSamplersProvider.samplers	skip:debug		F3 metrics samplers
-QuickPlay.connect	port	crates/horizon-client/src/game.rs::Options::read	gap: minor: no Realms variant and no latest-world fallback
+QuickPlay.connect	port	crates/horizon-client/src/game/launch_options.rs::Options::read	gap: minor: no Realms variant and no latest-world fallback
 QuickPlay.getLatestSingleplayerWorld	missing		minor: a quick play with no world id does not pick the newest world
-QuickPlay.joinMultiplayerWorld	port	crates/horizon-client/src/game.rs::Options::read	gap: minor: the server is not added to the server list
+QuickPlay.joinMultiplayerWorld	port	crates/horizon-client/src/game/launch_options.rs::Options::read	gap: minor: the server is not added to the server list
 QuickPlay.joinRealmsWorld	skip:service		Realms
 QuickPlayLog.log	skip:other		writes the launcher's quick play session file; Horizon keeps none
 FullTextSearchTree.searchIdentifier	port	crates/horizon-client/src/recipe_book.rs::Book::collection_matches	recipe-book namespace:path search; the creative search is Creative::search_results

@@ -21,7 +21,7 @@ use horizon_cosmetics::{Item, Part, Texture};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// The view's size, in points.
+/// The Wardrobe's view's size, in points.
 pub(super) const W: f32 = 240.;
 pub(super) const H: f32 = 330.;
 /// Pixels of a trackpad's scroll that make one wheel step.
@@ -52,7 +52,11 @@ impl Outfit {
 }
 
 pub(super) struct Viewer {
+    /// Its size in points.
+    size: (f32, f32),
     outfit: Option<(Outfit, Part)>,
+    /// Played again each time it ends (the Shop's emote).
+    again: Option<Arc<dyn BodyMotion>>,
     stage: Stage,
     image: Option<Arc<RenderImage>>,
     /// Pictures no longer shown, still in the window's sprite atlas until dropped there.
@@ -66,8 +70,15 @@ pub(super) struct Viewer {
 
 impl Viewer {
     pub(super) fn new() -> Self {
+        Self::sized(W, H)
+    }
+
+    /// A view `w`×`h` points.
+    pub(super) fn sized(w: f32, h: f32) -> Self {
         Self {
+            size: (w, h),
             outfit: None,
+            again: None,
             stage: Stage::default(),
             image: None,
             replaced: Vec::new(),
@@ -96,12 +107,17 @@ impl Viewer {
         }
     }
 
-    /// Plays an emote once on the player model, its items following their bones. The emote
-    /// format isn't in `horizon_cosmetics` yet: its player implements `BodyMotion` and calls
-    /// this (docs/cosmetics.md, "The live view").
-    #[allow(dead_code)]
-    pub(super) fn play(&mut self, motion: Arc<dyn BodyMotion>, cx: &mut Context<Self>) {
-        self.stage.play(motion, Instant::now());
+    /// Plays `motion` (an emote) on the player model, its items following their bones, again
+    /// each time it ends; None stops it after this time.
+    pub(super) fn play_again(
+        &mut self,
+        motion: Option<Arc<dyn BodyMotion>>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(m) = &motion {
+            self.stage.play(m.clone(), Instant::now());
+        }
+        self.again = motion;
         cx.notify();
     }
 
@@ -148,7 +164,7 @@ impl Viewer {
                 item, body, &shot.body, shot.ticks,
             ));
         }
-        let (pw, ph) = (W as u32, H as u32);
+        let (pw, ph) = (self.size.0 as u32, self.size.1 as u32);
         let picture = preview::render(&draws, pw, ph, &shot.camera);
         let texels = picture.rgba.as_chunks::<4>().0;
         let baked = art::bake(texels, pw as usize, ph as usize, 1., scale);
@@ -182,6 +198,9 @@ impl Render for Viewer {
             self.activation = Some(cx.observe_window_activation(window, |_, _, cx| cx.notify()));
         }
         let scale = window.scale_factor();
+        if let Some(m) = self.again.as_ref().filter(|_| !self.stage.playing()) {
+            self.stage.play(m.clone(), Instant::now());
+        }
         // As the sky: `HORIZON_LAUNCHER_MOTION=always` keeps it moving in the background.
         let front = window.is_window_active() || crate::sky::motion() == crate::sky::Motion::Always;
         let frame = self.stage.frame(Instant::now(), scale, front);
@@ -191,10 +210,11 @@ impl Render for Viewer {
         if let Some(after) = frame.wake {
             self.wake(after, cx);
         }
+        let (w, h) = self.size;
         div()
-            .w(px(W))
-            .h(px(H))
-            .children(self.image.clone().map(|i| img(i).w(px(W)).h(px(H))))
+            .w(px(w))
+            .h(px(h))
+            .children(self.image.clone().map(|i| img(i).w(px(w)).h(px(h))))
     }
 }
 
@@ -203,6 +223,7 @@ impl Render for Viewer {
 /// (`set_dragging` changes it), so that the page draws the grabbing hand.
 pub(super) fn frame(
     viewer: Entity<Viewer>,
+    (w, h): (f32, f32),
     dragging: bool,
     set_dragging: impl Fn(bool, &mut App) + Clone + 'static,
 ) -> Stateful<Div> {
@@ -211,8 +232,8 @@ pub(super) fn frame(
     div()
         .id("wardrobe-viewer")
         .relative()
-        .w(px(W))
-        .h(px(H))
+        .w(px(w))
+        .h(px(h))
         .when(dragging, |d| d.cursor_grabbing())
         .when(!dragging, |d| d.cursor_grab())
         .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, _, cx| {

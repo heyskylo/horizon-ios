@@ -30,7 +30,7 @@ pub fn buffers() -> [Option<wgpu::VertexBufferLayout<'static>>; 1] {
 /// What `gbuffers_entities` and `gbuffers_block` read from an entity vertex: camera-relative
 /// position, the shared atlas's UV, colour, light (block, sky in 16ths) and the world-oriented
 /// normal. The quad's corners, read from the same vertices at set 1, give the face normal where
-/// the vertex has none (block entities) and `at_tangent` along the texture's u, as for terrain.
+/// the vertex has none (custom geometry) and `at_tangent` along the texture's u, as for terrain.
 pub fn inputs() -> horizon_shaders::GbuffersInputs {
     let words = std::mem::size_of::<Vertex>() / 4;
     let mut declarations = "layout(location = 0) in vec3 hz_v_pos;\nlayout(location = 1) in vec2 hz_v_uv;\n\
@@ -107,6 +107,10 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
             "at_velocity",
             "hz_velocity(gbufferModelView, gbufferPreviousModelView)",
         ),
+        // Horizon's own, as for terrain: the HDR tier of a light-giving item, particle or glowing
+        // text (`mesher::hdr_tier`, the overlay's high bits), 0 for none, 1 to 4 for low to very
+        // bright.
+        ("horizonTier", "float((hz_v_overlay >> 16u) & 255u)"),
     ];
     horizon_shaders::GbuffersInputs {
         declarations,
@@ -123,6 +127,10 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
         }),
         item_id_declared: false,
         far_depth: false,
+        // Entities, items and block entities read the shared atlas: its own maps (paged_maps.rs).
+        paged_maps: true,
+        water_mask: false,
+        water_patches: false,
     }
 }
 
@@ -186,6 +194,9 @@ pub fn cloud_inputs() -> horizon_shaders::GbuffersInputs {
         alpha_test: None,
         item_id_declared: false,
         far_depth: false,
+        paged_maps: false,
+        water_mask: false,
+        water_patches: false,
     }
 }
 
@@ -220,6 +231,9 @@ pub(super) struct Draw {
     pub slot: u32,
     /// End portal or gateway faces: drawn with `end_portal.png` bound as the atlas.
     pub portal: bool,
+    /// A boat's water patch (`WATER_MASK_OVERLAY`): depth only, with the program's pipeline that
+    /// writes no colour.
+    pub water_mask: bool,
 }
 
 /// Which entity runs a pack's shadow pass draws (2.4, 3.2).
@@ -240,7 +254,7 @@ impl Casters {
     pub fn cast(&self, span: &EntitySpan, program: usize) -> bool {
         match program {
             ENTITY => self.entities && (!self.only_player || span.player),
-            BLOCK => self.blocks && (!self.only_lit || span.emissive),
+            BLOCK | BLOCK_TRANSLUCENT => self.blocks && (!self.only_lit || span.emissive),
             _ => false,
         }
     }
@@ -433,7 +447,7 @@ impl PackEntities {
         let posed = skin.map_or(0, |s| s.vertices);
         if let Some(skin) = skin {
             for (span, range, overlay) in skin_runs(skin) {
-                let program = program_of(&span).expect("tagged skin stage");
+                let program = material_program(&span, overlay, drawn).expect("tagged skin stage");
                 let pack = drawn[program] && !span.hidden;
                 let casts = shadow.cast(&span, program);
                 if !pack && !casts {
@@ -448,31 +462,64 @@ impl PackEntities {
                     casts,
                     overlay,
                     false,
+                    false,
                 );
             }
         }
         let first = spans.first().map_or(entities.len(), |s| s.start as usize);
         extend_without_portals(rest, &entities[..first.min(entities.len())]);
         let (mut other, mut portal_faces, mut beam_faces) = (Vec::new(), Vec::new(), Vec::new());
-        for (span, range) in runs(entities.len(), spans) {
+        let mut water_patches = Vec::new();
+        let mut without_fluids = Vec::new();
+        for (span, range, material) in material_runs(entities, spans, drawn) {
             let run_start = range.start as u32;
             let whole = &entities[range];
+            // A native fluid carries sprite-array UVs, not shared-atlas UVs.
+            // Keep it in its own material even when a shader pack draws the
+            // model in the same block-entity run. Do not corrupt either UV space.
+            let whole: &[Vertex] = if whole
+                .chunks(4)
+                .any(|q| super::is_native_terrain(q[0].layer))
+            {
+                without_fluids.clear();
+                for quad in whole.chunks(4) {
+                    if super::is_native_terrain(quad[0].layer) {
+                        if !span.hidden {
+                            rest.extend_from_slice(quad);
+                        }
+                    } else {
+                        without_fluids.extend_from_slice(quad);
+                    }
+                }
+                &without_fluids
+            } else {
+                whole
+            };
             // A block entity's run can hold End portal faces and beams beside plain parts (an End
             // gateway: its cube and its beam): each goes to its own program.
             // Beacon beams come in a run of their own, at stage NONE (game.rs: no stage of 5.4
             // is theirs), for gbuffers_beaconbeam.
-            let split = (program_of(&span) == Some(BLOCK) || span.stage == render_stage("NONE"))
+            let split = ((matches!(material, Some(BLOCK | BLOCK_TRANSLUCENT))
+                || span.stage == render_stage("NONE"))
                 && whole
                     .chunks(4)
-                    .any(|q| matches!(q[0].layer & 0xffff, 6 | 9 | 10));
-            let parts: [(&[Vertex], Part); 3] = if split {
+                    .any(|q| matches!(q[0].layer & 0xffff, 6 | 9 | 10)))
+                // A boat's water patch: depth only (`Part::WaterMask`).
+                || whole
+                    .chunks(4)
+                    .any(|q| q[0].layer & 0xffff == super::entity_batch::WATER_MASK_OVERLAY);
+            let parts: [(&[Vertex], Part); 4] = if split {
                 other.clear();
                 portal_faces.clear();
                 beam_faces.clear();
+                water_patches.clear();
                 for quad in whole.chunks(4) {
                     match quad[0].layer & 0xffff {
                         9 | 10 => portal_faces.extend_from_slice(quad),
                         6 => beam_faces.extend_from_slice(quad),
+                        super::entity_batch::WATER_MASK_OVERLAY => {
+                            water_patches.extend_from_slice(quad)
+                        }
                         _ => other.extend_from_slice(quad),
                     }
                 }
@@ -480,9 +527,15 @@ impl PackEntities {
                     (&other, Part::Plain),
                     (&portal_faces, Part::Portal),
                     (&beam_faces, Part::Beam),
+                    (&water_patches, Part::WaterMask),
                 ]
             } else {
-                [(whole, Part::Plain), (&[], Part::Plain), (&[], Part::Plain)]
+                [
+                    (whole, Part::Plain),
+                    (&[], Part::Plain),
+                    (&[], Part::Plain),
+                    (&[], Part::Plain),
+                ]
             };
             for (run, part) in parts {
                 if run.is_empty() {
@@ -491,7 +544,9 @@ impl PackEntities {
                 let program = match part {
                     Part::Portal => Some(BLOCK),
                     Part::Beam => Some(BEAM),
-                    Part::Plain => program_of(&span).filter(|&p| {
+                    // Drawn by the entity program, whose depth-only pipeline it takes.
+                    Part::WaterMask => material.filter(|&p| p == ENTITY),
+                    Part::Plain => material.filter(|&p| {
                         plain(run)
                             || (p == DESTROY && run.iter().all(|v| matches!(v.layer, 11 | 12)))
                     }),
@@ -499,7 +554,8 @@ impl PackEntities {
                 let pack = program.is_some_and(|p| drawn[p]) && !span.hidden;
                 // Portal faces cast too (a pack's shadow pass sees block entities whole, as Iris
                 // draws them); beams do not.
-                let casts = part != Part::Beam && program.is_some_and(|p| shadow.cast(&span, p));
+                let casts = !matches!(part, Part::Beam | Part::WaterMask)
+                    && program.is_some_and(|p| shadow.cast(&span, p));
                 if !pack && !span.hidden {
                     extend_without_portals(rest, run);
                 }
@@ -511,8 +567,13 @@ impl PackEntities {
                     Part::Beam => beam_segments(run, &mut self.scratch),
                     _ => self.scratch.extend_from_slice(run),
                 }
-                // A run copied whole: its vertices keep their order, for `at_velocity`.
-                if !split {
+                // A run copied whole keeps its vertices' order, for `at_velocity`; so does the
+                // start of a split one copied as it is (a boat's hull before its water patch).
+                let in_order = !split
+                    || (part == Part::Plain
+                        && bytemuck::cast_slice::<_, u8>(&whole[..run.len().min(whole.len())])
+                            == bytemuck::cast_slice::<_, u8>(run));
+                if in_order {
                     copied.push((run_start, posed + start, run.len() as u32));
                 }
                 if program == DESTROY {
@@ -533,6 +594,7 @@ impl PackEntities {
                     casts,
                     overlay,
                     portal,
+                    part == Part::WaterMask,
                 );
             }
         }
@@ -604,9 +666,10 @@ impl PackEntities {
         casts: bool,
         overlay: u32,
         portal: bool,
+        water_mask: bool,
     ) {
         let (entity_id, block_id) = match program {
-            BLOCK => (0, span.id),
+            BLOCK | BLOCK_TRANSLUCENT => (0, span.id),
             _ => (span.id, 0),
         };
         let mut bytes = [0u8; SLOT as usize];
@@ -628,6 +691,7 @@ impl PackEntities {
             shadow: casts,
             slot: self.draws.len() as u32,
             portal,
+            water_mask,
         });
     }
 }
@@ -662,6 +726,8 @@ enum Part {
     Plain,
     Portal,
     Beam,
+    /// A boat's water patch: depth only (`Draw::water_mask`).
+    WaterMask,
 }
 
 /// Beam faces (`block_entity_render::beam`: layer 6, v counting the sprite's repeats up the
@@ -753,7 +819,76 @@ pub const PARTICLE: usize = 3;
 pub const DESTROY: usize = 4;
 /// Beacon and End gateway beams (`gbuffers_beaconbeam`).
 pub const BEAM: usize = 5;
-pub const PROGRAMS: usize = 6;
+pub const BLOCK_TRANSLUCENT: usize = 6;
+pub const PARTICLE_TRANSLUCENT: usize = 7;
+pub const PROGRAMS: usize = 8;
+
+/// Translucent blocks retain the ordinary block shadow program and blockEntityId.
+pub fn shadow_program(program: usize) -> usize {
+    if program == BLOCK_TRANSLUCENT {
+        BLOCK
+    } else {
+        program
+    }
+}
+
+fn material_program(span: &EntitySpan, layer: u32, drawn: [bool; PROGRAMS]) -> Option<usize> {
+    Some(match program_of(span)? {
+        BLOCK
+            if drawn[BLOCK_TRANSLUCENT]
+                && (span.translucent
+                    || layer & super::OIT_ENTITY != 0
+                    || matches!(
+                        layer & 0xffff,
+                        super::TRANSLUCENT_ITEM_OVERLAY | super::TRANSLUCENT_GLINT_ITEM_OVERLAY
+                    )) =>
+        {
+            BLOCK_TRANSLUCENT
+        }
+        PARTICLE
+            if drawn[PARTICLE_TRANSLUCENT]
+                && layer & 0xffff == super::TRANSLUCENT_PARTICLE_OVERLAY =>
+        {
+            PARTICLE_TRANSLUCENT
+        }
+        p => p,
+    })
+}
+
+/// Split only where an available variant changes a quad's program. Keep contiguous runs,
+/// their vertex order and the original single draw when no material variant is usable.
+fn material_runs<'a>(
+    vertices: &'a [Vertex],
+    spans: &'a [EntitySpan],
+    drawn: [bool; PROGRAMS],
+) -> impl Iterator<Item = (EntitySpan, Range<usize>, Option<usize>)> + 'a {
+    runs(vertices.len(), spans).flat_map(move |(span, range)| {
+        let split = match program_of(&span) {
+            Some(BLOCK) => drawn[BLOCK_TRANSLUCENT],
+            Some(PARTICLE) => drawn[PARTICLE_TRANSLUCENT],
+            _ => false,
+        };
+        let mut start = range.start;
+        std::iter::from_fn(move || {
+            if start >= range.end {
+                return None;
+            }
+            let program = material_program(&span, vertices[start].layer, drawn);
+            let end = if split {
+                (start..range.end)
+                    .step_by(4)
+                    .skip(1)
+                    .find(|&i| material_program(&span, vertices[i].layer, drawn) != program)
+                    .unwrap_or(range.end)
+            } else {
+                range.end
+            };
+            let run = start..end;
+            start = end;
+            Some((span, run, program))
+        })
+    })
+}
 
 /// Which program draws `span`'s run, given which of them (or their fallbacks) the pack has;
 /// `None`: Horizon draws it.
@@ -911,11 +1046,17 @@ mod tests {
         assert_eq!(drawn_by_pack(&spans[0], all), Some(ENTITY));
         assert_eq!(drawn_by_pack(&spans[1], all), Some(PARTICLE));
         assert_eq!(
-            drawn_by_pack(&spans[1], [true, true, true, false, true, true]),
+            drawn_by_pack(
+                &spans[1],
+                [true, true, true, false, true, true, false, false]
+            ),
             None
         );
         assert_eq!(
-            drawn_by_pack(&spans[2], [true, false, true, true, true, true]),
+            drawn_by_pack(
+                &spans[2],
+                [true, false, true, true, true, true, false, false]
+            ),
             None
         );
         assert_eq!(drawn_by_pack(&spans[2], all), Some(BLOCK));
@@ -1142,6 +1283,83 @@ mod gpu_span_tests {
     use super::*;
     use crate::gfx::entity_skin::{SkinFrame, SkinJob};
     #[test]
+    #[ignore = "requires a Vulkan/Metal/DX12 adapter"]
+    fn native_fluid_stays_native_while_model_uses_pack() {
+        let instance = crate::gfx::test_gpu::instance();
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let layout = super::super::pack_draw::DrawUniforms::new(&device);
+        let mut geometry = PackEntities::new(&device, &layout.layout);
+        for overlay in [
+            super::super::FLUID_OVERLAY,
+            super::super::TERRAIN_MODEL_SOLID_OVERLAY,
+            super::super::TERRAIN_MODEL_CUTOUT_OVERLAY,
+            super::super::TERRAIN_MODEL_CUTOUT_MIPPED_OVERLAY,
+        ] {
+            let mut mixed = vec![
+                Vertex {
+                    layer: 0,
+                    ..bytemuck::Zeroable::zeroed()
+                };
+                8
+            ];
+            for v in &mut mixed[4..] {
+                v.layer = overlay | 279 << 16;
+                v.uv = [0.25, 0.75];
+                v.glint_uv = [17.0, 0.0];
+            }
+            let mut rest = Vec::new();
+            for hidden in [false, true] {
+                geometry.prepare(
+                    &device,
+                    &queue,
+                    &layout.layout,
+                    &mixed,
+                    &[EntitySpan {
+                        start: 0,
+                        id: 77,
+                        stage: render_stage("BLOCK_ENTITIES"),
+                        hidden,
+                        ..Default::default()
+                    }],
+                    [true; PROGRAMS],
+                    ([0.; 4], [1; 2]),
+                    Casters {
+                        blocks: true,
+                        ..Default::default()
+                    },
+                    &mut rest,
+                    None,
+                    (&[], &[]),
+                );
+                assert_eq!(
+                    geometry.scratch.len(),
+                    4,
+                    "the model still uses the shader pack"
+                );
+                assert_eq!(geometry.draws.len(), 1);
+                assert_eq!(
+                    (geometry.draws[0].pack, geometry.draws[0].shadow),
+                    (!hidden, true)
+                );
+                if hidden {
+                    assert!(
+                        rest.is_empty(),
+                        "hidden native fluid must not leak into the visible pass"
+                    );
+                } else {
+                    assert_eq!(
+                        bytemuck::cast_slice::<_, u8>(&rest),
+                        bytemuck::cast_slice::<_, u8>(&mixed[4..]),
+                        "fluid UV/layer payload cannot be sampled from the entity atlas"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn posed_draws_preserve_subject_ids_overlays_and_hidden_shadow_casters() {
         let mut skin = SkinFrame {
             vertices: 24,
@@ -1262,6 +1480,79 @@ mod gpu_span_tests {
             [(false, true), (true, true)],
             "the portal face casts as its block entity does"
         );
+    }
+
+    /// A boat's water patch (`RenderTypes.waterMask`) is a draw of its own, depth only, that casts
+    /// no shadow; with no pack program for entities, Horizon draws it with the boat.
+    #[test]
+    fn a_boats_water_patch_draws_depth_only() {
+        let instance = crate::gfx::test_gpu::instance();
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            return;
+        };
+        let Ok((device, queue)) = pollster::block_on(adapter.request_device(&Default::default()))
+        else {
+            return;
+        };
+        let layout = super::super::pack_draw::DrawUniforms::new(&device);
+        let mut geometry = PackEntities::new(&device, &layout.layout);
+        let mask = super::super::entity_batch::WATER_MASK_OVERLAY;
+        // One boat: a hull face, then the water patch.
+        let cpu: Vec<Vertex> = [0, 0, 0, 0, mask, mask, mask, mask]
+            .into_iter()
+            .map(|layer| Vertex {
+                layer,
+                ..bytemuck::Zeroable::zeroed()
+            })
+            .collect();
+        let spans = [EntitySpan {
+            start: 0,
+            id: 7,
+            stage: render_stage("ENTITIES"),
+            ..Default::default()
+        }];
+        let mut rest = Vec::new();
+        let shadows = Casters {
+            entities: true,
+            ..Default::default()
+        };
+        let mut prepare = |drawn, rest: &mut Vec<Vertex>| {
+            geometry.prepare(
+                &device,
+                &queue,
+                &layout.layout,
+                &cpu,
+                &spans,
+                drawn,
+                ([0.; 4], [1; 2]),
+                shadows,
+                rest,
+                None,
+                (&[], &[]),
+            );
+            let draws = (geometry.draws.iter())
+                .map(|d| (d.base, d.program, d.pack, d.shadow, d.water_mask))
+                .collect::<Vec<_>>();
+            let heights: Vec<f32> = geometry.scratch.iter().map(|v| v.pos[1]).collect();
+            (draws, heights)
+        };
+        assert_eq!(
+            prepare([true; PROGRAMS], &mut rest),
+            (
+                vec![
+                    (0, ENTITY, true, true, false),
+                    (4, ENTITY, true, false, true)
+                ],
+                // Where they lie: the patch at the water line, not moved.
+                vec![0.0; 8]
+            )
+        );
+        assert!(rest.is_empty());
+        let mut no_entities = [true; PROGRAMS];
+        no_entities[ENTITY] = false;
+        let (draws, _) = prepare(no_entities, &mut rest);
+        assert!(draws.iter().all(|d| !d.2), "{draws:?}");
+        assert_eq!(rest.len(), 8, "the boat and its patch stay Horizon's");
     }
 
     #[test]
@@ -1529,3 +1820,47 @@ mod velocity_translate_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[cfg(test)]
+mod tier_translate_tests {
+    /// A pack's entity and hand programs may read `horizonTier`, the overlay's HDR tier.
+    #[test]
+    fn a_pack_reading_horizon_tier_translates_for_entities_and_the_hand() {
+        let dir = std::env::temp_dir().join(format!("hz-entity-tier-{}", std::process::id()));
+        let shaders = dir.join("shaders");
+        std::fs::create_dir_all(&shaders).unwrap();
+        std::fs::write(
+            shaders.join("gbuffers_entities.vsh"),
+            "#version 120\nattribute float horizonTier;\nvarying float t;\n\
+             void main() {\n    gl_Position = ftransform();\n    t = horizonTier;\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            shaders.join("gbuffers_entities.fsh"),
+            "#version 120\nvarying float t;\nvoid main() {\n    gl_FragData[0] = vec4(t);\n}\n",
+        )
+        .unwrap();
+        let pack = horizon_shaders::Pack::open(&dir).unwrap();
+        let m = horizon_shaders::Macros::standard();
+        let vsh = horizon_shaders::preprocess(&pack, "gbuffers_entities.vsh", &m);
+        let fsh = horizon_shaders::preprocess(&pack, "gbuffers_entities.fsh", &m);
+        for (who, inputs) in [
+            ("entities", super::inputs()),
+            ("hand", super::super::pack_hand::inputs()),
+        ] {
+            let attribute = inputs.attributes.iter().find(|(n, _)| n == "horizonTier");
+            assert!(attribute.is_some(), "{who}");
+            horizon_shaders::translate_gbuffers(
+                &vsh,
+                &fsh,
+                horizon_shaders::Target::Buffers,
+                &inputs,
+            )
+            .unwrap_or_else(|e| panic!("{who}: {e:?}"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod material_route_tests;

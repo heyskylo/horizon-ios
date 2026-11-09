@@ -3,13 +3,15 @@
 //! dropped items (`ItemEntityRenderer`) and items posed in the world (hands,
 //! frames, armour stands). This binds the resolver's host services
 //! (`ItemEnv`) and the special renderers' registries to the game.
-use super::{Dim, Game};
+use super::{Dim, Game, entity_culling::EntityCullDecision};
 use horizon_assets::item_model::{
-    Components, DisplayContext, GlobalPos, ItemEnv, LevelState, OwnerState, StackView,
+    Components, ComponentsView, DisplayContext, GlobalPos, ItemEnv, LevelState, OwnerState,
+    StackView,
 };
 use horizon_client::{
     block_entity_render::{diffuse_lights, vertex_light},
     cit::{Hand as CitHand, Kind as CitKind},
+    graphics::EntityCullingMode,
     hud::{HudBatch, Rect},
     item_render::{self, ItemRenderState, SpecialHost, WorldSink},
     items::ItemStack,
@@ -187,7 +189,7 @@ pub(super) fn owner_at(position: [f64; 3], yaw: f32, entity_type: &str) -> Owner
 }
 /// `UseDuration` of a stack (`Item.getUseDuration`): 72000 for drawn items
 /// and for `blocks_attacks` items (shields), the consume time for food.
-fn use_duration(components: &Components) -> i32 {
+fn use_duration(components: ComponentsView<'_>) -> i32 {
     if let Some(c) = components.get("minecraft:consumable") {
         let seconds = c["consume_seconds"].as_f64().unwrap_or(1.6);
         return (seconds * 20.0) as i32;
@@ -252,7 +254,10 @@ impl Game<'_> {
     fn level_state_now(&self, dimension: &'static str) -> LevelState {
         let sky = self
             .dim_environment()
-            .sample(self.world.day_time, None, None);
+            .sample(&horizon_client::environment::Sample {
+                day_time: self.world.day_time,
+                ..Default::default()
+            });
         LevelState {
             dimension: dimension.to_owned(),
             game_time: self.world.game_time,
@@ -285,7 +290,7 @@ impl Game<'_> {
             && self.stack_in(slot) == Some(stack)
         {
             let view = item_render::stack_view(stack);
-            let mut duration = use_duration(&self.pack.item_renderer.models.components(&view));
+            let mut duration = use_duration(self.pack.item_renderer.models.components_view(&view));
             self.native_use_duration(stack, &mut duration);
             owner.using_this_item = true;
             owner.use_duration = duration;
@@ -615,7 +620,7 @@ impl Game<'_> {
                 continue;
             }
             let age = item.age as f32 + partial;
-            let (lo, _) = state.bounding_box();
+            let (lo, hi) = state.bounding_box();
             let min_offset_y = -lo.y + 0.0625;
             let bob = (age / 10.0 + item.bob_offset).sin() * 0.1 + 0.1;
             let spin = item_render::item_spin(age, item.bob_offset);
@@ -642,16 +647,21 @@ impl Game<'_> {
             };
             let seed = i64::from(self.pack.item_renderer.item_id(&item.stack.item))
                 + i64::from(item.stack.damage);
-            let copies = item_render::cluster_poses(
-                &state,
+            let copies = item_render::cluster_poses_with_depth(
                 pose,
                 item_render::rendered_amount(item.stack.count),
                 seed,
+                hi.z - lo.z,
             );
             // Use the same animated, spun, clustered transforms as the draw.
             // ItemEntity's collision box is only 0.25 blocks and cannot prove
             // that this larger rendered model stays behind an occluder.
             let culling = entity.then(|| {
+                // The posed envelope walks every model point in every copy;
+                // with culling off the decision is `Bypass` whatever it holds.
+                if self.settings.horizon.entity_culling == EntityCullingMode::Off {
+                    return EntityCullDecision::Bypass;
+                }
                 state
                     .posed_bounds(&copies)
                     .map(|(lo, hi)| {
@@ -778,19 +788,19 @@ mod tests {
         // runs instead of ending at once (#2289).
         let mut shield = Components::new();
         shield.insert("minecraft:blocks_attacks".into(), json!({}));
-        assert_eq!(use_duration(&shield), 72_000);
+        assert_eq!(use_duration(ComponentsView::of(&shield)), 72_000);
         // Food is used for as long as it takes to eat it.
         let mut food = Components::new();
         food.insert(
             "minecraft:consumable".into(),
             json!({"consume_seconds": 1.6}),
         );
-        assert_eq!(use_duration(&food), 32);
+        assert_eq!(use_duration(ComponentsView::of(&food)), 32);
         // The bow keeps its own use time.
         let mut bow = Components::new();
         bow.insert("minecraft:item_model".into(), json!("minecraft:bow"));
-        assert_eq!(use_duration(&bow), 72_000);
+        assert_eq!(use_duration(ComponentsView::of(&bow)), 72_000);
         // Anything else is not used at all.
-        assert_eq!(use_duration(&Components::new()), 0);
+        assert_eq!(use_duration(ComponentsView::of(&Components::new())), 0);
     }
 }

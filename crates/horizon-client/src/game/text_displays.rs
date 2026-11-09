@@ -348,13 +348,14 @@ impl Game<'_> {
         let background = self.settings.text_background(0.25);
         let mut displays = std::mem::take(&mut self.text_displays);
         for display in displays.values_mut().filter(|d| d.shows == Shows::Text) {
-            let cached = display.lines.take();
             display.last_progress = display.progress(partial as f32);
             let d = display.shown.blend(&display.from, display.last_progress);
             let position = display.previous.lerp(display.position, partial);
             if d.text.is_empty() || !self.display_in_view(camera, position, &d, scale) {
+                // Out of view: its glyphs stay cached for when it comes back.
                 continue;
             }
+            let cached = display.lines.take();
             let rotation = std::array::from_fn(|i| {
                 display.old_rotation[i]
                     + angle(display.rotation[i] - display.old_rotation[i]) * partial as f32
@@ -512,6 +513,11 @@ mod tests {
         assert!(!cache.matches(&d, 0, atlas.font.epoch() + 1, atlas.revision));
         assert!(!cache.matches(&d, 0, atlas.font.epoch(), atlas.revision + 1));
         d.text = std::sync::Arc::new(horizon_client::text::Text::legacy("§kSecret"));
+        let cache = CachedQuads::new(&atlas, &d, 0);
+        assert!(!cache.matches(&d, 0, atlas.font.epoch(), atlas.revision));
+        // A plugin hologram sends `§k` inside a literal JSON string: the font
+        // resolves it, so its glyphs still change every frame.
+        d.text = std::sync::Arc::new(horizon_client::text::Text::literal("§kSecret"));
         let cache = CachedQuads::new(&atlas, &d, 0);
         assert!(!cache.matches(&d, 0, atlas.font.epoch(), atlas.revision));
     }

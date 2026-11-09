@@ -1,0 +1,17 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "entity_swing", "target": "horizon_client::game::native_entity_state::Game<'_>::native_entity_swing", "receiver": "entity"},
+    {"name": "entity_set_fire", "target": "horizon_client::game::native_entity_state::Game<'_>::native_entity_set_fire", "receiver": "entity"},
+    {"name": "entity_effects", "target": "horizon_client::game::native_entity_state::Game<'_>::native_entity_effects", "receiver": "entity"},
+    {"name": "entity_set_attribute_base", "target": "horizon_client::game::native_entity_state::Game<'_>::native_entity_set_attribute_base", "receiver": "entity"},
+    {"name": "entity_use_item", "target": "horizon_client::game::native_entity_state::Game<'_>::native_entity_use_item", "receiver": "entity"},
+    {"name": "lightning_bolt", "target": "horizon_client::game::native_npcs::Game<'_>::native_lightning_bolt"}
+  ],
+  "rust_summary": "living-entity helpers for fighters and NPCs: a mob's swing (`native_entity_swing`), setting how long an entity burns (`native_entity_set_fire`), a mob's status effects (`native_entity_effects`), a mob's attribute base (`native_entity_set_attribute_base`), a mob's item-use pose (`native_entity_use_item`), and a lightning bolt that can be visual only (`native_lightning_bolt`).",
+  "doc_summary": "`entity.swing(host, off_hand)` swings a mob's arm (`LivingEntity.swing`, the off hand when `off_hand`; players send their own swing, so it is `false` for them); `entity.set_fire(host, ticks)` sets how many ticks it burns (`setRemainingFireTicks`, 0 puts it out; players acting and mobs); `entity.effects(host)` lists a mob's status effects as (id, ticks left, amplifier) (players: `effects` by UUID); `entity.set_attribute_base(host, attribute, base)` sets a mob's attribute base (`max_health`, `minecraft:max_health`...); `entity.use_item(host, off_hand, using)` sets the item-use pose a shield shows without the mob's own use running; `lightning_bolt(dimension, pos, visual_only)` strikes lightning in a loaded level, with fire and damage only unless `visual_only`. Bundles need \"hooks\": @API:living_helpers@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_entity_state.rs",
+    "crates/horizon-client/src/game/native_npcs.rs"
+  ]
+}

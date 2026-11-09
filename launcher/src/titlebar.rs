@@ -31,21 +31,25 @@ pub fn options() -> TitlebarOptions {
     }
 }
 
-/// Draw the macOS titlebar as a glass surface under the native traffic lights. The native
-/// titlebar remains transparent, so AppKit keeps its controls and window interactions.
+/// Draw the macOS title bar under the native traffic lights: glass, or the side colour without
+/// it. The native title bar is transparent either way, so the bar is always drawn: without it the
+/// page would start under the traffic lights. AppKit keeps its controls and window interactions.
 #[cfg(target_os = "macos")]
 pub fn render(theme: &Theme, _window: &Window) -> Option<Div> {
     use crate::glass::{self, Kind};
     use gpui::{div, prelude::*, px};
 
-    theme.glass.then(|| {
+    Some(
         div()
             .relative()
             .flex_none()
             .h(px(32.))
-            .child(glass::backdrop(Kind::Glass, 0.))
-            .text_color(theme.muted)
-    })
+            .when(theme.glass, |bar| {
+                bar.child(glass::backdrop(Kind::Glass, 0.))
+            })
+            .when(!theme.glass, |bar| bar.bg(theme.side))
+            .text_color(theme.muted),
+    )
 }
 
 #[cfg(all(

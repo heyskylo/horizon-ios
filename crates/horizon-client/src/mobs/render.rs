@@ -152,15 +152,7 @@ pub fn armor_tint(undyed: Option<u32>, stack: Option<&crate::items::ItemStack>) 
         .unwrap_or(undyed);
     abgr(dyed)
 }
-/// ColorLerper.Type.SHEEP colour: white is 0xE6E6E6, others 75% of the dye.
-pub fn sheep_wool_rgb(color: u8) -> u32 {
-    if color == 0 {
-        return 0xE6E6E6;
-    }
-    let src = DYE[color as usize & 15];
-    let f = |c: u32| ((c as f32 * 0.75).floor() as u32).min(255);
-    f(src >> 16 & 255) << 16 | f(src >> 8 & 255) << 8 | f(src & 255)
-}
+pub use crate::pack_palette::{diffuse as dye, sheep_wool as sheep_wool_rgb};
 /// `ColorLerper.getLerpedColor(ColorLerper.Type.SHEEP, ageInTicks)`: the 16
 /// wool colours in DyeColor order, one per 25 ticks, lerped in between. The
 /// colour a `jeb_` sheep's wool takes.
@@ -596,7 +588,7 @@ pub fn body(m: &Mob) -> (Cow<'static, str>, Cow<'_, str>) {
 pub fn body_color(m: &Mob, alpha: f32) -> u32 {
     match m.species() {
         Species::Wolf => super::tame::tint(m, alpha),
-        Species::TropicalFish => abgr(DYE[m.extra.variant2 as usize & 15]),
+        Species::TropicalFish => abgr(dye(m.extra.variant2 as usize)),
         // LivingEntityRenderer.submit: a spectator is invisible
         // (Player.updateInvisibilityStatus) but not to another spectator or
         // itself, so its body is forced translucent (654311423, alpha 38).
@@ -664,7 +656,7 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
                 &mut v,
                 model,
                 texture,
-                abgr(DYE[m.extra.color as usize & 15]),
+                abgr(dye(m.extra.color as usize)),
                 false,
             );
         }
@@ -794,7 +786,7 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
                 &mut v,
                 model,
                 texture,
-                abgr(DYE[m.extra.color as usize & 15]),
+                abgr(dye(m.extra.color as usize)),
                 false,
             );
         }
@@ -940,7 +932,7 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
                 &mut v,
                 model,
                 interned(format_args!("entity/fish/tropical_{letter}_pattern_{n}")),
-                abgr(DYE[m.extra.variant3 as usize & 15]),
+                abgr(dye(m.extra.variant3 as usize)),
                 false,
             );
         }
@@ -1112,7 +1104,7 @@ fn enderman_render_offset(m: &Mob, alpha: f32) -> glam::DVec3 {
 /// `base_transform` from a pose of the entity's origin (`EntityRenderDispatcher.submit`
 /// under a pose stack, as `SpawnerRenderer` draws the mob inside a spawner).
 pub fn base_transform_at(m: &Mob, alpha: f32, origin: glam::Mat4) -> glam::Mat4 {
-    let mut body = m.previous_body_yaw + wrap(m.body_yaw - m.previous_body_yaw) * alpha;
+    let mut body = anim::body_rot(m, alpha);
     if shaking(m) {
         // LivingEntityRenderer.setupRotations: a rapid wobble.
         let ticks = (m.age as f32 + alpha).floor();
@@ -1458,6 +1450,13 @@ pub(super) fn posed(base: glam::Mat4, p: [f32; 9]) -> glam::Mat4 {
         ))
         * glam::Mat4::from_scale(glam::Vec3::new(p[6], p[7], p[8]))
 }
+
+/// Keeps the original multiplication order when the local rotation was reused.
+pub(super) fn posed_rotated(base: glam::Mat4, p: [f32; 9], rotation: glam::Mat4) -> glam::Mat4 {
+    base * glam::Mat4::from_translation(glam::Vec3::new(p[0], p[1], p[2]) / 16.0)
+        * rotation
+        * glam::Mat4::from_scale(glam::Vec3::new(p[6], p[7], p[8]))
+}
 /// `draw_scrolled` through the GPU path when the mob takes it (`skin`), on
 /// the CPU otherwise.
 #[allow(clippy::too_many_arguments)]
@@ -1597,7 +1596,7 @@ pub fn cape(
         m.previous.y + (m.position.y - m.previous.y) * a,
         m.previous.z + (m.position.z - m.previous.z) * a,
     ];
-    let body = m.previous_body_yaw + wrap(m.body_yaw - m.previous_body_yaw) * alpha;
+    let body = anim::body_rot(m, alpha);
     // LivingEntityRenderState.fallFlyingScale.
     let ticks = m.extra.fall_fly_ticks as f32 + alpha;
     let gliding = (ticks * ticks / 100.0).clamp(0.0, 1.0);

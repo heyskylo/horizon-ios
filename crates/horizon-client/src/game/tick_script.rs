@@ -31,6 +31,10 @@ impl TickScript {
             running: None,
         }
     }
+    /// Whether a scenario is playing.
+    pub(super) fn playing(&self) -> bool {
+        self.running.is_some()
+    }
     /// Whether the variable is set (the frame asks before every tick).
     pub(super) fn armed(&self) -> bool {
         self.path.is_some()

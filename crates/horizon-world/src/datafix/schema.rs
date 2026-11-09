@@ -167,11 +167,11 @@ impl Walker<'_> {
         }
         match ty {
             Ty::Level => {
-                if k < key(4771, 0) {
-                    if let Some(Tag::Compound(c)) = v.get_mut("CustomBossEvents") {
-                        for e in c.values_mut() {
-                            self.field(Ty::TextComponent, e, "Name");
-                        }
+                if k < key(4771, 0)
+                    && let Some(Tag::Compound(c)) = v.get_mut("CustomBossEvents")
+                {
+                    for e in c.values_mut() {
+                        self.field(Ty::TextComponent, e, "Name");
                     }
                 }
                 self.walk(Ty::LightweightLevel, v);

@@ -36,8 +36,12 @@ pub struct Death<'a> {
     pub loot: &'a LootData,
     /// The killing `DamageSource`.
     pub damage: Option<LootDamage>,
-    /// The player who last hurt the mob, when `lastHurtByPlayerMemoryTime > 0`.
+    /// `LAST_DAMAGE_PLAYER`: the player who last hurt the mob, when they are
+    /// still in the world. Gone after they leave, even while the memory lasts.
     pub player: Option<LootEntity>,
+    /// `LivingEntity.lastHurtByPlayerMemoryTime > 0` (`playerKilled`):
+    /// experience and equipment follow this, not whether `player` is present.
+    pub player_killed: bool,
     /// That player's luck.
     pub luck: f32,
     /// The entity the mob rides.
@@ -176,57 +180,6 @@ fn is_raider(s: Species) -> bool {
         S::Pillager | S::Vindicator | S::Evoker | S::Illusioner | S::Witch | S::Ravager
     )
 }
-/// Whether `setBaby(true)` makes the species a baby (AgeableMob and the
-/// zombies, minus the species that are never babies).
-pub fn can_be_baby(s: Species) -> bool {
-    use Species as S;
-    matches!(
-        s,
-        S::Armadillo
-            | S::Axolotl
-            | S::Bee
-            | S::Camel
-            | S::Cat
-            | S::Chicken
-            | S::Cow
-            | S::Dolphin
-            | S::Donkey
-            | S::Drowned
-            | S::Fox
-            | S::HappyGhast
-            | S::GlowSquid
-            | S::Goat
-            | S::Hoglin
-            | S::Horse
-            | S::Husk
-            | S::Llama
-            | S::Mooshroom
-            | S::Mule
-            | S::Nautilus
-            | S::Ocelot
-            | S::Panda
-            | S::Pig
-            | S::Piglin
-            | S::PolarBear
-            | S::Rabbit
-            | S::Sheep
-            | S::SkeletonHorse
-            | S::Sniffer
-            | S::Squid
-            | S::Strider
-            | S::SulfurCube
-            | S::TraderLlama
-            | S::Turtle
-            | S::Villager
-            | S::WanderingTrader
-            | S::Wolf
-            | S::Zoglin
-            | S::Zombie
-            | S::ZombieHorse
-            | S::ZombieVillager
-            | S::ZombifiedPiglin
-    )
-}
 /// The species whose body item Horizon draws and handles as armour (and whose
 /// sun-protection slot is the body): the equines (a horse's armour, a llama's
 /// carpet, a camel's harness) and the wolf, happy ghast, nautilus and sulfur cube.
@@ -275,8 +228,9 @@ pub fn slot_item(m: &Mob, slot: &str) -> Option<LootStack> {
         for (e, l) in &g.slots[index] {
             stack.enchantments.push((e.to_string(), *l as i32));
         }
-        if let Some((material, pattern)) = &g.trims[index] {
-            let trim = serde_json::json!({ "material": &**material, "pattern": &**pattern });
+        if let Some(trim) = &g.trims[index] {
+            let trim =
+                horizon_client_core::scoreboard::tag_to_json(&crate::item_data::trim::to_nbt(trim));
             stack.components.push(("minecraft:trim".to_owned(), trim));
         }
     }
@@ -323,18 +277,22 @@ pub fn clear_slot(m: &mut Mob, slot: &str) {
         }
         "head" => {
             m.extra.head = None;
+            m.extra.armor[0] = None;
             gear::HEAD
         }
         "chest" => {
             m.extra.chest = None;
+            m.extra.armor[1] = None;
             gear::CHEST
         }
         "legs" => {
             m.extra.legs = None;
+            m.extra.armor[2] = None;
             gear::LEGS
         }
         "feet" => {
             m.extra.feet = None;
+            m.extra.armor[3] = None;
             gear::FEET
         }
         "body" => {
@@ -386,6 +344,39 @@ pub fn drop_chance(m: &Mob, slot: &str) -> f32 {
         "mainhand" if m.species() == Species::Vex => 0.0,
         _ => DEFAULT_DROP_CHANCE,
     }
+}
+/// `DropChances.isPreserved`: whether the slot's drop chance is > 1.0.
+pub fn is_preserved(m: &Mob, slot: &str) -> bool {
+    drop_chance(m, slot) > 1.0
+}
+/// `Mob.dropPreservedEquipment`: drops any equipped items whose drop chance is > 1.0.
+pub fn drop_preserved_equipment(m: &mut Mob) -> Vec<crate::items::ItemStack> {
+    use horizon_world::player_inventory::EquipmentSlot;
+    let mut dropped = Vec::new();
+    for &slot in &SLOTS {
+        if is_preserved(m, slot) {
+            let eq_slot = match slot {
+                "mainhand" => Some(EquipmentSlot::MainHand),
+                "offhand" => Some(EquipmentSlot::OffHand),
+                "feet" => Some(EquipmentSlot::Feet),
+                "legs" => Some(EquipmentSlot::Legs),
+                "chest" => Some(EquipmentSlot::Chest),
+                "head" => Some(EquipmentSlot::Head),
+                "body" => Some(EquipmentSlot::Body),
+                "saddle" => Some(EquipmentSlot::Saddle),
+                _ => None,
+            };
+            if let Some(eq) = eq_slot
+                && let Some(stack) = super::finalize::equipment_stack(m, eq)
+                && stack.count > 0
+                && &*stack.item != "minecraft:air"
+            {
+                clear_slot(m, slot);
+                dropped.push(stack);
+            }
+        }
+    }
+    dropped
 }
 /// The facts loot predicates read about a mob.
 pub fn loot_entity(m: &Mob, vehicle: Option<LootEntity>) -> LootEntity {
@@ -481,7 +472,7 @@ pub fn die(
         skulls = items.iter().any(|i| !i.is_empty());
         out.extend(items.into_iter().filter(|i| !i.is_empty()).map(Drop::Item));
     }
-    let killed_by_player = d.player.is_some();
+    let killed_by_player = d.player_killed;
     let s = m.species();
     // Fox.dropAllDeathLoot: whatever it holds in its mouth comes out first.
     if s == Species::Fox
@@ -709,6 +700,7 @@ mod death_loot_table_tests {
             loot: &loot,
             damage: None,
             player: None,
+            player_killed: false,
             luck: 0.0,
             vehicle: None,
             mob_drops: true,
@@ -741,6 +733,7 @@ mod slot_tests {
     use super::*;
     use crate::mobs::sensor_scan_tests::kind;
     use horizon_core::geometry::Vec3;
+    use horizon_world::loot::PackOverlay;
     use std::sync::Arc;
 
     fn mob(id: &str, species: Species) -> Mob {
@@ -780,5 +773,90 @@ mod slot_tests {
         let body = slot_item(&zombie, "body").unwrap();
         assert_eq!(body.item, "minecraft:iron_helmet");
         assert!(slot_item(&zombie, "head").is_none());
+    }
+
+    /// `LivingEntity.dropExperience` and `Mob.dropCustomDeathLoot`: the
+    /// memory timer (`playerKilled`) awards experience and equipment even
+    /// when `LAST_DAMAGE_PLAYER` is gone (the player left).
+    #[test]
+    fn experience_and_equipment_follow_the_hurt_memory_not_the_player_entity() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-guest-left-xp-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("data/minecraft/loot_table")).unwrap();
+        std::fs::write(root.join("items.json"), "{}").unwrap();
+        let loot = LootData::load(&root, &PackOverlay::default()).unwrap();
+        let death = |player_killed| Death {
+            loot: &loot,
+            damage: None,
+            player: None,
+            player_killed,
+            luck: 0.0,
+            vehicle: None,
+            mob_drops: true,
+            world_seed: 0,
+        };
+        let zombie = |helmet: bool| {
+            let mut m = mob("minecraft:zombie", Species::Zombie);
+            if helmet {
+                m.extra.head = Some("minecraft:iron_helmet".into());
+                m.extra.drop_chances = Some(Box::new([1.0; 8]));
+            }
+            m
+        };
+        let orbs = |out: &[Drop]| out.iter().filter(|d| matches!(d, Drop::Orb(_))).count();
+        let helmet = |out: &[Drop]| {
+            out.iter().any(|d| match d {
+                Drop::Item(s) => s.item == "minecraft:iron_helmet",
+                Drop::Stack(s) => &*s.item == "minecraft:iron_helmet",
+                _ => false,
+            })
+        };
+
+        let mut m = zombie(false);
+        let (out, _) = die(
+            &mut m,
+            &death(true),
+            &mut RandomSequences::default(),
+            &mut LegacyRandom::new(7),
+        );
+        assert!(orbs(&out) > 0, "memory timer awards experience: {out:?}");
+
+        let mut m = zombie(false);
+        let (out, _) = die(
+            &mut m,
+            &death(false),
+            &mut RandomSequences::default(),
+            &mut LegacyRandom::new(7),
+        );
+        assert_eq!(orbs(&out), 0, "no timer, no experience: {out:?}");
+
+        let mut m = zombie(true);
+        let (out, _) = die(
+            &mut m,
+            &death(true),
+            &mut RandomSequences::default(),
+            &mut LegacyRandom::new(7),
+        );
+        assert!(helmet(&out), "memory timer drops equipment: {out:?}");
+
+        let mut m = zombie(true);
+        let (out, _) = die(
+            &mut m,
+            &death(false),
+            &mut RandomSequences::default(),
+            &mut LegacyRandom::new(7),
+        );
+        assert!(!helmet(&out), "no timer, no equipment: {out:?}");
+    }
+
+    #[test]
+    fn preserved_equipment_drops_when_chance_exceeds_one() {
+        let mut m = mob("minecraft:zombie", Species::Zombie);
+        m.extra.head = Some("minecraft:iron_helmet".into());
+        m.extra.drop_chances = Some(Box::new([2.0; 8]));
+        let drops = drop_preserved_equipment(&mut m);
+        assert_eq!(drops.len(), 1);
+        assert_eq!(drops[0].item.as_ref(), "minecraft:iron_helmet");
+        assert_eq!(m.extra.head, None);
     }
 }

@@ -24,7 +24,6 @@ pub struct ItemEnergyBuffer {
 }
 
 /// What one item of a stack holds (`native_item_energy`).
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct NativeItemEnergy {
     pub(crate) amount: i32,
@@ -138,7 +137,7 @@ fn extract_one(
 }
 
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
 impl Game<'_> {
     /// The buffer a mod gave item `item`, checked; none for any other item.
     fn native_item_energy_of(&self, item: &str) -> Option<ItemEnergyBuffer> {

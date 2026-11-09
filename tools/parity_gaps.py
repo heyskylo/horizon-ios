@@ -64,7 +64,7 @@ def block(lists: list[dict]) -> str:
     return (f"**Player-visible gaps: {still} open** of the {total} the [port ledger](tools/port_ledger.py) found, "
             "reading every vanilla 26.3 method against Horizon's code: vanilla behaviour a player would notice that "
             f"Horizon doesn't have yet. By area: {parts}. This number goes down as gaps close "
-            "(`tools/parity_gaps.py`); the harness results below say that what is tested matches.")
+            "(`tools/parity_gaps.py`); the table below says what the harnesses compare.")
 
 
 def written(text: str) -> tuple[int, list[int]] | None:
@@ -83,10 +83,11 @@ def rewrite(text: str, new_block: str, still: int) -> str:
         text = text.replace("## Project status\n\n", f"## Project status\n\n{new_block}\n\n", 1)
     if BADGE.search(text):
         return BADGE.sub(lambda m: f"{m.group(1)}{still}{m.group(3)}", text)
-    parity = re.search(r'  <img src="https://img\.shields\.io/badge/vanilla%20parity-[^\n]*\n', text)
+    # No badge yet: it goes last in the badge row, the paragraph that closes just above the title.
+    row_end = text.find("</p>\n\n# Horizon")
     badge = (f'  <a href="#project-status"><img src="https://img.shields.io/badge/player--visible%20gaps-{still}'
              f'%20open-F0795A" alt="Player-visible gaps open"></a>\n')
-    return text[:parity.end()] + badge + text[parity.end():] if parity else text
+    return text[:row_end] + badge + text[row_end:] if row_end >= 0 else text
 
 
 def main(argv: list[str]) -> int:

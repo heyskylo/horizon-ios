@@ -38,6 +38,7 @@ pub mod nightly;
 pub mod other_launchers;
 pub mod packs;
 pub mod pictures;
+pub mod private_window;
 pub mod process;
 pub mod proxy;
 pub mod relocation;

@@ -8,7 +8,6 @@ use horizon_client::client_resources::ClientResources;
 use horizon_core::geometry::Direction;
 use horizon_world::registry::BlockStateId;
 
-#[allow(dead_code)]
 impl Game<'_> {
     /// For a client mod: what each block (`minecraft:grass_block`, `oak_log[axis=x]`; properties left out take the
     /// block's default) draws on each of its six sides, as the mesher bakes its model: each face's sprite (array and

@@ -19,24 +19,37 @@ pub use crate::crafting::{CustomRecipe, Ingredient};
 pub use crate::extras::Corner;
 pub use crate::extras_hud::Corners;
 pub use crate::first_person::Hand;
+pub use crate::fluid_render::NativeFluidRenderOptions;
 pub use crate::fog::{FogData, FogType};
+pub use crate::game::NativeAttributeModifier;
+pub use crate::game::NativeChunkSnapshot;
+pub use crate::game::NativeEffect;
+pub use crate::game::NativeEffectV2;
 pub use crate::game::NativeFluidTank;
+pub use crate::game::NativeInventoryError;
+pub use crate::game::NativeInventoryKind;
+pub use crate::game::NativeSlotRole;
 pub use crate::game::native_block_entity_draw::{BlockEntityDraw, CubeFace};
 pub use crate::game::native_client_services::{
-    NativeClientEntity, NativeClientHead, NativeClientProfile, NativeClientState,
+    NativeClientEntity, NativeClientHead, NativeClientItem, NativeClientProfile, NativeClientState,
+    NativeScreenKind, NativeWorldId,
 };
+pub use crate::game::native_text_field::NativeTextField;
 pub use crate::game::{
-    ItemEnergyBuffer, NativeBiomeId, NativeBlockEdit, NativeBlockReadError, NativeBlockRun,
-    NativeClientBiomes, NativeClientChunks, NativeClock, NativeColumnBlocks, NativeComponentError,
-    NativeConfig, NativeConfigFile, NativeConfigKind, NativeCriterion, NativeDataMapType,
-    NativeExperienceOrb, NativeFalling, NativeHeightmap, NativeHeldItem, NativeHit,
-    NativeItemEntity, NativeMapDecoration, NativeMapInfo, NativeMobRender, NativeModEvent,
-    NativePlayer, NativePlayerRender, NativeReloadListener, NativeShake, NativeStructureBlock,
-    NativeStructureTemplate, NativeWorldDraw,
+    AdvancementDisplay, ItemEnergyBuffer, NativeBiomeId, NativeBlockEdit, NativeBlockNbt,
+    NativeBlockReadError, NativeBlockRun, NativeClientBiomes, NativeClientChunks, NativeClock,
+    NativeColumnBlocks, NativeComponentError, NativeConfig, NativeConfigFile, NativeConfigKind,
+    NativeCriterion, NativeDataMapType, NativeExperienceOrb, NativeFalling, NativeHeightmap,
+    NativeHeldItem, NativeHit, NativeItemEntity, NativeMapDecoration, NativeMapInfo,
+    NativeMobRender, NativeModEvent, NativePlayer, NativePlayerRender, NativeReloadListener,
+    NativeShake, NativeStructureBlock, NativeStructureTemplate, NativeWorldDraw,
 };
+pub use crate::gamerules::Value as GameRuleValue;
+/// What a mod asks of the terrain's picture each frame (`native_world_hold`). API 414.
+pub use crate::gfx::WorldHold;
 pub use crate::gfx::native_render::{
     BlockSpriteArrays, RenderHooks, RenderNeeds, RenderNeedsEvent, WorldDrawn, WorldDrawnEvent,
-    wgpu,
+    WorldWarp, WorldWarpEvent, wgpu,
 };
 pub use crate::hud::HudBatch;
 pub use crate::hud_layout::{GuiDraw, HealthHud, HealthInputs};
@@ -54,6 +67,11 @@ pub use crate::music::{Music, MusicLayer};
 pub use crate::particles::{ParticleOptions, ParticleType};
 pub use crate::recipe_book::RecipeBookCategory;
 pub use crate::sound_engine::SoundPlayback;
+/// A named step of the server tick and its wall and CPU milliseconds (`native_server_tick_timed`).
+pub use crate::spans::Span as TickSpan;
+pub use crate::terrain_model::{
+    NativeModelMaterial, NativeModelRenderOptions, NativeModelShade, NativeModelUvShift,
+};
 pub use crate::text::Text;
 pub use crate::world_primitives::{PrimitiveShape, WorldPrimitive, WorldPrimitives};
 pub use horizon_assets::item_model::{DisplayContext, StackView};
@@ -62,29 +80,60 @@ pub use horizon_core::{
     position::BlockPos,
     random::{LegacyRandom, RandomSource},
 };
+/// A firework explosion (the `firework_explosion` component), for
+/// `native_client_fireworks`.
+pub use horizon_items::firework::{FireworkExplosion, FireworkShape};
+/// A synched entity data value (`ClientboundSetEntityDataPacket`'s), as `entity_data_to` hands
+/// them over.
+pub use horizon_protocol::entity_data::Value as EntityDataValue;
 /// The server's play packets `client_packet` hands over, decoded.
 pub use horizon_protocol::packets::play::Clientbound as ClientboundPlayPacket;
 /// The play packets a client sends, as `native_send_packet` takes them.
 pub use horizon_protocol::packets::play::Serverbound as ServerboundPlayPacket;
 pub use horizon_world::consumable::UseAnimation;
+/// Vanilla's `TagParser`: the tag an SNBT text holds and the bytes it read
+/// (`ItemStack::from_nbt` reads an item from it). API @API:item_from_snbt@.
+pub use horizon_world::nbt::parse_snbt;
 pub use horizon_world::player_inventory::EquipmentSlot;
 pub use horizon_world::{
     attachments::{
         AttachmentCodec, AttachmentError, AttachmentHost, AttachmentType, Attachments, Holder,
     },
+    block_state_properties::BlockProperties,
     fluid::{FluidKind, FluidState},
     level::{BlockId, Dimension as LevelDimension, PlacementContext},
     loot::{LootStack, NativeLootContext},
     nbt::{Compound, Tag},
     registry::BlockStateId,
-    worldgen::structure::{Mirror, Rotation},
+    worldgen::{
+        native_generate::{NativeGenerate, NativeLodColumn, NativeProtoChunk},
+        structure::{Mirror, Rotation},
+    },
 };
 pub use serde_json;
 use serde_json::{Map, Value};
+/// The slot range a menu's input slots take (`native_open_menu_with_input`).
+/// API @API:menu_input@.
+pub use std::ops::Range;
 use std::time::Duration;
 /// The window events `input_key` hands over (`winit::event::KeyEvent`) and their key types.
 pub use winit;
 pub use winit::keyboard::KeyCode;
+
+/// How far a chunk a mod asked for with `native_chunk_load_request` is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeChunkLoad {
+    /// Asked for and not loaded yet (generating, loading from disk, or its
+    /// level opening); ask again after a tick.
+    Pending,
+    /// Loaded: its blocks can be read and written (the mod's ticket keeps
+    /// it loaded, as a `/forceload`ed chunk is).
+    Loaded,
+    /// Not asked for by this owner: the request was refused (off a server,
+    /// no namespace, past the world's edge, a dimension Horizon lacks) or
+    /// has been released.
+    Failed,
+}
 
 /// An owned fluid payload. Component additions and removals are preserved exactly;
 /// the amount is in millibuckets. Empty/negative stacks are not transferable.
@@ -407,6 +456,97 @@ pub struct NativeStack {
     pub components: String,
 }
 
+/// One item a loot table can drop and its odds (`native_loot_odds`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeLootOdds {
+    /// The item (`minecraft:flint`).
+    pub item: String,
+    /// Its components beyond the item's own, in vanilla's item syntax, or "".
+    pub components: String,
+    /// The chance at least one comes from one roll of the whole table.
+    pub chance: f64,
+    /// How many come when it does: the fewest one drop gives, and the most
+    /// the table can give at once.
+    pub min: u32,
+    pub max: u32,
+    /// The conditions on its way that could not be judged here (a tool when
+    /// none was named, the weather, a killer), as short lines; they were
+    /// taken as met.
+    pub conditions: Vec<String>,
+}
+
+/// What a mod asks the recipe viewer to do with a stack
+/// (`native_show_recipes`, heard as `native_recipe_lookup`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NativeRecipeLookup {
+    /// The recipes that make it (JEI's R, a left click).
+    Recipes,
+    /// The recipes it is used in (JEI's U, a right click).
+    Uses,
+    /// A key (vanilla's name, `key.keyboard.a`) went down while the pointer
+    /// was on the stack in a screen the mod draws: the viewer acts on it as
+    /// over its own list (its recipe, uses and bookmark keys, as the player
+    /// bound them).
+    Key(String),
+}
+
+/// A category of a mod's own recipes for recipe viewers
+/// (`native_recipe_categories`): what a fishing spot, a sieve or a machine
+/// turns its inputs into, each output with its odds.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeRecipeCategory {
+    /// Its id (`mymod:sifting`).
+    pub id: String,
+    /// Its name, as the mod words it in the player's language.
+    pub title: String,
+    /// One short line under the name, or "".
+    pub subtitle: String,
+    /// The tab's icon.
+    pub icon: NativeStack,
+    /// The items and blocks that do it (a rod, a sieve), as JEI's catalysts.
+    pub catalysts: Vec<NativeStack>,
+    pub recipes: Vec<NativeCategoryRecipe>,
+}
+
+/// One recipe of a [`NativeRecipeCategory`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeCategoryRecipe {
+    /// Its input slots, each with the stacks it takes; none for a recipe
+    /// with no input (a catch).
+    pub inputs: Vec<Vec<NativeStack>>,
+    pub outputs: Vec<NativeChanceOutput>,
+    /// Lines about the whole recipe.
+    pub notes: Vec<String>,
+}
+
+/// An output of a [`NativeCategoryRecipe`] that comes with a chance.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeChanceOutput {
+    pub stack: NativeStack,
+    /// The chance it comes, 0 to 1, each time the recipe runs (a catch, a
+    /// block broken).
+    pub chance: f32,
+    /// How many come when it does.
+    pub min: u32,
+    pub max: u32,
+    /// Lines about this output (`needs a brush`).
+    pub notes: Vec<String>,
+}
+
+/// How a native mod's item panel draws its page buttons and search box
+/// (`native_panel_style`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NativePanelStyle {
+    /// The recipe book's page arrows and a plain search box (the default).
+    #[default]
+    RecipeBook,
+    /// A recipe viewer's: square page buttons on a bar over the items and
+    /// the viewer's search box, as Horizon's Recipes panel draws them.
+    Viewer,
+}
+
 /// What the player did on a native mod's panel (`native_panel_event`).
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -449,6 +589,78 @@ pub struct NativeZoom {
     pub turn: f32,
 }
 
+/// A boss bar a server mod shows one player (`native_boss_bar`), as Bukkit's
+/// `BossBar` holds it. API @API:boss_bar@.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeBossBar {
+    pub name: Text,
+    /// How full the bar is, 0 to 1.
+    pub progress: f32,
+    /// `BossBarColor`'s ordinal: 0 pink, 1 blue, 2 red, 3 green, 4 yellow,
+    /// 5 purple, 6 white.
+    pub color: i32,
+    /// `BossBarOverlay`'s ordinal: 0 progress (no notches), 1 six notches,
+    /// 2 ten, 3 twelve, 4 twenty.
+    pub overlay: i32,
+    /// `BossEvent`'s flags: the sky darkens, boss music plays, fog thickens.
+    pub darken: bool,
+    pub music: bool,
+    pub fog: bool,
+}
+
+/// One open level of a server, counted for a diagnostics mod (`native_level_stats`): Bukkit's
+/// `World.getLoadedChunks`, `getForceLoadedChunks`, `getEntities` and `Chunk.getTileEntities`
+/// in numbers. API @API:level_stats@.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct NativeLevelStats {
+    /// The chunks it holds loaded.
+    pub chunks: usize,
+    /// The chunks `/forceload` and mods' tickets (`native_force_chunk`) keep loaded.
+    pub forced_chunks: usize,
+    pub block_entities: usize,
+    /// The block entities that tick (`Level.blockEntityTickers`).
+    pub ticking_block_entities: usize,
+    /// Its entities by type (`minecraft:zombie`), players included, the most first and ties
+    /// by name.
+    pub entities: Vec<(String, usize)>,
+    /// Its block entities by type (`minecraft:chest`, else a mod block's name), in the same
+    /// order.
+    pub block_entity_types: Vec<(String, usize)>,
+}
+
+/// What one mob type cost one level's ticks while a mod sampled them
+/// (`native_take_mob_costs`). API @API:server_tick_timed@.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct NativeMobCost {
+    /// The level, `minecraft:overworld`.
+    pub dimension: String,
+    /// The mob type, `minecraft:zombie`.
+    pub kind: String,
+    /// The time its mobs' own ticks took (their riders' inside), in nanoseconds.
+    pub nanos: u64,
+    /// The mob ticks timed.
+    pub mob_ticks: u64,
+}
+
+/// Where a fishing bobber outside water floats and fishes, as a mod's
+/// `native_fishing_medium` answers it: lava, the void under an island, a
+/// cloud. Below `surface` the bobber floats and fishes as in still water,
+/// above it it falls as anywhere else. API @API:fishing_medium@.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeFishingMedium {
+    /// The height the bobber floats at (world Y), as water's surface is.
+    pub surface: f64,
+    /// The loot table a catch from here rolls (`mymod:gameplay/lava_fishing`);
+    /// None rolls vanilla's `minecraft:gameplay/fishing`.
+    pub loot_table: Option<String>,
+    /// The ticks a fish takes to come, drawn from `min..=max` when the bobber
+    /// starts waiting, less the rod's Lure as in water (vanilla draws 100 to
+    /// 600). None keeps vanilla's draw.
+    pub lure_ticks: Option<(i32, i32)>,
+}
+
 /// A player on the server, as a server hook sees them.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -476,6 +688,68 @@ pub struct NativeServerPlayer {
     /// The IP address the player connects from (behind a Velocity proxy: the address the proxy forwards);
     /// empty when not known. API 407.
     pub address: String,
+    /// The connection's round-trip time in milliseconds, as the keep-alive measured it and the
+    /// player list shows it (`ServerCommonPacketListenerImpl.latency`). The fields below are API
+    /// @API:server_player_state@; 0, false or None where the server does not hold them.
+    pub latency: i32,
+    /// The protocol version the client connected with (the server's own: others are refused).
+    pub protocol: i32,
+    /// The experience level and the progress to the next one, 0 to 1.
+    pub xp_level: i32,
+    pub xp_progress: f32,
+    /// On the ground, as the player's last accepted move said.
+    pub on_ground: bool,
+    /// The player's abilities as the client is told them (`Abilities.flying`, `mayfly`,
+    /// `invulnerable`, `walkingSpeed`, `flyingSpeed`): speeds 0.1 and 0.05 by default.
+    pub flying: bool,
+    pub may_fly: bool,
+    pub invulnerable: bool,
+    pub walk_speed: f32,
+    pub fly_speed: f32,
+    /// Holding sneak (`Player.isShiftKeyDown`).
+    pub sneaking: bool,
+    /// The eyes' height above the feet in the current pose (`Entity.getEyeHeight`): 1.62
+    /// standing, 1.27 crouching, 0.4 swimming or gliding, 0.2 asleep.
+    pub eye_height: f32,
+    /// The selected hotbar slot, 0 to 8.
+    pub selected_slot: u8,
+    /// The name a server mod shows for the player (`native_set_nickname`), if one does.
+    pub nickname: Option<String>,
+    /// The level a player needs to see this one, when a server mod hid them
+    /// (`native_hide_player`).
+    pub hidden: Option<u8>,
+    /// A fake player: a mod's bot with no client (`native_set_player_fake`), so a mod need not
+    /// build anything for it that only a client could show. API @API:server_player_fake@.
+    pub fake: bool,
+    /// Whether the player is using an item (`LivingEntity.isUsingItem`), and blocking with a
+    /// shield (using one). API @API:server_player_state@.
+    pub using_item: bool,
+    pub blocking: bool,
+    /// Sprinting (`Player.isSprinting`) and gliding with an elytra (`isFallFlying`).
+    /// API @API:server_player_state@.
+    pub sprinting: bool,
+    pub gliding: bool,
+}
+
+/// What a player's client told the server about itself, and what the server sent it
+/// (`native_player_client`). API @API:player_client@.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct NativeClientInfo {
+    /// The client's brand (`minecraft:brand`): `vanilla`, `fabric`, `horizon`...
+    pub brand: String,
+    /// `ClientInformation`: the language (`en_us`), the view distance it asks for, chat
+    /// visibility (0 full, 1 system, 2 hidden), main hand (0 left, 1 right) and particles
+    /// (0 all, 1 decreased, 2 minimal).
+    pub language: String,
+    pub view_distance: i8,
+    pub chat_visibility: i32,
+    pub main_hand: i32,
+    pub particle_status: i32,
+    /// The chunks the server has sent it and holds as sent.
+    pub sent_chunks: usize,
+    /// The bytes received from and sent to it on the wire, where the connection counts them.
+    pub wire_bytes: Option<(u64, u64)>,
 }
 
 /// A command a native mod adds, as one usage: words, then arguments
@@ -483,7 +757,10 @@ pub struct NativeServerPlayer {
 /// `pay <player:player> <amount:integer>`, `balance [player:player]`,
 /// `eco give <player:player> <amount:integer>`. Kinds: `word`, `text` (the
 /// rest of the line, last), `integer`, `number`, `boolean`, `player`,
-/// `item`, `block_pos`. Usages of one command share their words; the
+/// `item`, `block_pos`; and the kinds whose completions the player's client
+/// asks the server for (`native_tab_complete_v2`): `word?`, `text?` and
+/// `player_name` (a word, any name accepted, that the server completes with
+/// the online players' names). Usages of one command share their words; the
 /// server merges them into one tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -491,6 +768,12 @@ pub struct NativeCommand {
     pub usage: String,
     /// The operator level a player needs to see and run it (0: everyone).
     pub level: u8,
+    /// The permission node that decides instead, when set
+    /// ([`NativeCommand::permission`]). API @API:command_permission@.
+    pub permission: Option<String>,
+    /// Whether the usage replaces vanilla's command of its name
+    /// ([`NativeCommand::replace_vanilla`]).
+    pub replace_vanilla: bool,
 }
 
 impl NativeCommand {
@@ -499,6 +782,8 @@ impl NativeCommand {
         Self {
             usage: usage.to_owned(),
             level: 0,
+            permission: None,
+            replace_vanilla: false,
         }
     }
     /// The same, for operators of `level` and above.
@@ -506,8 +791,63 @@ impl NativeCommand {
         Self {
             usage: usage.to_owned(),
             level: level.min(4),
+            permission: None,
+            replace_vanilla: false,
         }
     }
+    /// The same, for the players who have the permission node `node`
+    /// (Bukkit's `plugin.yml` `permission:`): the server asks
+    /// `native_has_permission(player, node, level)` before it shows or runs
+    /// the usage, so a permissions mod grants or refuses it whatever the
+    /// player's level, and without one the level decides as before. Each
+    /// usage has its own node: a command's root is shown when any of its
+    /// usages is allowed, and a line runs as the usage its words match.
+    /// API @API:command_permission@.
+    pub fn permission(mut self, node: &str) -> Self {
+        self.permission = Some(node.to_owned());
+        self
+    }
+    /// The same, replacing vanilla's command of this name (Bukkit's plugin
+    /// command over a vanilla one, as Tab's `/bossbar`): vanilla's tree of
+    /// the name is left out of the players' trees, and their lines of it go
+    /// to the mods, which then answer every usage of it. Without it, a usage
+    /// of a vanilla name is left out.
+    pub fn replace_vanilla(mut self, on: bool) -> Self {
+        self.replace_vanilla = on;
+        self
+    }
+}
+
+/// What a command a mod ran did (`native_run_command_captured`): whether it
+/// ran without failing, its result and the lines it answered with, in order.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct NativeCommandResult {
+    pub ran: bool,
+    /// Vanilla's `CommandResultCallback` value: the sum of the successful
+    /// results (one for a plain command, one per fork of `execute as @a run`),
+    /// 0 when it failed (`execute if entity` of nobody). A mod's command gives
+    /// 1 when a mod ran it.
+    pub result: i32,
+    pub output: Vec<Text>,
+}
+
+/// A command of the server (`native_command_info`): vanilla's or one a mod
+/// registered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct NativeCommandInfo {
+    /// Its own name, an alias resolved (`teleport` for `tp`).
+    pub name: String,
+    /// The other names that run it (`tp` for `teleport`).
+    pub aliases: Vec<String>,
+    /// Its usages: vanilla's one line, as `/help` gives it, or each usage a
+    /// mod registered.
+    pub usages: Vec<String>,
+    /// The operator level a player needs to run it (0: everyone).
+    pub level: u8,
+    /// Whether vanilla has it; false for a mod's.
+    pub vanilla: bool,
 }
 
 /// Which `Game` observes the phase; a mirror `Game` never fires.
@@ -796,6 +1136,8 @@ mod generated_host {
 }
 pub use generated_host::Host;
 
+pub use crate::game::native_client_services::HudMode;
+
 /// Result of accessing or decoding an attachment.
 pub type AttachmentResult<T> = std::result::Result<T, AttachmentError>;
 
@@ -879,6 +1221,32 @@ pub use generated::Hooks;
 #[doc(hidden)]
 pub use generated::*;
 
+/// Runs `body` in a fresh process of this test binary: `mod_api::MODS` is set once per process, and
+/// another test that set it first would make this one's `set` fail. The parent starts the binary again
+/// for just this test (`--exact`, `--include-ignored`) and requires that exactly one test ran and passed; the
+/// child sees `OWN_PROCESS` and runs `body` itself.
+#[cfg(test)]
+pub(crate) fn in_own_process(name: &str, body: impl FnOnce()) {
+    const OWN_PROCESS: &str = "HORIZON_TEST_OWN_PROCESS";
+    if std::env::var_os(OWN_PROCESS).is_some_and(|v| v == name) {
+        return body();
+    }
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([name, "--exact", "--include-ignored", "--test-threads=1"])
+        .env(OWN_PROCESS, name)
+        .output()
+        .unwrap();
+    let report = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success() && report.contains("test result: ok. 1 passed;"),
+        "{name} failed in its own process:\n{report}"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -891,6 +1259,13 @@ mod tests {
     /// turned on; a test's own list is never switched.
     #[test]
     fn a_mod_turned_off_is_skipped_until_turned_on() {
+        crate::mod_api::in_own_process(
+            "mod_api::tests::a_mod_turned_off_is_skipped_until_turned_on",
+            a_mod_turned_off_is_skipped_until_turned_on_in_own_process,
+        );
+    }
+
+    fn a_mod_turned_off_is_skipped_until_turned_on_in_own_process() {
         name_mods(&["quiet", "broken"]);
         let _ = MODS.set(Arc::from(vec![
             Box::new(Quiet) as Box<dyn Hooks>,
@@ -948,6 +1323,26 @@ mod tests {
                 pitch: 0.0,
                 entity_id: 0,
                 address: String::new(),
+                latency: 0,
+                protocol: 0,
+                xp_level: 0,
+                xp_progress: 0.0,
+                on_ground: true,
+                flying: false,
+                may_fly: false,
+                invulnerable: false,
+                walk_speed: 0.1,
+                fly_speed: 0.05,
+                sneaking: false,
+                eye_height: 1.62,
+                selected_slot: 0,
+                nickname: None,
+                hidden: None,
+                fake: false,
+                using_item: false,
+                blocking: false,
+                sprinting: false,
+                gliding: false,
             })
         }
         fn action_bar(&mut self, _uuid: u128, line: Text) -> bool {

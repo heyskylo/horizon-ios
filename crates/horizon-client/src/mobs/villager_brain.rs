@@ -459,7 +459,7 @@ pub struct Bx<'a, 'w> {
     refresh: bool,
 }
 
-/// `Brain.tick` (from `Villager.customServerAiStep`).
+/// `Brain.tick`, called from the villager's server AI phase.
 pub fn tick(m: &mut Mob, w: &MobWorld, lr: &mut LegacyRandom, events: &mut Vec<MobEvent>) {
     if brain(m).is_none() {
         let seed = i64::from(m.id);
@@ -3603,6 +3603,12 @@ fn harvest_tick(
             }
             cx.events.push(MobEvent::SetBlock {
                 pos: p,
+                state: crop,
+            });
+            cx.events.push(MobEvent::GameEvent {
+                event: "minecraft:block_place",
+                at: p.map(|v| f64::from(v) + 0.5),
+                source: m.id,
                 state: crop,
             });
             cx.events.push(MobEvent::Sound(

@@ -1,15 +1,23 @@
 //! What each kind of mob costs the server tick, for `horizon-report` (dedicated/report.rs): while
 //! a report records, one tick in [`SAMPLE_EVERY`] times every mob's own tick and adds it up by
-//! level and mob type. Off, a mob costs one thread-local read; sampled, two clock reads and a
-//! map update. A mob's riders tick inside its own tick, so they count for it.
+//! level and mob type. A native mod samples apart from it (`native_mob_cost_sampling`), with
+//! sums of its own, so neither takes the other's. Off, a mob costs one thread-local read;
+//! sampled, two clock reads and a map update for each who samples. A mob's riders tick inside
+//! its own tick, so they count for it. The server tick's spans are shared the same way
+//! ([`want_spans`]).
 use horizon_client::{fast_hash::FxHashMap, mobs::MobType};
 use std::{
     cell::{Cell, RefCell},
+    sync::atomic::{AtomicU8, Ordering},
     time::Instant,
 };
 
 /// One server tick in this many is sampled while a report records.
 pub(super) const SAMPLE_EVERY: usize = 4;
+
+/// Who samples the mob ticks: a report's sampled tick, a mod.
+const REPORT: u8 = 1;
+const MOD: u8 = 2;
 
 /// The time and the ticks of one mob type in one level.
 struct Cost {
@@ -19,19 +27,47 @@ struct Cost {
 }
 
 thread_local! {
-    static SAMPLING: Cell<bool> = const { Cell::new(false) };
-    static COSTS: RefCell<FxHashMap<(&'static str, usize), Cost>> = RefCell::default();
+    /// [`REPORT`] and [`MOD`], each set while it samples.
+    static SAMPLING: Cell<u8> = const { Cell::new(0) };
+    /// The report's sums, then the mod's.
+    static COSTS: RefCell<[FxHashMap<(&'static str, usize), Cost>; 2]> = RefCell::default();
 }
 
-/// Sample (or stop sampling) the mob ticks this thread runs next.
+/// Who wants the tick's spans recorded besides nobody: `HORIZON_SPIKES` (the slow-tick log),
+/// a report's recording, a mod (`native_spans`).
+pub(super) const SPANS_SPIKES: u8 = 1;
+pub(super) const SPANS_REPORT: u8 = 2;
+pub(super) const SPANS_MOD: u8 = 4;
+static SPAN_USERS: AtomicU8 = AtomicU8::new(0);
+
+/// `user` wants the spans recorded, or no longer does: they stay on while anyone does.
+pub(super) fn want_spans(user: u8, on: bool) {
+    let users = if on {
+        SPAN_USERS.fetch_or(user, Ordering::Relaxed) | user
+    } else {
+        SPAN_USERS.fetch_and(!user, Ordering::Relaxed) & !user
+    };
+    horizon_client::spans::enable(users != 0);
+}
+
+/// Sample (or stop sampling) the mob ticks this thread runs next, for the report.
 pub(super) fn set_sampling(on: bool) {
-    SAMPLING.with(|s| s.set(on));
+    set(REPORT, on);
+}
+
+/// Sample (or stop sampling) the mob ticks this thread runs next, for a mod ([`take_mod`]).
+pub(super) fn set_mod_sampling(on: bool) {
+    set(MOD, on);
+}
+
+fn set(who: u8, on: bool) {
+    SAMPLING.with(|s| s.set(if on { s.get() | who } else { s.get() & !who }));
 }
 
 /// When this tick is sampled, the start of a mob's tick.
 #[inline]
 pub(super) fn start() -> Option<Instant> {
-    SAMPLING.with(Cell::get).then(Instant::now)
+    (SAMPLING.with(Cell::get) != 0).then(Instant::now)
 }
 
 /// A sampled mob of type `kind` in level `dim` ticked since `started`.
@@ -43,15 +79,21 @@ pub(super) fn add(dim: &'static str, kind: &MobType, started: Instant) {
 /// [`add`] for the type at address `key` named `id`.
 fn add_kind(dim: &'static str, key: usize, id: &str, started: Instant) {
     let nanos = started.elapsed().as_nanos() as u64;
+    let who = SAMPLING.with(Cell::get);
     COSTS.with(|c| {
         let mut costs = c.borrow_mut();
-        let cost = costs.entry((dim, key)).or_insert_with(|| Cost {
-            kind: id.to_owned(),
-            nanos: 0,
-            mob_ticks: 0,
-        });
-        cost.nanos += nanos;
-        cost.mob_ticks += 1;
+        for (sums, bit) in costs.iter_mut().zip([REPORT, MOD]) {
+            if who & bit == 0 {
+                continue;
+            }
+            let cost = sums.entry((dim, key)).or_insert_with(|| Cost {
+                kind: id.to_owned(),
+                nanos: 0,
+                mob_ticks: 0,
+            });
+            cost.nanos += nanos;
+            cost.mob_ticks += 1;
+        }
     });
 }
 
@@ -64,9 +106,18 @@ pub(super) struct MobCost {
     pub mob_ticks: u64,
 }
 
-/// The costs sampled since the last call, costliest first; clears them.
+/// The report's costs sampled since the last call, costliest first; clears them.
 pub(super) fn take() -> Vec<MobCost> {
-    let costs = COSTS.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    take_of(0)
+}
+
+/// The mod's costs sampled since the last call ([`set_mod_sampling`]), as [`take`].
+pub(super) fn take_mod() -> Vec<MobCost> {
+    take_of(1)
+}
+
+fn take_of(sums: usize) -> Vec<MobCost> {
+    let costs = COSTS.with(|c| std::mem::take(&mut c.borrow_mut()[sums]));
     let mut out: Vec<MobCost> = costs
         .into_iter()
         .map(|((dimension, _), c)| MobCost {
@@ -84,8 +135,8 @@ pub(super) fn take() -> Vec<MobCost> {
 pub(super) fn sample_cost_nanos() -> f64 {
     const N: u32 = 20_000;
     let was = SAMPLING.with(Cell::get);
-    let kept = COSTS.with(|c| std::mem::take(&mut *c.borrow_mut()));
-    set_sampling(true);
+    let kept = COSTS.with(|c| std::mem::take(&mut c.borrow_mut()[0]));
+    SAMPLING.with(|s| s.set(REPORT));
     let timer = Instant::now();
     for _ in 0..N {
         if let Some(started) = start() {
@@ -93,8 +144,8 @@ pub(super) fn sample_cost_nanos() -> f64 {
         }
     }
     let per = timer.elapsed().as_nanos() as f64 / f64::from(N);
-    set_sampling(was);
-    COSTS.with(|c| *c.borrow_mut() = kept);
+    SAMPLING.with(|s| s.set(was));
+    COSTS.with(|c| c.borrow_mut()[0] = kept);
     per
 }
 
@@ -137,6 +188,47 @@ mod tests {
             ("minecraft:zombie", 1)
         );
         assert!(take().is_empty());
+    }
+
+    /// The mod's samples and the report's are kept apart: each takes its own, and one
+    /// stopping leaves the other sampling.
+    #[test]
+    fn a_mod_samples_apart_from_the_report() {
+        set_mod_sampling(true);
+        add(
+            "minecraft:overworld",
+            (4, "minecraft:cow"),
+            start().expect("mod samples"),
+        );
+        set_sampling(true);
+        add(
+            "minecraft:overworld",
+            (5, "minecraft:pig"),
+            start().unwrap(),
+        );
+        set_sampling(false);
+        assert!(start().is_some(), "the mod still samples");
+        let report = take();
+        assert_eq!(report.len(), 1);
+        assert_eq!(report[0].kind, "minecraft:pig");
+        let mut kinds: Vec<_> = take_mod().into_iter().map(|c| c.kind).collect();
+        kinds.sort();
+        assert_eq!(kinds, ["minecraft:cow", "minecraft:pig"].map(String::from));
+        let _ = sample_cost_nanos();
+        assert!(take_mod().is_empty(), "calibration is the report's");
+        set_mod_sampling(false);
+        assert!(start().is_none());
+    }
+
+    /// Spans stay on while anyone wants them.
+    #[test]
+    fn spans_stay_on_while_anyone_wants_them() {
+        // Only the mod's bit: other tests may want them as the report meanwhile.
+        want_spans(SPANS_MOD, true);
+        assert!(horizon_client::spans::enabled());
+        assert_ne!(SPAN_USERS.load(Ordering::Relaxed) & SPANS_MOD, 0);
+        want_spans(SPANS_MOD, false);
+        assert_eq!(SPAN_USERS.load(Ordering::Relaxed) & SPANS_MOD, 0);
     }
 
     /// Calibrating leaves what was sampled, and the switch, as they were.

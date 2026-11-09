@@ -101,10 +101,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             "restore" => {
                 let pos = input.chunk()?;
-                if level.chunk(pos).is_none() {
-                    if let Some(chunk) = detached.remove(&pos) {
-                        level.add_chunk(pos, chunk)?;
-                    }
+                if level.chunk(pos).is_none()
+                    && let Some(chunk) = detached.remove(&pos)
+                {
+                    level.add_chunk(pos, chunk)?;
                 }
             }
             "enable" => {
