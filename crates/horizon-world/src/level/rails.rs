@@ -578,10 +578,12 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 f64::from(pos.z) + 1.0,
             ),
         );
-        let pressed = self
-            .level
-            .count_entities(area, super::EntityQuery::Everything)
-            > 0;
+        let pressed = self.level.count_entities_at(
+            pos,
+            b.table.name(state),
+            area,
+            super::EntityQuery::Everything,
+        ) > 0;
         let block = b.block(state);
         if pressed != was {
             let next = b.table.set_bool(state, b.props.powered, pressed);

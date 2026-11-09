@@ -282,6 +282,8 @@ impl Game<'_> {
                     },
                     uuid,
                 );
+                // Entity.saveWithoutId's common fields, also for a cloud never saved.
+                crate::game::persist::write_static_entity_fields(&mut tag);
                 set_key(&mut tag, "Age", Tag::Int(c.age));
                 set_key(&mut tag, "Duration", Tag::Int(c.duration));
                 set_key(&mut tag, "Radius", Tag::Float(c.radius.to_bits()));
@@ -323,7 +325,7 @@ impl Game<'_> {
             Target::Trident(id) => {
                 let uuid = self.uuid_for(id);
                 let t = self.tridents.iter().find(|t| t.id == id)?;
-                t.to_nbt(uuid, self.persist.raw.get(&id))
+                t.to_nbt(uuid, self.pack.assets.registry, self.persist.raw.get(&id))
             }
             Target::Spawner(id) => {
                 let s = self.ominous_spawners.iter().find(|s| s.id == id)?;
@@ -335,6 +337,29 @@ impl Game<'_> {
                     s.uuid,
                     s.raw.as_deref(),
                 )
+            }
+            // LeashFenceKnotEntity saves nothing of its own: the common
+            // entity fields, as an explicitly summoned knot's.
+            Target::Knot(id) => {
+                let fence = self.natural_knot(id)?;
+                let uuid = *self.persist.uuids.get(&id)?;
+                let knot = super::OtherEntity {
+                    id,
+                    kind: "minecraft:leash_knot".into(),
+                    position: horizon_client::mobs::leash::knot_state(fence).position,
+                    yaw: 0.0,
+                    pitch: 0.0,
+                    item_transformation: None,
+                    interaction: None,
+                    knot_check: None,
+                    eye: None,
+                };
+                let mut tag = self.other_to_nbt(&knot, uuid);
+                // Entity.saveWithoutId writes `remainingFireTicks` always; the
+                // knot's never changes (BlockAttachedEntity.tick has no
+                // baseTick).
+                set_key(&mut tag, "Fire", Tag::Short(0));
+                tag
             }
         })
     }
@@ -622,6 +647,18 @@ impl Game<'_> {
                     .iter_mut()
                     .find(|trident| trident.id == id)
                     .ok_or_else(stale)?
+                    .load_nbt(loaded, &tag, self.pack.assets.registry);
+                set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
+            }
+            Target::Rocket(id) => {
+                let player = self.saved_player_uuid();
+                let loaded =
+                    entity_nbt::firework_rocket_from_nbt(&tag, player).ok_or_else(stale)?;
+                let uuid = self.uuid_for(id);
+                self.rockets
+                    .iter_mut()
+                    .find(|r| r.id == id)
+                    .ok_or_else(stale)?
                     .load_nbt(loaded);
                 set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
             }
@@ -698,6 +735,7 @@ impl Game<'_> {
         | Target::Orb(id)
         | Target::Cushion(id)
         | Target::Trident(id)
+        | Target::Rocket(id)
         | Target::Other(id)
         | Target::Fangs(id)
         | Target::Projectile(id) = t
@@ -1272,6 +1310,12 @@ impl Game<'_> {
             name: String::new(),
             text: g.target_name(t),
             display: None,
+        };
+        // A natural knot is listed but keeps no tags yet: `tag add`/`remove` leave it out.
+        let targets = if matches!(id, "tag.add" | "tag.remove") {
+            super::without_knots(targets)?
+        } else {
+            targets
         };
         let mut all: Vec<String> = Vec::new();
         for &t in &targets {

@@ -725,6 +725,10 @@ pub fn read_nbt(m: &mut Mob, tag: &Tag) {
     s.wave = int(tag.get("Wave")).unwrap_or(0);
     s.can_join_raid = flag(tag.get("CanJoinRaid"));
     s.raid_id = int(tag.get("RaidId"));
+    // Pillager.readAdditionalSaveData: setCanPickUpLoot(true) after the generic read.
+    if m.species() == Species::Pillager {
+        m.extra.pick_up_loot = true;
+    }
 }
 
 #[cfg(test)]
