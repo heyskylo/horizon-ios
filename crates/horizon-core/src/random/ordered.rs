@@ -136,6 +136,29 @@ impl LegacyRandom {
             gate.draws.lanes[gate.lane].store(usize::MAX, Ordering::Release);
         }
     }
+    /// A gated random's [`LaneDone`], for its lane's thread to hold while it runs; None for an
+    /// ungated one.
+    pub fn lane_done(&self) -> Option<LaneDone> {
+        self.gate.as_deref().map(|gate| LaneDone {
+            draws: Arc::clone(&gate.draws),
+            lane: gate.lane,
+        })
+    }
+}
+
+/// Marks a lane finished when dropped, also while a panic unwinds its thread: the other lanes
+/// then run to their end instead of waiting for a lane that stopped, and the panic reaches the
+/// caller when it joins the threads.
+#[must_use = "the lane is marked finished when this is dropped"]
+pub struct LaneDone {
+    draws: Arc<OrderedDraws>,
+    lane: usize,
+}
+
+impl Drop for LaneDone {
+    fn drop(&mut self) {
+        self.draws.lanes[self.lane].store(usize::MAX, Ordering::Release);
+    }
 }
 
 #[cfg(test)]
@@ -193,5 +216,44 @@ mod tests {
             expected
         );
         assert_eq!(shared.finish().state(), serial.state());
+    }
+
+    /// A lane that panics part way, holding its [`LaneDone`], doesn't hold up a lane whose later
+    /// items wait for it: that lane finishes, and the panic reaches the caller.
+    #[test]
+    fn a_panicking_lane_lets_the_others_finish() {
+        let (sent, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let shared = OrderedDraws::new(&LegacyRandom::new(7), 2);
+            let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                std::thread::scope(|s| {
+                    let panicking = Arc::clone(&shared);
+                    s.spawn(move || {
+                        let mut random = panicking.lane(0);
+                        let _done = random.lane_done();
+                        for item in [0, 2, 4] {
+                            random.begin_item(item);
+                            random.next_int_bound(10).unwrap();
+                            assert_ne!(item, 2, "item 2");
+                            random.end_item();
+                        }
+                        random.finish_lane();
+                    });
+                    let mut random = shared.lane(1);
+                    let _done = random.lane_done();
+                    for item in [1, 3, 5] {
+                        random.begin_item(item);
+                        random.next_int_bound(10).unwrap();
+                        random.end_item();
+                    }
+                    random.finish_lane();
+                });
+            }));
+            let _ = sent.send(caught.is_err());
+        });
+        let panicked = finished
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("the lanes finished instead of waiting for the one that panicked");
+        assert!(panicked, "the panic reached the caller");
     }
 }

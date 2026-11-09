@@ -4,7 +4,7 @@ mod ordered;
 mod positional;
 mod worldgen;
 pub use hash::{seed_from_hash, seed_from_hash_utf16};
-pub use ordered::OrderedDraws;
+pub use ordered::{LaneDone, OrderedDraws};
 pub use positional::{
     LegacyPositionalRandom, PositionalRandom, XoroshiroPositionalRandom, java_string_hash,
     position_seed,
