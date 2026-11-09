@@ -125,8 +125,9 @@ horizon-extras = ["discord", "friends", "heartbeat"]
 # Online extras a server or a port can leave out; the server build has none of them. "Playing Horizon"
 # on Discord (game/discord.rs).
 discord = ["horizon-client-lib/discord"]
-# Play with Friends: sharing a world behind an invite code (game/friends.rs) and joining one.
-friends = ["horizon-client-lib/friends", "dep:horizon-friends"]
+# Play with Friends: sharing a world behind an invite code (game/friends.rs) and joining one
+# (game/friends/tunnel.rs, on the engine's `net::tunnel` hook).
+friends = ["dep:horizon-friends"]
 # The anonymous "I'm playing" ping (docs/telemetry.md).
 heartbeat = ["horizon-client-lib/heartbeat"]
 # Records the call sites of mob random draws (`mob_ai_probe` traces).

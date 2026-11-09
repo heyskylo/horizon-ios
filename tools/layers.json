@@ -97,7 +97,6 @@
     "horizon-client-lib -> horizon-chat-filter",
     "horizon-client-lib -> horizon-cosmetics",
     "horizon-client-lib -> horizon-dualsense",
-    "horizon-client-lib -> horizon-friends",
     "horizon-client-lib -> horizon-hdr",
     "horizon-client-lib -> horizon-mcp",
     "horizon-client-lib -> horizon-mods",

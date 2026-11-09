@@ -21,6 +21,9 @@ pub fn main_with(mods: crate::mod_api::Mods) {
     horizon_client::telemetry::mark_start();
     // Opt-in telemetry keeps each crash report (docs/telemetry.md), whatever the mode.
     crash::on_report(horizon_client::telemetry::keep_crash);
+    // Play with Friends: `friend:` addresses join through its tunnel (net::tunnel).
+    #[cfg(feature = "friends")]
+    crate::game::friends::tunnel::register();
     horizon_client::spans::startup::init(std::time::Instant::now());
     horizon_client::spans::trace::start_from_env();
     let args: Vec<String> = std::env::args().skip(1).collect();

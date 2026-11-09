@@ -42,8 +42,6 @@ horizon-chat-filter = { path = "../horizon-chat-filter" }
 horizon-shaders = { path = "../horizon-shaders" }
 # Horizon's own shader packs: the format, the stages and the check (docs/shaders.md).
 horizon-shader-api = { path = "../horizon-shader-api" }
-# Play with Friends: invite codes and their tunnel; the `friends` feature.
-horizon-friends = { path = "../horizon-friends", optional = true }
 # The narrator (GameNarrator): text-to-speech of chat, system messages and screens.
 horizon-narrator = { path = "../horizon-narrator" }
 # Horizon mods: sandboxed WebAssembly components, off unless installed and turned on (docs/mods.md).
@@ -114,7 +112,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
 
 [features]
-default = ["audio", "controllers", "discord", "friends", "heartbeat"]
+default = ["audio", "controllers", "discord", "heartbeat"]
 # Sound output. Without it (and `controllers`) the program links neither libasound nor libudev on
 # Linux: the server build (`--no-default-features`, released as horizon-engine; docs/server.md).
 audio = ["horizon-client-render/audio"]
@@ -122,8 +120,6 @@ audio = ["horizon-client-render/audio"]
 controllers = ["dep:gilrs", "dep:horizon-dualsense", "horizon-client-input/controllers"]
 # "Playing Horizon" on the player's Discord profile (`discord_presence`).
 discord = []
-# Play with Friends, joining side (`net.rs`): without it no invite code joins.
-friends = ["dep:horizon-friends"]
 # The anonymous "I'm playing" ping (`heartbeat.rs`, docs/telemetry.md).
 heartbeat = ["horizon-telemetry/live"]
 # Records the call sites of mob random draws (`mob_ai_probe` traces).

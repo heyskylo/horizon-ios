@@ -161,7 +161,7 @@ mod foxes;
 mod frame_geometry;
 mod frames;
 #[cfg(feature = "friends")]
-mod friends;
+pub(crate) mod friends;
 #[cfg(test)]
 mod setblock_order_tests;
 // Without Play with Friends: nothing shared, no Friends button (game/friends_off.rs).

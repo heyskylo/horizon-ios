@@ -127,7 +127,7 @@ Today `allowed` has 40 entries, all from the three mixed engine crates (main at 
 | Crate | Depends upward on |
 |---|---|
 | `horizon-client` | platform: `horizon-anticheat`, `-chat-filter`, `-dualsense`, `-hdr`, `-mod-api-gen`, `-mods`, `-optifine`, `-shader-api`, `-shaders`, `-theme`; Horizon: `horizon-bench`, `-cosmetics`, `-friends`, `-telemetry` |
-| `horizon-client-lib` | the same, plus `horizon-mcp`, minus `horizon-mod-api-gen` |
+| `horizon-client-lib` | the same, plus `horizon-mcp`, minus `horizon-mod-api-gen` and `horizon-friends` (left through the `net::tunnel` hook) |
 | `horizon-client-render` | platform: `horizon-hdr`, `-mod-api-gen`, `-optifine`, `-polytone`, `-shader-api`, `-shaders`, `-theme`; Horizon: `horizon-bench`, `-cosmetics`, `-telemetry` |
 | `horizon-client-input` | platform: `horizon-dualsense`, `horizon-theme` |
 
