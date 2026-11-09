@@ -6417,6 +6417,31 @@ def piston_push_ground():
     return ops
 
 
+def falling_block_in_moving_piston():
+    """#13793: `FallingBlockEntity.tick` neither places, drops nor discards a block that comes down
+    where a piston is extending (the block there `is(Blocks.MOVING_PISTON)`), before its `cancelDrop`
+    check: it stays a falling block, the piston pushes it on, and it lands a block further a tick
+    later. The piston fires in the tick's block events, before the entity lands. A sideways motion
+    shows the landing's slowdown (0.7) and the air drag it keeps."""
+    ops = []
+    selector = '@e[type=minecraft:falling_block,tag=piston_falling,limit=1]'
+    for piston, fields in (('sticky_piston', ''), ('piston', ''), ('sticky_piston', ',CancelDrop:1b'),
+                           ('piston', ',Motion:[0.0d,0.0d,0.05d]')):
+        ops += setup('/kill @e[type=!player]', '/fill 28 208 28 36 218 34 air',
+                     '/fill 28 209 28 36 209 34 stone', f'/setblock 31 210 31 {piston}[facing=east]',
+                     '/summon minecraft:falling_block 32.5 210 31.5 '
+                     f'{{BlockState:{{Name:"minecraft:sand"}},Tags:["piston_falling"]{fields}}}',
+                     '/setblock 30 210 31 redstone_block')
+        for _ in range(3):
+            ops.append({'op': 'tick', 'n': 1})
+            ops.append(cmd(f'/data get entity {selector} Pos'))
+            ops.append(cmd(f'/data get entity {selector} Motion'))
+            ops.append(cmd('/execute if block 33 210 31 minecraft:sand'))
+            ops.append(cmd('/execute if entity @e[type=minecraft:item,x=28,y=208,z=28,dx=8,dy=10,dz=6]'))
+    ops += setup('/kill @e[type=!player]', '/fill 28 208 28 36 218 34 air')
+    return ops
+
+
 def primed_tnt_box():
     """#12020: `EntityTypes.TNT` is sized 0.98F, so its box is half 0.49F wide
     and 0.98F tall, both widened from float: TNT stopped by a wall ends 0.49F
@@ -7309,6 +7334,7 @@ def groups():
         ('item block escape', item_block_escape()),
         ('scheduled block item birth', scheduled_item_birth()),
         ('piston push ground', piston_push_ground()),
+        ('falling block in a moving piston', falling_block_in_moving_piston()),
         ('piston tnt effects', piston_tnt_effects()),
         ('carpet farms', carpet_farms(cmd, setup)),
         ('passenger teleports', passenger_teleports(cmd, setup)),
