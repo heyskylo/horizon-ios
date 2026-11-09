@@ -311,16 +311,24 @@ pub fn hover_name(names: &crate::creative::Names, stack: &ItemStack) -> String {
     {
         return title.to_owned();
     }
+    if let Some(head) = crate::item_tooltip::player_head_name(stack) {
+        // `PlayerHeadItem.getName`: a profile's name, else the item name.
+        return head.title(&|key| names.display_get(key));
+    }
     if let Some(name) = stack.item_name() {
         return name;
+    }
+    if stack
+        .data()
+        .is_some_and(|d| d.other("!minecraft:item_name").is_some())
+    {
+        // `Item.getName` is `getOrDefault(ITEM_NAME, EMPTY)`.
+        return String::new();
     }
     if stack.data().is_some_and(|d| d.ominous_banner) {
         return names
             .display_get("block.minecraft.ominous_banner")
             .unwrap_or_else(|| "Ominous Banner".to_owned());
-    }
-    if let Some(head) = crate::item_tooltip::player_head_name(stack) {
-        return head.title(&|key| names.display_get(key));
     }
     names.display_item(&stack.item)
 }
@@ -1672,6 +1680,18 @@ mod tests {
         );
         assert_eq!(increased_repair_cost(0), 1);
         assert_eq!(increased_repair_cost(3), 7);
+    }
+
+    /// `ItemStack.getHoverName` falls back to `getOrDefault(ITEM_NAME, EMPTY)`,
+    /// so a removed item name is the empty string, not the localized item.
+    #[test]
+    fn hover_name_honors_a_removed_item_name() {
+        let mut sword = sword(&[]);
+        sword.data_mut().set_other(
+            "!minecraft:item_name",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(hover_name(&crate::creative::Names::default(), &sword), "");
     }
 
     /// Checks against the prepared vanilla resources when they are present.
