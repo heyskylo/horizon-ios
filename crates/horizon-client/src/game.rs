@@ -10950,11 +10950,11 @@ impl Game<'_> {
                     if self.screen == Screen::Options && d != 0.0 {
                         self.options_scroll(d)?;
                     }
-                    // AbstractContainerScreen.mouseScrolled: a bundle under the
-                    // cursor takes the wheel before the screen's own scrolling.
+                    // A bundle under the cursor, or the pinned fuel list, takes the wheel first.
                     let bundle = bundles::takes_bundle_wheel(self.screen)
                         && d != 0.0
-                        && self.bundle_scroll(scaled(raw_x), scaled(raw_y));
+                        && self.bundle_scroll(scaled(raw_x), scaled(raw_y))
+                        || self.recipe_fuel_scroll(d);
                     if self.screen == Screen::Creative && d != 0.0 && !bundle {
                         self.creative_screen.wheel(f64::from(d), &self.pack.names);
                     }
