@@ -1136,6 +1136,40 @@ mod generated_host {
 }
 pub use generated_host::Host;
 
+/// A deferred main-thread callback for native mods.
+pub type TaskCallback = Box<dyn FnOnce(&mut dyn Host) + Send + 'static>;
+
+/// Extension methods for [`Host`] task scheduling.
+pub trait HostTaskExt: Host {
+    /// Offload heavy computation to the mod worker pool and safely run `callback`
+    /// on the main thread with the typed result during `native_tick`.
+    fn spawn_task_with<T: Send + 'static>(
+        &self,
+        task: impl FnOnce() -> T + Send + 'static,
+        callback: impl FnOnce(&mut dyn Host, T) + Send + 'static,
+    ) {
+        let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let slot_task = slot.clone();
+        self.spawn_task(
+            Box::new(move || {
+                let res = task();
+                if let Ok(mut lock) = slot_task.lock() {
+                    *lock = Some(res);
+                }
+            }),
+            Box::new(move |host| {
+                if let Ok(mut lock) = slot.lock()
+                    && let Some(res) = lock.take()
+                {
+                    callback(host, res);
+                }
+            }),
+        );
+    }
+}
+
+impl<H: Host + ?Sized> HostTaskExt for H {}
+
 pub use crate::game::native_client_services::HudMode;
 
 /// Result of accessing or decoding an attachment.
