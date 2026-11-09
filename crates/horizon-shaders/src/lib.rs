@@ -10,7 +10,6 @@
 //!   on its screens (8.1 to 8.3); [`Pack::with_chosen`] runs the pack with the player's values.
 //! - [`preprocess`]: a stage file through `#include` and the GLSL preprocessor, lines mapped back (1.4, 1.5).
 //! - [`translate_composite`], [`translate_gbuffers`], [`translate_shadow`]: a program into naga modules and its interface (1.6, 2.2).
-//! - [`translate_core`]: a resource pack's vanilla core shader (`shaders/core/`) into naga modules.
 //! - [`Config`] and [`draw_buffers`]: the buffer settings and output lists stage files carry (1.7, 6.1).
 //! - [`load_post`]: a dimension's `prepare`, `deferred`, `composite` and `final` programs, in order (2.1).
 //! - [`load_textures`]: the custom textures `texture.*` and `customTexture.*` name (3.4).
@@ -20,7 +19,6 @@ mod biomes;
 mod block_ids;
 mod condition;
 mod config;
-mod core_shader;
 mod custom;
 mod discover;
 mod lang;
@@ -40,10 +38,9 @@ pub use biomes::{
 pub use block_ids::BlockIds;
 pub use condition::eval_condition;
 pub use config::{
-    BUFFERS, Buffer, Config, Format, HALF_LIVES, Kind, SHADOW_COLORS, Shadow, buffer_index,
-    draw_buffers, shadow_color,
+    BUFFERS, Buffer, Config, Format, HALF_LIVES, Kind, ReadConfig, SHADOW_COLORS, Shadow,
+    buffer_index, draw_buffers, shadow_color,
 };
-pub use core_shader::{BLOCKS, CoreProgram, Glue, SAMPLERS, translate_core};
 pub use custom::{Custom, Val};
 pub use discover::{Found, discover};
 pub use lang::Lang;

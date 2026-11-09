@@ -97,7 +97,8 @@ names its sources: the sections of that specification, the documentation pages a
   that downloads NVIDIA's files itself, on the player's machine. No NVIDIA binaries, headers or SDK files in the
   repository.
 - **The JVM bridge** (running Java mods) is only ever a separate, optional download, never installed or on by
-  default. The game may offer to turn it on when it finds a Java mod; the player decides.
+  default. The game may offer to turn it on when it finds a Java mod; the player decides. It is promoted out of beta
+  only after MSPT and RAM benchmarks against the Java client with the same mods ([#13914](https://github.com/horizon-rust/horizon/issues/13914)).
 
 ## Before asking for review
 
@@ -116,6 +117,12 @@ For the game workspace, Clippy checks all targets of the touched crates and thei
 including examples. The dependency scope includes optional, platform, build and development dependencies. Tests run
 library, binary, integration and doc tests without building unrelated example executables. Shared Cargo
 configuration and toolchain changes select the whole workspace; CI also keeps its workspace-wide checks.
+
+### Translations
+
+Most of Horizon's translations were written by machine and stay marked unreviewed until someone who speaks the
+language checks them. To report a wrong string or review your language, see [docs/translations.md](docs/translations.md)
+and #translations on Horizon's Discord. Never mark machine-written text as reviewed.
 
 ## Claim before you start
 
