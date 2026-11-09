@@ -18,10 +18,10 @@ horizon-client-core = { path = "../horizon-client-core" }
 horizon-client-input = { path = "../horizon-client-input" }
 horizon-client-render = { path = "../horizon-client-render" }
 horizon-command = { path = "../horizon-command" }
-# Emotes pose the player model (`Mob::emote`, `mobs::anim::setup`).
-horizon-cosmetics = { path = "../horizon-cosmetics" }
 horizon-items = { path = "../horizon-items" }
 horizon-core = { path = "../horizon-core" }
+# Extension points for the crates above the engine (docs/layers.md, "How a Horizon crate plugs in").
+horizon-hooks = { path = "../horizon-hooks" }
 # `horizon-ctl mcp`: the Model Context Protocol, shared with the launcher and the server.
 horizon-mcp = { path = "../horizon-mcp" }
 # The server thread ahead of the workers (MinecraftServer.spin's Thread.setPriority).
@@ -73,8 +73,7 @@ mio = { version = "1.2.4", features = ["os-poll", "net"] }
 # Shared chunk frames are found by one keyed 128-bit hash of their body (lan/conn.rs SharedFrames).
 xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 horizon-theme = { path = "../horizon-theme" }
-# Opt-in data collection: the game keeps, the launcher sends (docs/telemetry.md); `live` is
-# the anonymous "I'm playing" ping the game sends itself (`heartbeat.rs`), the `heartbeat` feature.
+# Opt-in data collection: the game keeps, the launcher sends (docs/telemetry.md).
 horizon-telemetry = { path = "../horizon-telemetry", default-features = false }
 horizon-bench = { path = "../horizon-bench" }
 crc32fast = "1"
@@ -112,7 +111,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
 
 [features]
-default = ["audio", "controllers", "discord", "friends", "heartbeat"]
+default = ["audio", "controllers", "discord", "friends"]
 # Sound output. Without it (and `controllers`) the program links neither libasound nor libudev on
 # Linux: the server build (`--no-default-features`, released as horizon-engine; docs/server.md).
 audio = ["horizon-client-render/audio"]
@@ -122,8 +121,6 @@ controllers = ["dep:gilrs", "horizon-client-input/controllers"]
 discord = []
 # Play with Friends, joining side (`net.rs`): without it no invite code joins.
 friends = ["dep:horizon-friends"]
-# The anonymous "I'm playing" ping (`heartbeat.rs`, docs/telemetry.md).
-heartbeat = ["horizon-telemetry/live"]
 # Records the call sites of mob random draws (`mob_ai_probe` traces).
 rng-trace = ["horizon-core/rng-trace"]
 # Compatibility with earlier experiment commands: main already uses mimalloc.

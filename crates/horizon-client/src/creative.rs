@@ -26,6 +26,8 @@ pub struct Tab {
     /// The page of tabs it is on: vanilla's are 0, mods' after, as NeoForge
     /// pages them.
     pub page: u32,
+    /// A Polytone creative tab modifier's `name`: its text and colour, over the tab's own.
+    pub name: Option<(String, Option<u32>)>,
 }
 impl Tab {
     /// The tab without its stacks.
@@ -41,6 +43,7 @@ impl Tab {
             inventory: self.inventory,
             hotbar: self.hotbar,
             page: self.page,
+            name: self.name.clone(),
         }
     }
 }
@@ -97,6 +100,29 @@ pub struct Creative {
     /// of every search item, built on the first search and kept until the
     /// translations, item list or enchantment registry change.
     lines_cache: Mutex<Option<(u64, Arc<[Vec<String>]>)>>,
+    /// The packs' Polytone creative tab modifiers, applied by `rebuild`.
+    pack: Vec<crate::polytone_creative_tabs::TabModifier>,
+}
+/// A text component's plain text and its colour (a name, or `#rrggbb`).
+fn component_text(json: &Value) -> (String, Option<u32>) {
+    match json {
+        Value::String(s) => (s.clone(), None),
+        Value::Object(o) => {
+            let text = o
+                .get("text")
+                .or_else(|| o.get("translate"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            let color = o.get("color").and_then(Value::as_str).and_then(|c| {
+                c.strip_prefix('#')
+                    .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+                    .or_else(|| crate::text::named_color(c))
+            });
+            (text, color)
+        }
+        _ => (String::new(), None),
+    }
 }
 /// The grid's stacks for one tab, search text and language.
 struct Shown {
@@ -300,6 +326,7 @@ impl Creative {
                     inventory: kind == "INVENTORY",
                     hotbar: kind == "HOTBAR",
                     page: t["page"].as_u64().unwrap_or(0) as u32,
+                    name: None,
                 },
                 category: kind == "CATEGORY",
                 operator,
@@ -340,6 +367,7 @@ impl Creative {
                     inventory: kind == "INVENTORY",
                     hotbar: false,
                     page: 0,
+                    name: None,
                 },
                 category: false,
             });
@@ -380,6 +408,7 @@ impl Creative {
             permissions: false,
             shown: Mutex::new(None),
             lines_cache: Mutex::new(None),
+            pack: Vec::new(),
         };
         creative.rebuild();
         creative
@@ -399,10 +428,12 @@ impl Creative {
                     .filter(|(_, o)| keep(**o))
                     .map(|(s, _)| s.clone())
                     .collect();
-                (!e.category || !items.is_empty()).then(|| Tab {
+                let mut tab = Tab {
                     items,
                     ..e.tab.header()
-                })
+                };
+                self.apply_pack(&mut tab);
+                (!e.category || !tab.items.is_empty()).then_some(tab)
             })
             .collect();
         *self.lines_cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -413,6 +444,44 @@ impl Creative {
             .map(|(s, e, _)| (s.clone(), e.clone()))
             .unzip();
         self.forget_items();
+    }
+    /// The packs' Polytone creative tab modifiers (wiki "Creative Tab Modifiers"): the tabs are
+    /// built again with them.
+    pub fn set_pack_modifiers(&mut self, pack: Vec<crate::polytone_creative_tabs::TabModifier>) {
+        self.pack = pack;
+        self.rebuild();
+        self.selected = self.selected.min(self.tabs.len().saturating_sub(1));
+    }
+    /// A tab after the modifiers aimed at it: its items, icon and name.
+    fn apply_pack(&self, tab: &mut Tab) {
+        let aimed = self
+            .pack
+            .iter()
+            .filter(|m| m.targets.matches(&tab.id, |_| false));
+        for m in aimed {
+            let in_tag = |item: &str, tag: &str| {
+                let (namespace, path) = split_id(tag);
+                self.exported_search.iter().any(|(s, e, _)| {
+                    *s.item == *item && e.tags.iter().any(|t| t.0 == namespace && t.1 == path)
+                })
+            };
+            let mut ids: Vec<String> = tab.items.iter().map(|s| s.item.to_string()).collect();
+            m.apply(&mut ids, &in_tag);
+            let mut old = std::mem::take(&mut tab.items);
+            tab.items = ids
+                .into_iter()
+                .map(|id| match old.iter().position(|s| *s.item == *id) {
+                    Some(i) => old.remove(i),
+                    None => ItemStack::new(&id, 1),
+                })
+                .collect();
+            if let Some(icon) = &m.icon {
+                tab.icon = icon.clone();
+            }
+            if let Some(name) = &m.name {
+                tab.name = Some(component_text(name));
+            }
+        }
     }
     /// `CreativeModeInventoryScreen.tryRefreshInvalidatedTabs`, which its
     /// constructor and `containerTick` run with `hasPermissions`
@@ -483,6 +552,7 @@ impl Creative {
                 inventory: false,
                 hotbar: false,
                 page: 0,
+                name: None,
             });
         }
         &self.tabs[self.selected.min(self.tabs.len() - 1)]
@@ -1678,6 +1748,7 @@ mod tests {
             inventory: false,
             hotbar: false,
             page: 0,
+            name: None,
         };
         // Top row, second column: the button spans x 27..53, y -28..4.
         let t = tab(true, 1);

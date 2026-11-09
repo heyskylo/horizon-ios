@@ -264,7 +264,7 @@ impl Game<'_> {
         let horizon = if self.level_flat() {
             f64::from(self.level_min_y())
         } else {
-            63.0
+            f64::from(self.pack.polytone_colors.env.horizon_height)
         };
         self.dim == Dim::Overworld
             && camera.y < horizon
