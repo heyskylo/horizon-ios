@@ -704,20 +704,6 @@ impl Hdr {
         )
     }
 
-    /// The display as a 0.2 pack's `Frame` describes it, with the values the last pass uses:
-    /// the headroom (the peak over paper white, at least 1), then paper white, the peak and
-    /// the black level in nits.
-    pub fn display(&self) -> [f32; 4] {
-        let paper = self.paper_white.max(1.0);
-        let headroom = (self.peak / paper).max(1.0);
-        [
-            headroom,
-            paper,
-            paper * headroom,
-            self.black.clamp(0.0, paper),
-        ]
-    }
-
     /// The peak the HDR metadata gives: while calibration's peak step runs, PQ's own
     /// 10 000 nits, so a compositor that clips at the declared peak (KWin) lets the test
     /// patch through as bright as the display goes and the logo under it shows.
@@ -1553,23 +1539,6 @@ struct ReferenceParams { peak: f32, scene: f32, world: f32, debug: f32, share: v
         hdr.peak = 150.0;
         let [r, g, b] = eased(&mut hdr, [1.5, 0.5, 0.2]);
         assert!(r == 1.0 && near(g, 0.5) && near(b, 0.2), "{r} {g} {b}");
-    }
-
-    /// What a 0.2 pack's `Frame` reads of the display: the headroom the tone curve eases
-    /// into, never below 1, and the black Horizon lifts after it, never above paper white.
-    #[test]
-    fn the_display_a_pack_reads_is_the_one_the_curve_maps_to() {
-        let Some((device, queue)) = gpu() else {
-            return;
-        };
-        let mut hdr = Hdr::with_debug(&device, &queue, F::Rgba16Float, Output::Pq, true, None);
-        (hdr.paper_white, hdr.peak, hdr.black) = (203.0, 1000.0, 0.05);
-        let [headroom, paper, peak, black] = hdr.display();
-        assert_eq!((headroom, paper, black), (1000.0 / 203.0, 203.0, 0.05));
-        assert!((peak - 1000.0).abs() < 1e-3, "{peak}");
-        // A peak under paper white has no headroom: the display tops out at white.
-        (hdr.peak, hdr.black) = (150.0, 400.0);
-        assert_eq!(hdr.display(), [1.0, 203.0, 203.0, 203.0]);
     }
 
     /// ITU-R BT.2390's black level lift on grey light, in HDR10 and in scRGB, against values

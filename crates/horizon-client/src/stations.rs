@@ -101,6 +101,17 @@ pub fn enchantment_list(
     }
     list
 }
+
+/// `ItemStack.isEnchantable`: an enchantable component, no enchantments
+/// yet, and the enchantments component present (all items have it by
+/// default; a removal patch leaves none).
+pub fn is_enchantable(e: &Enchantments, stack: &ItemStack) -> bool {
+    e.enchantable_of(stack) > 0
+        && stack.enchantments().is_empty()
+        && stack
+            .data()
+            .is_none_or(|d| d.other("!minecraft:enchantments").is_none())
+}
 /// `EnchantmentMenu.slotsChanged` for an enchantable item.
 pub fn enchant_offers(
     e: &Enchantments,
@@ -111,8 +122,7 @@ pub fn enchant_offers(
 ) -> EnchantOffers {
     let mut offers = EnchantOffers::default();
     let Some(stack) = stack else { return offers };
-    // ItemStack.isEnchantable: enchantable component and no enchantments yet.
-    if e.enchantable_of(stack) == 0 || !stack.enchantments().is_empty() {
+    if !is_enchantable(e, stack) {
         return offers;
     }
     let mut random = LegacyRandom::new(i64::from(seed));
@@ -1729,6 +1739,27 @@ mod tests {
             out.data()
                 .and_then(|d| d.other("!minecraft:repair_cost"))
                 .is_none()
+        );
+    }
+
+    /// Enchanting: `ItemStack.isEnchantable` needs the enchantments component
+    /// present; a removal patch leaves no offers.
+    #[test]
+    fn enchanting_needs_the_stacks_enchantments_component() {
+        let e = sample();
+        let items = sample_items();
+        let mut removed = sword(&[]);
+        removed.data_mut().set_other(
+            "!minecraft:enchantments",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(
+            enchant_offers(&e, &items, 1234, 15, Some(&removed)).costs,
+            [0, 0, 0]
+        );
+        assert_ne!(
+            enchant_offers(&e, &items, 1234, 15, Some(&sword(&[]))).costs,
+            [0, 0, 0]
         );
     }
 
