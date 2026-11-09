@@ -13,6 +13,8 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         log::warn!("Trait mods already installed; ignoring the second list");
     }
     horizon_threads::configure_allocator();
+    // OptiFine's and Polytone's pack formats (platform, docs/layers.md), before any pack loads.
+    horizon_client::pack_formats::install();
     // horizon-extras (docs/forking.md): without the feature, no Horizon Settings or Mods page.
     if !cfg!(feature = "horizon-extras") {
         horizon_client::options_ui::HORIZON_EXTRAS
@@ -21,8 +23,9 @@ pub fn main_with(mods: crate::mod_api::Mods) {
     horizon_client::telemetry::mark_start();
     // Opt-in telemetry keeps each crash report (docs/telemetry.md), whatever the mode.
     crash::on_report(horizon_client::telemetry::keep_crash);
-    // Crates above the engine registered their hooks before this (horizon-official's `main`);
-    // none registers after this point.
+    // Crates above the engine registered their hooks before this (horizon-official's `main`),
+    // then the Horizon parts still in this crate; none registers after this point.
+    game::player_hooks::register();
     horizon_hooks::engine::seal();
     horizon_client::spans::startup::init(std::time::Instant::now());
     horizon_client::spans::trace::start_from_env();

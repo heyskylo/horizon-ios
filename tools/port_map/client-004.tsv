@@ -6,7 +6,7 @@ EndCrystalRenderer.submit	port	crates/horizon-client/src/game/end.rs::Game::end_
 EndCrystalRenderer.extractRenderState	inline	crates/horizon-client/src/game/end.rs::Game::end_crystal_geometry	age, show-bottom and beam target read from the crystal there
 EndCrystalRenderer.shouldRender	inline	crates/horizon-client/src/game/end.rs::Game::end_crystal_geometry	gap: minor: no frustum test; crystals within 256 blocks always draw, beam included
 EnderDragonRenderer.submit	port	crates/horizon-client/src/game/dragon.rs::Game::dragon_geometry	
-EnderDragonRenderer.submitRays	port	crates/horizon-client/src/game/dragon.rs::Game::dragon_rays	
+EnderDragonRenderer.submitRays	port	crates/horizon-client/src/game/dragon/death_render.rs::dragon_rays	
 EnderDragonRenderer.submitCrystalBeams	port	crates/horizon-client/src/game/dragon.rs::Game::crystal_beam	
 EnderDragonRenderer.extractRenderState	inline	crates/horizon-client/src/game/dragon.rs::Game::dragon_geometry	flap, death fade, hurt overlay, nearest-crystal beam and egg distance read there
 EndermanRenderer.getRenderOffset	port	crates/horizon-client/src/mobs/render.rs::enderman_render_offset	EndermanRenderer.getRenderOffset's random side offset for a creepy enderman, 0.02 * minecraft:scale per axis

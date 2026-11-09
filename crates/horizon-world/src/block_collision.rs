@@ -174,6 +174,14 @@ impl<'r> BlockCollisionRegistry<'r> {
             .get(state.0 as usize)
             .is_none_or(|flags| flags & 4 == 0)
     }
+    /// Whether `state` has a contextual collision rule (scaffolding, a liquid, powder snow):
+    /// its shape with an entity's context may differ from the cached one. States outside the
+    /// registry count.
+    pub fn has_context_rule(&self, state: BlockStateId) -> bool {
+        self.scan_flags
+            .get(state.0 as usize)
+            .is_none_or(|flags| flags & 8 != 0)
+    }
     /// Whether a scan keeps `state` in the cells around its box: a large
     /// collision shape or a moving piston. States outside the registry count.
     pub fn reaches_out(&self, state: BlockStateId) -> bool {

@@ -10,7 +10,7 @@ impl Game<'_> {
     /// the container's hotbar keys are now (`checkHotbarKeyPressed`).
     pub(super) fn key_pressed(&mut self, key: KeyCode, raw: KeyCode) -> Result<()> {
         self.direct_craft_stop();
-        if self.screen == Screen::Playing && self.studio_replay.is_some() {
+        if self.screen == Screen::Playing && self.studio.replay.is_some() {
             match key {
                 KeyCode::Escape => {
                     self.close_studio_replay();
@@ -25,19 +25,19 @@ impl Game<'_> {
                 KeyCode::KeyF => self.handle_studio_timeline_action(
                     horizon_client::studio::TimelineAction::ToggleFreecam,
                 ),
-                KeyCode::KeyT => self.studio_timeline.visible = !self.studio_timeline.visible,
+                KeyCode::KeyT => self.studio.timeline.visible = !self.studio.timeline.visible,
                 KeyCode::KeyM => self.add_studio_marker(),
                 KeyCode::Home => self.handle_studio_topbar_action(
                     horizon_client::studio::TopBarAction::ResetCameraToPlayer,
                 ),
                 KeyCode::KeyL => {
-                    self.studio_freecam.locked_to_path = !self.studio_freecam.locked_to_path;
+                    self.studio.freecam.locked_to_path = !self.studio.freecam.locked_to_path;
                 }
                 KeyCode::KeyK => self.handle_studio_timeline_action(
                     horizon_client::studio::TimelineAction::AddCameraKeyframe,
                 ),
                 KeyCode::Delete => {
-                    if let Some(index) = self.studio_timeline.selected_keyframe {
+                    if let Some(index) = self.studio.timeline.selected_keyframe {
                         self.handle_studio_timeline_action(
                             horizon_client::studio::TimelineAction::RemoveCameraKeyframe(index),
                         );
@@ -63,7 +63,6 @@ impl Game<'_> {
             return Ok(());
         }
         if self.sort_key_press(key)
-            || self.hdr_key_press(key)
             || horizon_client::keybinds::key_name(key)
                 .is_some_and(|name| self.hud_editor_key_press(name))
         {
@@ -79,7 +78,7 @@ impl Game<'_> {
             KeyCode::Escape => match self.screen {
                 Screen::Options => self.options_key(KeyCode::Escape, None)?,
                 Screen::Playing => {
-                    if self.studio_replay.is_some() && self.captured {
+                    if self.studio.replay.is_some() && self.captured {
                         self.capture(false);
                         return Ok(());
                     }
@@ -214,7 +213,7 @@ impl Game<'_> {
             // key.toggleGui is a KeyMapping: it clicks only with no screen open.
             KeyCode::F1 if self.screen == Screen::Playing => self.toggle_hide_gui(),
             KeyCode::F11 => self.toggle_fullscreen(),
-            KeyCode::F5 if self.screen == Screen::Playing && self.studio_replay.is_none() => {
+            KeyCode::F5 if self.screen == Screen::Playing && self.studio.replay.is_none() => {
                 self.cycle_camera()
             }
             KeyCode::KeyE
@@ -280,8 +279,7 @@ impl Game<'_> {
             KeyCode::KeyQ if self.screen == Screen::Playing => {
                 // handleKeybinds: the number keys select before key.drop.
                 self.select_queued_hotbar();
-                let all =
-                    drop_whole_stack(self.modifiers) || std::mem::take(&mut self.pad.drop_stack);
+                let all = drop_whole_stack(self.modifiers) || self.input_takes_stack_drop();
                 self.drop_held(all);
             }
             KeyCode::Digit1

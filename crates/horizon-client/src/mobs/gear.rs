@@ -151,20 +151,26 @@ pub fn damage_bonus(levels: &[(Arc<str>, u32)], target: Option<Species>) -> f32 
 /// to the attribute map when the item is equipped.
 pub fn attack_damage(m: &Mob, items: Option<&crate::items::Items>) -> f32 {
     let base = f64::from(m.attrs.attack_damage);
-    let modifiers = m
-        .extra
-        .main_hand
-        .as_deref()
-        .and_then(|id| items?.get(id))
-        .map(|i| i.modifiers.as_slice());
-    modifiers.map_or(base, |modifiers| {
-        super::equip::attribute_with(
-            modifiers,
-            "minecraft:attack_damage",
-            base,
-            super::equip::Slot::MainHand,
-        )
-    }) as f32
+    let modifiers = match items {
+        Some(items) => m.extra.main_hand_stack().map_or_else(
+            || {
+                m.extra
+                    .main_hand
+                    .as_deref()
+                    .and_then(|id| items.get(id))
+                    .map(|i| i.modifiers.clone())
+                    .unwrap_or_default()
+            },
+            |stack| items.attribute_modifiers(stack),
+        ),
+        None => Vec::new(),
+    };
+    super::equip::attribute_with(
+        &modifiers,
+        "minecraft:attack_damage",
+        base,
+        super::equip::Slot::MainHand,
+    ) as f32
 }
 /// The extra damage of the mob's held weapon against a target species.
 pub fn melee_bonus(m: &Mob, target: Option<Species>) -> f32 {
