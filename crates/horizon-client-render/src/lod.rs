@@ -2593,8 +2593,7 @@ impl Lod {
         self.returned_at = std::time::Instant::now();
         let nodes = &self.plan.nodes;
         self.mesh_samples.retain(|key| nodes.contains(key));
-        // Queued tiles the view left are not sampled (a running one is
-        // dropped when it finishes, `finish_sample`).
+        // Queued tiles the view left are not sampled; a running one is dropped (`finish_sample`).
         drop_queued_samples(&self.shared, &mut self.pending, |key| {
             self.plan.nodes.contains(key)
         });
