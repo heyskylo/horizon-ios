@@ -191,7 +191,7 @@ pub struct BlockSurvivalRegistry<'r> {
     small_dripleaf: BTreeSet<BlockStateId>,
     sugar_cane: BTreeSet<BlockStateId>,
     sugar_cane_adjacent: BTreeSet<BlockStateId>,
-    fluid_tags: [u8; 5],
+    fluid_tags: [crate::fluid::FluidMask; 5],
     bubble_up: BTreeSet<BlockStateId>,
     bubble_down: BTreeSet<BlockStateId>,
 }
@@ -444,7 +444,7 @@ impl<'r> BlockSurvivalRegistry<'r> {
                 .filter(|id| names.contains(&registry.state(*id).unwrap().name))
                 .collect())
         };
-        let fluid_tag = |name: &str| -> io::Result<u8> {
+        let fluid_tag = |name: &str| -> io::Result<crate::fluid::FluidMask> {
             fluid_tags
                 .get(name)
                 .into_iter()

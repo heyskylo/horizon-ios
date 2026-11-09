@@ -101,6 +101,7 @@ pub fn enchantment_list(
     }
     list
 }
+
 /// `ItemStack.isEnchantable`: an enchantable component, no enchantments
 /// yet, and the enchantments component present (all items have it by
 /// default; a removal patch leaves none).
@@ -320,16 +321,24 @@ pub fn hover_name(names: &crate::creative::Names, stack: &ItemStack) -> String {
     {
         return title.to_owned();
     }
+    if let Some(head) = crate::item_tooltip::player_head_name(stack) {
+        // `PlayerHeadItem.getName`: a profile's name, else the item name.
+        return head.title(&|key| names.display_get(key));
+    }
     if let Some(name) = stack.item_name() {
         return name;
+    }
+    if stack
+        .data()
+        .is_some_and(|d| d.other("!minecraft:item_name").is_some())
+    {
+        // `Item.getName` is `getOrDefault(ITEM_NAME, EMPTY)`.
+        return String::new();
     }
     if stack.data().is_some_and(|d| d.ominous_banner) {
         return names
             .display_get("block.minecraft.ominous_banner")
             .unwrap_or_else(|| "Ominous Banner".to_owned());
-    }
-    if let Some(head) = crate::item_tooltip::player_head_name(stack) {
-        return head.title(&|key| names.display_get(key));
     }
     names.display_item(&stack.item)
 }
@@ -547,12 +556,19 @@ fn remove_non_curses(e: &Enchantments, mut item: ItemStack) -> ItemStack {
     item.set_crafting_enchantments(kept);
     if &*item.item == "minecraft:enchanted_book" && item.stored_enchantments().is_empty() {
         item = item.transmute("minecraft:book", item.count);
+        // A book has no stored-enchantments default, so `transmuteCopy` drops
+        // the enchanted book's removal patch.
+        item.data_mut()
+            .set_other("!minecraft:stored_enchantments", None);
     }
     let mut cost = 0;
     for _ in 0..n {
         cost = increased_repair_cost(cost);
     }
-    item.data_mut().repair_cost = cost;
+    // `set(REPAIR_COST, cost)` replaces a removal marker the input carried.
+    let data = item.data_mut();
+    data.set_other("!minecraft:repair_cost", None);
+    data.repair_cost = cost;
     item.tidy();
     item
 }
@@ -1756,6 +1772,60 @@ mod tests {
         assert_ne!(
             enchant_offers(&e, &items, 1234, 15, Some(&sword(&[]))).costs,
             [0, 0, 0]
+        );
+    }
+
+    /// `ItemStack.getHoverName` falls back to `getOrDefault(ITEM_NAME, EMPTY)`,
+    /// so a removed item name is the empty string, not the localized item.
+    #[test]
+    fn hover_name_honors_a_removed_item_name() {
+        let mut sword = sword(&[]);
+        sword.data_mut().set_other(
+            "!minecraft:item_name",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(hover_name(&crate::creative::Names::default(), &sword), "");
+    }
+
+    /// Grindstone: transmuting an empty enchanted book to a book drops the
+    /// stored-enchantments removal patch too, as `transmuteCopy` does on the
+    /// book's prototype.
+    #[test]
+    fn grindstone_transmute_drops_a_removed_stored_enchantments() {
+        let e = sample();
+        let items = sample_items();
+        let book = item_data::parse_stack(
+            r#"{id:"minecraft:enchanted_book",count:1,components:{"!minecraft:stored_enchantments":{},"minecraft:enchantments":{"minecraft:sharpness":1}}}"#,
+        )
+        .unwrap()
+        .unwrap();
+        let out = grindstone_result(&e, &items, Some(&book), None).unwrap();
+        assert_eq!(&*out.item, "minecraft:book");
+        assert_eq!(out.enchantment_level("minecraft:sharpness"), 1);
+        assert!(
+            out.data()
+                .and_then(|d| d.other("!minecraft:stored_enchantments"))
+                .is_none()
+        );
+    }
+
+    /// Grindstone: `set(REPAIR_COST, cost)` replaces a removal marker the
+    /// input carried, whether the result keeps a curse or none.
+    #[test]
+    fn grindstone_replaces_a_removed_repair_cost() {
+        let e = sample();
+        let items = sample_items();
+        let mut book = book(&[("minecraft:sharpness", 1)]);
+        book.data_mut().set_other(
+            "!minecraft:repair_cost",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        let out = grindstone_result(&e, &items, Some(&book), None).unwrap();
+        assert_eq!(out.repair_cost(), 0);
+        assert!(
+            out.data()
+                .and_then(|d| d.other("!minecraft:repair_cost"))
+                .is_none()
         );
     }
 
