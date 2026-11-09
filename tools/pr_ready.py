@@ -45,7 +45,7 @@ FLEET_SHARED = Path.home() / "code" / "horizon-parity" / "shared-local" / "parit
 if "PARITY_SHARED" not in os.environ and not (ROOT / ".local" / "minecraft").exists() and FLEET_SHARED.is_dir():
     # A fleet worktree without vanilla data still knows each harness's dependencies.
     os.environ["PARITY_SHARED"] = str(FLEET_SHARED)
-from tools import parity, release_train  # noqa: E402
+from tools import parity, process_tree, release_train  # noqa: E402
 from tools.ci import rust_changes  # noqa: E402
 
 RBUILD = Path.home() / "fleet" / "rbuild"
@@ -467,7 +467,8 @@ def run_script(steps, host, verbose):
 
 
 def run_windows(steps, verbose):
-    """Run local checks directly on Windows without requiring a Unix shell."""
+    """Run local checks directly on Windows without requiring a Unix shell. Each runs in its own job
+    (tools/process_tree.py): what a check starts, a harness's game say, ends with it, or with this process."""
     for step in steps:
         command = shlex.split(step.command)
         cwd = ROOT
@@ -513,13 +514,14 @@ def run_windows(steps, verbose):
         print(f"  {step.name}...", file=sys.stderr, flush=True)
         started = time.monotonic()
         try:
-            with subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, text=True, errors="replace") as process:
+            with process_tree.popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True, errors="replace") as process:
                 for line in process.stdout:
                     step.output += line
                     if verbose:
                         print("    " + line, end="", file=sys.stderr)
                 status = process.wait()
+                process_tree.ended(process)
             step.status = "pass" if status == 0 else "fail"
         except OSError as error:
             step.status, step.detail = "fail", str(error)

@@ -57,9 +57,11 @@ import time
 try:
     from . import parity_reach
     from . import file_lock
+    from . import process_tree
 except ImportError:
     import parity_reach
     import file_lock
+    import process_tree
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCAL = ROOT / ".local"
@@ -858,10 +860,11 @@ class LocalExecutor:
         if shard:
             environment["PARITY_SHARD"] = shard
         # stdin from /dev/null: tools/parity_shim.py never reuses an oracle run that reads a pipe, and CI runners
-        # (and --worker's ssh) give the runner one, which kept oracle reuse off on CI.
-        process = subprocess.Popen([sys.executable, str(Path(__file__)), "--trace", str(trace), str(script)],
-                                   cwd=ROOT, env=environment, stdin=subprocess.DEVNULL, stdout=log,
-                                   stderr=subprocess.STDOUT, start_new_session=True)
+        # (and --worker's ssh) give the runner one, which kept oracle reuse off on CI. Whatever the harness starts
+        # ends with it (tools/process_tree.py).
+        process = process_tree.popen([sys.executable, str(Path(__file__)), "--trace", str(trace), str(script)],
+                                     cwd=ROOT, env=environment, stdin=subprocess.DEVNULL, stdout=log,
+                                     stderr=subprocess.STDOUT)
         self.running[name] = {"process": process, "started": time.monotonic(), "log": log, "expected": expected,
                               "slot": slot, "script": script}
         return True
@@ -871,11 +874,12 @@ class LocalExecutor:
         finished = []
         for name, item in list(self.running.items()):
             process, elapsed = item["process"], time.monotonic() - item["started"]
-            if process.poll() is None and elapsed < self.timeout:
+            if not process_tree.ended(process) and elapsed < self.timeout:
                 continue
-            if process.poll() is None:
-                kill_tree(process)
+            if process.returncode is None:
+                process_tree.kill(process)
                 process.wait()
+                process_tree.ended(process)
                 print(f"--- {name}: timed out after {self.timeout}s", file=item["log"])
             item["log"].close()
             item["slot"].close()
@@ -885,18 +889,7 @@ class LocalExecutor:
 
     def stop(self):
         for item in self.running.values():
-            kill_tree(item["process"])
-
-
-def kill_tree(process):
-    """Kill a harness and what it started: its process group (start_new_session), or its tree on Windows."""
-    if os.name == "nt":
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)], capture_output=True)
-        return
-    try:
-        os.killpg(process.pid, 9)
-    except ProcessLookupError:
-        pass
+            process_tree.kill(item["process"])
 
 
 def host_config():
@@ -1176,7 +1169,8 @@ def run(selected, state, hasher, environment_digest, executors, reuse_oracles, r
 def exit_on_termination():
     """SIGTERM and SIGHUP (a cancelled CI job, a dropped ssh) end this process through its finally blocks, which stop
     the running harnesses. Each runs in its own session, so without that they, and the vanilla servers they started,
-    outlive it (orphans of days were found on the Mac mini's runners, 2026-10-26). Windows has no SIGHUP."""
+    outlive it (orphans of days were found on the Mac mini's runners, 2026-10-26). Windows has no SIGHUP; there each
+    harness's job ends with this process however it ends (tools/process_tree.py)."""
     for name in ("SIGTERM", "SIGHUP"):
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), lambda received, _frame: sys.exit(128 + received))
