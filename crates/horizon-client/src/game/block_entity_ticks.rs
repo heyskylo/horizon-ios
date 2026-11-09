@@ -237,11 +237,12 @@ impl Game<'_> {
                     .flatten(),
                 f.items[0].as_ref().map(|s| s.item.clone()),
                 f.items[2].as_ref().map_or(0, |s| s.count),
+                f.lit_remaining,
             ),
             _ => return Ok(()),
         };
         let mut drops = Vec::new();
-        let (lit, burning, smelted, smelting) = {
+        let (lit, burning, smelted, smelting, fueled) = {
             let Some(BlockEntity::Furnace(f)) = self.world.block_entities.get_mut(&pos) else {
                 return Ok(());
             };
@@ -260,12 +261,15 @@ impl Game<'_> {
             let smelting = started
                 .then(|| f.items[0].as_ref().map(|item| item.item.clone()))
                 .flatten();
-            (lit, burning, smelted, smelting)
+            // The tick takes one off `lit_remaining`; only consuming fuel
+            // sets it higher (a lava bucket leaves a bucket of the same count).
+            let fueled = f.lit_remaining > before.4.saturating_sub(1);
+            (lit, burning, smelted, smelting, fueled)
         };
-        // `AbstractFurnaceBlockEntity.serverTick`: `burn` sets the changed
-        // flag, so a completed smelt marks the chunk and tells comparators
-        // even though the block state stays LIT.
-        if smelted.is_some() {
+        // `AbstractFurnaceBlockEntity.serverTick`: `burn` and consuming fuel
+        // set the changed flag, so a completed smelt or a refuel marks the
+        // chunk and tells comparators even though the block state stays LIT.
+        if smelted.is_some() || fueled {
             self.container_changed(pos);
         }
         if let Some(item) = smelting {
@@ -488,6 +492,52 @@ mod furnace_changed_tests {
         assert!(
             game.world.modified.contains(&(0, 0)),
             "a finished smelt left the chunk unmarked"
+        );
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_refuel_while_lit_marks_the_chunk() {
+        // litTimeRemaining goes 1 -> 0 and the furnace takes new fuel in the
+        // same tick: it stays LIT, and consuming the fuel sets changed.
+        let mut game = server_game();
+        let state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:furnace")
+            .unwrap();
+        let pos = (8, 64, 8);
+        game.world.set(pos.0, pos.1, pos.2, state).unwrap();
+        game.world.block_entities.insert(
+            pos,
+            BlockEntity::Furnace(Furnace {
+                kind: FurnaceKind::Furnace,
+                items: [
+                    Some(ItemStack::new("minecraft:raw_iron", 1)),
+                    Some(ItemStack::new("minecraft:coal", 2)),
+                    None,
+                ],
+                lit_remaining: 1,
+                lit_total: 1600,
+                cooking_timer: 10,
+                cooking_total: 200,
+                speed: 1.0,
+                recipes_used: HashMap::new(),
+            }),
+        );
+        game.world.modified.clear();
+
+        game.tick_furnace(pos).expect("the furnace ticks");
+
+        let Some(BlockEntity::Furnace(f)) = game.world.block_entities.get(&pos) else {
+            panic!("no furnace");
+        };
+        assert_eq!(f.items[1].as_ref().map(|s| s.count), Some(1), "fuel used");
+        assert!(f.items[2].is_none(), "nothing smelted");
+        assert!(
+            game.world.modified.contains(&(0, 0)),
+            "a refuel left the chunk unmarked"
         );
     }
 }
