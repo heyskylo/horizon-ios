@@ -113,6 +113,12 @@ including examples. The dependency scope includes optional, platform, build and 
 library, binary, integration and doc tests without building unrelated example executables. Shared Cargo
 configuration and toolchain changes select the whole workspace; CI also keeps its workspace-wide checks.
 
+### Translations
+
+Most of Horizon's translations were written by machine and stay marked unreviewed until someone who speaks the
+language checks them. To report a wrong string or review your language, see [docs/translations.md](docs/translations.md)
+and #translations on Horizon's Discord. Never mark machine-written text as reviewed.
+
 ## Claim before you start
 
 Work is tracked in GitHub issues, and an issue that is assigned is taken (so is one with the `in progress` label:
