@@ -72,10 +72,7 @@ fn change(json: &Json) -> Result<SpriteChange, String> {
         Some(v) => Some(
             v.as_i64()
                 .map(|c| c as u32)
-                .or_else(|| {
-                    v.as_str()
-                        .and_then(|s| u32::from_str_radix(s.trim_start_matches('#'), 16).ok())
-                })
+                .or_else(|| v.as_str().and_then(hex_color))
                 .ok_or("color is not an int")?,
         ),
     };
@@ -85,6 +82,17 @@ fn change(json: &Json) -> Result<SpriteChange, String> {
         color,
         texture: None,
     })
+}
+
+/// `#RRGGBB` (opaque, as the attribute colours read it) or `#AARRGGBB`.
+fn hex_color(s: &str) -> Option<u32> {
+    let hex = s.trim().trim_start_matches('#');
+    let packed = u32::from_str_radix(hex, 16).ok()?;
+    match hex.len() {
+        6 => Some(0xff00_0000 | packed),
+        8 => Some(packed),
+        _ => None,
+    }
 }
 
 /// A sprite id as targets name it: `hud/hotbar` is `minecraft:hud/hotbar`.
@@ -98,6 +106,13 @@ pub fn sprite_id(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_six_digit_hex_colour_is_opaque() {
+        assert_eq!(super::hex_color("#FF0000"), Some(0xffff_0000));
+        assert_eq!(super::hex_color("80FF0000"), Some(0x80ff_0000));
+        assert_eq!(super::hex_color("#FFF"), None);
+    }
+
     use super::*;
     use serde_json::json;
 
