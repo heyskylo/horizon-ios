@@ -462,17 +462,7 @@ impl Launcher {
                 .into_any_element()
         };
         let about = card()
-            .child(index_row(
-                0,
-                tr("Data folder"),
-                Some(mono(short(&backend::data_dir()))),
-                Some(
-                    button("about-open-data", "Open", Kind::Secondary, &t)
-                        .on_click(|_, _, cx| crate::glass_toast::open(cx, &backend::data_dir()))
-                        .into_any_element(),
-                ),
-                &t,
-            ))
+            .child(self.location_row(0, cx).mb(px(0.)))
             .child(index_row(
                 0,
                 tr("Logs"),

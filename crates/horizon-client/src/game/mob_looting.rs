@@ -157,7 +157,7 @@ impl Game<'_> {
     /// The numbers `Mob.compareArmor` and `compareWeapons` read off `stack`
     /// in `slot` for the mob `m`.
     pub(super) fn stack_facts(&self, m: &Mob, stack: &ItemStack, slot: Slot) -> Facts {
-        let (armor, toughness, attack) = self.attributes(m, &stack.item, slot);
+        let (armor, toughness, attack) = self.attributes(m, stack, slot);
         Facts {
             armor,
             armor_toughness: toughness,
@@ -173,22 +173,18 @@ impl Game<'_> {
 
     /// `Mob.getApproximateAttributeWith` for the item `id` in `slot`: each
     /// attribute starts from the mob's own value. (armour, toughness, damage)
-    fn attributes(&self, m: &Mob, id: &str, slot: Slot) -> (f64, f64, f64) {
-        let empty: &[(String, String, f64, String, String)] = &[];
-        let modifiers = self
-            .items()
-            .get(id)
-            .map_or(empty, |i| i.modifiers.as_slice());
+    fn attributes(&self, m: &Mob, stack: &ItemStack, slot: Slot) -> (f64, f64, f64) {
+        let modifiers = self.items().attribute_modifiers(stack);
         (
-            equip::attribute_with(modifiers, "minecraft:armor", f64::from(m.kind.armor), slot),
+            equip::attribute_with(&modifiers, "minecraft:armor", f64::from(m.kind.armor), slot),
             equip::attribute_with(
-                modifiers,
+                &modifiers,
                 "minecraft:armor_toughness",
                 f64::from(m.kind.armor_toughness),
                 slot,
             ),
             equip::attribute_with(
-                modifiers,
+                &modifiers,
                 "minecraft:attack_damage",
                 f64::from(m.attrs.attack_damage),
                 slot,
