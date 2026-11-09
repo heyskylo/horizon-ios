@@ -307,8 +307,9 @@ horizon-client`, the harnesses and horizon-plain build, has none either. The fir
 
 The spec for the three registries that let a platform or Horizon crate add settings, pages and HUD drawing without
 an engine file naming it. Controllers, splitscreen, replays (M6) and Horizon's extras (M5) move out on them.
-Status: spec; each registry lands in its own PR (layer plan M5, seam): the settings store (#14036), pages v1
-(#14070: `HorizonSettings`, every row but `Slider`; v2 adds `Slider`, `Title`, `Pause`), the HUD hook.
+Status: each registry lands in its own PR (layer plan M5, seam): the settings store (#14036), pages (#14070:
+`HorizonSettings` and every row but `Slider`; #14110: `Slider` and `tooltip`; `Title` and `Pause` next), the HUD
+hook (#14081), `seat()` (#14096).
 
 **One shape for all three.** As with `Hooks` above:
 
@@ -370,6 +371,7 @@ pub trait Page: Sync {
     fn place(&self) -> Place;                // where its entry is
     fn rows(&self, rows: &mut Vec<Row>);     // asked when the page is drawn, not every frame elsewhere
     fn act(&self, row: usize, act: Act);     // a click, a reverse click, a slider's value, a key
+    fn tooltip(&self, row: usize) -> Option<Label> { None }   // hover text, may follow the value
 }
 pub enum Row {
     Heading(&'static str),                   // translation key
