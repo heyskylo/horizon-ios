@@ -2,7 +2,8 @@
 
 ## What and why
 
-<!-- What this changes, and why. Link the issue it fixes ("Fixes #123"). -->
+<!-- What this changes, and why. Link the issue it fixes ("Fixes #123"). Over about 500 lines: link the issue with its
+     approved spec too ("Spec: #123"), CONTRIBUTING.md "Large pull requests". -->
 
 ## Kind
 

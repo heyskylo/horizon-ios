@@ -61,10 +61,14 @@ pub fn rotation(tag: &Tag) -> [f32; 2] {
 }
 /// `NumericTag.byteValue`'s nonzero test for entity NBT, defaulting to false.
 pub fn flag(tag: &Tag, key: &str) -> bool {
+    flag_or(tag, key, false)
+}
+/// `getBooleanOr(key, default)`: any numeric tag's nonzero test, else `default`.
+pub fn flag_or(tag: &Tag, key: &str, default: bool) -> bool {
     // NBT floats floor before int narrowing; the final byte keeps the low bits.
     tag.get(key)
         .and_then(int_value)
-        .is_some_and(|value| value as i8 != 0)
+        .map_or(default, |value| value as i8 != 0)
 }
 /// `Entity.saveWithoutId` fields every entity has, over the loaded compound.
 struct Base<'a> {
@@ -753,9 +757,10 @@ pub fn mob_to_nbt(
         "Invulnerable".into(),
         Tag::Byte(i8::from(m.invulnerable_flag)),
     );
-    // Entity.saveWithoutId: the hurt immunity left, only while there is some.
-    if m.invulnerable > 0 {
-        map.insert("invulnerable_time".into(), Tag::Int(m.invulnerable));
+    // Entity.saveWithoutId: `invulnerableTime`, only while there is some (the
+    // hurt cooldown is not saved).
+    if m.invulnerable_time > 0 {
+        map.insert("invulnerable_time".into(), Tag::Int(m.invulnerable_time));
     } else {
         map.remove(&horizon_world::nbt::JavaString::from("invulnerable_time"));
     }
@@ -1241,6 +1246,14 @@ pub fn mob_to_nbt(
                 memories.push((
                     "minecraft:liked_noteblock_cooldown_ticks",
                     Tag::compound([("value", Tag::Int(m.extra.ints[2]))]),
+                ));
+            }
+            // ITEM_PICKUP_COOLDOWN_TICKS (`Codec.INT`), which a throw sets to 60,
+            // while it runs.
+            if m.extra.ints[3] > 0 {
+                memories.push((
+                    "minecraft:item_pickup_cooldown_ticks",
+                    Tag::compound([("value", Tag::Int(m.extra.ints[3]))]),
                 ));
             }
             // Always written, so a forgotten note block does not come back
@@ -2236,7 +2249,7 @@ pub fn mob_from_nbt(
     m.silent = flag(tag, "Silent");
     m.invulnerable_flag = flag(tag, "Invulnerable");
     // Entity.load: `getIntOr("invulnerable_time", 0)`.
-    m.invulnerable = number(tag.get("invulnerable_time")).unwrap_or(0) as i32;
+    m.invulnerable_time = number(tag.get("invulnerable_time")).unwrap_or(0) as i32;
     if m.species() == crate::mobs::Species::Bat {
         // Bat.readAdditionalSaveData: BatFlags bit 0, resting.
         m.extra.flag = number(tag.get("BatFlags")).unwrap_or(0) & 1 != 0;
@@ -2525,6 +2538,8 @@ pub fn mob_from_nbt(
         };
         m.extra.ints[2] =
             number(memory("minecraft:liked_noteblock_cooldown_ticks")).unwrap_or(0) as i32;
+        m.extra.ints[3] =
+            number(memory("minecraft:item_pickup_cooldown_ticks")).unwrap_or(0) as i32;
         if let Some(st) = m.extra.allay.as_mut()
             && let Some(noteblock) = memory("minecraft:liked_noteblock")
             && let Some(Tag::IntArray(p)) = noteblock.get("pos")
@@ -3949,6 +3964,24 @@ pub fn cushion_from_nbt(tag: &Tag, id: u32) -> Option<Cushion> {
 #[cfg(test)]
 mod cushion_tests {
     use super::*;
+
+    #[test]
+    fn flags_take_any_number_and_fall_back_when_absent() {
+        let tag = Tag::compound([
+            ("byte", Tag::Byte(2)),
+            ("int", Tag::Int(1)),
+            ("wrapped", Tag::Int(256)),
+            ("short", Tag::Short(0)),
+            ("text", string("1")),
+        ]);
+        assert!(flag(&tag, "byte"));
+        assert!(flag(&tag, "int"));
+        assert!(!flag(&tag, "wrapped"));
+        assert!(!flag_or(&tag, "short", true));
+        assert!(flag_or(&tag, "text", true));
+        assert!(flag_or(&tag, "absent", true));
+        assert!(!flag(&tag, "absent"));
+    }
 
     #[test]
     fn cushion_save_preserves_color_anchor_rotation_and_unknown_data() {

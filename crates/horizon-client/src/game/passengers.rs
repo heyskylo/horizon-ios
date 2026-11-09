@@ -705,7 +705,7 @@ impl Game<'_> {
                 self.world.random.triangle(0.0, 1.1485),
             );
             if let Some(h) = self.mobs.iter_mut().find(|m| m.id == other) {
-                h.invulnerable = TRAP_INVULNERABLE;
+                h.invulnerable_time = TRAP_INVULNERABLE;
                 h.extra.tame = true;
                 h.extra.age = 0;
                 h.velocity = Vec3::new(h.velocity.x + dx, h.velocity.y, h.velocity.z + dz);
@@ -720,7 +720,7 @@ impl Game<'_> {
     fn trap_skeleton(&mut self, at: [f64; 3]) -> Option<u32> {
         let id = self.spawn_mob("minecraft:skeleton", at, true)?;
         let m = self.mobs.iter_mut().find(|m| m.id == id)?;
-        m.invulnerable = TRAP_INVULNERABLE;
+        m.invulnerable_time = TRAP_INVULNERABLE;
         if m.extra.head.is_none() {
             m.extra.head = Some("minecraft:iron_helmet".into());
         }

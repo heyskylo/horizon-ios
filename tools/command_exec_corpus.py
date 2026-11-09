@@ -986,6 +986,52 @@ def minecart_numeric_fields():
                        '/tick unfreeze', '/forceload remove 0 0 15 15')
 
 
+def teleport_lands():
+    """TeleportCommand.performTeleport after a successful teleportTo: unless the target is a living
+    entity that is fall-flying, its vertical motion is zeroed (multiply(1, 0, 1)) and it is on the
+    ground (setOnGround(true)). Frozen, so nothing moves before the read; to a position and to an
+    entity."""
+    ops = setup('/forceload add 320 320 351 351')
+    ops += [{'op': 'settle', 'required_chunks': [[x, z] for x in (20, 21) for z in (20, 21)]}]
+    ops += setup('/tick freeze', '/summon marker 340.5 230 340.5 {Tags:["tp_dest"]}')
+    motion = 'Motion:[0.25d,0.5d,-0.125d],OnGround:0b,NoGravity:1b'
+    # (kind, NBT, whether its save writes the live OnGround here: boats and minecarts write it once
+    # #12824 lands; falling blocks and arrows always write 0b).
+    cases = (
+        ('zombie', f'{{NoAI:1b,{motion}}}', True),
+        ('zombie', f'{{NoAI:1b,FallFlying:1b,{motion}}}', True),
+        ('armor_stand', f'{{{motion}}}', True),
+        ('item', f'{{Item:{{id:"minecraft:stone",count:1}},PickupDelay:32767,Age:-32768,{motion}}}', True),
+        ('experience_orb', f'{{Value:3,{motion}}}', True),
+        ('oak_boat', f'{{{motion}}}', False),
+        ('minecart', f'{{{motion}}}', False),
+        ('tnt', f'{{fuse:32767,{motion}}}', True),
+        ('falling_block', f'{{BlockState:{{Name:"minecraft:sand"}},Time:1,{motion}}}', False),
+        ('arrow', f'{{pickup:0b,{motion}}}', False),
+    )
+    for i, (kind, nbt, ground) in enumerate(cases):
+        tag = f'tp_land_{i}'
+        ops += setup(f'/summon {kind} {322 + i * 2}.5 230 322.5 {{Tags:["{tag}"],{nbt[1:-1]}}}')
+        dest = f'{322 + i * 2}.5 240 324.5' if i % 2 == 0 else '@e[tag=tp_dest,limit=1]'
+        ops += [cmd(f'/tp @e[tag={tag},limit=1] {dest}'),
+                cmd(f'/data get entity @e[tag={tag},limit=1] Motion')]
+        if ground:
+            ops += [cmd(f'/data get entity @e[tag={tag},limit=1] OnGround')]
+    # The dragon's own flight builds on its motion: /tp stops it too.
+    ops += setup(f'/summon ender_dragon 344.5 230 344.5 {{Tags:["tp_dragon"],NoAI:1b,{motion}}}')
+    ops += [cmd('/tp @e[tag=tp_dragon,limit=1] 344.5 236 344.5'),
+            cmd('/data get entity @e[tag=tp_dragon,limit=1] Motion')]
+    ops += setup('/kill @e[tag=tp_dragon]')
+    # SpreadPlayersCommand.setPlayerPositions calls teleportTo(..., Set.of(), ...) too: the motion
+    # goes, the ground flag stays (where it lands is random, so only the motion is read).
+    ops += setup(f'/summon armor_stand 340.5 230 330.5 {{Tags:["tp_spread"],{motion}}}')
+    ops += [cmd('/spreadplayers 340 330 0 1 false @e[tag=tp_spread]', record=False),
+            cmd('/data get entity @e[tag=tp_spread,limit=1] Motion'),
+            cmd('/data get entity @e[tag=tp_spread,limit=1] OnGround')]
+    return ops + setup(*[f'/kill @e[tag=tp_land_{i}]' for i in range(len(cases))], '/kill @e[tag=tp_spread]',
+                       '/kill @e[tag=tp_dest]', '/tick unfreeze', '/forceload remove 320 320 351 351')
+
+
 def vehicle_saved_ground_and_fall():
     """Entity.load/saveWithoutId's OnGround and fall_distance on boats and minecarts.
 
@@ -1667,6 +1713,49 @@ def aquatic_from_bucket():
                     cmd(f'/data get entity {target} FromBucket')]
             ops += setup(f'/kill {target}')
     return ops
+
+
+def dispensed_spawn_egg_persistence():
+    """`SpawnEggItemBehavior.execute` spawns with `EntitySpawnReason.DISPENSER`
+    and never calls `Mob.setPersistenceRequired`: the mob saves
+    `PersistenceRequired: 0b`, as one from a spawn egg used by hand does. So
+    `Mob.checkDespawn` removes the zombie at once, far from every player,
+    while the pig, which is never removed when far away, stays. The elder
+    guardian's and copper golem's constructors require persistence (1b)."""
+    x, z, y = 5312, 5120, 300
+    # (dispenser x, mob, saved PersistenceRequired, or None once despawned)
+    eggs = [(x + 2, 'zombie', None), (x + 6, 'pig', 0), (x + 10, 'elder_guardian', 1),
+            (x + 14, 'copper_golem', 1)]
+    ops = [*setup(f'/forceload add {x} {z} {x + 15} {z + 15}'),
+           {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4]]},
+           *setup(f'/fill {x} {y - 1} {z} {x + 15} {y - 1} {z + 15} minecraft:stone')]
+    for bx, kind, _ in eggs:
+        ops += [cmd(f'/setblock {bx} {y} {z + 4} minecraft:dispenser[facing=south]'
+                    f'{{Items:[{{Slot:0b,id:"minecraft:{kind}_spawn_egg",count:1}}]}}', expect_result=1),
+                cmd(f'/setblock {bx} {y + 1} {z + 4} minecraft:redstone_block', expect_result=1)]
+    ops.append({'op': 'tick', 'n': 6})
+
+    def reads():
+        out = []
+        for _, kind, saved in eggs:
+            mob = f'@e[type=minecraft:{kind},x={x},y={y - 8},z={z},dx=16,dy=24,dz=16,limit=1]'
+            if saved is None:
+                out.append(cmd(f'/execute unless entity {mob}', expect_result=1))
+            else:
+                out += [cmd(f'/execute if entity {mob}', expect_result=1),
+                        cmd(f'/data get entity {mob} PersistenceRequired', expect_result=saved)]
+        return out
+
+    ops += reads()
+    # Unload the chunk (saving its mobs), then load it again.
+    ops += [*setup(f'/forceload remove {x} {z} {x + 15} {z + 15}'), {'op': 'tick', 'n': 60},
+            cmd(f'/execute unless loaded {x} {y} {z}', expect_result=1),
+            *setup(f'/forceload add {x} {z} {x + 15} {z + 15}'),
+            {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4]]}]
+    ops += reads()
+    return ops + setup(f'/kill @e[type=!minecraft:player,x={x},y={y - 8},z={z},dx=16,dy=24,dz=16]',
+                       f'/fill {x} {y - 1} {z} {x + 15} {y + 1} {z + 15} minecraft:air',
+                       f'/forceload remove {x} {z} {x + 15} {z + 15}')
 
 
 
@@ -4717,6 +4806,49 @@ def entity_ticking_gate():
                        f'/forceload remove {x0} {z0}')
 
 
+def summoned_eye_of_ender():
+    """#12807: a summoned or loaded eye of ender flies by its Motion (no target, no
+    gravity), saves its Item, and shatters after 80 ticks; its life is not saved."""
+    x0, y0, z0 = 3520, 300, 3520
+    chunk = [[x0 >> 4, z0 >> 4]]
+    subjects = [
+        'Motion:[0.05d,0d,0d]',
+        '',
+        'Motion:[0d,0.1d,-0.02d],Item:{id:"minecraft:stone",count:5}',
+        'Motion:[11d,0d,0.03d]',
+    ]
+    uuid = [f'00003207-0000-0000-0000-{n:04x}00000001' for n in range(1, len(subjects) + 2)]
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk}]
+    for n, body in enumerate(subjects, 1):
+        sep = ',' if body else ''
+        ops += setup(f'/summon eye_of_ender {x0 + 1}.5 {y0 + 2} {z0 + n * 2}.5 '
+                     f'{{UUID:[I;12807,0,{n},1]{sep}{body}}}')
+    ops.append({'op': 'tick', 'n': 2})
+    for u in uuid[:len(subjects)]:
+        ops.append(cmd(f'/data get entity {u}'))
+    ops.append({'op': 'tick', 'n': 78})
+    for u in uuid[:len(subjects)]:
+        ops.append(cmd(f'/execute if entity {u}', expect_result=1))
+    ops.append({'op': 'tick', 'n': 1})
+    for u in uuid[:len(subjects)]:
+        ops.append(cmd(f'/execute unless entity {u}', expect_result=1))
+    # A loaded eye starts its life again: EyeOfEnder saves only its Item.
+    last = uuid[len(subjects)]
+    ops += setup(f'/summon eye_of_ender {x0 + 8}.5 {y0 + 2} {z0 + 8}.5 '
+                 f'{{UUID:[I;12807,0,{len(subjects) + 1},1],Motion:[0d,0d,0.01d]}}')
+    ops.append({'op': 'tick', 'n': 50})
+    ops += [cmd(f'/forceload remove {x0} {z0}', False), {'op': 'tick', 'n': 60},
+            cmd(f'/execute unless loaded {x0} {y0} {z0}', expect_result=1),
+            cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk}]
+    ops.append(cmd(f'/data get entity {last} Pos'))
+    ops.append({'op': 'tick', 'n': 80})
+    ops.append(cmd(f'/execute if entity {last}', expect_result=1))
+    ops.append({'op': 'tick', 'n': 1})
+    ops.append(cmd(f'/execute unless entity {last}', expect_result=1))
+    return ops + setup(f'/kill @e[type=eye_of_ender,x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16]',
+                       f'/forceload remove {x0} {z0}')
+
+
 def sulfur_cube_loaded_health():
     # Size is saved as physical size minus one. Babies age even with NoAI.
     cases = [(0, None, -24000, 4), (1, None, 0, 8),
@@ -6643,6 +6775,10 @@ def groups():
     except ImportError:
         from mob_effect_predicate_corpus import cases as mob_effect_predicates
     try:
+        from .fill_block_nbt_corpus import fill_block_nbt
+    except ImportError:
+        from fill_block_nbt_corpus import fill_block_nbt
+    try:
         from .seed_sync_corpus import cases as seed_sync_proof
     except ImportError:
         from seed_sync_corpus import cases as seed_sync_proof
@@ -6730,6 +6866,7 @@ def groups():
         ('conduit and enchanting table block entities', conduit_table_entities(cmd, setup)),
         ('modern data literal values', storage_literals(cmd)),
         ('comparator output data', comparator_output_data()),
+        ('fill block NBT', fill_block_nbt(cmd, setup)),
         ('hopper empty slot limits', hopper_empty_slot_limits()),
         ('End clock commands', end_clock_commands()),
         ('client commands', client_commands()),
@@ -6753,6 +6890,7 @@ def groups():
         ('command minecart loaded success', command_minecart_loaded_success()),
         ('ravager NoAI counters', ravager_noai_counters()),
         ('aquatic FromBucket', aquatic_from_bucket()),
+        ('dispensed spawn egg persistence', dispensed_spawn_egg_persistence()),
         ('villager command names', villager_command_names()),
         ('item lifetime counters', item_lifetime_counters()),
         ('seed sync proof', seed_sync_proof(cmd, setup)),
@@ -6801,6 +6939,7 @@ def groups():
         ('numeric array edits', numeric_array_edits()),
         ('projectile saved UUID', projectile_saved_uuid()),
         ('entity ticking gate', entity_ticking_gate()),
+        ('summoned eye of ender', summoned_eye_of_ender()),
         ('awake villager saved position', awake_villager_saved_position()),
         ('villager wake rotation', villager_wake_rotation()),
         ('cube saved Age', cube_saved_age()),
@@ -6853,6 +6992,7 @@ def groups():
         ('summoned potions', summoned_potions()),
         ('potion contents names', potion_contents_names()),
         ('creeper cloud selectors', creeper_cloud_selectors()),
+        ('teleport lands', teleport_lands()),
         ('vehicle ground and fall', vehicle_ground_and_fall()),
         ('vehicle saved ground and fall', vehicle_saved_ground_and_fall()),
         # Last: it leaves the player in other food than it found.
