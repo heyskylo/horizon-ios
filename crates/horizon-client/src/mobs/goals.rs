@@ -1894,11 +1894,21 @@ impl Goal for HurtByTarget {
         let Some(t) = cx.w.target_info(by) else {
             return false;
         };
+        // TargetGoal.canAttack: the attacker's block must be inside the home
+        // (`Mob.isWithinHome(target.blockPosition())`).
+        let target_block = [
+            t.position.x.floor() as i32,
+            t.position.y.floor() as i32,
+            t.position.z.floor() as i32,
+        ];
         t.alive
             && t.can_be_seen_as_enemy
             && !(t.is_player && t.creative)
             // HurtByTargetGoal.canUse ends with canAttack(lastHurtByMob).
             && !m.spares_target(cx.w, by)
+            && m.ai
+                .home
+                .is_none_or(|(center, radius)| within_home(center, radius, target_block))
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if self.bee && !super::bee::angry(m, cx.w) {
