@@ -23,6 +23,8 @@ pub(super) enum Orientation {
     Flat,
     /// `movement_aligned`: stands along its velocity, facing the camera around it.
     Movement,
+    /// `none`: fixed in the world's axes (its +Z facing south).
+    Fixed,
 }
 
 impl Orientation {
@@ -31,6 +33,7 @@ impl Orientation {
             "look_at_y" => Self::AroundY,
             "look_up" => Self::Flat,
             "movement_aligned" => Self::Movement,
+            "none" => Self::Fixed,
             _ => Self::Camera,
         }
     }
@@ -50,6 +53,7 @@ pub(super) fn orient(
         Orientation::Camera => rolled(camera),
         Orientation::AroundY => rolled(Quat::from_rotation_y((-center.x).atan2(-center.z))),
         Orientation::Flat => rolled(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+        Orientation::Fixed => rolled(Quat::IDENTITY),
         Orientation::Movement => {
             let up = velocity.normalize_or_zero();
             let right = up.cross((-center).normalize_or_zero()).normalize_or_zero();

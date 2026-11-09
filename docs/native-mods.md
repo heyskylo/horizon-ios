@@ -395,6 +395,16 @@ alone): it is asked when a chunk holding it is sent and when its block changes, 
 copy's `nbt`. A saved chunk sent past the view distance asks it on its own thread, so read only `entity`. Keep it to what clients show (a machine running, its facing, a tank's level), not a menu's progress:
 menus have their own data slots. Bundles that use it need `"hooks": 45`.
 
+Fields meant for the next client update only, not for the save (the items a processing particle shows):
+`ModBlockEntity::set_client_update_fields(Compound)` replaces the pending batch, `clear_client_update_fields` drops it
+and `take_client_update_fields` drains it. The owner adds the drained fields to its `native_block_entity_update_tag`
+result itself; setting them neither schedules an update nor is saved, compared or cloned, and repeated block changes
+may coalesce into one update.
+
+`native_block_clone_item(block, pos, state, &mut stack)` answers a block's `getCloneItemStack` for pick block
+(Ctrl+Pick) with the real state and position; the first mod that fills the stack owns the result, and no answer keeps
+vanilla's. An empty or unregistered stack picks nothing. Ctrl+Pick still adds the block entity's components afterwards.
+
 API 46 adds `native_visuals`: a world-frame hook that appends block-rim and
 colored-light requests. Rims trace the client's existing block outline edges,
 depth-tested against terrain. Lights add camera-local RGB illumination to the
