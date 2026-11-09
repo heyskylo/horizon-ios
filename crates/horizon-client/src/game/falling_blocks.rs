@@ -105,8 +105,10 @@ impl Game<'_> {
         );
         let on_ground = wanted.y < 0.0 && movement.y != wanted.y;
         f.on_ground = on_ground;
-        if next.y < f.position.y {
-            f.fall_distance += f.position.y - next.y;
+        // Entity.checkFallDamage: each step down, narrowed to a float (a
+        // falling block never runs baseTick, so it is never in water).
+        if movement.y < 0.0 {
+            f.fall_distance -= f64::from(movement.y as f32);
         }
         let from = f.position;
         f.position = next;

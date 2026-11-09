@@ -680,7 +680,7 @@ pub fn tick(
     if m.species() == Species::Rabbit {
         super::rabbit::base_tick(m);
     }
-    if m.death_time >= super::creaking::death_limit(m) {
+    if !m.alive() && m.death_time >= super::creaking::death_limit(m) {
         // Creaking.tickDeath: a heart's creaking crumbles away.
         if super::creaking::is_creaking(m) && super::creaking::tearing_down(m) {
             super::creaking::tear_down(m, events);
@@ -796,24 +796,17 @@ pub fn tick(
     m.anim.end_tick(m.ai.swinging);
     tick_swing(m);
     flower_contact_effects(m, w);
-    if m.species() == Species::CopperGolem {
-        // CopperGolem.tick: updateWeathering after the living tick.
-        super::copper_golem::update_weathering(m, w, level_random, events);
-    }
-    if m.species() == Species::Strider {
-        super::strider::float(m, w);
-    }
-    if m.species() == Species::Bat {
-        super::bat::tick(m);
-    }
-    if m.species() == Species::Bee {
-        super::bee::tick(m, level_random);
-    }
-    if m.species() == Species::Allay {
-        super::allay::tick(m, w, events);
-    }
-    if m.species() == Species::Panda {
-        super::panda::tick(m, w, events);
+    // The species' own tick after the living tick, with or without AI.
+    match m.species() {
+        // CopperGolem.tick: updateWeathering.
+        Species::CopperGolem => super::copper_golem::update_weathering(m, w, level_random, events),
+        Species::Strider => super::strider::float(m, w),
+        Species::Bat => super::bat::tick(m),
+        Species::Bee => super::bee::tick(m, level_random),
+        Species::Allay => super::allay::tick(m, w, events),
+        Species::Panda => super::panda::tick(m, w, events),
+        Species::Villager => super::villager::tick(m, w.game_time),
+        _ => {}
     }
     aquatic::school_tick(m, w, level_random);
     // Dolphin.tick: after super.tick, NoAI restores the species maximum.

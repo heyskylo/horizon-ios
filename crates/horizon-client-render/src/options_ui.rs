@@ -1669,6 +1669,9 @@ pub struct OptionsUi {
     pub minecart_improvements: bool,
     /// Scroll the selected language into the middle on the next layout.
     center_language: bool,
+    /// The output of the renderer the options are drawn for, as of the last draw. It lives
+    /// here, not on the graphics screen, which opening resets: `shell_mut` hands it over.
+    output: crate::gfx::EffectiveOutput,
     graphics: shell::Shell<crate::graphics_ui::GraphicsScreen>,
     /// Controller Settings, on the settings shell.
     controller: shell::Shell<crate::controller_ui::ControllerScreen>,
@@ -1754,6 +1757,7 @@ impl Default for OptionsUi {
             in_world: false,
             minecart_improvements: false,
             center_language: false,
+            output: crate::gfx::EffectiveOutput::NONE,
             graphics: Default::default(),
             controller: Default::default(),
             extras: Default::default(),
@@ -2245,6 +2249,7 @@ impl OptionsUi {
         }
     }
     fn shell_mut(&mut self) -> Option<&mut dyn shell::Hosted> {
+        self.graphics.screen.output = self.output;
         match self.page() {
             Page::Extras => Some(&mut self.extras),
             page if Self::graphics_page(page).is_some() => Some(&mut self.graphics),
@@ -2285,7 +2290,8 @@ impl OptionsUi {
                 }
                 shell::Output::Push(page) => {
                     if page == Page::HdrCalibration {
-                        self.calibration = Some(crate::hdr_calibration::Calibration::new(s));
+                        self.calibration =
+                            Some(crate::hdr_calibration::Calibration::new(s, &self.output));
                     }
                     self.push(page);
                 }
@@ -3586,13 +3592,18 @@ impl OptionsUi {
             Narratable::container_list(self.row_bands.len(), hovered_row, rect).key(key)
         });
     }
+    /// `output`: that of the renderer the options are drawn for, each draw, so the graphics
+    /// screen's rows and calibration read its offer and report as they are now, not another
+    /// window's, and not one from before the page opened.
     pub fn draw(
         &mut self,
         s: &Settings,
+        output: crate::gfx::EffectiveOutput,
         batch: &mut HudBatch,
         atlas: &HudAtlas,
         cursor: (f32, f32),
     ) {
+        self.output = output;
         let (w, h) = (batch.width, batch.height);
         if let Some(error) = &self.resource_error {
             ui::menu_background(batch, atlas, 0.0, 0.0, w, h, self.in_world);
@@ -5206,6 +5217,10 @@ impl OptionsUi {
 mod tests {
     use super::*;
     use crate::extras_ui::ExtraRow;
+    use crate::gfx::EffectiveOutput;
+
+    /// A renderer whose destination offers nothing and whose display reports nothing.
+    const NONE: EffectiveOutput = EffectiveOutput::NONE;
 
     /// The window allows the input method only while `typing` says a search
     /// box has the focus (`Game::text_field_focused`), so a page without one
@@ -5519,7 +5534,7 @@ mod tests {
         assert!(file.set_text("renderDistance", "1").is_err());
         assert_eq!(file.int("renderDistance"), 128);
     }
-    fn atlas() -> HudAtlas {
+    pub(super) fn atlas() -> HudAtlas {
         HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap()
     }
 
@@ -6075,16 +6090,28 @@ mod tests {
         );
         assert!(!ui.focus_from_keyboard);
         let _ = take_cursor();
-        ui.draw(&s, &mut HudBatch::new([480, 480]), &atlas, over);
+        ui.draw(&s, NONE, &mut HudBatch::new([480, 480]), &atlas, over);
         assert_eq!(take_cursor(), Cursor::PointingHand);
-        ui.draw(&s, &mut HudBatch::new([480, 480]), &atlas, (-10.0, -10.0));
+        ui.draw(
+            &s,
+            NONE,
+            &mut HudBatch::new([480, 480]),
+            &atlas,
+            (-10.0, -10.0),
+        );
         assert_eq!(take_cursor(), Cursor::Arrow, "focus is not mouse hover");
         assert!(
             ui.focus.is_some(),
             "moving the pointer does not clear focus"
         );
         ui.focus_from_keyboard = true;
-        ui.draw(&s, &mut HudBatch::new([480, 480]), &atlas, (-10.0, -10.0));
+        ui.draw(
+            &s,
+            NONE,
+            &mut HudBatch::new([480, 480]),
+            &atlas,
+            (-10.0, -10.0),
+        );
         assert_eq!(
             take_cursor(),
             Cursor::Arrow,
@@ -6110,7 +6137,7 @@ mod tests {
             .expect("visible disabled button");
         let over = (button.x + 1.0, button.y + 1.0);
         let _ = take_cursor();
-        ui.draw(&s, &mut HudBatch::new([480, 480]), &atlas, over);
+        ui.draw(&s, NONE, &mut HudBatch::new([480, 480]), &atlas, over);
         assert_eq!(take_cursor(), Cursor::NotAllowed);
         assert!(
             ui.click(
@@ -6129,7 +6156,13 @@ mod tests {
             ui.focus.is_none(),
             "an inactive widget rejects the click before focus"
         );
-        ui.draw(&s, &mut HudBatch::new([480, 480]), &atlas, (-10.0, -10.0));
+        ui.draw(
+            &s,
+            NONE,
+            &mut HudBatch::new([480, 480]),
+            &atlas,
+            (-10.0, -10.0),
+        );
         assert_eq!(take_cursor(), Cursor::Arrow);
     }
 
@@ -6167,6 +6200,7 @@ mod tests {
         let mut on = HudBatch::new([480, 480]);
         ui.draw(
             &s,
+            NONE,
             &mut on,
             &atlas,
             (extra.x + extra.w / 2.0, extra.y + extra.h / 2.0),
@@ -6179,6 +6213,7 @@ mod tests {
         let mut off = HudBatch::new([480, 480]);
         ui.draw(
             &s,
+            NONE,
             &mut off,
             &atlas,
             (extra.x + extra.w + 40.0, extra.y + extra.h + 40.0),
@@ -6420,7 +6455,7 @@ mod tests {
                 .unwrap();
             let cursor = (option.x + 1.0, option.y + 1.0);
             let mut actual = HudBatch::new([480, 480]);
-            ui.draw(&s, &mut actual, &atlas, cursor);
+            ui.draw(&s, NONE, &mut actual, &atlas, cursor);
             let key = format!("options.inactivityFpsLimit.{mode}.tooltip");
             assert!(lang::has(&key));
             let mut expected = HudBatch::new([480, 480]);
@@ -7051,7 +7086,7 @@ mod tests {
         ui.show(Page::Language);
         let draw_hint = |ui: &mut OptionsUi| {
             let mut batch = HudBatch::new([960, 640]);
-            ui.draw(&settings, &mut batch, &atlas, (-1.0, -1.0));
+            ui.draw(&settings, NONE, &mut batch, &atlas, (-1.0, -1.0));
             let search = &ui.language_search;
             batch.vertices.iter().any(|v| {
                 v.color == rgba(170, 170, 170, 255)
@@ -7157,7 +7192,7 @@ mod tests {
             let row_y = if above { top - 5.0 } else { bottom - 16.0 };
             ui.scroll = row.y - row_y;
             let (x, width, height) = (row.x, row.w, row.h);
-            ui.draw(&s, &mut batch, &atlas, (-1.0, -1.0));
+            ui.draw(&s, NONE, &mut batch, &atlas, (-1.0, -1.0));
             let vertices: Vec<_> = batch
                 .vertices
                 .iter()
@@ -7680,42 +7715,6 @@ mod tests {
         }
     }
 
-    /// Shader packs, both kinds, are on the graphics screen's Shaders page: its Shader
-    /// Packs... opens the pack list, listed afresh, and Done comes back to that page.
-    #[test]
-    fn the_graphics_shaders_page_opens_the_shader_pack_list() {
-        use crate::graphics_ui::{H, Item};
-        use winit::keyboard::KeyCode;
-        let atlas = atlas();
-        let mut s = Settings::default();
-        let mut ui = OptionsUi {
-            size: (427.0, 240.0),
-            ..Default::default()
-        };
-        ui.show(Page::Graphics);
-        ui.graphics.show(crate::graphics_ui::Page::Shaders);
-        let packs = Item::Horizon(H::ShaderPacks);
-        assert!(
-            (0..40).any(|_| {
-                ui.key(&mut s, &atlas, KeyCode::Tab, None);
-                ui.graphics.focused_row() == Some(packs)
-            }),
-            "{:?}",
-            ui.graphics.focused()
-        );
-        let events = ui.key(&mut s, &atlas, KeyCode::Enter, None);
-        assert_eq!(ui.page(), Page::ShaderPacks);
-        assert!(events.contains(&Event::ListShaderPacks), "{events:?}");
-        // The picked pack's own settings are read with the list.
-        assert!(events.contains(&Event::OpenShaderOptions), "{events:?}");
-        ui.back(&mut s);
-        assert_eq!(ui.page(), Page::Graphics);
-        assert_eq!(
-            ui.graphics.open_page(),
-            Some(crate::graphics_ui::Page::Shaders)
-        );
-    }
-
     #[test]
     fn horizon_settings_hang_off_options_and_reach_every_horizon_page() {
         let s = Settings::default();
@@ -7932,28 +7931,6 @@ mod tests {
         let events = ui.wheel(&mut s, size, cursor, [854, 480], 1.0);
         assert_eq!(s.master_volume, 0.5);
         assert!(!events.iter().any(|e| matches!(e, Event::Volume(0, _))));
-    }
-
-    #[test]
-    fn the_graphics_screens_wheel_scrolls_even_over_a_slider_being_changed() {
-        use crate::graphics_ui::{H, Item};
-        use winit::keyboard::KeyCode as K;
-        let mut s = Settings::default();
-        let mut ui = OptionsUi::default();
-        ui.show(Page::Graphics);
-        ui.graphics.show(crate::graphics_ui::Page::Performance);
-        let size = (640.0, 360.0);
-        s.horizon.chunk_updates = 16;
-        let chunk_updates = Item::Horizon(H::ChunkUpdates);
-        // Tab onto it: the arrows change it.
-        while ui.graphics.focused_row() != Some(chunk_updates) {
-            shell::Hosted::key(&mut ui.graphics, &mut s, K::Tab, None, false, size);
-        }
-        assert!(ui.graphics.changes_value());
-        let before = ui.graphics.scroll_amount();
-        ui.wheel(&mut s, size, (320.0, 150.0), [1920, 1080], -1.0);
-        assert_eq!(s.horizon.chunk_updates, 16);
-        assert!(ui.graphics.scroll_amount() > before);
     }
 
     #[test]
@@ -8446,3 +8423,7 @@ mod tests {
         ui.shift = false;
     }
 }
+
+#[cfg(test)]
+#[path = "options_ui_graphics_tests.rs"]
+mod graphics_tests;

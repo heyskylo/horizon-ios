@@ -7,7 +7,6 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [AGENTS.md](../AGENTS.md) and [Architecture](architecture.md): where each part of the code lives, how `Game` is organised, which harness checks which area.
 - [How Horizon is built](how-horizon-is-built.md): who writes Horizon, how changes are checked, and what is safe to run.
 - [Release flow](release-flow.md): pull request checks, merging and the automatic Nightly releases that reach players.
-- [Resource preparation and filesystem work](prepare-performance.md): shared asset indexes, verified imports, staging and filesystem work that reduce preparation time.
 - [Build from source](../README.md#build-from-source): your own copy of the game, resource preparation, `cargo run`.
 - [Build times](build-times.md): `tools/build_times.py` measures cold and incremental builds per crate and the critical path, writes a JSON report and a table, and compares two reports; the first numbers, Windows and Linux.
 - [Native client](native-client.md): options, controls, the dedicated server, `horizon-ctl` scripting, packaging, architecture.
@@ -31,6 +30,7 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [Cosmetics](cosmetics.md): wearable items drawn only by Horizon clients (hats, back items, shoulder pets, name tag styles), with no gameplay effect, client-side visibility toggles and the JSON item format.
 - [Layers](layers.md): engine, platform and Horizon: what belongs to each, where a new feature goes, the dependency rule, every built-in outside address.
 - [Forking](forking.md): the `horizon-extras` feature that holds Horizon's own extras (cosmetics, Friends, its settings pages...), and building the game without them.
+- [Translations](translations.md): where Horizon's own text and its ~85 languages live, the unreviewed mark on machine-written strings, and how a native speaker reviews a language in #translations on Discord.
 - [Narrator](narrator.md): vanilla's text-to-speech (Ctrl+B): the voices per platform, how screens record what they narrate, `horizon-ctl narration`, and where it still differs from vanilla.
 - [Shader packs](shaders.md): Horizon's own WGSL shader packs, how to make and check one (`horizon-shader`).
 - [Shader-pack clean room](cleanroom/README.md): how Java shader-pack support was rebuilt without another loader's code: the [format specification](cleanroom/shader-packs-spec.md) and the [provenance log](cleanroom/provenance-log.md) of every source read.
@@ -39,7 +39,6 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [Modpacks](modpacks.md): porting whole packs (ATM10 and smaller): import, inventory, carry-over, an agent per mod with a harness against the Java original, coverage, and how "10x" is measured.
 - [Launcher](../launcher/README.md): installs, updates and starts builds; its CLI and MCP server; releasing it.
 - [Versioning](versioning.md): how releases are numbered from 0.2 (`v0.2.x`, `launcher@0.2.x`), and how installs from before 0.2 get there.
-- [Reusing pack overlays](reuse-pack-overlays.md): caching completed pack overlays, invalidating changed inputs and measuring reload costs.
 - [Resource packs](resource-packs.md): everything a 26.3 resource pack can change, whether Horizon honours it, and the proof.
 - [Opt-in data collection](telemetry.md): the consent, exactly what is sent, how it is stored and sent.
 - [Security](security.md): how Horizon protects code, CI and automatic releases against untrusted input while work is performed by AI agents.
@@ -78,21 +77,13 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 
 ## Architecture: world generation
 
-- [World generation](world-generation.md): the pipeline from noise to features.
+- [World generation](world-generation.md): the pipeline from noise to features. Each stage's vanilla comparison is its harness (`tools/test_<name>_parity.py`); `python3 tools/port_ledger.py where Class.method` finds the Rust port of a vanilla method.
 - [World height](world-height.md): each level's shape from its dimension type, data packs' taller levels.
 - [Pregeneration](pregeneration.md): `/pregen`, generating, lighting and saving an area ahead of the players.
-- [Noise generation](noise-generation.md), [compiled density functions](density-functions.md), [structure density](structure-density.md), [terrain filling](terrain-filling.md).
-- Biomes: [lookup](biome-lookup.md), [temperatures](biome-temperatures.md).
-- Surfaces: [material surfaces](material-surfaces.md), [material conditions](material-conditions.md), [rule libraries](material-rule-libraries.md), [vertical anchors](vertical-anchors.md), [value providers](value-providers.md).
-- [Carving](carving.md), [heightmaps](heightmaps.md), [feature placement](feature-placement.md).
 
 ## Architecture: world data and simulation
 
 - [World data](world-data.md): chunk storage, palettes, region files.
-- [Block entity save batches](save-batch-entities.md): grouping block entities across save batches while preserving chunk data and save ordering.
-- [Block-state codecs](block-state-codecs.md), [scheduled ticks](scheduled-ticks.md).
-- [Collision geometry](collision-geometry.md): shapes, collision, movement and fluids.
-- [Face visibility](face-visibility.md): which model faces the mesher emits.
 
 ## Java comparison profiling
 
