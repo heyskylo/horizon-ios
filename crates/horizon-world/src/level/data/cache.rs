@@ -435,7 +435,7 @@ impl Snapshot {
                 sturdy: fact.sturdy,
                 weak: fact.weak,
                 strong: fact.strong,
-                fluid_kind: fact.fluid.kind() as u8,
+                fluid_kind: fact.fluid.kind().index() as u8,
                 fluid_amount: fact.fluid.amount(),
                 fluid_falling: fact.fluid.falling(),
                 emission: fact.emission,

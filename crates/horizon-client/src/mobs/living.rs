@@ -15,7 +15,7 @@ use horizon_core::{
 use horizon_world::{
     block_landing::LandingEntityKind,
     entity_fluid::{CurrentAccumulator, CurrentTarget},
-    fluid::{FluidKind, FluidState},
+    fluid::{FluidState, FluidTemplate},
     fluid_flow::{FluidFlowWorld, flow_at},
     movement_restitution::{RestitutionInput, RestitutionWorld, restitute_movement},
     registry::BlockStateId,
@@ -235,10 +235,10 @@ impl MobWorld<'_> {
                 for z in lo.z.floor() as i32..=(hi.z.ceil() as i32 - 1) {
                     let p = BlockPos::new(x, y, z);
                     let state = self.fluid_tables.fluid(self.world.block(x, y, z));
-                    let current = match state.kind() {
-                        FluidKind::Empty => continue,
-                        FluidKind::Water | FluidKind::FlowingWater => &mut water,
-                        FluidKind::Lava | FluidKind::FlowingLava => &mut lava,
+                    let current = match state.kind().template() {
+                        FluidTemplate::Empty => continue,
+                        FluidTemplate::Water => &mut water,
+                        FluidTemplate::Lava => &mut lava,
                     };
                     let surface = f64::from(y) + self.fluid_height(x, y, z).1;
                     if surface < lo.y {
