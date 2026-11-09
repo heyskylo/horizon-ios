@@ -912,6 +912,16 @@ impl Creative {
         let y = if tab.top { -28.0 } else { Self::HEIGHT - 4.0 };
         (x, y)
     }
+    /// `CreativeModeInventoryScreen.checkTabHovering`: the tab whose icon
+    /// rectangle, 3 pixels in from its 26x32 slot (`isHovering(x + 3, y + 3,
+    /// 21, 27)`), holds the cursor. The screen draws its display name.
+    pub fn hovered_tab(tabs: &[Tab], origin: (f32, f32), cursor: (f32, f32)) -> Option<usize> {
+        tabs.iter().position(|tab| {
+            let (x, y) = Self::tab_position(tab);
+            let (x, y) = (origin.0 + x + 3.0, origin.1 + y + 3.0);
+            cursor.0 >= x && cursor.0 < x + 21.0 && cursor.1 >= y && cursor.1 < y + 27.0
+        })
+    }
     /// `CreativeModeInventoryScreen.extractTabButton`'s cursor: an unselected
     /// tab asks for the pointing hand when the whole-pixel mouse, relative to
     /// the screen origin, is strictly inside its 26x32 button.
