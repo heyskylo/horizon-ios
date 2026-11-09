@@ -7,7 +7,7 @@
 //! `cat_collar` to `cat`).
 //!
 //! Built when the packs load; a mob's draw only swaps the layer's part tree. Without CEM files
-//! nothing is built and every model stays vanilla's, and a file no layer uses isn't parsed.
+//! or old mob textures ([`LEGACY`]) every model stays vanilla's, and a file no layer uses isn't parsed.
 //!
 //! The seam with random entity textures (ETF): a `.jem`'s own `texture` replaces the layer's
 //! vanilla texture name, and the random texture lookup then gets that name. Variants without
@@ -34,7 +34,7 @@ pub struct CemModels {
     layers: HashMap<String, CemLayer>,
 }
 
-/// A model layer as a `.jem` reshapes it.
+/// A model layer as a `.jem` reshapes it, or as a pack's pre-1.21.5 mob texture needs it.
 pub struct CemLayer {
     pub model: Arc<Part>,
     /// The `.jem`'s animations, run after the vanilla animation.
@@ -45,19 +45,34 @@ pub struct CemLayer {
     /// The `attachments` the pack's bones declare, by the bone's `cem#<n>` name: the item
     /// anchors a renderer looks up (`right_handheld_item`, `left_handheld_item`, `fox_item`).
     pub anchors: Vec<(String, String, [f32; 3])>,
+    /// The packs' pre-1.21.5 textures this layer paints with, by the vanilla texture they
+    /// stand for without its climate ([`legacy_stem`]): `entity/cow/mooshroom_red`
+    /// is drawn as `entity/cow/red_mooshroom`.
+    legacy: Vec<(&'static str, &'static str)>,
+}
+
+impl CemLayer {
+    /// What this layer draws in place of the vanilla `texture`: the `.jem`'s own, or the old
+    /// name of a texture 1.21.5 renamed when the packs paint this layer with it.
+    pub fn texture_for(&self, texture: &str) -> Option<&str> {
+        self.texture.as_deref().or_else(|| {
+            let stem = legacy_stem(texture);
+            self.legacy
+                .iter()
+                .find(|(new, _)| *new == stem)
+                .map(|(_, old)| *old)
+        })
+    }
 }
 
 /// How many fallbacks a chain follows (`cat_baby_collar`, `cat_collar`, `cat` takes two).
 const FALLBACK_STEPS: usize = 3;
 
 impl CemModels {
-    /// The `.jem` files under `root` applied to the layers of `types`.
+    /// The `.jem` files under `root` applied to the layers of `types`, and the layers the
+    /// packs' pre-1.21.5 mob textures paint ([`LEGACY`]).
     pub fn load(root: &Path, types: &HashMap<String, Arc<MobType>>) -> Self {
         let files = jem_files(root);
-        if files.is_empty() {
-            set_rule_species(Vec::new());
-            return Self::default();
-        }
         let (models, standing) = Self::from_files(root, &files, &vanilla_layers(types));
         set_rule_species(standing);
         models
@@ -104,6 +119,8 @@ impl CemModels {
         // Each file parsed once, when a layer first tries it.
         let mut parsed: HashMap<&str, Option<EntityModel>> = HashMap::new();
         let mut layers = HashMap::new();
+        // The layers that took their own file (`pig.jem` for `pig#main`), for [`LEGACY`].
+        let mut own = HashMap::new();
         // The species whose rules read the standing block, for the per-tick gate.
         let mut standing_species = Vec::new();
         for (key, mut candidates) in plan {
@@ -137,8 +154,19 @@ impl CemModels {
             // only: the layer keeps its own texture.
             if layer_suffix(&key) != layer_suffix(&layer_key(name)) {
                 layer.texture = None;
+            } else if key == layer_key(name) {
+                own.insert(key.clone(), (name, path));
             }
             layers.insert(key, layer);
+        }
+        let own: HashMap<String, (&str, &str, &EntityModel)> = own
+            .into_iter()
+            .filter_map(|(key, (name, path))| {
+                Some((key, (name, path, parsed.get(path)?.as_ref()?)))
+            })
+            .collect();
+        for family in LEGACY {
+            family.layers(root, vanilla, &own, &mut layers);
         }
         (Self { layers }, standing_species)
     }
@@ -624,7 +652,134 @@ impl CemLayer {
             animation,
             texture: jem.texture.as_deref().and_then(atlas_name),
             anchors,
+            legacy: Vec::new(),
         }
+    }
+}
+
+/// A mob 1.21.5 split by climate or renamed the texture of: a pack made before paints the
+/// adult and its climate variants with its one old texture (`entity/pig/pig`, 64x32), whose
+/// UVs the adult's model measures.
+struct Legacy {
+    /// The adult's model; its climate variants', which the pack knew as the adult.
+    model: &'static str,
+    variants: &'static [&'static str],
+    /// The vanilla textures without climate ([`legacy_stem`]), and their old names.
+    textures: &'static [(&'static str, &'static str)],
+    /// How many times taller the new texture is than the old: the texels the old model read
+    /// kept their places.
+    taller: f32,
+}
+
+const LEGACY: &[Legacy] = &[
+    Legacy {
+        model: "pig",
+        variants: &["cold_pig"],
+        textures: &[("entity/pig/pig", "entity/pig/pig")],
+        taller: 2.0,
+    },
+    Legacy {
+        model: "cow",
+        variants: &["cold_cow", "warm_cow"],
+        textures: &[("entity/cow/cow", "entity/cow/cow")],
+        taller: 2.0,
+    },
+    Legacy {
+        model: "mooshroom",
+        variants: &[],
+        textures: &[
+            ("entity/cow/mooshroom_red", "entity/cow/red_mooshroom"),
+            ("entity/cow/mooshroom_brown", "entity/cow/brown_mooshroom"),
+        ],
+        taller: 2.0,
+    },
+    Legacy {
+        model: "chicken",
+        variants: &["cold_chicken"],
+        textures: &[("entity/chicken/chicken", "entity/chicken")],
+        taller: 1.0,
+    },
+];
+
+/// A vanilla mob texture without its climate: `entity/pig/pig_cold` is `entity/pig/pig`.
+fn legacy_stem(texture: &str) -> &str {
+    ["_temperate", "_warm", "_cold"]
+        .iter()
+        .find_map(|climate| texture.strip_suffix(climate))
+        .unwrap_or(texture)
+}
+
+impl Legacy {
+    /// The family's layers (adult and climate variants) when the packs have an old texture of
+    /// it: the adult's vanilla model, reshaped by its own `.jem` when there is one without a
+    /// texture of its own, read in the old layout. Without this a pig drew the 64x64 texture
+    /// through a `.jem`'s 64x32 UVs, and cold pigs and mooshrooms vanilla's textures.
+    fn layers(
+        &self,
+        root: &Path,
+        vanilla: &HashMap<&str, (&Arc<Part>, &str)>,
+        own: &HashMap<String, (&str, &str, &EntityModel)>,
+        layers: &mut HashMap<String, CemLayer>,
+    ) {
+        // `root` holds vanilla's files too, which never had the old names.
+        let legacy: Vec<_> = self
+            .textures
+            .iter()
+            .copied()
+            .filter(|(_, old)| {
+                root.join(format!("assets/minecraft/textures/{old}.png"))
+                    .is_file()
+            })
+            .collect();
+        let adult = format!("{}#main", self.model);
+        let Some(&(part, _)) = vanilla.get(adult.as_str()) else {
+            return;
+        };
+        let jem = own.get(&adult);
+        if legacy.is_empty() || jem.is_some_and(|(_, _, jem)| jem.texture.is_some()) {
+            return;
+        }
+        let rules = jem.map(|&(_, path, _)| load_rules(root, path));
+        for model in std::iter::once(self.model).chain(self.variants.iter().copied()) {
+            let key = format!("{model}#main");
+            // A variant with a file of its own was made after 1.21.5.
+            if !vanilla.contains_key(key.as_str()) || key != adult && own.contains_key(&key) {
+                continue;
+            }
+            let tree = (**part).clone();
+            let mut layer = match (jem, &rules) {
+                (Some(&(name, _, jem)), Some(rules)) => CemLayer::build(&tree, jem, name, rules),
+                _ => CemLayer {
+                    model: Arc::new(tree),
+                    animation: None,
+                    texture: None,
+                    anchors: Vec::new(),
+                    legacy: Vec::new(),
+                },
+            };
+            old_layout(Arc::make_mut(&mut layer.model), self.taller);
+            layer.legacy = legacy.clone();
+            layers.insert(key, layer);
+        }
+    }
+}
+
+/// The vanilla parts of `part` (not a `.jem`'s `cem#` bones) reading a texture `taller` times
+/// shorter. Faces past its bottom belong to parts newer than it (the 1.21.5 cow's muzzle):
+/// the model it was painted for had none.
+fn old_layout(part: &mut Part, taller: f32) {
+    if part.name.starts_with("cem#") {
+        return;
+    }
+    for polygon in &mut part.polygons {
+        for vertex in &mut polygon.vertices {
+            vertex[4] *= taller;
+        }
+    }
+    part.polygons
+        .retain(|p| p.vertices.iter().all(|v| v[4] <= 1.0));
+    for child in &mut part.children {
+        old_layout(child, taller);
     }
 }
 
@@ -878,6 +1033,75 @@ mod tests {
         let leg = get(&models.layer("cow#main").unwrap().model, "right_hind_leg");
         assert_eq!((leg.polygons.len(), leg.children.len()), (0, 1));
         assert!(models.layer("sheep#main").is_none());
+    }
+
+    #[test]
+    fn a_pre_1_21_5_pig_paints_with_its_old_texture() {
+        // Conquest's pig: the head replaced, the legs left vanilla.
+        let pig = r#"{"textureSize": [64, 32], "models": [{"part": "head", "translate": [5, 9.7, -11],
+            "boxes": [{"coordinates": [-11, -14, 3, 8, 8, 8], "uvNorth": [8, 8, 16, 16]}]}]}"#;
+        let mut leg = plane("right_hind_leg", vec![]);
+        leg.polygons[0].vertices[2][4] = 0.3125; // v 20 of the 64x64 texture
+        let tree = plane("root", vec![plane("head", vec![]), leg]);
+        let files = [("optifine/cem/pig.jem", pig)];
+        let new = models("legacy-new", &files, &["pig#main"], &tree);
+        assert_eq!(
+            new.layer("pig#main")
+                .unwrap()
+                .texture_for("entity/pig/pig_temperate"),
+            None
+        );
+        let files = [files[0], ("textures/entity/pig/pig.png", "")];
+        let old = models("legacy-old", &files, &["pig#main"], &tree);
+        let layer = old.layer("pig#main").unwrap();
+        assert_eq!(
+            layer.texture_for("entity/pig/pig_warm"),
+            Some("entity/pig/pig")
+        );
+        // The leg's v 20 is 20 of the old texture's 32; the pack's own box keeps its UVs.
+        let leg = get(&layer.model, "right_hind_leg");
+        assert_eq!(leg.polygons[0].vertices[2][4], 0.625);
+        assert_eq!(get(&layer.model, "cem#0").polygons[0].vertices[0][4], 0.25);
+    }
+
+    #[test]
+    fn a_pre_1_21_5_pack_paints_variants_with_the_adults_old_texture() {
+        // A pig without a `.jem`, its head with a face past the old texture's bottom.
+        let mut head = plane("head", vec![]);
+        let mut newer = head.polygons[0].clone();
+        newer.vertices[2][4] = 0.578125; // v 37 of 64: past the old 32
+        head.polygons.push(newer);
+        let tree = plane("root", vec![head]);
+        let keys = ["pig#main", "cold_pig#main"];
+        let files = [("textures/entity/pig/pig.png", "")];
+        let pigs = models("legacy-family", &files, &keys, &tree);
+        let cold = pigs.layer("cold_pig#main").unwrap();
+        assert_eq!(
+            cold.texture_for("entity/pig/pig_cold"),
+            Some("entity/pig/pig")
+        );
+        assert_eq!(get(&cold.model, "head").polygons.len(), 1);
+        // A cold pig with a file of its own was made for its own texture.
+        let file = format!(r#"{{"models": [{{"part": "head", {BOX}}}]}}"#);
+        let files = [files[0], ("optifine/cem/cold_pig.jem", file.as_str())];
+        let pigs = models("legacy-own-variant", &files, &keys, &tree);
+        let cold = pigs.layer("cold_pig#main").unwrap();
+        assert_eq!(cold.texture_for("entity/pig/pig_cold"), None);
+
+        // Mooshrooms take each colour's old name.
+        let files = [("textures/entity/cow/red_mooshroom.png", "")];
+        let moosh = models("legacy-mooshroom", &files, &["mooshroom#main"], &tree);
+        let layer = moosh.layer("mooshroom#main").unwrap();
+        let red = layer.texture_for("entity/cow/mooshroom_red");
+        assert_eq!(red, Some("entity/cow/red_mooshroom"));
+        assert_eq!(layer.texture_for("entity/cow/mooshroom_brown"), None);
+        // Without the old names nothing changes.
+        let files = [("textures/entity/pig/pig_temperate.png", "")];
+        assert!(
+            models("legacy-modern", &files, &keys, &tree)
+                .layer("pig#main")
+                .is_none()
+        );
     }
 
     const BOX: &str = r#""boxes": [{"coordinates": [0, 0, 0, 1, 1, 1], "textureOffset": [0, 0]}]"#;
