@@ -674,8 +674,8 @@ impl Game<'_> {
         let stack = parse_stack(op["item"].as_str().ok_or("missing blocking stack")?)?
             .ok_or("empty blocking stack")?;
         // Reload the stack just as a player inventory does between sessions.
-        let saved = horizon_client::item_nbt::item_to_nbt(&stack);
-        self.inventory[self.selected] = horizon_client::item_nbt::item_from_nbt(&saved);
+        let saved = horizon_items::item_nbt::item_to_nbt(&stack);
+        self.inventory[self.selected] = horizon_items::item_nbt::item_from_nbt(&saved);
         let (creative, mode) = (self.creative, self.mode);
         self.creative = op["creative"].as_bool().unwrap_or(false);
         self.mode = if self.creative {
