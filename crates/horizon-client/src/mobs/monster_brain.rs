@@ -1255,11 +1255,7 @@ fn shoot_tick(m: &mut Mob, cx: &mut Bx) {
     );
     // The new entity's own random spreads the shot (5 - difficulty id * 4):
     // not the breeze's.
-    p.shoot_own(
-        [xd, yd, zd],
-        0.7,
-        5.0 - f32::from(cx.w.difficulty.id) * 4.0,
-    );
+    p.shoot_own([xd, yd, zd], 0.7, 5.0 - f32::from(cx.w.difficulty.id) * 4.0);
     cx.events.push(MobEvent::Projectile(p));
     breeze_sound(m, cx, "entity.breeze.shoot", 1.5);
 }

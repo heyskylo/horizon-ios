@@ -909,8 +909,7 @@ pub fn perform_ranged_attack(m: &mut Mob, who: Who, cx: &mut Cx, power: f32) {
     );
     // From the arrow's own random, after its UUID.
     if let (ProjectileKind::Arrow { base_damage, .. }, Some(a)) = (&mut p.kind, p.arrow.as_mut()) {
-        *base_damage =
-            f64::from(power) * 2.0 + a.random.triangle(f64::from(id) * 0.11, 0.574_25);
+        *base_damage = f64::from(power) * 2.0 + a.random.triangle(f64::from(id) * 0.11, 0.574_25);
     }
     p.set_bonus(super::gear::arrow_bonus(m));
     ignite_for_wither_skeleton(m, &mut p);

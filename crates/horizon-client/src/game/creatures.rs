@@ -2377,7 +2377,11 @@ impl Game<'_> {
             self.next_entity += 1;
             p.id = self.next_entity;
         }
-        self.persist.uuids.extend(p.uuid.take().map(|uuid| (p.id, uuid)));
+        // The UUID its own random made, unless it already has one (a client
+        // copy's from the spawn packet).
+        if let Some(uuid) = p.uuid.take() {
+            self.persist.uuids.entry(p.id).or_insert(uuid);
+        }
         // Projectile.setOwner: the acting player's or the mob's UUID, which
         // its save keeps even once the owner is gone.
         if p.owner_uuid.is_none() {
@@ -7496,15 +7500,7 @@ impl Game<'_> {
         let velocity = self.known_player_movement();
         let start = Vec3::new(eye[0], eye[1] - 0.1, eye[2]);
         let mut proj = Projectile::new(kind.clone(), start, Some(Who::Player));
-        proj.shoot_from_rotation(
-            self.pitch,
-            self.yaw,
-            0.0,
-            1.5,
-            1.0,
-            velocity,
-            on_ground,
-        );
+        proj.shoot_from_rotation(self.pitch, self.yaw, 0.0, 1.5, 1.0, velocity, on_ground);
         self.add_projectile(proj);
         // SnowballItem.use / EggItem.use / EnderpearlItem.use: awardStat(ITEM_USED).
         self.award_stat("used", item, 1);

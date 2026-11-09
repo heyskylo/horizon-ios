@@ -412,8 +412,6 @@ impl Game<'_> {
                     a.pickup_item = ItemStack::new("minecraft:spectral_arrow", 1);
                 }
                 p.id = id;
-                // The spawn packet's UUID, kept before this, wins over its own random's.
-                p.uuid = None;
                 p.velocity = velocity;
                 p.yaw = yaw;
                 p.pitch = pitch;
