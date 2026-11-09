@@ -522,6 +522,11 @@ impl Hdr {
         self.targets.as_ref().unwrap().frame.clone()
     }
 
+    /// Lets the targets go, a scaled screenshot's: the next `frame` makes them again.
+    pub fn release_targets(&mut self) {
+        self.targets = None;
+    }
+
     /// The float frame with HUD coverage (`Layered`).
     pub fn layered(&self) -> bool {
         self.layered.is_some()
@@ -1542,6 +1547,32 @@ struct ReferenceParams { peak: f32, scene: f32, world: f32, debug: f32, share: v
         // A peak under paper white has no headroom: the display tops out at white.
         (hdr.peak, hdr.black) = (150.0, 400.0);
         assert_eq!(hdr.display(), [1.0, 203.0, 203.0, 203.0]);
+    }
+
+    #[test]
+    fn a_scaled_screenshot_shoots_at_its_size_and_leaves_the_window_its_own_targets() {
+        let Some((device, queue)) = gpu() else {
+            eprintln!("scaled screenshot GPU unavailable");
+            return;
+        };
+        let mut hdr = Hdr::with_debug(&device, &queue, F::Rgba16Float, Output::Pq, true, None);
+        let extent = |t: &wgpu::Texture| [t.width(), t.height()];
+        hdr.frame(&device, [4, 2]);
+        // `Renderer::draw_scaled_frame`: the frame at the screenshot's size, its SDR picture
+        // and HDR10 copy at that size too, then the targets let go.
+        assert_eq!(extent(&hdr.frame(&device, [8, 4])), [8, 4]);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let sdr = hdr
+            .sdr_screenshot(&device, &mut encoder, F::Bgra8Unorm, false)
+            .unwrap();
+        let pq = hdr.capture(&device, &queue, &mut encoder, true).unwrap();
+        queue.submit([encoder.finish()]);
+        assert_eq!((extent(&sdr), extent(&pq)), ([8, 4], [8, 4]));
+        hdr.release_targets();
+        assert!(hdr.hud().is_none() && hdr.coverage_view().is_none());
+        // The window's next frame makes its own again.
+        assert_eq!(extent(&hdr.frame(&device, [4, 2])), [4, 2]);
+        assert_eq!(extent(hdr.hud().unwrap()), [4, 2]);
     }
 
     #[test]

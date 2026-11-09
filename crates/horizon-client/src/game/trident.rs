@@ -44,6 +44,8 @@ pub(super) struct ThrownTrident {
     owner_uuid: Option<[i32; 4]>,
     /// `Entity.isNoGravity`: `AbstractArrow.applyGravity` then skips the pull.
     pub(super) no_gravity: bool,
+    /// `Entity.onGround`: moved by `setPos`, it keeps the one it was loaded with.
+    pub(super) on_ground: bool,
     /// `Entity.remainingFireTicks`; on clients, the synchronized on-fire flag.
     pub(super) fire_ticks: i32,
     /// Water membership from the preceding `baseTick` (not updated while stuck).
@@ -102,6 +104,7 @@ impl ThrownTrident {
         self.owner_uuid = n.owner;
         self.guest = None;
         self.no_gravity = n.no_gravity;
+        self.on_ground = n.on_ground;
         self.fire_ticks = n.fire_ticks;
     }
     /// `AbstractArrow.addAdditionalSaveData` + `DealtDamage`.
@@ -125,6 +128,7 @@ impl ThrownTrident {
                 has_been_shot: self.has_been_shot,
                 owner: self.owner_uuid,
                 no_gravity: self.no_gravity,
+                on_ground: self.on_ground,
                 fire_ticks: self.fire_ticks,
                 item: &self.stack,
             },
@@ -155,6 +159,7 @@ impl ThrownTrident {
             has_been_shot: false,
             owner_uuid: None,
             no_gravity: false,
+            on_ground: false,
             fire_ticks: 0,
             was_touching_water: false,
             random: horizon_core::random::LegacyRandom::new(i64::from(id)),
@@ -524,6 +529,7 @@ impl Game<'_> {
             has_been_shot: false,
             owner_uuid: Some(owner_uuid),
             no_gravity: false,
+            on_ground: false,
             fire_ticks: 0,
             was_touching_water: false,
             random: horizon_core::random::LegacyRandom::new(i64::from(id)),
@@ -1214,6 +1220,8 @@ impl Game<'_> {
             _ => None,
         });
         for (t, at) in live.chain(taken) {
+            // Frame generation and temporal upscaling follow its own flight and spin.
+            self.mark_motion(out.len(), Self::MOTION_OBJECT | u64::from(t.id));
             let p = glam::DVec3::from_array(at) - camera;
             let base = glam::Mat4::from_translation(p.as_vec3())
                 * glam::Mat4::from_rotation_y((t.yaw - 90.0).to_radians())
@@ -1268,6 +1276,7 @@ impl Game<'_> {
                 );
             }
         }
+        self.mark_motion(out.len(), 0);
     }
 }
 horizon_client::impl_joined!(ThrownTrident);

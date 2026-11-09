@@ -9026,6 +9026,30 @@ impl Game<'_> {
     pub(super) fn native_player_died(&mut self, player: u128, cause: Option<&str>) {
         mod_api::dispatch_player_died(self, mod_api::mods(), player, cause);
     }
+    /// `player` (`name`) is joining: the "joined the game" line the host's chat
+    /// shows (`line`). Set `line` to `None` to show nothing, or replace it. Only
+    /// the host's chat is asked: a dedicated server sends no such line. Server-side.
+    /// Pending API @API:player_join_message@.
+    pub(super) fn native_player_join_message(
+        &mut self,
+        player: u128,
+        name: &str,
+        line: &mut Option<Text>,
+    ) {
+        mod_api::dispatch_player_join_message(self, mod_api::mods(), player, name, line);
+    }
+    /// `player` (`name`) is leaving: the "left the game" line the host's chat
+    /// shows (`line`). Set `line` to `None` to show nothing, or replace it. Server-side.
+    /// Pending API @API:player_leave_message@.
+    pub(super) fn native_player_leave_message(
+        &mut self,
+        player: u128,
+        name: &str,
+        line: &mut Option<Text>,
+    ) {
+        mod_api::dispatch_player_leave_message(self, mod_api::mods(), player, name, line);
+    }
+
     /// `player` (`name`) died, with the message the game rendered for them
     /// (`message`, the death screen's and the team's line), whether or not
     /// death messages are shown. Only hears: the message is not changed
