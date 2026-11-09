@@ -597,7 +597,7 @@ fn read_ticks(
 }
 fn fluid_name(kind: u32) -> Option<String> {
     use horizon_world::fluid::FluidKind;
-    let fluid = *FluidKind::ALL.get(kind as usize)?;
+    let fluid = FluidKind::from_index(kind as usize)?;
     (fluid != FluidKind::Empty).then(|| fluid.name().to_owned())
 }
 fn fluid_id(name: &str) -> Option<u32> {
