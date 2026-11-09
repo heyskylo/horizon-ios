@@ -276,8 +276,29 @@ impl Game<'_> {
                         continue;
                     }
                     Some(rest) => {
-                        // ItemEntity.playerTouch: a partial add is `Inventory.add`
-                        // returning false, so no stat, take animation or sound.
+                        // ItemEntity.playerTouch: `Inventory.add` is true once any
+                        // of the stack went in, so a partial pickup still takes
+                        // (animation and sound) and awards the stat with the
+                        // count the stack had before it (`take(this, count)`,
+                        // `awardStat(..., count)`).
+                        if rest.count < before {
+                            self.award_stat("picked_up", &kind, before as i32);
+                            if let Some(thrower) = thrower {
+                                self.trigger_thrown_picked_up_by_player(&rest, thrower);
+                            }
+                            self.add_pickup(
+                                pickups::Taken::Item(Box::new(item.clone())),
+                                pickups::Collector::Player,
+                            );
+                            // handleTakeItemEntity: the random pitch of a full pickup.
+                            let pitch = ((self.world.random.next_float()
+                                - self.world.random.next_float())
+                                * 0.7
+                                + 1.0)
+                                * 2.0;
+                            self.audio
+                                .play("minecraft:entity.item.pickup", Some(feet), 0.2, pitch);
+                        }
                         item.stack = rest;
                     }
                 }
