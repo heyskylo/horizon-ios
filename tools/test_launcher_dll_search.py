@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 
 from check_imports import pe_imports
+import lab
 
 
 def check(binary):
@@ -23,14 +24,11 @@ def check(binary):
         exe_dir, cwd = root / "bin", root / "cwd"
         exe_dir.mkdir()
         cwd.mkdir()
-        env = os.environ.copy()
-        for key in (
+        homes = {key: root / key for key in (
             "HORIZON_HOME", "HORIZON_LAUNCHER_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME",
             "HORIZON_LAUNCHER_TRASH", "HORIZON_LAUNCHER_CLIPBOARD", "HORIZON_LAUNCHER_DESKTOP",
-        ):
-            env[key] = str(root / key)
-        env.update(HORIZON_LAUNCHER_NO_SELF_UPDATE="1", HORIZON_NO_AUDIO="1",
-                   HORIZON_TELEMETRY_URL="off")
+        )}
+        env = lab.game_env(**homes, HORIZON_TELEMETRY_URL="off")
 
         def version(exe):
             result = subprocess.run([str(exe), "--version"], cwd=cwd, env=env,
