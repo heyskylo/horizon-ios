@@ -52,6 +52,8 @@ fn a_death_drops_the_off_hand_before_the_armour() {
     assert!(offhand.is_none() && armor.iter().all(Option::is_none));
 }
 
+#[path = "knot_command_view_tests.rs"]
+mod knot_command_view_tests;
 /// `MinecraftServer.computeNextAutosaveInterval`: three hundred seconds of
 /// ticks at the rate the server runs at, never fewer than a hundred.
 #[test]
@@ -202,6 +204,8 @@ fn glfw_modifier_bits_are_glfw_modifier_bits() {
     assert_eq!(glfw_modifiers(ModifiersState::all()), 15);
 }
 
+#[path = "knot_identity_tests.rs"]
+mod knot_identity_tests;
 /// The `button` a native mod's mouse hooks hand over is GLFW's index (0
 /// left, 1 right, 2 middle, 3 back, 4 forward, else the button's number),
 /// the one `keybinds::mouse_name` names (`key.mouse.<index + 1>` from the

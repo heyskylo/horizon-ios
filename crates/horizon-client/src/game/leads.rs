@@ -120,6 +120,70 @@ fn write_mob_leash_tag(
 }
 
 impl Game<'_> {
+    /// The fences the live leads of the level in place hang on, mobs first,
+    /// each once.
+    fn lead_fences(&self) -> Vec<[i32; 3]> {
+        let mut fences = Vec::new();
+        let mobs = self
+            .mobs
+            .iter()
+            .filter(|m| !m.removed)
+            .map(|m| m.extra.leash);
+        for holder in mobs.chain(self.boats.iter().map(|b| b.leash)) {
+            if let Some(Holder::Knot(p)) = holder
+                && !fences.contains(&p)
+            {
+                fences.push(p);
+            }
+        }
+        fences
+    }
+    /// `LeashFenceKnotEntity.notifyLeasheeRemoved`: a fence no lead hangs on
+    /// any more has lost its knot, with its id. Its UUID goes with the rest
+    /// of the dead entities' memory (`prune_entity_memory`).
+    pub(super) fn forget_untied_knots(&mut self) {
+        let fences = self.lead_fences();
+        self.knot_ids.retain(|p, _| fences.contains(p));
+    }
+    /// `LeashFenceKnotEntity.getOrCreateKnot` → `createKnot`: the first lead
+    /// tied to a fence makes its knot, a real entity with its own id (the
+    /// shared `Entity.id` counter) and UUID, whether or not anyone tracks
+    /// it. A fence that already has one keeps it. Call
+    /// [`Self::forget_untied_knots`] before the tie.
+    pub(super) fn tie_knot(&mut self, fence: [i32; 3]) {
+        if self.knot_ids.contains_key(&fence) {
+            return;
+        }
+        self.next_entity += 1;
+        let id = self.next_entity;
+        self.knot_ids.insert(fence, id);
+        self.uuid_for(id);
+    }
+    /// The fence of the natural knot whose entity id is `id`, while a lead
+    /// still hangs on it.
+    pub(super) fn natural_knot(&self, id: u32) -> Option<[i32; 3]> {
+        let (&fence, _) = self.knot_ids.iter().find(|&(_, &k)| k == id)?;
+        let mobs = self
+            .mobs
+            .iter()
+            .filter(|m| !m.removed)
+            .map(|m| m.extra.leash);
+        mobs.chain(self.boats.iter().map(|b| b.leash))
+            .any(|h| h == Some(Holder::Knot(fence)))
+            .then_some(fence)
+    }
+    /// The ids of the level's natural knots that a lead still holds, in the
+    /// order they were made.
+    pub(super) fn natural_knot_ids(&self) -> Vec<u32> {
+        let mut ids: Vec<u32> = self
+            .knot_ids
+            .values()
+            .copied()
+            .filter(|&id| self.natural_knot(id).is_some())
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
     /// BlockAttachedEntity.tick / LeashFenceKnotEntity.survives for explicitly loaded knots.
     pub(super) fn tick_explicit_knots(&mut self) {
         let ticking = self.entity_ticking_area();
@@ -359,6 +423,9 @@ impl Game<'_> {
                 |u| self.mob_by_uuid(u),
                 |u| self.boat_by_uuid(u),
             );
+            if let Some((Holder::Knot(_), _)) = holder {
+                self.forget_untied_knots();
+            }
             let m = &mut self.mobs[i];
             if let Some((h, player)) = holder {
                 if h == Holder::Player {
@@ -366,6 +433,9 @@ impl Game<'_> {
                 }
                 m.extra.leash = Some(h);
                 m.extra.leash_pending = None;
+                if let Holder::Knot(fence) = h {
+                    self.tie_knot(fence);
+                }
             } else if m.age > 100 {
                 m.extra.leash_pending = None;
                 let at = [m.position.x, m.position.y, m.position.z];
@@ -548,12 +618,16 @@ impl Game<'_> {
         {
             return true;
         }
+        self.forget_untied_knots();
         let mut attached = self.tie_player_boats(center, Holder::Knot(knot_pos));
         for j in in_hand {
             if self.can_attach_lead(j, center) {
                 self.mobs[j].extra.leash = Some(Holder::Knot(knot_pos));
                 attached = true;
             }
+        }
+        if attached {
+            self.tie_knot(knot_pos);
         }
         if !attached && !sneaking && knot_hit {
             let player = self.player_center();
