@@ -3,12 +3,13 @@
 //! that happens only after the player confirms, without their home folder or names.
 use super::servers_page::Field;
 use super::*;
-use gpui::{ClipboardItem, ScrollHandle};
+use crate::scrollbar::TakeWheel;
+use gpui::ClipboardItem;
 use horizon_launcher::game_log::{self, Shared};
 
 pub(super) struct Console {
     follow: bool,
-    scroll: ScrollHandle,
+    scroll: Scrollbar,
     /// Lines and search at the last draw: a change means scroll down when following.
     seen: (usize, String),
     confirm_share: bool,
@@ -20,7 +21,7 @@ impl Default for Console {
     fn default() -> Self {
         Console {
             follow: true,
-            scroll: ScrollHandle::new(),
+            scroll: Scrollbar::default(),
             seen: (0, String::new()),
             confirm_share: false,
             sharing: false,
@@ -138,7 +139,7 @@ impl Launcher {
             .collect();
         let now = (count, search);
         if self.console.follow && now != self.console.seen {
-            self.console.scroll.scroll_to_bottom();
+            self.console.scroll.handle.scroll_to_bottom();
         }
         self.console.seen = now;
         let follow = div()
@@ -282,9 +283,10 @@ impl Launcher {
         let shown = lines.len().saturating_sub(LOG_LINES);
         let body = div()
             .id("console-lines")
-            .track_scroll(&self.console.scroll)
+            .track_scroll(&self.console.scroll.handle)
             .h(px(320.))
             .overflow_y_scroll()
+            .take_wheel(&self.console.scroll)
             .p(px(10.))
             .border_2()
             .border_color(t.outline)
@@ -337,7 +339,7 @@ impl Launcher {
             .collect();
         let now = (count, search);
         if self.console.follow && now != self.console.seen {
-            self.console.scroll.scroll_to_bottom();
+            self.console.scroll.handle.scroll_to_bottom();
         }
         self.console.seen = now;
         let follow = div()
@@ -497,9 +499,10 @@ impl Launcher {
         let shown = lines.len().saturating_sub(LOG_LINES);
         let log = div()
             .id("console-lines")
-            .track_scroll(&self.console.scroll)
+            .track_scroll(&self.console.scroll.handle)
             .h(px(320.))
             .overflow_y_scroll()
+            .take_wheel(&self.console.scroll)
             .p(px(16.))
             .rounded(px(radius::ROW))
             .bg(gpui::black().opacity(0.25))

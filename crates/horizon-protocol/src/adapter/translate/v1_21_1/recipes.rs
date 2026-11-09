@@ -7,6 +7,7 @@ use crate::{
     adapter::{
         ServerVersion,
         ids::{self, Way},
+        pinned_ids::item,
         session::Session,
     },
     buf::{Codec, Reader, Writer},
@@ -153,7 +154,7 @@ impl Recipes {
                     ingredients.push(Ingredient::read(r)?);
                 }
                 let result = result(r)?;
-                let station = SlotDisplay::Item(405); // pinned minecraft:crafting_table
+                let station = SlotDisplay::Item(item::CRAFTING_TABLE);
                 recipe.display = Some(if serializer == 0 {
                     recipe.notify = r.bool()?;
                     RecipeDisplay::Shaped {
@@ -190,14 +191,14 @@ impl Recipes {
                 let experience = r.f32()?;
                 let duration = r.varint()?;
                 let (station, property, book) = match serializer {
-                    15 => (407, "furnace_input", 4 + category),
+                    15 => (item::FURNACE, "furnace_input", 4 + category),
                     16 => (
-                        1508,
+                        item::BLAST_FURNACE,
                         "blast_furnace_input",
                         if category == 1 { 7 } else { 8 },
                     ),
-                    17 => (1507, "smoker_input", 9),
-                    _ => (1527, "campfire_input", 12),
+                    17 => (item::SMOKER, "smoker_input", 9),
+                    _ => (item::CAMPFIRE, "campfire_input", 12),
                 };
                 recipe.category = book;
                 recipe.properties.push((property, ingredient.items()));
@@ -220,7 +221,7 @@ impl Recipes {
                 recipe.display = Some(RecipeDisplay::Stonecutter {
                     input: ingredient.display(),
                     result,
-                    station: SlotDisplay::Item(1513),
+                    station: SlotDisplay::Item(item::STONECUTTER),
                 });
                 ingredients.push(ingredient);
             }
@@ -262,7 +263,7 @@ impl Recipes {
                     base: base.display(),
                     addition: addition.display(),
                     result,
-                    station: SlotDisplay::Item(1512),
+                    station: SlotDisplay::Item(item::SMITHING_TABLE),
                 });
                 ingredients.extend([template, base, addition]);
             }

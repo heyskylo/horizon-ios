@@ -27,6 +27,7 @@ use horizon_core::{
     ticks::{SavedTick, TickPriority, TickTypeId},
 };
 use horizon_world::attachments::{ATTACHMENTS_KEY, attachment_compound};
+use horizon_world::worldgen::blending::BlendingData;
 use horizon_world::{
     DATA_VERSION,
     chunk::BlockState,
@@ -44,7 +45,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         mpsc,
     },
 };
@@ -62,7 +63,7 @@ mod loot_tests;
 pub fn chunks_with_block_entities<'a, N: std::hash::BuildHasher>(
     chunks: impl IntoIterator<Item = &'a Arc<Chunk>>,
     entities: &HashMap<(i32, i32, i32), crate::containers::BlockEntity>,
-    names: &HashMap<(i32, i32, i32), String, N>,
+    names: &HashMap<(i32, i32, i32), Tag, N>,
 ) -> Vec<Chunk> {
     let chunks: Vec<_> = chunks.into_iter().collect();
     if chunks.is_empty() {
@@ -628,7 +629,10 @@ fn block_entity_id(e: &crate::containers::BlockEntity, block: &str) -> String {
     match (e, block) {
         (
             crate::containers::BlockEntity::Chest(_),
-            "minecraft:trapped_chest" | "minecraft:barrel" | "minecraft:dropper",
+            "minecraft:trapped_chest"
+            | "minecraft:barrel"
+            | "minecraft:dropper"
+            | "minecraft:ender_chest",
         ) => block.to_owned(),
         (crate::containers::BlockEntity::Chest(_), b) if b.ends_with("shulker_box") => {
             "minecraft:shulker_box".to_owned()
@@ -667,7 +671,17 @@ pub fn encode_block_entity(
         ("components", Tag::Compound(components)),
     ];
     match e {
-        BlockEntity::Chest(items) => entries.push(("Items", encode_items(items))),
+        // EnderChestBlockEntity saves nothing of its own: the items are the player's.
+        BlockEntity::Chest(_) if block == "minecraft:ender_chest" => {}
+        BlockEntity::Chest(items) => {
+            let list = encode_items(items);
+            // ShulkerBoxBlockEntity.saveAdditional: `saveAllItems(.., false)`
+            // writes no list for an empty box; other containers always do.
+            let empty = matches!(&list, Tag::List(l) if l.is_empty());
+            if !(empty && block.ends_with("shulker_box")) {
+                entries.push(("Items", list));
+            }
+        }
         BlockEntity::Furnace(f) => {
             entries.push(("Items", encode_items(&f.items)));
             entries.push(("lit_time_remaining", Tag::Int(f.lit_remaining)));
@@ -695,7 +709,9 @@ pub fn encode_block_entity(
             if let Some(record) = j.record() {
                 entries.push(("RecordItem", item_to_nbt(record)));
             }
-            entries.push(("ticks_since_song_started", Tag::Long(j.ticks)));
+            if j.song_clock_present {
+                entries.push(("ticks_since_song_started", Tag::Long(j.ticks)));
+            }
         }
         BlockEntity::Beacon(b) => {
             if let Some(p) = &b.primary {
@@ -798,9 +814,19 @@ pub fn encode_block_entity(
                 entries.push(("item", item_to_nbt(item)));
             }
         }
-        // Encoded above.
-        BlockEntity::DaylightDetector | BlockEntity::CopperGolemStatue(_) | BlockEntity::Mod(_) => {
+        // ConduitBlockEntity.saveAdditional: EntityReference.store.
+        BlockEntity::Conduit(target) => {
+            if let Some(uuid) = target {
+                entries.push(("Target", Tag::IntArray(uuid.to_vec())));
+            }
         }
+        // Encoded above; an enchanting table's CustomName is the block name.
+        BlockEntity::DaylightDetector
+        | BlockEntity::Bell
+        | BlockEntity::EndPortal
+        | BlockEntity::EnchantingTable
+        | BlockEntity::CopperGolemStatue(_)
+        | BlockEntity::Mod(_) => {}
         // PotentSulfurBlockEntity.saveAdditional.
         BlockEntity::PotentSulfur(sulfur) => {
             entries.push(("countdown", Tag::Int(sulfur.waiting_countdown)))
@@ -938,13 +964,18 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
     }
     if id == "minecraft:jukebox" {
         let record = tag.get("RecordItem").and_then(item_from_nbt);
-        let ticks = number(tag.get("ticks_since_song_started")).unwrap_or(0);
+        let clock = number(tag.get("ticks_since_song_started"));
+        let ticks = clock.unwrap_or(0);
+        // JukeboxBlockEntity.loadAdditional adopts a saved clock separately
+        // from a record-only load. Catalog-dependent load validation is separate.
+        let song_clock_present = record.is_some() && clock.is_some();
         let playing = record.is_some();
         return Some((
             pos,
             BlockEntity::Jukebox(crate::containers::Jukebox {
                 items: [record],
                 ticks,
+                song_clock_present,
                 playing,
             }),
         ));
@@ -1124,7 +1155,18 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
         | BlockEntity::EndGateway(_)
         | BlockEntity::Skull(_)
         | BlockEntity::DaylightDetector
+        | BlockEntity::Bell
+        | BlockEntity::EndPortal
+        | BlockEntity::EnchantingTable
         | BlockEntity::Mod(_) => {}
+        // ConduitBlockEntity.loadAdditional: EntityReference.read through
+        // UUIDUtil.CODEC, an int array of four.
+        BlockEntity::Conduit(target) => {
+            *target = match tag.get("Target") {
+                Some(Tag::IntArray(v)) if v.len() == 4 => Some([v[0], v[1], v[2], v[3]]),
+                _ => None,
+            };
+        }
         // `BlockEntity.loadAdditional`: the components the block entity keeps.
         BlockEntity::CopperGolemStatue(components) => {
             *components = match tag.get("components") {
@@ -1363,6 +1405,51 @@ fn nibbles(light: &Light, sky: bool) -> Vec<u8> {
 pub fn encode(chunk: &Chunk, registry: &BlockRegistry, biomes: &Biomes) -> NamedTag {
     encode_with(chunk, registry, biomes, None, LevelShape::OVERWORLD)
 }
+/// A save's lookup of an old chunk's calculated blending data.
+pub type BlendingLookup = Box<dyn Fn(i32, i32) -> Option<Arc<BlendingData>> + Send + Sync>;
+/// [`encode_with`] for a save of `SaveDir`: an old chunk whose blending data
+/// the generation calculated saves it (`BlendingData.pack`), when the record
+/// it was loaded from has the same section range; otherwise `blending_data`
+/// stays as it was loaded.
+fn encode_saved(
+    chunk: &Chunk,
+    registry: &BlockRegistry,
+    biomes: &Biomes,
+    tables: Option<&SaveTables>,
+    shape: LevelShape,
+    blending: Option<&BlendingData>,
+) -> NamedTag {
+    let mut root = encode_with(chunk, registry, biomes, tables, shape);
+    if let Some(data) = blending {
+        put_calculated_blending(&mut root, data);
+    }
+    root
+}
+fn put_calculated_blending(root: &mut NamedTag, data: &BlendingData) {
+    let Tag::Compound(map) = &mut root.tag else {
+        return;
+    };
+    let Some(saved) = map.get(&"blending_data".into()) else {
+        return;
+    };
+    let (min_section, max_section, heights) = data.pack();
+    if saved.get("min_section") != Some(&Tag::Int(min_section))
+        || saved.get("max_section") != Some(&Tag::Int(max_section))
+    {
+        return;
+    }
+    let mut fields = vec![
+        ("min_section", Tag::Int(min_section)),
+        ("max_section", Tag::Int(max_section)),
+    ];
+    if let Some(heights) = heights {
+        fields.push((
+            "heights",
+            Tag::List(heights.iter().map(|h| Tag::Float(h.to_bits())).collect()),
+        ));
+    }
+    map.insert("blending_data".into(), Tag::compound(fields));
+}
 /// The chunk NBT vanilla's `SerializableChunkData.write` produces for a full
 /// chunk in a level of `shape`.
 pub fn encode_with(
@@ -1472,7 +1559,7 @@ pub fn encode_with(
             if let Some((_, name)) = chunk.block_names.iter().find(|(q, _)| q == p)
                 && let Tag::Compound(map) = &mut current
             {
-                map.insert("CustomName".into(), string(name));
+                map.insert("CustomName".into(), name.clone());
             }
             let source = extras
                 .and_then(|x| x.block_entity_sources.iter().find(|(q, _)| q == p))
@@ -1484,7 +1571,25 @@ pub fn encode_with(
                 Some(original) => {
                     let loaded = decode_block_entity(original).map_or_else(
                         || current.clone(),
-                        |(q, e)| encode_block_entity(q, &e, &block),
+                        |(q, e)| {
+                            let mut loaded = encode_block_entity(q, &e, &block);
+                            if !matches!(
+                                e,
+                                crate::containers::BlockEntity::Banner(_)
+                                    | crate::containers::BlockEntity::Sign(_)
+                                    | crate::containers::BlockEntity::Mod(_)
+                            ) && let Some(name) = original
+                                .get("CustomName")
+                                .and_then(crate::block_entity_nbt::component)
+                                && let Tag::Compound(map) = &mut loaded
+                            {
+                                // BaseContainerBlockEntity.loadAdditional: the
+                                // external name is also part of the loaded model.
+                                // Its removal must win over the source overlay.
+                                map.insert("CustomName".into(), name);
+                            }
+                            loaded
+                        },
                     );
                     merge_block_entity(original, &loaded, &current)
                 }
@@ -1693,7 +1798,6 @@ fn decode_column(
         }
     }
     let air = registry.default_state("minecraft:air")?.0;
-    let mut cache: HashMap<String, u32> = HashMap::new();
     let Some(Tag::List(sections)) = tag.get("sections") else {
         return Some(chunk);
     };
@@ -1709,30 +1813,7 @@ fn decode_column(
         {
             let palette: Vec<u32> = palette
                 .iter()
-                .map(|p| {
-                    let state = BlockState::from_nbt(p).ok();
-                    let key = state
-                        .as_ref()
-                        .map(|s| format!("{}{:?}", s.name, s.properties))
-                        .unwrap_or_default();
-                    *cache.entry(key).or_insert_with(|| {
-                        state
-                            .and_then(|s| {
-                                registry.id(&s).or_else(|| {
-                                    // Missing properties take the block's defaults.
-                                    let default = registry.default_state(&s.name)?;
-                                    let mut full = registry.state(default)?.clone();
-                                    for (k, v) in &s.properties {
-                                        if full.properties.contains_key(k) {
-                                            full.properties.insert(k.clone(), v.clone());
-                                        }
-                                    }
-                                    registry.id(&full).or(Some(default))
-                                })
-                            })
-                            .map_or(air, |id| id.0)
-                    })
-                })
+                .map(|p| registry.saved_state_id(p).map_or(air, |id| id.0))
                 .collect();
             let target = Arc::make_mut(&mut chunk.sections[si]);
             let data = match states.get("data") {
@@ -1792,7 +1873,18 @@ fn decode_column(
                             horizon_world::attachments::Attachments::from_nbt(data.clone()),
                         ));
                     }
-                    if let Some(name) = text(e.get("CustomName")) {
+                    let name = if matches!(
+                        be.1,
+                        crate::containers::BlockEntity::Banner(_)
+                            | crate::containers::BlockEntity::Sign(_)
+                            | crate::containers::BlockEntity::Mod(_)
+                    ) {
+                        text(e.get("CustomName")).map(|name| string(&name))
+                    } else {
+                        e.get("CustomName")
+                            .and_then(crate::block_entity_nbt::component)
+                    };
+                    if let Some(name) = name {
                         chunk.block_names.push((be.0, name));
                     }
                     if let Some(rolled) = roll_loaded_loot(&chunk, biomes, e, &mut be) {
@@ -2231,7 +2323,10 @@ fn region_path(root: &Path, folder: &str, rx: i32, rz: i32) -> PathBuf {
 enum Record {
     Tag(Arc<NamedTag>),
     /// A chunk to encode on the writer thread.
-    Chunk(Arc<Chunk>, Arc<Encoding>),
+    /// The old chunk's calculated blending data is taken when the save is
+    /// requested ([`SaveDir::calculated_blending`]): a snapshot of that save.
+    Chunk(Arc<Chunk>, Arc<Encoding>, Option<Arc<BlendingData>>),
+    Proto(Arc<SavedProto>, Arc<Encoding>),
     /// A chunk's points of interest, made on the writer thread against the
     /// saved ones (`resolve_poi`).
     Poi(Arc<Chunk>, Arc<SaveTables>),
@@ -2248,8 +2343,16 @@ impl Record {
     fn tag(&self) -> Option<Arc<NamedTag>> {
         match self {
             Record::Tag(t) => Some(t.clone()),
-            Record::Chunk(c, e) => Some(Arc::new(encode_with(
+            Record::Chunk(c, e, blending) => Some(Arc::new(encode_saved(
                 c,
+                e.registry,
+                &e.biomes,
+                e.tables.as_deref(),
+                e.shape,
+                blending.as_deref(),
+            ))),
+            Record::Proto(p, e) => Some(Arc::new(encode_proto(
+                p,
                 e.registry,
                 &e.biomes,
                 e.tables.as_deref(),
@@ -2422,6 +2525,7 @@ struct Writer {
 #[derive(Default)]
 struct Outstanding {
     count: Mutex<usize>,
+    chunks: AtomicUsize,
     error: Mutex<Option<String>>,
     done: Condvar,
 }
@@ -2447,9 +2551,15 @@ pub struct SaveDir {
     lod_decoded: Mutex<LodDecoded>,
     /// What older chunks are upgraded with, found on the first one read.
     datafix_context: OnceLock<Option<DatafixContext>>,
+    /// The Overworld's old-world blending cache, read when a save is requested
+    /// (installed where `SavedOldWorld` is made for this same folder).
+    blending_lookup: OnceLock<BlendingLookup>,
 }
 fn is_forced_ticket(ticket: &Tag) -> bool {
     matches!(ticket.get("type"), Some(Tag::String(t)) if *t == JavaString::from("minecraft:forced"))
+}
+fn is_portal_ticket(ticket: &Tag) -> bool {
+    matches!(ticket.get("type"), Some(Tag::String(t)) if *t == JavaString::from("minecraft:portal"))
 }
 #[derive(Default)]
 struct LodDecoded {
@@ -2539,7 +2649,18 @@ impl SaveDir {
             lod_regions: Default::default(),
             lod_decoded: Default::default(),
             datafix_context: OnceLock::new(),
+            blending_lookup: OnceLock::new(),
         }
+    }
+    /// Lets saves of this folder take an old chunk's calculated blending data
+    /// (`lookup` must not calculate). Set once, before the folder saves.
+    pub fn set_blending_lookup(&self, lookup: BlendingLookup) {
+        let _ = self.blending_lookup.set(lookup);
+    }
+    /// The calculated blending data of the old chunk at `x, z`, if this folder
+    /// has a lookup and its cache holds one.
+    pub fn calculated_blending(&self, x: i32, z: i32) -> Option<Arc<BlendingData>> {
+        self.blending_lookup.get().and_then(|lookup| lookup(x, z))
     }
     /// 26.3's TicketStorage: persistent tickets live in each dimension's
     /// data/minecraft/chunk_tickets.dat, with ChunkPos.CODEC's [x, z] int array.
@@ -2559,8 +2680,53 @@ impl SaveDir {
             })
             .collect()
     }
-    pub fn save_forced_chunks(&self, forced: &HashSet<(i32, i32)>) -> Result<()> {
-        if forced.is_empty() && !saved_data_path(&self.root, "chunk_tickets").exists() {
+    /// The saved `PORTAL` tickets, for `TicketStorage.activateAllDeactivatedTickets`
+    /// (`Ticket.CODEC`: a non-negative level, `ticks_left` 0 when missing).
+    pub fn load_portal_tickets(&self) -> Vec<crate::ticket_levels::PortalTicket> {
+        let Some(Tag::List(tickets)) =
+            read_saved_data(&self.root, "chunk_tickets").and_then(|d| d.get("tickets").cloned())
+        else {
+            return Vec::new();
+        };
+        tickets
+            .iter()
+            .filter(|t| is_portal_ticket(t))
+            .filter_map(|t| {
+                let chunk = match t.get("chunk_pos")? {
+                    Tag::IntArray(pos) if pos.len() == 2 => (pos[0], pos[1]),
+                    _ => return None,
+                };
+                let level = match t.get("level")? {
+                    &Tag::Int(level) if level >= 0 => level,
+                    _ => return None,
+                };
+                let ticks_left = match t.get("ticks_left") {
+                    None => 0,
+                    Some(&Tag::Long(n)) => n,
+                    Some(&Tag::Int(n)) => n.into(),
+                    Some(&Tag::Short(n)) => n.into(),
+                    Some(&Tag::Byte(n)) => n.into(),
+                    Some(_) => return None,
+                };
+                Some(crate::ticket_levels::PortalTicket {
+                    chunk,
+                    level,
+                    ticks_left,
+                })
+            })
+            .collect()
+    }
+    /// `TicketStorage.packTickets`: the forced chunks and the `PORTAL` tickets
+    /// the level holds now, in place of the ones saved before.
+    pub fn save_chunk_tickets(
+        &self,
+        forced: &HashSet<(i32, i32)>,
+        portal: &[crate::ticket_levels::PortalTicket],
+    ) -> Result<()> {
+        if forced.is_empty()
+            && portal.is_empty()
+            && !saved_data_path(&self.root, "chunk_tickets").exists()
+        {
             return Ok(());
         }
         let mut data = compound_or_empty(read_saved_data(&self.root, "chunk_tickets"));
@@ -2568,7 +2734,7 @@ impl SaveDir {
         let mut tickets = match data.get("tickets") {
             Some(Tag::List(tickets)) => tickets
                 .iter()
-                .filter(|t| !is_forced_ticket(t))
+                .filter(|t| !is_forced_ticket(t) && !is_portal_ticket(t))
                 .cloned()
                 .collect::<Vec<_>>(),
             _ => Vec::new(),
@@ -2581,6 +2747,18 @@ impl SaveDir {
                 ("level", Tag::Int(31)), // ChunkMap.FORCED_TICKET_LEVEL: ENTITY_TICKING.
                 ("chunk_pos", Tag::IntArray(vec![x, z])),
             ])
+        }));
+        tickets.extend(portal.iter().map(|t| {
+            let mut ticket = Tag::compound([
+                ("type", Tag::String("minecraft:portal".into())),
+                ("level", Tag::Int(t.level)),
+                ("chunk_pos", Tag::IntArray(vec![t.chunk.0, t.chunk.1])),
+            ]);
+            // `optionalFieldOf("ticks_left", 0L)` leaves out its default.
+            if t.ticks_left != 0 {
+                put(&mut ticket, "ticks_left", Tag::Long(t.ticks_left));
+            }
+            ticket
         }));
         put(&mut data, "tickets", Tag::List(tickets));
         write_saved_data(&self.root, "chunk_tickets", data)
@@ -2777,19 +2955,26 @@ impl SaveDir {
     /// Queue proto chunks for the writer thread; loads see them meanwhile.
     pub fn save_protos(
         &self,
-        protos: &[SavedProto],
-        registry: &BlockRegistry,
-        biomes: &Biomes,
+        protos: Vec<SavedProto>,
+        registry: &'static BlockRegistry,
+        biomes: &Arc<Biomes>,
     ) -> Result<()> {
-        let tables = self.tables.get().map(|t| &**t);
+        let encoding = Arc::new(Encoding {
+            registry,
+            biomes: biomes.clone(),
+            tables: self.tables.get().cloned(),
+            shape: self.shape,
+        });
         let records = protos
-            .iter()
+            .into_iter()
             .map(|p| {
-                let tag = encode_proto(p, registry, biomes, tables, self.shape);
-                ((p.column.x, p.column.z), Some(tag))
+                (
+                    (p.column.x, p.column.z),
+                    Record::Proto(Arc::new(p), encoding.clone()),
+                )
             })
             .collect();
-        self.write_records("region", records, false)
+        self.queue(Folder::Region, records, false)
     }
     /// Entities saved for a chunk (`entities/`; older chunks may still keep
     /// them in the chunk's own `entities` list).
@@ -2834,7 +3019,14 @@ impl SaveDir {
                 .map_err(|_| "writer poisoned")? += 1;
             let mut writer = self.writer.lock().map_err(|_| "writer poisoned")?;
             let writer = writer.get_or_insert_with(|| self.start_writer());
+            let chunks = if folder == Folder::Region {
+                batch.len()
+            } else {
+                0
+            };
+            self.outstanding.chunks.fetch_add(chunks, Ordering::Relaxed);
             if writer.send.send((folder, batch)).is_err() {
+                self.outstanding.chunks.fetch_sub(chunks, Ordering::Relaxed);
                 *self
                     .outstanding
                     .error
@@ -2907,6 +3099,9 @@ impl SaveDir {
                             }
                         }
                     }
+                    if kind == Folder::Region {
+                        outstanding.chunks.fetch_sub(batch.len(), Ordering::Relaxed);
+                    }
                     if let Ok(mut count) = outstanding.count.lock() {
                         *count -= 1;
                         outstanding.done.notify_all();
@@ -2931,6 +3126,10 @@ impl SaveDir {
                 .map_err(|_| "writer poisoned")?;
         }
         self.write_result()
+    }
+    /// `ChunkMap.activeChunkWrites`: chunk records, excluding entity/POI IO.
+    pub fn active_chunk_writes(&self) -> usize {
+        self.outstanding.chunks.load(Ordering::Relaxed)
     }
     /// Poll durability without holding up the event loop. Errors remain visible
     /// to every waiter, including a later synchronous shutdown.
@@ -2965,9 +3164,17 @@ impl SaveDir {
         let records = chunks
             .iter()
             .map(|c| {
+                let blending = self.calculated_blending(c.x, c.z);
                 (
                     (c.x, c.z),
-                    Some(encode_with(c, registry, biomes, tables, self.shape)),
+                    Some(encode_saved(
+                        c,
+                        registry,
+                        biomes,
+                        tables,
+                        self.shape,
+                        blending.as_deref(),
+                    )),
                 )
             })
             .collect();
@@ -3001,7 +3208,13 @@ impl SaveDir {
         });
         let records = chunks
             .iter()
-            .map(|c| ((c.x, c.z), Record::Chunk(c.clone(), encoding.clone())))
+            .map(|c| {
+                let blending = self.calculated_blending(c.x, c.z);
+                (
+                    (c.x, c.z),
+                    Record::Chunk(c.clone(), encoding.clone(), blending),
+                )
+            })
             .collect();
         self.queue(Folder::Region, records, false)?;
         self.save_poi(chunks, false)?;
@@ -3306,6 +3519,18 @@ pub fn random_uuid() -> [i32; 4] {
     let b = (b & !(0xC000_0000_0000_0000)) | 0x8000_0000_0000_0000;
     [(a >> 32) as i32, a as i32, (b >> 32) as i32, b as i32]
 }
+/// `Mth.createInsecureUUID`: a new entity's UUID is its own random's first two
+/// draws (`Entity.uuid`).
+pub fn insecure_uuid(random: &mut impl horizon_core::random::RandomSource) -> [i32; 4] {
+    let most = random.next_long() & -61441 | 16384;
+    let least = random.next_long() & 4_611_686_018_427_387_903 | i64::MIN;
+    [
+        (most >> 32) as i32,
+        most as i32,
+        (least >> 32) as i32,
+        least as i32,
+    ]
+}
 pub(crate) fn uuid_tag(u: [i32; 4]) -> Tag {
     Tag::IntArray(u.to_vec())
 }
@@ -3316,11 +3541,23 @@ pub(crate) fn uuid_from_tag(tag: Option<&Tag>) -> Option<[i32; 4]> {
         _ => None,
     }
 }
+// `DoubleTag.valueOf` / `FloatTag.valueOf` store -0.0 as the shared +0.0
+// `ZERO`, so a resting entity's `Motion` reads `0.0d`, never `-0.0d`.
 pub(crate) fn doubles(values: &[f64]) -> Tag {
-    Tag::List(values.iter().map(|v| Tag::Double(v.to_bits())).collect())
+    Tag::List(
+        values
+            .iter()
+            .map(|&v| Tag::Double(if v == 0.0 { 0 } else { v.to_bits() }))
+            .collect(),
+    )
 }
 pub(crate) fn floats(values: &[f32]) -> Tag {
-    Tag::List(values.iter().map(|v| Tag::Float(v.to_bits())).collect())
+    Tag::List(
+        values
+            .iter()
+            .map(|&v| Tag::Float(if v == 0.0 { 0 } else { v.to_bits() }))
+            .collect(),
+    )
 }
 pub(crate) fn read_doubles<const N: usize>(tag: Option<&Tag>) -> Option<[f64; N]> {
     match tag? {
@@ -3716,6 +3953,9 @@ pub struct Level {
     pub previous_game_mode: Option<i32>,
     pub time: i64,
     pub day_time: i64,
+    /// The End's clock (`world_clocks.dat`'s `minecraft:the_end`); `None` in a world that has
+    /// none yet, which starts it at the game time.
+    pub end_clock: Option<i64>,
     /// The world spawn or a legacy bare Overworld spawn column. Personal
     /// points use `respawn_elsewhere` so their blocks are checked on death.
     pub spawn: Option<[f64; 3]>,
@@ -3783,6 +4023,10 @@ pub struct Level {
     /// `LivingEntity.addAdditionalSaveData`'s `FallFlying`: the player was
     /// gliding (shared flag 7), so the glide goes on after the load.
     pub fall_flying: bool,
+    /// Current body's save projection. None before a live body supplies it;
+    /// retained raw data stays intact until then.
+    pub player_impulse_grace: Option<i32>,
+    pub player_fall_particles: Option<bool>,
     pub food_exhaustion: f32,
     pub food_tick_timer: i32,
     /// Abilities.flying: whether creative/spectator flight is active.
@@ -3956,6 +4200,12 @@ impl Level {
             })
             .or_else(|| number(data.get("DayTime")))
             .unwrap_or(level.time);
+        level.end_clock = read_saved_data(dir, "world_clocks").and_then(|c| {
+            number(
+                c.get("minecraft:the_end")
+                    .and_then(|o| o.get("total_ticks")),
+            )
+        });
         let weather = read_saved_data(dir, "weather");
         let w = |new: &str, old: &str| {
             number(weather.as_ref().and_then(|w| w.get(new)))
@@ -3998,6 +4248,8 @@ impl Level {
         Some(level)
     }
     pub fn read_player(&mut self, p: &Tag) {
+        self.player_impulse_grace = None;
+        self.player_fall_particles = None;
         let n = |k: &str| number(p.get(k));
         let f = |k: &str| float(p.get(k));
         self.position = read_doubles::<3>(p.get("Pos"));
@@ -4122,7 +4374,9 @@ impl Level {
             .get("RootVehicle")
             .and_then(|r| uuid_from_tag(r.get("Attach")));
     }
-    /// The player compound: the loaded one with Horizon's state written over it.
+    /// The player compound: loaded data with current state written over it.
+    /// `LivingEntity.addAdditionalSaveData` / `ServerPlayer.addAdditionalSaveData`:
+    /// the live fall fields and the player's empty brain are saved too.
     pub fn player_tag(&self) -> Tag {
         let mut p = compound_or_empty(self.player_extra.clone());
         // Keys rewritten from scratch.
@@ -4196,6 +4450,16 @@ impl Level {
                 .or_insert(Tag::Float(0.1f32.to_bits()));
             map.entry("flying".into()).or_insert(Tag::Byte(0));
         }
+        let impulse_grace = self
+            .player_impulse_grace
+            .map(Tag::Int)
+            .or_else(|| p.get("current_impulse_context_reset_grace_time").cloned())
+            .unwrap_or(Tag::Int(0));
+        let fall_particles = self
+            .player_fall_particles
+            .map(|v| Tag::Byte(i8::from(v)))
+            .or_else(|| p.get("spawn_extra_particles_on_fall").cloned())
+            .unwrap_or(Tag::Byte(0));
         let uuid = self.player_uuid.unwrap_or([0, 0, 0, 0]);
         let mut entries: Vec<(&str, Tag)> = vec![
             ("DataVersion", Tag::Int(DATA_VERSION)),
@@ -4208,6 +4472,14 @@ impl Level {
             // isFallFlying())`, always written.
             ("FallFlying", Tag::Byte(i8::from(self.fall_flying))),
             ("Health", Tag::Float(self.health.to_bits())),
+            // Player inherits LivingEntity.makeBrain: a new empty Brain;
+            // Brain.Packed's codec stores its empty memories map.
+            (
+                "Brain",
+                Tag::compound([("memories", Tag::Compound(Default::default()))]),
+            ),
+            ("current_impulse_context_reset_grace_time", impulse_grace),
+            ("spawn_extra_particles_on_fall", fall_particles),
             ("AbsorptionAmount", Tag::Float(self.absorption.to_bits())),
             ("foodLevel", Tag::Int(self.food)),
             ("foodSaturationLevel", Tag::Float(self.saturation.to_bits())),
@@ -4351,12 +4623,21 @@ impl Level {
     }
     /// Write every file; a world without a player UUID gets a random one.
     pub fn write(&mut self, dir: &Path) -> Result<()> {
-        self.write_internal(dir, true)
+        self.write_internal(dir, true, false)
     }
 
     /// Dedicated servers save connected players separately.
     pub fn write_without_player(&mut self, dir: &Path) -> Result<()> {
-        self.write_internal(dir, false)
+        self.write_internal(dir, false, false)
+    }
+
+    /// The temporary world a Realms upload packs
+    /// (`RealmsCreateWorldFlow.createTemporaryWorldFolder`): level.dat as
+    /// `WorldData.createTag(null)` writes it — no `singleplayer_uuid` — with the world
+    /// generation and game rules, and no player file or weather/clocks the server makes
+    /// on its own. The caller writes the data packs and removes the folder.
+    pub fn write_upload(&mut self, dir: &Path) -> Result<()> {
+        self.write_internal(dir, false, true)
     }
 
     /// The player's file alone, `players/data/<singleplayer_uuid>.dat`
@@ -4371,7 +4652,7 @@ impl Level {
         write_dat(&player_file, self.player_tag())
     }
 
-    fn write_internal(&mut self, dir: &Path, write_player: bool) -> Result<()> {
+    fn write_internal(&mut self, dir: &Path, write_player: bool, upload: bool) -> Result<()> {
         fs::create_dir_all(dir)?;
         restore_level_dat(dir);
         let existing = read_dat(&dir.join("level.dat")).and_then(|r| r.get("Data").cloned());
@@ -4418,7 +4699,9 @@ impl Level {
                 map.remove(&JavaString::from(key));
             }
         }
-        let uuid = self.ensure_player_uuid();
+        // An upload's level.dat names no player (`createTag(null)`); every other file
+        // names this world's own.
+        let uuid = (!upload).then(|| self.ensure_player_uuid());
         // A new world's first spawn point is its world spawn.
         if self.world_spawn.is_none() {
             self.world_spawn = self.spawn.map(|s| {
@@ -4495,10 +4778,12 @@ impl Level {
             ),
             ("difficulty_settings", difficulty),
             ("initialized", Tag::Byte(1)),
-            ("singleplayer_uuid", uuid_tag(uuid)),
             ("ServerBrands", Tag::List(brands)),
         ] {
             put(&mut data, key, value);
+        }
+        if let Some(uuid) = uuid {
+            put(&mut data, "singleplayer_uuid", uuid_tag(uuid));
         }
         if let Tag::Compound(map) = &mut data {
             map.entry("allowCommands".into()).or_insert(Tag::Byte(0));
@@ -4535,27 +4820,33 @@ impl Level {
             });
         }
         // Saved data: weather, clocks, and (when missing or legacy) world
-        // generation settings and game rules.
-        write_saved_data(
-            dir,
-            "weather",
-            Tag::compound([
-                ("clear_weather_time", Tag::Int(self.weather.clear_time)),
-                ("rain_time", Tag::Int(self.weather.rain_time)),
-                ("thunder_time", Tag::Int(self.weather.thunder_time)),
-                ("raining", Tag::Byte(i8::from(self.weather.raining))),
-                ("thundering", Tag::Byte(i8::from(self.weather.thundering))),
-            ]),
-        )?;
-        let mut clocks = compound_or_empty(read_saved_data(dir, "world_clocks"));
-        let mut overworld = compound_or_empty(clocks.get("minecraft:overworld").cloned());
-        put(&mut overworld, "total_ticks", Tag::Long(self.day_time));
-        put(&mut clocks, "minecraft:overworld", overworld);
-        if let Tag::Compound(map) = &mut clocks {
-            map.entry("minecraft:the_end".into())
-                .or_insert_with(|| Tag::compound([("total_ticks", Tag::Long(self.time))]));
+        // generation settings and game rules. An upload's temporary world carries only
+        // what the server needs before its first tick.
+        if !upload {
+            write_saved_data(
+                dir,
+                "weather",
+                Tag::compound([
+                    ("clear_weather_time", Tag::Int(self.weather.clear_time)),
+                    ("rain_time", Tag::Int(self.weather.rain_time)),
+                    ("thunder_time", Tag::Int(self.weather.thunder_time)),
+                    ("raining", Tag::Byte(i8::from(self.weather.raining))),
+                    ("thundering", Tag::Byte(i8::from(self.weather.thundering))),
+                ]),
+            )?;
+            let mut clocks = compound_or_empty(read_saved_data(dir, "world_clocks"));
+            let mut overworld = compound_or_empty(clocks.get("minecraft:overworld").cloned());
+            put(&mut overworld, "total_ticks", Tag::Long(self.day_time));
+            put(&mut clocks, "minecraft:overworld", overworld);
+            let mut end = compound_or_empty(clocks.get("minecraft:the_end").cloned());
+            put(
+                &mut end,
+                "total_ticks",
+                Tag::Long(self.end_clock.unwrap_or(self.time)),
+            );
+            put(&mut clocks, "minecraft:the_end", end);
+            write_saved_data(dir, "world_clocks", clocks)?;
         }
-        write_saved_data(dir, "world_clocks", clocks)?;
         if legacy || !saved_data_path(dir, "world_gen_settings").exists() {
             write_world_gen_settings(dir, self.seed, WorldGen::default())?;
         }
@@ -4624,6 +4915,8 @@ struct SavedLodSampler<G: ChunkGenerator> {
     /// Chunks the generator decorated for far terrain alone, kept from
     /// earlier sessions; saved chunks take precedence over them.
     generated: Arc<crate::lod::cache::DiskCache>,
+    /// The generator's far samples from earlier sessions (`lod::bake`).
+    bake: Option<Arc<crate::lod::bake::LodBake>>,
 }
 impl<G: ChunkGenerator> SavedLodSampler<G> {
     fn saved_columns(&mut self, key: (i32, i32)) -> Option<LodSurfaces> {
@@ -4654,6 +4947,7 @@ impl<G: ChunkGenerator> crate::streaming::LodSampler for SavedLodSampler<G> {
             details: Vec::new(),
             approximate: self.approximate,
             generated: self.generated.clone(),
+            bake: self.bake.clone(),
         }))
     }
     fn set_approximate(&mut self, approximate: bool) {
@@ -4691,7 +4985,15 @@ impl<G: ChunkGenerator> crate::streaming::LodSampler for SavedLodSampler<G> {
         details
     }
     fn grid(&mut self, x: i32, z: i32, stride: i32, side: usize) -> Vec<crate::lod::Column> {
-        let mut columns = self.inner.grid(x, z, stride, side);
+        let approximate = self.approximate;
+        let baked = (self.bake.as_ref()).and_then(|b| b.grid(approximate, [x, z], stride, side));
+        let mut columns = baked.unwrap_or_else(|| {
+            let columns = self.inner.grid(x, z, stride, side);
+            if let Some(bake) = &self.bake {
+                bake.put_grid(approximate, [x, z], stride, side, &columns);
+            }
+            columns
+        });
         // Saved chunks show in tiles up to 16 blocks a column. With Reduced far
         // detail only up to 4 (within about a kilometre): coarser tiles keep
         // the generator's terrain, which saved chunks were made from, since
@@ -5064,6 +5366,13 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
             self.save.root.join("data/horizon_far_terrain"),
             crate::lod::cache::build_key(self.registry.registry.len(), self.biomes.list.len()),
         ));
+        let bake = crate::lod::bake::LodBake::open(
+            &self.save.root,
+            self.save.shape,
+            self.registry.registry.len(),
+            self.biomes.list.len(),
+        )
+        .map(Arc::new);
         Box::new(SavedLodSampler {
             generator: self,
             inner,
@@ -5071,6 +5380,7 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
             details: Vec::new(),
             approximate: false,
             generated,
+            bake,
         })
     }
     fn load(&self, x: i32, z: i32) -> Option<Chunk> {
@@ -5135,7 +5445,7 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
             .collect();
         if let Err(e) = self
             .save
-            .save_protos(&saved, self.registry.registry, &self.biomes)
+            .save_protos(saved, self.registry.registry, &self.biomes)
         {
             log::warn!("Horizon: failed to save proto chunks: {e}");
         }
@@ -5255,6 +5565,28 @@ fn effect_details(e: &crate::effects::SavedEffect) -> Vec<(&'static str, Tag)> {
 mod tests {
     use crate::mobs::spawner::SpawnDataExt;
 
+    #[test]
+    fn an_ender_chest_saves_none_of_the_players_items() {
+        use crate::containers::BlockEntity;
+        let mut slots = vec![None; 27];
+        slots[0] = Some(crate::items::ItemStack::new("minecraft:diamond", 3));
+        let chest = encode_block_entity(
+            (1, 2, 3),
+            &BlockEntity::Chest(slots.clone()),
+            "minecraft:chest",
+        );
+        assert!(
+            chest.get("Items").is_some(),
+            "control: a chest saves its items"
+        );
+        let ender = encode_block_entity(
+            (1, 2, 3),
+            &BlockEntity::Chest(slots),
+            "minecraft:ender_chest",
+        );
+        assert_eq!(ender.get("id"), Some(&string("minecraft:ender_chest")));
+        assert!(ender.get("Items").is_none(), "{ender:?}");
+    }
     #[test]
     fn a_server_falls_back_to_level_dat_old_and_restores_it() {
         let world = std::env::temp_dir().join(format!("horizon-dat-old-{}", std::process::id()));
@@ -5988,6 +6320,7 @@ mod tests {
             details: Vec::new(),
             approximate: false,
             generated: Arc::new(crate::lod::cache::DiskCache::new(dir.join("far"), 1)),
+            bake: None,
         };
         use crate::streaming::LodSampler;
         sampler.request_detail(&[(-2, 3)], [-32, 48]);
@@ -6056,16 +6389,16 @@ mod tests {
             for z in [-17, -16, -1, 0, 15, 16] {
                 let p = (x, 64, z);
                 entities.insert(p, BlockEntity::Chest(vec![None; 27]));
-                names.insert(p, format!("container {x},{z}"));
+                names.insert(p, string(&format!("container {x},{z}")));
             }
         }
         // Names without a modelled entity must also survive the snapshot.
-        names.insert((-2, 80, -3), "orphan name".into());
+        names.insert((-2, 80, -3), string("orphan name"));
         let mut source = Chunk::empty(-1, -1);
         source
             .block_entities
             .push(((99, 0, 99), BlockEntity::Chest(vec![])));
-        source.block_names.push(((99, 0, 99), "stale".into()));
+        source.block_names.push(((99, 0, 99), string("stale")));
         source.saved = Some(Arc::new(ChunkExtras::default()));
         let source = Arc::new(source);
         let batch = vec![
@@ -6111,7 +6444,7 @@ mod tests {
         names.clear();
         assert!(!snapshot[0].block_entities.is_empty());
         assert!(!snapshot[0].block_names.is_empty());
-        assert_eq!(source.block_names[0].1, "stale");
+        assert_eq!(source.block_names[0].1, string("stale"));
         assert_eq!(source.block_entities[0].0, (99, 0, 99));
     }
 
@@ -6215,8 +6548,15 @@ mod tests {
             super::read_dat(&dir.join("level.dat"))
                 .and_then(|r| super::number(r.get("Data")?.get("DataVersion")))
         };
-        // 1.12.2 and 1.16.5: upgraded too, every server fix is ported.
-        for old in [1343, 2586] {
+        // 1.12.2 and 1.16.5: upgraded too, every server fix is ported. Data from before 1.13
+        // needs the data fixers' tables of the prepared resources: without them (a checkout
+        // nothing was prepared in, CI's verify) only 1.16.5 is upgraded here.
+        let olds: &[i32] = if horizon_world::datafix::tables_available() {
+            &[1343, 2586]
+        } else {
+            &[2586]
+        };
+        for &old in olds {
             super::write_dat(&dir.join("level.dat"), level(old)).unwrap();
             super::upgrade_older_world(&dir).unwrap();
             assert_eq!(version(&dir), Some(i64::from(super::DATA_VERSION)));
@@ -6301,11 +6641,17 @@ mod tests {
         save.save_entities_later(vec![((1, 2), vec![entity(2)])])
             .unwrap();
         assert!(!save.writes_finished().unwrap());
+        assert_eq!(save.active_chunk_writes(), 0); // entity batches do not count
+        save.write_records("region", vec![((0, 0), None), ((1, 0), None)], false)
+            .unwrap();
+        // The writer is blocked above: two chunk records in ONE queued batch.
+        assert_eq!(save.active_chunk_writes(), 2);
         assert_eq!(save.load_entities(1, 2), vec![entity(2)]);
         assert!(super::SessionLock::acquire(&dir).is_err());
         drop(blocked);
         save.flush().unwrap();
         assert!(save.writes_finished().unwrap());
+        assert_eq!(save.active_chunk_writes(), 0);
         let reopened = super::SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
         assert_eq!(reopened.load_entities(1, 2), vec![entity(2)]);
         save.save_entities_later(vec![((1, 2), vec![])]).unwrap();
@@ -7279,6 +7625,31 @@ mod tests {
     }
 
     #[test]
+    fn the_ends_clock_keeps_its_own_time() {
+        let dir = std::env::temp_dir().join(format!("horizon-end-clock-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut level = Level {
+            name: "Test".into(),
+            time: 5000,
+            day_time: 9000,
+            ..Level::default()
+        };
+        // A world without one starts the End's clock at its game time.
+        level.write(&dir).unwrap();
+        assert_eq!(Level::read(&dir).unwrap().end_clock, Some(5000));
+        // Then it keeps its own count, apart from the game time and the day.
+        level.time = 8000;
+        level.end_clock = Some(321);
+        level.write(&dir).unwrap();
+        let back = Level::read(&dir).unwrap();
+        assert_eq!(
+            (back.time, back.day_time, back.end_clock),
+            (8000, 9000, Some(321))
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn level_round_trips_through_the_vanilla_files() {
         let dir = std::env::temp_dir().join(format!("horizon-level-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -8031,7 +8402,7 @@ mod tests {
             let save = SaveDir::new(dimension_dir(&root, dim), LevelShape::OVERWORLD);
             assert!(save.load_forced_chunks().is_empty());
             let forced = HashSet::from([(i as i32, -17), (-23, i as i32), (-1, -1)]);
-            save.save_forced_chunks(&forced).unwrap();
+            save.save_chunk_tickets(&forced, &[]).unwrap();
         }
         for (i, dim) in dimensions.iter().enumerate() {
             let path = dimension_dir(&root, dim);
@@ -8043,7 +8414,7 @@ mod tests {
             );
             let mut data = read_saved_data(&path, "chunk_tickets").unwrap();
             let other = Tag::compound([
-                ("type", Tag::String("minecraft:portal".into())),
+                ("type", Tag::String("example:loader".into())),
                 ("level", Tag::Int(30)),
                 ("chunk_pos", Tag::IntArray(vec![7, -8])),
                 ("ticks_left", Tag::Long(42)),
@@ -8058,11 +8429,11 @@ mod tests {
             }
             write_saved_data(&path, "chunk_tickets", data).unwrap();
             forced.remove(&(-1, -1));
-            save.save_forced_chunks(&forced).unwrap();
+            save.save_chunk_tickets(&forced, &[]).unwrap();
             drop(save);
             let reopened = SaveDir::new(path.clone(), LevelShape::OVERWORLD);
             assert_eq!(reopened.load_forced_chunks(), forced);
-            reopened.save_forced_chunks(&HashSet::new()).unwrap();
+            reopened.save_chunk_tickets(&HashSet::new(), &[]).unwrap();
             assert!(
                 SaveDir::new(path.clone(), LevelShape::OVERWORLD)
                     .load_forced_chunks()
@@ -8775,5 +9146,293 @@ mod far_census {
                 started.elapsed().as_secs_f32()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod jukebox_song_clock_tests {
+    use super::*;
+    use crate::containers::{BlockEntity, Jukebox};
+
+    fn input(clock: Option<i64>, with_record: bool) -> Tag {
+        let record = if with_record {
+            "RecordItem:{id:\"minecraft:music_disc_cat\",count:1,components:{\"minecraft:custom_data\":{h032:1}}},"
+        } else {
+            ""
+        };
+        let clock = clock.map_or(String::new(), |n| format!("ticks_since_song_started:{n}L,"));
+        nbt::parse_snbt(&format!(
+            "{{id:\"minecraft:jukebox\",x:4,y:200,z:4,{record}{clock}}}"
+        ))
+        .unwrap()
+        .0
+    }
+    fn record_kept(tag: &Tag) {
+        let record = tag.get("RecordItem").expect("actual modeled record");
+        assert_eq!(
+            record.get("id"),
+            Some(&Tag::String("minecraft:music_disc_cat".into()))
+        );
+        assert_eq!(record.get("count"), Some(&Tag::Int(1)));
+        assert_eq!(
+            record
+                .get("components")
+                .and_then(|c| c.get("minecraft:custom_data"))
+                .and_then(|c| c.get("h032")),
+            Some(&Tag::Int(1))
+        );
+    }
+    #[test]
+    fn model_save_preserves_song_clock_presence_without_raw() {
+        let mut failures = Vec::new();
+        let mut check = |label: &str, tag: &Tag, expected: Option<i64>| {
+            let got = tag.get("ticks_since_song_started").cloned();
+            let want = expected.map(Tag::Long);
+            if got != want {
+                failures.push(format!("{label}: {got:?}, expected {want:?}"));
+            }
+        };
+        for (label, clock, with_record) in [
+            ("empty", None, false),
+            ("record-only", None, true),
+            ("loaded-zero", Some(0), true),
+            ("loaded-41", Some(41), true),
+        ] {
+            let (pos, model) =
+                decode_block_entity(&input(clock, with_record)).expect("actual load path");
+            let BlockEntity::Jukebox(j) = &model else {
+                panic!("wrong modeled type")
+            };
+            assert_eq!(j.record().is_some(), with_record);
+            assert_eq!(j.ticks, clock.unwrap_or(0));
+            // H032 must preserve the separate legacy record-only adoption policy.
+            assert_eq!(j.playing, with_record);
+            let saved = encode_block_entity(pos, &model, "minecraft:jukebox");
+            let command = block_entity_data(pos, &model, "minecraft:jukebox", None);
+            check(label, &saved, clock);
+            check(label, &command, clock);
+            if with_record {
+                record_kept(&saved);
+                record_kept(&command);
+            } else {
+                assert!(saved.get("RecordItem").is_none());
+            }
+            if clock.is_some() {
+                let mut detached = model.clone();
+                let BlockEntity::Jukebox(j) = &mut detached else {
+                    unreachable!()
+                };
+                j.playing = false;
+                // Decoded clock state, not this separate legacy flag, owns saving.
+                let saved = encode_block_entity(pos, &detached, "minecraft:jukebox");
+                check("clock independent of legacy playing", &saved, clock);
+                record_kept(&saved);
+            }
+        }
+        let empty = BlockEntity::Jukebox(Jukebox::default());
+        check(
+            "default modeled/no raw",
+            &encode_block_entity((4, 200, 4), &empty, "minecraft:jukebox"),
+            None,
+        );
+        let raw = input(Some(41), true);
+        let (pos, loaded_model) = decode_block_entity(&raw).unwrap();
+        let loaded = encode_block_entity(pos, &loaded_model, "minecraft:jukebox");
+        let BlockEntity::Jukebox(j) = loaded_model else {
+            unreachable!()
+        };
+        let current = BlockEntity::Jukebox(Jukebox {
+            items: j.items,
+            playing: true,
+            ..Default::default()
+        });
+        let current = encode_block_entity(pos, &current, "minecraft:jukebox");
+        check("modeled record-only/no raw", &current, None);
+        record_kept(&current);
+        // The chunk writer uses this real overlay after encoding its model.
+        // A stale input clock must not resurrect the removed modeled field.
+        let merged = merge_block_entity(&raw, &loaded, &current);
+        check("contradictory raw clock", &merged, None);
+        record_kept(&merged);
+        let canonical = crate::block_entity_nbt::canonical(&merged).unwrap();
+        check(
+            "chunk canonical after actual model overlay",
+            &canonical,
+            None,
+        );
+        record_kept(&canonical);
+        assert!(
+            failures.is_empty(),
+            "modeled song clock presence mismatches: {failures:?}"
+        );
+    }
+}
+
+/// Added controls (H077): an old chunk's calculated blending data is taken
+/// when its save is requested and written with `BlendingData.pack`; the raw
+/// compound stays for the rest. The heights are the official 26.3 server's
+/// for the constructed edge chunk (12, 0).
+#[cfg(test)]
+mod calculated_blending_save_tests {
+    use super::*;
+    use horizon_world::worldgen::blending::BlendingData;
+
+    fn heights() -> [f32; 16] {
+        let mut h = [f32::MAX; 16];
+        h[12..].copy_from_slice(&[70.0, 70.0, 69.0, 68.0]);
+        h
+    }
+    fn calculated(min: i32, max: i32) -> Arc<BlendingData> {
+        Arc::new(BlendingData::unpack(min, max, Some(&heights())).unwrap())
+    }
+    /// A loaded old chunk: its raw `blending_data` kept in the loaded root.
+    fn old_chunk(x: i32, z: i32) -> Chunk {
+        let mut chunk = Chunk::empty(x, z);
+        let mut extras = crate::chunk::ChunkExtras::default();
+        extras.root.insert(
+            "blending_data".into(),
+            Tag::compound([("min_section", Tag::Int(-4)), ("max_section", Tag::Int(20))]),
+        );
+        chunk.saved = Some(Arc::new(extras));
+        chunk
+    }
+    fn saved_heights(save: &SaveDir, x: i32, z: i32) -> Option<Option<Vec<u32>>> {
+        let root = save.read_record_raw("region", x, z)?;
+        let data = root.tag.get("blending_data")?.clone();
+        Some(match data.get("heights") {
+            Some(Tag::List(list)) => Some(
+                list.iter()
+                    .map(|v| match v {
+                        Tag::Float(bits) => *bits,
+                        other => panic!("{other:?}"),
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        })
+    }
+    fn resources() -> Option<(crate::assets::Assets, Arc<Biomes>)> {
+        let root = PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES")?);
+        let assets = crate::assets::Assets::load(&root).expect("assets");
+        let biomes = Arc::new(Biomes::load(&root).expect("biomes"));
+        Some((assets, biomes))
+    }
+    fn folder(name: &str, assets: &crate::assets::Assets) -> (PathBuf, SaveDir) {
+        let dir = std::env::temp_dir().join(format!("horizon-h077-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let save = SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
+        let _ = save.tables.set(Arc::new(SaveTables::new(assets)));
+        (dir, save)
+    }
+    fn want() -> Vec<u32> {
+        heights().map(f32::to_bits).to_vec()
+    }
+
+    /// The owner of a cache entry, as `SavedOldWorld` owns its cache.
+    struct Owner(Arc<BlendingData>);
+    /// A lookup that reads `owner`'s entry through a weak link, as the game's does.
+    fn hook(save: &SaveDir, at: (i32, i32), owner: &Arc<Owner>) {
+        let weak = Arc::downgrade(owner);
+        save.set_blending_lookup(Box::new(move |x, z| {
+            if (x, z) == at {
+                weak.upgrade().map(|o| o.0.clone())
+            } else {
+                None
+            }
+        }));
+    }
+
+    /// The real `save_later` path writes the calculated heights, and only for
+    /// the chunk the lookup has them for.
+    #[test]
+    fn save_later_writes_the_calculated_heights_of_a_hooked_folder() {
+        let Some((assets, biomes)) = resources() else {
+            return;
+        };
+        let (dir, save) = folder("later", &assets);
+        let owner = Arc::new(Owner(calculated(-4, 20)));
+        hook(&save, (12, 0), &owner);
+        save.save_later(
+            &[Arc::new(old_chunk(12, 0)), Arc::new(old_chunk(11, 0))],
+            assets.registry,
+            &biomes,
+        )
+        .unwrap();
+        save.flush().unwrap();
+        assert_eq!(saved_heights(&save, 12, 0), Some(Some(want())));
+        // No calculation for (11, 0): its raw compound, without heights.
+        assert_eq!(saved_heights(&save, 11, 0), Some(None));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The owner is gone before the queued record is encoded: the record
+    /// keeps the snapshot taken at the request (a lookup at encoding would
+    /// find nothing).
+    #[test]
+    fn a_queued_record_keeps_its_snapshot_after_the_owner_is_dropped() {
+        let Some((assets, biomes)) = resources() else {
+            return;
+        };
+        let (dir, save) = folder("owner", &assets);
+        let owner = Arc::new(Owner(calculated(-4, 20)));
+        hook(&save, (12, 0), &owner);
+        let encoding = Arc::new(Encoding {
+            registry: assets.registry,
+            biomes: biomes.clone(),
+            tables: save.tables.get().cloned(),
+            shape: save.shape,
+        });
+        // As `save_later` makes it: the snapshot taken at the request.
+        let record = Record::Chunk(
+            Arc::new(old_chunk(12, 0)),
+            encoding,
+            save.calculated_blending(12, 0),
+        );
+        drop(owner);
+        assert!(
+            save.calculated_blending(12, 0).is_none(),
+            "the owner is gone"
+        );
+        let tag = record.tag().expect("a chunk record encodes");
+        let heights = match tag.tag.get("blending_data").and_then(|b| b.get("heights")) {
+            Some(Tag::List(list)) => list
+                .iter()
+                .map(|v| match v {
+                    Tag::Float(bits) => *bits,
+                    other => panic!("{other:?}"),
+                })
+                .collect::<Vec<u32>>(),
+            other => panic!("heights {other:?}"),
+        };
+        assert_eq!(heights, want());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The same coordinates in another dimension's folder (no lookup), and a
+    /// lookup whose section range differs from the saved record: the raw
+    /// compound stays.
+    #[test]
+    fn an_unhooked_folder_or_another_section_range_keeps_the_raw_compound() {
+        let Some((assets, biomes)) = resources() else {
+            return;
+        };
+        let (dir, nether) = folder("nether", &assets);
+        let owner = Arc::new(Owner(calculated(-4, 20)));
+        nether
+            .save_later(&[Arc::new(old_chunk(12, 0))], assets.registry, &biomes)
+            .unwrap();
+        nether.flush().unwrap();
+        assert_eq!(saved_heights(&nether, 12, 0), Some(None));
+        let _ = fs::remove_dir_all(&dir);
+        let (dir, other) = folder("range", &assets);
+        let elsewhere = Arc::new(Owner(calculated(0, 16)));
+        hook(&other, (12, 0), &elsewhere);
+        other
+            .save(&[Arc::new(old_chunk(12, 0))], assets.registry, &biomes)
+            .unwrap();
+        assert_eq!(saved_heights(&other, 12, 0), Some(None));
+        drop(owner);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

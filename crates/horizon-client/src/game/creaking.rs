@@ -38,19 +38,32 @@ struct Host<'a> {
     creaking: Option<Arc<MobType>>,
     next_entity: &'a mut u32,
     spawning: bool,
+    /// The game's index of `mobs` by id: a heart asks for its creaking a
+    /// few times a tick.
+    index: std::cell::RefCell<super::mob_index::MobIndex>,
+}
+impl Host<'_> {
+    /// The slot of the live mob `id` in `mobs`, as a scan for the first
+    /// one with that id that is not removed (ids are unique in the list).
+    fn slot(&self, id: u32) -> Option<usize> {
+        self.index
+            .borrow_mut()
+            .find(self.mobs, id)
+            .filter(|&i| !self.mobs[i].removed)
+    }
 }
 impl HeartHost for Host<'_> {
     fn mob(&self, id: u32) -> Option<&Mob> {
-        self.mobs
-            .iter()
-            .chain(self.added.iter())
-            .find(|m| m.id == id && !m.removed)
+        match self.slot(id) {
+            Some(slot) => Some(&self.mobs[slot]),
+            None => self.added.iter().find(|m| m.id == id && !m.removed),
+        }
     }
     fn mob_mut(&mut self, id: u32) -> Option<&mut Mob> {
-        self.mobs
-            .iter_mut()
-            .chain(self.added.iter_mut())
-            .find(|m| m.id == id && !m.removed)
+        match self.slot(id) {
+            Some(slot) => Some(&mut self.mobs[slot]),
+            None => self.added.iter_mut().find(|m| m.id == id && !m.removed),
+        }
     }
     fn mob_for_uuid(&self, uuid: [i32; 4]) -> Option<u32> {
         self.uuids
@@ -94,8 +107,9 @@ impl Game<'_> {
     }
     /// Runs `f` on the heart at `key` with the game's mobs and level random,
     /// then applies what the heart reported. `others`: whether `f` reads the
-    /// other mobs through the mob world (without, it holds none: building them
-    /// costs a pass over every mob).
+    /// mob world, which is then built with the other mobs (`f` gets None
+    /// otherwise: the world reads every player, the teams and the weather, and
+    /// most heart ticks need none of it).
     fn with_heart(
         &mut self,
         key: Pos,
@@ -103,7 +117,7 @@ impl Game<'_> {
         others: bool,
         f: impl FnOnce(
             &mut CreakingHeart,
-            &horizon_client::mobs::MobWorld,
+            Option<&horizon_client::mobs::MobWorld>,
             &mut LegacyRandom,
             &mut Host,
             &mut Vec<HeartEvent>,
@@ -122,8 +136,9 @@ impl Game<'_> {
             Vec::new()
         };
         let mut events = Vec::new();
-        let added = {
-            let w = self.mob_world_base(&snapshot);
+        let index = std::cell::RefCell::new(std::mem::take(&mut self.mob_index));
+        let (added, index) = {
+            let w = others.then(|| self.mob_world_base(&snapshot));
             let mut host = Host {
                 mobs: &mut mobs,
                 added: Vec::new(),
@@ -131,10 +146,13 @@ impl Game<'_> {
                 creaking,
                 next_entity: &mut next_entity,
                 spawning,
+                index,
             };
-            f(heart, &w, &mut random, &mut host, &mut events);
-            host.added
+            f(heart, w.as_ref(), &mut random, &mut host, &mut events);
+            (host.added, host.index.into_inner())
         };
+        // The heart's additions go after every slot the index holds.
+        self.mob_index = index;
         mobs.extend(added);
         self.mobs = mobs;
         self.persist.uuids = uuids;
@@ -177,7 +195,9 @@ impl Game<'_> {
             return;
         };
         let _ = self.with_heart(key, &mut heart, true, |h, w, lr, host, out| {
-            creaking_heart::creaking_hurt(h, home, w, lr, host, out);
+            if let Some(w) = w {
+                creaking_heart::creaking_hurt(h, home, w, lr, host, out);
+            }
         });
         self.world
             .block_entities
@@ -288,7 +308,12 @@ impl Game<'_> {
             let pos = [key.0, key.1, key.2];
             let others = creaking_heart::tick_updates(&heart);
             self.with_heart(key, &mut heart, others, |h, w, lr, host, out| {
-                creaking_heart::server_tick(h, pos, w, lr, host, out);
+                if creaking_heart::server_tick_start(h, pos, lr, host, out) {
+                    debug_assert!(w.is_some(), "tick_updates said no update");
+                    if let Some(w) = w {
+                        creaking_heart::server_tick_update(h, pos, w, lr, host, out);
+                    }
+                }
             })?;
         }
         self.world

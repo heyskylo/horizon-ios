@@ -630,13 +630,12 @@ impl PackAtlas {
                 "layout(set = 1, binding = 0) readonly buffer HzBlockSlots { uint hz_block_slots[]; };\n\
                  layout(set = 1, binding = 1) readonly buffer HzSlotOrigins { vec4 hz_slot_origins[]; };\n",
             );
-            // Of each sprite layer, `mc_Entity` (id, then 1 for fluids or 0) and
-            // `at_midBlock.w` (its block's light), the game's table; and the arena page's
-            // vertices (`TerrainVertex`, six words each).
+            // Source metadata follows each quad in its arena page. The immutable table
+            // holds sprite rectangles and the current pack's ids of source states.
             declarations.push_str(
-                "layout(set = 3, binding = 0) readonly buffer HzBlockIds { int hz_block_ids[]; };\n\
+                "layout(set = 3, binding = 0) readonly buffer HzQuadSources { uvec2 hz_sources[]; };\n\
                  layout(set = 3, binding = 1) readonly buffer HzVertices { uint hz_vertices[]; };\n\
-                 layout(set = 3, binding = 2) readonly buffer HzSpriteRects { uvec2 hz_sprite_rects[]; };\n",
+                 layout(set = 3, binding = 2) readonly buffer HzTerrainTables { int hz_tables[]; };\n",
             );
             "hz_slot_origins[hz_block_slots[uint(gl_VertexIndex) >> 8u]]"
         } else {
@@ -649,7 +648,8 @@ impl PackAtlas {
         let columns = self.columns;
         let (cell, side, scale) = if flat {
             (
-                "uvec2 hz_rect = hz_sprite_rects[hz_layer];\n    \
+                "uvec2 hz_rect = uvec2(0u, 1u);\n    \
+                 if (2u * hz_layer + 1u < uint(hz_tables[0])) hz_rect = uvec2(hz_tables[2u + 2u * hz_layer], hz_tables[3u + 2u * hz_layer]);\n    \
                  hz_cell = vec2(float(hz_rect.x & 65535u), float(hz_rect.x >> 16u)) / float(hz_rect.y);\n    "
                     .to_owned(),
                 "float(hz_rect.y)",
@@ -701,20 +701,27 @@ impl PackAtlas {
         let mut body = body;
         if flat {
             body.push_str(FACE);
+            body.push_str(
+                "    uint hz_quad = uint(gl_VertexIndex) / 4u;\n    \
+                 uvec2 hz_source = uvec2(0u);\n    \
+                 if (hz_quad < uint(hz_sources.length())) hz_source = hz_sources[hz_quad];\n    \
+                 bool hz_known_source = (hz_source.y & 8192u) != 0u;\n    \
+                 int hz_material = -1;\n    \
+                 if (hz_known_source && hz_source.x < uint(hz_tables[1])) hz_material = hz_tables[2u + uint(hz_tables[0]) + 2u * hz_source.x + ((hz_source.y >> 12u) & 1u)];\n",
+            );
         }
         declarations.push_str(
             "vec2 hz_cell; vec2 hz_scale; vec2 hz_mid; float hz_uv_scale; vec4 hz_tangent;\n",
         );
         let entity = if flat {
-            "vec4(float(hz_block_ids[3u * hz_layer]), float(hz_block_ids[3u * hz_layer + 1u]), 0.0, 0.0)"
+            "vec4(float(hz_material), hz_known_source ? float((hz_source.y >> 12u) & 1u) : 0.0, 0.0, 0.0)"
         } else {
             "vec4(-1.0, 0.0, 0.0, 0.0)"
         };
-        // The block a face belongs to: half a block behind its centre (the quad's diagonal);
-        // w, the light it gives (Iris's `BLOCK_EMISSION_ATTRIBUTE`, 0 to 15).
+        // The mesher's owning cell, even for inset, offset, multipart or extended faces;
+        // w is the source's emitted light, independent of sprite and smooth light.
         let mid_block = if flat {
-            "vec4((floor((hz_p0 + hz_p2) * 0.5 - 0.5 * hz_Normal) + 0.5 - hz_v_pos) * 64.0, \
-             float(hz_block_ids[3u * hz_layer + 2u]))"
+            "(hz_known_source ? vec4((vec3(float(hz_source.y & 15u), float((hz_source.y >> 4u) & 15u), float((hz_source.y >> 8u) & 15u)) + 0.5 - hz_v_pos) * 64.0, float((hz_source.y >> 14u) & 15u)) : vec4(0.0))"
         } else {
             "vec4(0.0)"
         };
@@ -757,6 +764,9 @@ impl PackAtlas {
             alpha_test: None,
             item_id_declared: false,
             far_depth: false,
+            paged_maps: false,
+            water_mask: false,
+            water_patches: false,
         }
     }
 }
@@ -1153,3 +1163,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "pack_atlas/source_ownership_test.rs"]
+mod source_ownership_test;

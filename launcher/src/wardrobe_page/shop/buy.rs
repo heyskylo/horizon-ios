@@ -22,7 +22,7 @@ impl Launcher {
         let t = self.theme;
         let badge = c.supporter.clone().filter(|s| s.item == id);
         let mine: HashSet<String> = me.owned.iter().cloned().collect();
-        let owned = self.shop_price(id, c, &mine, currency) == tr("Owned");
+        let owned = rules::owns(id, c, &mine);
         let ready = !self.shop.busy;
         let mut out = div().flex().flex_col().gap(px(12.)).pt(px(6.));
         if let Some(s) = &badge {

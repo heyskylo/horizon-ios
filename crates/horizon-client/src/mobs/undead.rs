@@ -324,7 +324,11 @@ impl Goal for DrownedTridentAttack {
         self.0.can_use(m, cx) && m.extra.main_hand.as_deref() == Some("minecraft:trident")
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        self.0.can_continue(m, cx)
+        // `RangedAttackGoal.canContinueToUse` asks `canUse()` again: the
+        // trident test is re-checked, and the goal only falls back to a target
+        // it is still walking towards once the trident is gone.
+        self.0.can_use(m, cx)
+            && (m.extra.main_hand.as_deref() == Some("minecraft:trident") || !m.ai.nav.is_done())
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx);
@@ -880,7 +884,8 @@ pub fn perform_ranged_attack(m: &mut Mob, who: Who, cx: &mut Cx, power: f32) {
     let Some(t) = cx.w.target_info(who) else {
         return;
     };
-    let start = Vec3::new(m.position.x, m.eye_y() - 0.1, m.position.z);
+    // AbstractArrow(type, mob, ...) starts at getEyeY() - 0.1F, widened.
+    let start = Vec3::new(m.position.x, m.eye_y() - f64::from(0.1_f32), m.position.z);
     let height = t.bounds.max_position().y - t.bounds.min_position().y;
     let xd = t.position.x - m.position.x;
     let yd = t.position.y + height / 3.0 - start.y;
@@ -909,7 +914,7 @@ pub fn perform_ranged_attack(m: &mut Mob, who: Who, cx: &mut Cx, power: f32) {
     ignite_for_wither_skeleton(m, &mut p);
     p.shoot(
         &mut arrow_random,
-        [xd, yd + dist * 0.2, zd],
+        [xd, yd + dist * f64::from(0.2_f32), zd],
         1.6,
         (14 - id * 4) as f32,
     );
@@ -1610,5 +1615,64 @@ mod wither_arrow_tests {
             }
             assert!(hit, "angry at the player targets the player");
         });
+    }
+}
+
+#[cfg(test)]
+mod trident_continue_tests {
+    use super::*;
+    use crate::mobs::world::{test_player, with_test_world};
+    use horizon_core::random::LegacyRandom;
+    use std::sync::Arc;
+
+    /// `DrownedTridentAttackGoal` overrides `canUse` with the trident test and
+    /// inherits `RangedAttackGoal.canContinueToUse`, which calls `canUse()`
+    /// again. Losing the trident mid-attack must therefore stop the goal;
+    /// Horizon's continue asked only the base ranged goal.
+    #[test]
+    fn a_drowned_that_loses_its_trident_stops_the_trident_attack() {
+        let mut outcomes = None;
+        let ran = with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:drowned"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            m.extra.set_main_hand(Some("minecraft:trident".into()));
+            m.ai.target = Some(Who::Player);
+            let mut world = w.clone();
+            world.player = Some(test_player(Vec3::new(3.5, 64.0, 0.5)));
+            m.ai.goals.add(
+                2,
+                DrownedTridentAttack(crate::mobs::witch::RangedAttack::new(
+                    1.0,
+                    40,
+                    40,
+                    10.0,
+                    drowned_throw,
+                )),
+            );
+            let mut lr = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w: &world,
+                lr: &mut lr,
+                events: &mut events,
+            };
+            let mut goals = std::mem::take(&mut m.ai.goals);
+            goals.tick(&mut m, &mut cx);
+            let started = goals.is_running("DrownedTridentAttackGoal");
+            // No path left to follow: only the trident used to keep it going.
+            m.nav_stop();
+            m.extra.set_main_hand(None);
+            goals.tick(&mut m, &mut cx);
+            outcomes = Some((started, goals.is_running("DrownedTridentAttackGoal")));
+            m.ai.goals = goals;
+        });
+        if !ran {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            Some((true, false)),
+            "a trident attack starts for a drowned holding one and stops when it is gone"
+        );
     }
 }

@@ -461,9 +461,13 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             // Vanilla iterates a HashSet of the position and its six
             // neighbours; BlockPos hash order is reproduced below.
             let wire = self.b.named.redstone_wire;
-            let mut targets: Vec<BlockPos> = std::iter::once(pos)
-                .chain(Direction::ALL.map(|d| rel(pos, d)))
-                .collect();
+            // `pos` and its six neighbours are always distinct, so keep this
+            // tiny HashSet iteration equivalent on the stack. The old path
+            // allocated three Vecs (the input, deduplication scratch and the
+            // sorted output) for every wire update.
+            let mut targets = [BlockPos::default(); 7];
+            targets[0] = pos;
+            targets[1..].copy_from_slice(&Direction::ALL.map(|d| rel(pos, d)));
             java_hash_set_order(&mut targets);
             for target_pos in targets {
                 self.update_neighbors_at(target_pos, wire);
@@ -1511,31 +1515,58 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     }
 }
 
-/// Order `positions` as a `java.util.HashSet<BlockPos>` of capacity 16 would
-/// iterate them (bucket index of the spread hash, then insertion order).
-fn java_hash_set_order(positions: &mut Vec<BlockPos>) {
+/// Order the seven distinct positions as a `java.util.HashSet<BlockPos>` of
+/// capacity 16 would iterate them (bucket index of the spread hash, then
+/// insertion order).
+fn java_hash_set_order(positions: &mut [BlockPos; 7]) {
     fn hash(pos: BlockPos) -> i32 {
         // Vec3i.hashCode: (y + z * 31) * 31 + x
         (pos.y.wrapping_add(pos.z.wrapping_mul(31)))
             .wrapping_mul(31)
             .wrapping_add(pos.x)
     }
-    let mut unique: Vec<BlockPos> = Vec::new();
-    for pos in positions.iter() {
-        if !unique.contains(pos) {
-            unique.push(*pos);
-        }
-    }
     let buckets = 16;
     let bucket = |pos: BlockPos| {
         let h = hash(pos);
         ((h ^ ((h as u32) >> 16) as i32) & (buckets - 1)) as usize
     };
-    let mut ordered: Vec<(usize, usize, BlockPos)> = unique
-        .iter()
-        .enumerate()
-        .map(|(i, p)| (bucket(*p), i, *p))
-        .collect();
-    ordered.sort_by_key(|(b, i, _)| (*b, *i));
-    *positions = ordered.into_iter().map(|(_, _, p)| p).collect();
+    let mut ordered: [(usize, usize, BlockPos); 7] =
+        std::array::from_fn(|i| (bucket(positions[i]), i, positions[i]));
+    ordered.sort_unstable_by_key(|(b, i, _)| (*b, *i));
+    for (position, (_, _, ordered_position)) in positions.iter_mut().zip(ordered) {
+        *position = ordered_position;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::java_hash_set_order;
+    use horizon_core::position::BlockPos;
+
+    #[test]
+    fn hash_set_order_matches_vanilla_bucket_and_insertion_order() {
+        let origin = BlockPos::new(0, 0, 0);
+        let mut positions = [
+            origin,
+            BlockPos::new(0, -1, 0),
+            BlockPos::new(0, 1, 0),
+            BlockPos::new(0, 0, -1),
+            BlockPos::new(0, 0, 1),
+            BlockPos::new(-1, 0, 0),
+            BlockPos::new(1, 0, 0),
+        ];
+        java_hash_set_order(&mut positions);
+        assert_eq!(
+            positions,
+            [
+                origin,
+                BlockPos::new(0, 0, -1),
+                BlockPos::new(-1, 0, 0),
+                BlockPos::new(0, 0, 1),
+                BlockPos::new(1, 0, 0),
+                BlockPos::new(0, -1, 0),
+                BlockPos::new(0, 1, 0),
+            ]
+        );
+    }
 }

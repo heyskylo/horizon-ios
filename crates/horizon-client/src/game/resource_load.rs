@@ -442,6 +442,7 @@ pub(super) fn load_resources(
     }
     let tables = Arc::new(startup::time("pack.mesh_tables", || {
         MeshTables::new(&assets, &render, &facts, visibility)
+            .map(|t| t.with_polytone_colormaps(&root, assets.registry))
     })?);
     let pack_step = startup::step("pack.assemble");
     let pack = PackResources::assemble(
@@ -499,7 +500,6 @@ pub(super) fn load_resources(
         let handle = std::thread::Builder::new()
             .name("world-rest-loader".into())
             .spawn(move || {
-                let _item_defaults = item_defaults;
                 let _step = startup::step("rest");
                 let rest = load_world_rest(
                     &root,
@@ -508,6 +508,7 @@ pub(super) fn load_resources(
                     &behaviour_json,
                     &gameplay_projection,
                     entity_models.as_deref(),
+                    item_defaults.as_ref(),
                     visibility,
                     &progress,
                     started,
@@ -539,6 +540,7 @@ pub(super) fn load_resources(
             &behaviour_json,
             &gameplay_projection,
             entity_models.as_deref(),
+            item_defaults.as_ref(),
             visibility,
             progress,
             started,

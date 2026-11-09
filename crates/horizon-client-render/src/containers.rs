@@ -19,26 +19,75 @@ pub struct ModMenuType {
     pub slots: usize,
     pub data_slots: usize,
     pub results: Vec<usize>,
+    /// its crafting grid, if it has one (`crafting`).
+    pub crafting: Option<ModCrafting>,
+    /// its linked slots, if it has any (`links`).
+    pub links: Option<ModLinks>,
+}
+
+/// a mod menu type's linked slots: `count` container slots from `from` on,
+/// which show the slots of the containers a native mod links them to
+/// (`native_menu_links`) instead of the block entity's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModLinks {
+    pub from: usize,
+    pub count: usize,
+}
+
+impl ModLinks {
+    /// The linked container slots.
+    pub fn slots(&self) -> std::ops::Range<usize> {
+        self.from..self.from + self.count
+    }
+}
+
+/// a mod menu type's crafting grid: `size`x`size` container slots from
+/// `grid` on, row by row, and the slot showing what they craft. The block
+/// entity holds the grid; the result is the menu's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModCrafting {
+    pub grid: usize,
+    pub size: usize,
+    pub result: usize,
+}
+
+impl ModCrafting {
+    /// The grid's container slots.
+    pub fn grid_slots(&self) -> std::ops::Range<usize> {
+        self.grid..self.grid + self.size * self.size
+    }
 }
 
 static MOD_MENU_TYPES: std::sync::OnceLock<Vec<ModMenuType>> = std::sync::OnceLock::new();
 
-/// registers the content mods' menu types, `(id, slots, data slots,
-/// results)`, a list set once per process (false when it already was).
-pub fn register_mod_menu_types(
-    menus: impl IntoIterator<Item = (String, usize, usize, Vec<usize>)>,
-) -> bool {
+/// One menu type as [`register_mod_menu_types`] takes it: `(id, slots, data
+/// slots, results, crafting, links)`.
+pub type ModMenuTypeEntry = (
+    String,
+    usize,
+    usize,
+    Vec<usize>,
+    Option<ModCrafting>,
+    Option<ModLinks>,
+);
+
+/// registers the content mods' menu types, a list set once per process
+/// (false when it already was).
+pub fn register_mod_menu_types(menus: impl IntoIterator<Item = ModMenuTypeEntry>) -> bool {
     if MOD_MENU_TYPES.get().is_some() {
         return false;
     }
-    let menus = menus
-        .into_iter()
-        .map(|(id, slots, data_slots, results)| ModMenuType {
-            id: Box::leak(id.into_boxed_str()),
-            slots,
-            data_slots,
-            results,
-        });
+    let menus =
+        menus.into_iter().map(
+            |(id, slots, data_slots, results, crafting, links)| ModMenuType {
+                id: Box::leak(id.into_boxed_str()),
+                slots,
+                data_slots,
+                results,
+                crafting,
+                links,
+            },
+        );
     MOD_MENU_TYPES.set(menus.collect()).is_ok()
 }
 
@@ -267,7 +316,10 @@ impl SkullSkin {
 /// The item slots of the container `name`'s block carries, if any.
 fn container_size(name: &str) -> Option<usize> {
     match name {
-        "minecraft:chest" | "minecraft:trapped_chest" | "minecraft:barrel" => Some(27),
+        "minecraft:chest"
+        | "minecraft:trapped_chest"
+        | "minecraft:barrel"
+        | "minecraft:ender_chest" => Some(27),
         n if n.ends_with("copper_chest") => Some(27),
         "minecraft:hopper" => Some(HOPPER_SLOTS),
         "minecraft:dispenser" | "minecraft:dropper" => Some(9),
@@ -392,8 +444,25 @@ impl BlockEntity {
         if name == "minecraft:end_gateway" {
             return Some(Self::EndGateway(EndGateway::default()));
         }
+        if name == "minecraft:bell" {
+            return Some(Self::Bell);
+        }
+        if name == "minecraft:conduit" {
+            return Some(Self::Conduit(None));
+        }
+        if name == "minecraft:enchanting_table" {
+            return Some(Self::EnchantingTable);
+        }
         if name == "minecraft:daylight_detector" {
             return Some(Self::DaylightDetector);
+        }
+        if name == "minecraft:ender_chest" {
+            // EnderChestBlock.newBlockEntity: 27 slots, player-specific inventory.
+            return Some(Self::Chest(vec![None; 27]));
+        }
+        if name == "minecraft:end_portal" {
+            // EndPortalBlock.newBlockEntity: no data, only identity.
+            return Some(Self::EndPortal);
         }
         if name.ends_with("copper_golem_statue") {
             return Some(Self::CopperGolemStatue(Default::default()));
@@ -487,6 +556,10 @@ impl BlockEntity {
             Self::Crafter(_) => name == "minecraft:crafter",
             Self::EndGateway(_) => name == "minecraft:end_gateway",
             Self::DaylightDetector => name == "minecraft:daylight_detector",
+            Self::Bell => name == "minecraft:bell",
+            Self::Conduit(_) => name == "minecraft:conduit",
+            Self::EndPortal => name == "minecraft:end_portal",
+            Self::EnchantingTable => name == "minecraft:enchanting_table",
             Self::StructureBlock(_) => name == "minecraft:structure_block",
             Self::TestBlock(_) => name == "minecraft:test_block",
             Self::TestInstanceBlock(_) => name == "minecraft:test_instance_block",
@@ -525,6 +598,10 @@ impl BlockEntity {
             Self::Skull(_) => "minecraft:skull",
             Self::EndGateway(_) => "minecraft:end_gateway",
             Self::DaylightDetector => "minecraft:daylight_detector",
+            Self::Bell => "minecraft:bell",
+            Self::Conduit(_) => "minecraft:conduit",
+            Self::EndPortal => "minecraft:end_portal",
+            Self::EnchantingTable => "minecraft:enchanting_table",
             Self::Brushable(_) => "minecraft:brushable_block",
             Self::Campfire(_) => "minecraft:campfire",
             Self::ChiseledBookshelf(_) => "minecraft:chiseled_bookshelf",
@@ -559,6 +636,10 @@ impl BlockEntity {
             | Self::TestBlock(_)
             | Self::TestInstanceBlock(_)
             | Self::DaylightDetector
+            | Self::Bell
+            | Self::Conduit(_)
+            | Self::EndPortal
+            | Self::EnchantingTable
             | Self::Brushable(_) => Vec::new(),
             Self::Mod(m) => m.items.iter().flatten().cloned().collect(),
             Self::Lectern(l) => l.book.iter().cloned().collect(),
@@ -589,6 +670,10 @@ impl BlockEntity {
             | Self::TestBlock(_)
             | Self::TestInstanceBlock(_)
             | Self::DaylightDetector
+            | Self::Bell
+            | Self::Conduit(_)
+            | Self::EndPortal
+            | Self::EnchantingTable
             | Self::Brushable(_) => &[],
             Self::Jukebox(j) => &j.items,
             Self::Crafter(c) => &c.items,
@@ -624,6 +709,10 @@ impl BlockEntity {
             | Self::TestBlock(_)
             | Self::TestInstanceBlock(_)
             | Self::DaylightDetector
+            | Self::Bell
+            | Self::Conduit(_)
+            | Self::EndPortal
+            | Self::EnchantingTable
             | Self::Brushable(_) => &mut [],
             Self::Jukebox(j) => &mut j.items,
             Self::Crafter(c) => &mut c.items,
@@ -875,5 +964,35 @@ mod tests {
             .sum();
         assert!((250..450).contains(&paid), "{paid}");
         assert!((0..100).all(|_| (1..=2).contains(&create_experience(1, 1.7, &mut random))));
+    }
+
+    /// An ender chest placed with /setblock gets its block entity (`EnderChestBlock.newBlockEntity`),
+    /// so `/data get block` answers with the entity and the chunk saves it.
+    #[test]
+    fn an_ender_chest_starts_as_a_block_entity() {
+        let entity = BlockEntity::for_block("minecraft:ender_chest").expect("an ender chest");
+        // `Chest` variant with 27 slots; `id()` reports the chest kind, block name comes from NBT.
+        assert_eq!(entity.id(), "minecraft:chest");
+        assert_eq!(entity.slots().len(), 27);
+        assert!(entity.slots()[0].is_none());
+        assert!(matches!(entity, BlockEntity::Chest(_)));
+        // `fits`: an ender chest entity fits an ender chest block.
+        assert!(entity.fits("minecraft:ender_chest"));
+        // A stone block is not an ender chest.
+        assert!(BlockEntity::for_block("minecraft:stone").is_none());
+    }
+
+    /// An end portal placed with /setblock gets its block entity (`EndPortalBlock.newBlockEntity`),
+    /// so `/data get block` answers with the entity and the chunk saves it.
+    #[test]
+    fn an_end_portal_starts_as_a_block_entity() {
+        let entity = BlockEntity::for_block("minecraft:end_portal").expect("an end portal");
+        assert_eq!(entity.id(), "minecraft:end_portal");
+        assert_eq!(entity.slots().len(), 0);
+        assert!(matches!(entity, BlockEntity::EndPortal));
+        // `fits`: an end portal entity fits an end portal block.
+        assert!(entity.fits("minecraft:end_portal"));
+        // A stone block is not an end portal.
+        assert!(BlockEntity::for_block("minecraft:stone").is_none());
     }
 }

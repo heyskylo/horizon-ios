@@ -740,6 +740,9 @@ impl Mob {
         let vertical = wanted.y != moved.y;
         self.vertical_collision_below = vertical && wanted.y < 0.0;
         self.on_ground = self.vertical_collision_below;
+        // Entity.setOnGroundWithMovement's checkSupportingBlock, before
+        // checkFallDamage reads the landing block (getOnPosLegacy).
+        self.supporting = self.supporting_block(w, moved);
         // Strider.checkFallDamage: lava breaks any fall, and the fluid state
         // waits for the next baseTick; Bat and Bee.checkFallDamage do nothing.
         if self.kind.flags.lava_walker && self.fluids.in_lava {
@@ -778,8 +781,6 @@ impl Mob {
                 input,
             );
         }
-        // Entity.checkSupportingBlock
-        self.supporting = self.supporting_block(w, moved);
         self.movement_emission(w, moved, events);
         // Entity.move's last step: soul sand, honey and the like slow the
         // horizontal speed of whatever the mob stands in or on.
@@ -1307,8 +1308,15 @@ impl Mob {
             self.flying_speed()
         }
     }
+    /// `LivingEntity.getFlyingSpeed`: a mount its player steers
+    /// (`getControllingPassenger() instanceof Player`) keeps a tenth of its
+    /// speed in the air (a horse's jump); anything else 0.02.
     fn flying_speed(&self) -> f32 {
-        0.02
+        if super::equine::controlled(self) {
+            self.ai.speed * 0.1
+        } else {
+            0.02
+        }
     }
     /// `LivingEntity.getEffectiveGravity`: the gravity, floored to 0.01 while a
     /// Slow Falling mob is on its way down.
@@ -1346,8 +1354,51 @@ impl Mob {
         let stands_on_fluid = self.kind.flags.lava_walker && w.fluid(x, y, z) == Fluid::Lava;
         if self.is_in_liquid() && self.affected_by_fluids() && !stands_on_fluid {
             self.travel_in_fluid(w, input, events);
+        } else if self.extra.fall_flying {
+            self.travel_fall_flying(w, input, events);
         } else {
             self.travel_in_air(w, input, events);
+        }
+    }
+    /// `LivingEntity.travelFallFlying`: use the mob's existing authoritative move
+    /// and damage routes, with the shared `updateFallFlyingMovement` arithmetic.
+    fn travel_fall_flying(&mut self, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) {
+        if self.on_climbable(w) {
+            self.travel_in_air(w, input, events);
+            self.extra.fall_flying = false;
+            return;
+        }
+        let before = (self.velocity.x * self.velocity.x + self.velocity.z * self.velocity.z).sqrt();
+        self.velocity = crate::motion::fall_flying_movement(
+            self.velocity,
+            self.head_pitch,
+            self.yaw,
+            self.effective_gravity(),
+        );
+        self.do_move(w, events);
+        if self.horizontal_collision {
+            let damage = ((before
+                - (self.velocity.x * self.velocity.x + self.velocity.z * self.velocity.z).sqrt())
+                * 10.0
+                - 3.0) as f32;
+            if damage > 0.0 {
+                let monster = super::ai::is_monster(self.species());
+                let sound = match (monster, damage as i32 > 4) {
+                    (true, true) => "entity.hostile.big_fall",
+                    (true, false) => "entity.hostile.small_fall",
+                    (false, true) => "entity.generic.big_fall",
+                    (false, false) => "entity.generic.small_fall",
+                };
+                if !self.silent {
+                    events.push(MobEvent::Sound(
+                        sound,
+                        [self.position.x, self.position.y, self.position.z],
+                        1.0,
+                        1.0,
+                    ));
+                }
+                self.damage(damage, super::Damage::of(super::DamageKind::FlyIntoWall));
+            }
         }
     }
     /// LivingEntity.travelFlying: no gravity, `0.91F` drag in the air,
@@ -1511,7 +1562,9 @@ impl Mob {
             self.move_relative(speed, input);
             self.do_move(w, events);
             let mut m = self.velocity;
-            if self.horizontal_collision && self.kind.flags.climber {
+            // LivingEntity.travelInWater: `horizontalCollision && onClimbable()`,
+            // a ladder or scaffolding under water as well as a climbing spider.
+            if self.horizontal_collision && self.on_climbable(w) {
                 m.y = 0.2;
             }
             m = Vec3::new(
@@ -1984,9 +2037,11 @@ impl RestitutionWorld for MobRestitution<'_, '_> {
     fn bounce_event(&mut self) -> Result<(), ()> {
         Ok(())
     }
-    /// Nothing to mark: the bounce is already the velocity of this tick, and
-    /// the mob tracker sends the position and velocity it reads.
-    fn mark_position_for_sync(&mut self) {}
+    /// `Entity.syncPosition`: the tracker keeps where the mob bounced as a
+    /// step of its next move (`SteppedInterpolationTracker.updateTracking`).
+    fn mark_position_for_sync(&mut self) {
+        self.mob.sync_position = true;
+    }
     fn set_velocity(&mut self, velocity: Vec3) -> Result<(), ()> {
         self.mob.velocity = velocity;
         Ok(())
@@ -3118,5 +3173,20 @@ mod tests {
             );
         });
         assert!(ran, "built test world ran");
+    }
+
+    /// `LivingEntity.getFlyingSpeed`: a horse its player steers (saddled, ridden) moves
+    /// through the air at a tenth of its speed; riderless or unsaddled at 0.02.
+    #[test]
+    fn a_steered_mount_moves_through_the_air_at_a_tenth_of_its_speed() {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        std::sync::Arc::make_mut(&mut kind).species = super::super::Species::Horse;
+        let mut m = Mob::new(1, kind, Vec3::ZERO, 0.0);
+        m.ai.speed = 0.3;
+        assert_eq!(m.flying_speed(), 0.02, "no rider");
+        m.rider = Some(super::super::equine::Rider::default());
+        assert_eq!(m.flying_speed(), 0.02, "unsaddled");
+        m.extra.saddled = true;
+        assert_eq!(m.flying_speed(), 0.3_f32 * 0.1);
     }
 }

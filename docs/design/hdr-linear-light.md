@@ -81,7 +81,11 @@ below); where HDR's settings live (a later note).
   highlights. A pack that leaves it out gets Horizon's:
   in HDR a roll-off into the headroom (ITU-R BT.2390's EETF in PQ; HDR's black level already uses the same
   recommendation's lift), in SDR a clip at white, as vanilla. A pack that only grades keeps Horizon's tone curve;
-  one that only tone maps needs no post chain.
+  one that only tone maps needs no post chain. Horizon's curve keeps light as it is up to its knee, 60% of the peak
+  and at least paper white, where HDR lighting eased into the peak before it. The source's peak is where the EETF
+  puts its knee there (13.7 times paper white at 203 and 1000 nits, PQ's 10 000 nits at most), and light past it
+  shows at the peak. The curve acts on the brightest channel and scales the others with it, so light keeps its hue
+  as it eases and no channel passes the peak.
 - **Horizon's display pass is always last** and can't be replaced: it clamps to the headroom, converts to BT.2020
   for HDR10, lifts the black level, encodes (PQ, scRGB, or 2.2 for SDR) and shows what the HUD and menus cover at
   UI Brightness, as today.
@@ -185,8 +189,8 @@ With HDR on:
   world border's red vignette included.
 - **`keep_world` becomes a pass** instead of a copy. The frame keeps the world, light above white included; the pass
   writes it clipped to white, in gamma, with alpha 0, into the HUD's target. That backdrop is what the HUD draws on,
-  so it starts at white at most, as today. The target is in the frame's format, so the HUD's pipelines draw on it as on
-  the frame with HDR switched off; the display pass clips what the HUD drew at white.
+  so it starts at white at most, as today. The target is 8-bit, as the frame with HDR switched off is, so each HUD draw
+  clips at white and rounds as it does there.
 - **The HUD and menus keep today's blends, alpha included**, so the crosshair and `GUI_INVERT` (which invert what is
   under them), the text highlight, the menu blur and CIT glint layers (whose blends may read the destination's alpha,
   `hud/cit_glint.rs`) see what they see today; the backdrop's alpha 0 is the alpha `keep_world` leaves today.
@@ -283,18 +287,15 @@ Behind `HORIZON_HDR_FRAME=float` until the last step, each a small pull request:
    display pass does today, moved there), so that the camera overlays, the blur and the composite after it see light
    and the display pass lifts nothing; camera overlays before `keep_world`, the HUD's target and coverage, the
    display pass's composite, the blur; then the tone curve, after that pass, taking over the easing into the peak.
-4. Light written instead of marked, a whole frame at a time. Where a blended draw meets a surface of the other kind
-   (glass, water, clouds or a particle over lit terrain, or the other way round), the pixel keeps one mark for both:
-   the pass from step 3 would clip the written light and lift it again, or leave the marked part unlifted. So a frame
-   is all written or all marked, and the step goes path by path, not group by group. First the rebuild when the
-   frame's case changes: the lane, written or marked, picked again whenever what decides it changes (HDR, a pack, the
-   frame's switch, Improved Transparency, the visibility buffer), and TAA's history reset when it does. Then every
-   shader that marks the frame writes light instead on the default path, in one pull request (the shaders that draw
-   work out the marks, so one function, shared with the pass, turns each into light), alpha 1 where opaque and
-   coverage where blended, without the passes that only write marks or the pass from step 3, and with anti-aliasing
-   and TAA taking light above white; Improved Transparency (OIT) and the visibility buffer keep the marked frame
-   while they are switched on, whether or not a frame draws through them, until a pull request each moves them. Then
-   the 0.1 path split off, marks no longer written outside it, and the pass gone with them.
+4. Light written instead of marked, a whole frame at a time: where a blended draw meets a surface of the other kind
+   (glass, water, clouds or a particle over lit terrain, or the other way round), a pixel would keep one mark for both,
+   so a frame is all written or all marked. First the rebuild when what decides the frame changes (HDR, a pack, the
+   frame's switch, the HUD's layer), and TAA's history reset when the light it holds changes. Then every shader that
+   marks the frame writes its light instead on the default path (one function, shared with the display pass, turns
+   each mark into light), alpha 1 where opaque and coverage where blended, without the passes that only write marks,
+   and with anti-aliasing and TAA taking light above white; then Improved Transparency (OIT) and the visibility
+   buffer, a pull request each. Then no float frame holds marks, a 0.2 pack's included, and the pass from step 3
+   goes. Without the HUD's layer, HDR without a pack keeps the compatibility frame, and its marks, until step 5.
 5. On by default and the switch removed, and 0.1 no longer served (see 0.1 packs). The shim goes with it: the
    pipeline variants that write marks and the HDR pass's lift from them, in a pull request of its own.
 

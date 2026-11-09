@@ -5,7 +5,7 @@
 //! usage: environment_fixture RESOURCES INPUT OUTPUT
 use horizon_client::{
     biome::Biomes,
-    environment::{Environment, apply_weather},
+    environment::{Environment, Sample},
 };
 use std::{collections::HashMap, fmt::Write as _, fs, path::Path};
 
@@ -22,22 +22,22 @@ pub fn main() -> horizon_client::Result<()> {
     for line in input.lines() {
         let f: Vec<&str> = line.split(' ').collect();
         let dimension = f[0];
-        let environment =
-            match environments.entry(dimension.to_owned()) {
-                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-                std::collections::hash_map::Entry::Vacant(e) => e.insert(
-                    Environment::load_dimension(root, dimension, dimension == "overworld")?,
-                ),
-            };
+        let environment = match environments.entry(dimension.to_owned()) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(Environment::load_dimension(root, dimension)?)
+            }
+        };
         let info = biomes.get(biomes.id(&format!("minecraft:{}", f[4])));
-        let mut sky = environment.sample(
-            f[1].parse()?,
-            info.sky.map(horizon_client::biome::rgb),
-            info.fog.map(horizon_client::biome::rgb),
-        );
-        if dimension == "overworld" {
-            apply_weather(&mut sky, f[2].parse()?, f[3].parse()?);
-        }
+        // The weather layers only exist where the dimension can have weather.
+        let sky = environment.sample(&Sample {
+            day_time: f[1].parse()?,
+            rain: f[2].parse()?,
+            thunder: f[3].parse()?,
+            blend: None,
+            biome: Some(&info.attributes),
+            ..Sample::default()
+        });
         let v3 = |c: [f32; 3]| format!("[{:?},{:?},{:?}]", c[0], c[1], c[2]);
         let v4 = |c: [f32; 4]| format!("[{:?},{:?},{:?},{:?}]", c[0], c[1], c[2], c[3]);
         let mut row = format!("{{\"case\":\"{line}\"");
@@ -72,6 +72,7 @@ pub fn main() -> horizon_client::Result<()> {
             "visual/cloud_fog_end_distance",
             format!("{:?}", sky.cloud_fog_end),
         );
+        put("visual/cloud_height", format!("{:?}", sky.cloud_height));
         out.push_str(&row);
         out.push_str("}\n");
     }

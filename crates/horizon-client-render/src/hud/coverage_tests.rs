@@ -12,8 +12,6 @@ impl Gpu {
         let instance = crate::gfx::test_gpu::instance();
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
         if !hud_coverage::supported(
-            (false, true, true),
-            true,
             adapter.limits().max_color_attachments,
             adapter.get_downlevel_capabilities().flags,
             adapter.get_texture_format_features(hud_coverage::FORMAT),
@@ -45,7 +43,7 @@ impl Gpu {
         let view = atlas.create_view(&Default::default());
         let hud = HudRenderer::new(
             &device,
-            wgpu::TextureFormat::Rgba16Float,
+            hud_coverage::HUD_FORMAT,
             &view,
             &view,
             &device.create_sampler(&Default::default()),
@@ -72,8 +70,16 @@ impl Gpu {
         })
     }
 
-    fn draw(&self, batch: &HudBatch, initial: f64, coverage: bool) -> (Vec<u8>, Vec<u8>) {
-        let frame = self.texture(wgpu::TextureFormat::Rgba16Float);
+    /// `batch` drawn on the HUD's target cleared to `backdrop`, with coverage cleared to
+    /// `initial`: the target's and the coverage's 8-bit texels.
+    fn draw(
+        &self,
+        batch: &HudBatch,
+        backdrop: f64,
+        initial: f64,
+        coverage: bool,
+    ) -> (Vec<u8>, Vec<u8>) {
+        let frame = self.texture(hud_coverage::HUD_FORMAT);
         let mask = self.texture(hud_coverage::FORMAT);
         let depth = self.texture(wgpu::TextureFormat::Depth32Float);
         let [frame_view, mask_view, depth_view] =
@@ -86,7 +92,7 @@ impl Gpu {
             bytemuck::bytes_of(&HudUniform::new([4.0, 2.0, 1.0, 0.75], batch.end_portal, 0)),
         );
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        for (view, value) in [(&frame_view, 0.3), (&mask_view, initial)] {
+        for (view, value) in [(&frame_view, backdrop), (&mask_view, initial)] {
             let mut attachment = hud_coverage::attachment(view);
             attachment.ops.load = wgpu::LoadOp::Clear(wgpu::Color {
                 r: value,
@@ -141,7 +147,7 @@ impl Gpu {
         (
             color
                 .chunks(256)
-                .flat_map(|r| r[..32].iter().copied())
+                .flat_map(|r| r[..16].iter().copied())
                 .collect(),
             mask.chunks(256)
                 .flat_map(|r| r[..4].iter().copied())
@@ -150,8 +156,8 @@ impl Gpu {
     }
 
     fn check(&self, batch: &HudBatch, initial: f64, expected: [u8; 4]) {
-        let (plain, _) = self.draw(batch, initial, false);
-        let (color, mask) = self.draw(batch, initial, true);
+        let (plain, _) = self.draw(batch, 0.3, initial, false);
+        let (color, mask) = self.draw(batch, 0.3, initial, true);
         assert_eq!(color, plain, "coverage changed the primary colour or alpha");
         for (got, want) in mask.iter().zip(expected.repeat(2)) {
             assert!(
@@ -219,6 +225,46 @@ fn coverage_follows_hud_blends_discard_scissor_and_depth_without_changing_colour
     }
     batch.blends.push((0..12, Blend::Depth([1, 0, 2, 2])));
     gpu.check(&batch, 0.0, [0, 128, 0, 0]);
+}
+
+/// The HUD's target is 8-bit as vanilla's frame is, so each draw clips at white before the
+/// next blends over it: a text highlight added over a light backdrop, then a 50% black panel.
+#[test]
+fn each_hud_draw_clips_at_white_as_on_an_8_bit_frame() {
+    let Some(gpu) = Gpu::new() else {
+        return;
+    };
+    let mut batch = HudBatch::new([4, 2]);
+    quad(
+        &mut batch,
+        Blend::Additive,
+        rgba(128, 128, 128, 255),
+        0.0,
+        0.25,
+    );
+    quad(&mut batch, Blend::Alpha, rgba(0, 0, 0, 128), 0.0, 0.25);
+    // Vanilla's frame in integers: 204 + 128 clips at 255, then the panel keeps 127/255 of it.
+    let (backdrop, highlight, panel) = (204u32, 128u32, 128u32);
+    let clipped = (backdrop + highlight).min(255);
+    let want = ((clipped * (255 - panel)) as f64 / 255.0).round() as u8;
+    assert_eq!(want, 127);
+    // The HUD layer's target, and the 8-bit frame a 0.2 pack finishes on in SDR, where the
+    // HUD draws without coverage.
+    for coverage in [true, false] {
+        let (color, mask) = gpu.draw(&batch, f64::from(backdrop) / 255.0, 0.0, coverage);
+        // Unclipped, the panel would have kept 127/255 of 332: 165.
+        for pixel in [0, 1, 4, 5] {
+            assert_eq!(
+                color[pixel * 4..pixel * 4 + 3],
+                [want; 3],
+                "{coverage}: {color:?}"
+            );
+        }
+        // The highlight hides nothing; the panel hides half of what is under it.
+        if coverage {
+            assert_eq!(mask[0], 128, "{mask:?}");
+        }
+    }
 }
 
 #[test]

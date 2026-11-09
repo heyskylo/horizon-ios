@@ -18,9 +18,9 @@ use horizon_client::motion::MotionWorld;
 use horizon_core::geometry::{Aabb, Axis, Direction, ShapeOp, Vec3, border::BorderGeometry};
 use horizon_core::position::BlockPos;
 use horizon_world::{
-    block_collision_scan::BlockCollisionWorld, level::data::PushReaction::IgnoreEntity,
-    level::pistons::MovingPiston, piston_movement::PistonMovement, piston_push,
-    world_movement::EntityMovementWorld,
+    block_collision_scan::BlockCollisionWorld, collision_context::CollisionContext,
+    level::data::PushReaction::IgnoreEntity, level::pistons::MovingPiston,
+    piston_movement::PistonMovement, piston_push, world_movement::EntityMovementWorld,
 };
 
 /// What one piston asks for this tick: where it is, its state, and the progress
@@ -74,6 +74,78 @@ impl Game<'_> {
             self.push_for_piston(push, &mut accumulators);
             self.advance_piston_collision(pos);
         }
+    }
+
+    /// `moveEntityByPiston`'s `applyEffectsFromBlocks(previousPos, position)`
+    /// for projectile `i`: a cobweb (`WebBlock.entityInside`) or powder snow
+    /// (`PowderSnowBlock.entityInside`) its box met on the way makes it stuck
+    /// (`makeStuckInBlock`), the last one met deciding. A push moves along one
+    /// axis, so the boxes it started and ended in cover the blocks it crossed.
+    fn projectile_piston_block_effects(&mut self, i: usize, from: Vec3) {
+        let p = &self.creatures.projectiles[i];
+        let end = p.aabb();
+        let offset = from.subtract(p.position);
+        let start = end.move_by(offset);
+        let (lo, hi) = (
+            Vec3::new(
+                start.min_position().x.min(end.min_position().x) + 1.0e-5,
+                start.min_position().y.min(end.min_position().y) + 1.0e-5,
+                start.min_position().z.min(end.min_position().z) + 1.0e-5,
+            ),
+            Vec3::new(
+                start.max_position().x.max(end.max_position().x) - 1.0e-5,
+                start.max_position().y.max(end.max_position().y) - 1.0e-5,
+                start.max_position().z.max(end.max_position().z) - 1.0e-5,
+            ),
+        );
+        let mut stuck = None;
+        for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
+            for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
+                for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
+                    let name = &self.res.facts().get(self.world.block(x, y, z)).name;
+                    if let Some(s) = horizon_client::projectiles::stuck_speed_of(name) {
+                        stuck = Some(s);
+                    }
+                }
+            }
+        }
+        if let Some(stuck) = stuck {
+            self.creatures.projectiles[i].stuck_speed = stuck;
+        }
+    }
+
+    /// `moveEntityByPiston`'s `applyEffectsFromBlocks` for the entity-sensing
+    /// blocks (pressure plates, tripwires, buttons, detector rails): the ones
+    /// the pushed box covered, from `start` to `end`, sense it during the push
+    /// (`entityInside`). So a plate a push carried an entity onto powers its
+    /// neighbours before the piston pushes the next entity; the tick's
+    /// entity-inside pass would only see it after the pistons. A push moves
+    /// along one axis, so its two boxes cover the blocks it crossed.
+    fn piston_block_triggers(&mut self, start: Aabb, end: Aabb) {
+        let eps = 1.0e-5;
+        let (a, b) = (start.min_position(), end.min_position());
+        let lo = Vec3::new(a.x.min(b.x), a.y.min(b.y), a.z.min(b.z));
+        let (a, b) = (start.max_position(), end.max_position());
+        let hi = Vec3::new(a.x.max(b.x), a.y.max(b.y), a.z.max(b.z));
+        let behaviours = self.res.behaviours();
+        let mut sensing = Vec::new();
+        for x in (lo.x + eps).floor() as i32..=(hi.x - eps).floor() as i32 {
+            for y in (lo.y + eps).floor() as i32..=(hi.y - eps).floor() as i32 {
+                for z in (lo.z + eps).floor() as i32..=(hi.z - eps).floor() as i32 {
+                    if behaviours.senses_entities(self.world.block(x, y, z)) {
+                        sensing.push(BlockPos::new(x, y, z));
+                    }
+                }
+            }
+        }
+        if sensing.is_empty() {
+            return;
+        }
+        self.with_level(|b, level, ticks| {
+            for pos in sensing {
+                b.entity_inside(level, ticks, pos);
+            }
+        });
     }
 
     /// The collision view of the moving piston at `pos` takes the progress
@@ -137,9 +209,11 @@ impl Game<'_> {
                 // `Entity.move(MoverType.SHULKER_BOX, ...)`: steps and reads the ground flag,
                 body.step_height,
                 body.on_ground,
+                None,
             ) else {
                 return;
             };
+            self.set_pushed_on_ground(target, movement, moved);
             if moved.length_squared() > 0.0 {
                 self.apply_push(target, moved);
             }
@@ -489,14 +563,53 @@ impl Game<'_> {
         };
         // `limitPistonMovement` returns zero once the tick's budget is spent.
         if limited == Vec3::ZERO {
+            // `Entity.move` stops there; `moveEntityByPiston` still applies
+            // the block effects.
+            if let Target::Entity(EntityHandle::Tnt(i)) = target {
+                let from = self.tnts[i].position;
+                self.tnt_piston_block_effects(i, from);
+            }
+            if let Target::Entity(EntityHandle::Projectile(i)) = target {
+                let at = self.creatures.projectiles[i].position;
+                self.projectile_piston_block_effects(i, at);
+            }
+            self.piston_block_triggers(before, before);
             return;
         }
+        // `Entity.move`: a projectile a cobweb or powder snow holds stops dead
+        // (`setDeltaMovement(Vec3.ZERO)`); a piston's push is not scaled.
+        let projectile_from = match target {
+            Target::Entity(EntityHandle::Projectile(i)) => {
+                let p = &mut self.creatures.projectiles[i];
+                if p.stuck_speed.length_squared() > 1.0e-7 {
+                    p.stuck_speed = Vec3::ZERO;
+                    p.velocity = Vec3::ZERO;
+                }
+                Some((i, p.position))
+            }
+            _ => None,
+        };
+        // Primed TNT: a `PISTON` move uses up a pending stuck multiplier
+        // without scaling the push, and powder snow reads its fall.
+        let tnt = match target {
+            Target::Entity(EntityHandle::Tnt(i)) => {
+                let t = &mut self.tnts[i];
+                t.take_stuck();
+                Some((
+                    i,
+                    t.position,
+                    t.powder_snow_subject(),
+                    t.collision_context(),
+                ))
+            }
+            _ => None,
+        };
         let resolved = with_piston_noclip(piston_direction, || {
             pushed_movement(
                 SceneCollisions {
                     world: &self.world,
                     binding: self.collision,
-                    subject: None,
+                    subject: tnt.as_ref().map(|t| t.2),
                 },
                 self.border.geometry(),
                 at,
@@ -504,15 +617,11 @@ impl Game<'_> {
                 limited,
                 step_height,
                 on_ground,
+                tnt.as_ref().map(|t| t.3),
             )
             .unwrap_or(Vec3::ZERO)
         });
-        // Entity.move updates an authoritative living entity's ground flag
-        // even for a horizontal piston push. Keeping the old support flag
-        // would run Frost Walker while the stand is moving over open water.
-        if let Target::Entity(EntityHandle::ArmorStand(i)) = target {
-            self.armor_stands[i].on_ground = limited.y < 0.0 && limited.y != resolved.y;
-        }
+        self.set_pushed_on_ground(target, limited, resolved);
 
         // Entity.move updates ground before its tiny-collision return. This
         // native slice covers only unoccupied server NoAI horizontal moves.
@@ -538,12 +647,82 @@ impl Game<'_> {
                 self.mobs[i].on_ground = limited.y < 0.0 && limited.y != resolved.y;
             }
         }
-        if resolved.length_squared() <= 1.0e-7
-            && limited.length_squared() - resolved.length_squared() >= 1.0e-7
-        {
+        // `Entity.move(MoverType.PISTON, …)` restitution, which runs whether or
+        // not the step is applied: so a primed TNT in a chunk that does not tick
+        // entities still loses its velocity into walls and ceilings and
+        // bounces on slime (#12022).
+        self.restitute_piston(target, limited, resolved);
+        let moved = resolved.length_squared() > 1.0e-7
+            || limited.length_squared() - resolved.length_squared() < 1.0e-7;
+        if moved {
+            self.apply_push(target, resolved);
+        }
+        if let Some((i, from, ..)) = tnt {
+            self.finish_tnt_piston_move(i, from, resolved);
+        }
+        if let Some((i, from)) = projectile_from {
+            self.projectile_piston_block_effects(i, from);
+        }
+        let after = if moved {
+            before.move_by(resolved)
+        } else {
+            before
+        };
+        self.piston_block_triggers(before, after);
+    }
+
+    /// `Entity.restituteMovementAfterCollisions` after a block's push, for a
+    /// server entity (`canSimulateMovement`; a player's own client moves it):
+    /// an axis the collision cut off stops (no entity bounces off walls), and
+    /// a cut-off vertical push stops the fall or rise, except a fall onto
+    /// slime fast enough to bounce. The bounce is of the entity's own
+    /// velocity, scaled by the part of the push that was made. The ground
+    /// flag is set by `set_pushed_on_ground`.
+    fn restitute_piston(&mut self, target: Target, limited: Vec3, resolved: Vec3) {
+        let Target::Entity(handle) = target else {
+            return;
+        };
+        // `Mth.equal` horizontally, exact vertically, as `Entity.move` compares.
+        let collided_x = (limited.x - resolved.x).abs() >= 1.0e-5;
+        let collided_z = (limited.z - resolved.z).abs() >= 1.0e-5;
+        let moved_vertically = limited.y.abs() > 0.0;
+        let vertical = limited.y != resolved.y;
+        if !(collided_x || collided_z || moved_vertically && vertical) {
             return;
         }
-        self.apply_push(target, resolved);
+        let below = vertical && limited.y < 0.0;
+        with_entity_mut!(self, handle, entity => {
+            let pos = entity.position();
+            // `getOnPosLegacy`: the block 0.2 under the feet.
+            let on = self.world.block(
+                pos.x.floor() as i32,
+                (pos.y - 0.2).floor() as i32,
+                pos.z.floor() as i32,
+            );
+            let slime = &*self.res.facts().get(on).name == "minecraft:slime_block";
+            let velocity = entity.velocity_mut();
+            if collided_x {
+                velocity.x = 0.0;
+            }
+            if collided_z {
+                velocity.z = 0.0;
+            }
+            if vertical {
+                velocity.y = crate::entities::vertical_collision_velocity(
+                    velocity.y, resolved.y, 0.04, below, slime,
+                );
+            }
+        });
+    }
+
+    /// The end of a block's `Entity.move` push: a server entity's ground flag
+    /// is set after every push, a sideways one and one the collision turns
+    /// away included, on ground only when the push's downward part was blocked.
+    fn set_pushed_on_ground(&mut self, target: Target, wanted: Vec3, moved: Vec3) {
+        if let Target::Entity(handle) = target {
+            let on_ground = wanted.y < 0.0 && wanted.y != moved.y;
+            with_entity_mut!(self, handle, entity => entity.set_piston_on_ground(on_ground));
+        }
     }
 
     /// `Entity.limitPistonMovement`: each axis may travel at most 0.51 blocks
@@ -652,15 +831,19 @@ fn pushed_movement<W>(
     movement: Vec3,
     step_height: f32,
     on_ground: bool,
+    context: Option<CollisionContext<'_>>,
 ) -> horizon_client::Result<Vec3>
 where
     W: BlockCollisionWorld<Error = std::io::Error> + EntityMovementWorld<Error = std::io::Error>,
 {
-    EntityCollisions::with_border(blocks, border, at).resolve(
+    // Without the entity's own context, the one `resolve` reads at its feet.
+    let context = context.unwrap_or_else(|| CollisionContext::position(before.min_position().y));
+    EntityCollisions::with_border(blocks, border, at).resolve_with_context(
         before,
         movement,
         step_height,
         on_ground,
+        context,
     )
 }
 
@@ -689,6 +872,7 @@ mod tests {
             Vec3::new(0.51, 0.0, 0.0),
             0.0,
             false,
+            None,
         )
         .expect("the push resolves");
         // The wall stops the body 0.4 blocks short of the whole push.
@@ -711,6 +895,7 @@ mod tests {
             Vec3::new(0.51, 0.0, 0.0),
             0.0,
             false,
+            None,
         )
         .expect("the push resolves");
         assert!(
@@ -828,6 +1013,187 @@ mod order_tests {
             moved[0]
         );
         assert!(moved[1] < 0.02, "far stone still in the way: {}", moved[1]);
+    }
+
+    /// A primed TNT pushed east by a piston into a stone wall loses its
+    /// horizontal velocity, matching `Entity.move(MoverType.PISTON, …)`
+    /// restitution even in a chunk that does not tick entities (#12022).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_pushed_tnt_loses_velocity_into_a_wall() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(std::env::temp_dir().join(format!(
+            "horizon-piston-velocity-unit-{}",
+            std::process::id()
+        )));
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let registry = &game.pack.assets.registry;
+        let stone = registry.default_state("minecraft:stone").unwrap();
+        let moving = registry.default_state("minecraft:moving_piston").unwrap();
+        let mut chunk = Chunk::empty(0, 0);
+        for x in 0..16 {
+            for z in 0..16 {
+                chunk.set(x, 199, z, stone.0);
+            }
+        }
+        // Stone wall at x=6 blocks the TNT pushed east by the piston at x=5.
+        chunk.set(6, 200, 5, stone.0);
+        chunk.set(5, 200, 5, moving.0);
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+        let piston = MovingPiston {
+            moved_state: stone,
+            direction: Direction::East,
+            extending: true,
+            source: false,
+            progress: 0.0,
+            progress_o: 0.0,
+            last_ticked: 0,
+            death_ticks: 0,
+            id: 1,
+        };
+        game.block_ticks.moving_pistons = vec![(BlockPos::new(5, 200, 5), piston)];
+        game.sync_moving_pistons();
+        game.tnts.clear();
+        assert!(game.run_command("summon tnt 5.5 200 5.5 {fuse:80,Motion:[0.4d,0.0d,0.0d]}"));
+        assert!(
+            (game.tnts[0].velocity.x - 0.4).abs() < 1.0e-9,
+            "TNT starts with vx 0.4, got {:?}",
+            game.tnts[0].velocity
+        );
+        // Piston advances from progress 0 to 0.5 and pushes the TNT east.
+        let pushes: Vec<_> = game
+            .block_ticks
+            .moving_pistons
+            .iter()
+            .map(|&(pos, old)| (pos, old, old.progress + 0.5))
+            .collect();
+        for (_, piston) in &mut game.block_ticks.moving_pistons {
+            piston.progress += 0.5;
+        }
+        game.push_piston_entities(pushes);
+        // The stone wall at x=6 stops the TNT; its horizontal velocity must be zeroed.
+        assert!(
+            game.tnts[0].velocity.x.abs() < 1.0e-9,
+            "TNT velocity.x should be zeroed by the wall, got {:?}",
+            game.tnts[0].velocity
+        );
+    }
+
+    /// A primed TNT pushed down by a piston onto a slime block bounces up,
+    /// matching vanilla's slime restitution (~+0.64) even in a lazy chunk (#12022).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_pushed_tnt_bounces_on_slime() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::env::temp_dir().join(format!("horizon-piston-slime-unit-{}", std::process::id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let registry = &game.pack.assets.registry;
+        let stone = registry.default_state("minecraft:stone").unwrap();
+        let slime = registry.default_state("minecraft:slime_block").unwrap();
+        let moving = registry.default_state("minecraft:moving_piston").unwrap();
+        let mut chunk = Chunk::empty(0, 0);
+        for x in 0..16 {
+            for z in 0..16 {
+                chunk.set(x, 199, z, stone.0);
+            }
+        }
+        // Slime block at y=199 under the TNT pushed down by the piston at y=200.
+        chunk.set(5, 199, 5, slime.0);
+        chunk.set(5, 200, 5, moving.0);
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+        let piston = MovingPiston {
+            moved_state: stone,
+            direction: Direction::Down,
+            extending: true,
+            source: false,
+            progress: 0.0,
+            progress_o: 0.0,
+            last_ticked: 0,
+            death_ticks: 0,
+            id: 1,
+        };
+        game.block_ticks.moving_pistons = vec![(BlockPos::new(5, 200, 5), piston)];
+        game.sync_moving_pistons();
+        game.tnts.clear();
+        assert!(game.run_command("summon tnt 5.5 200.5 5.5 {fuse:80,Motion:[0.0d,-0.4d,0.0d]}"));
+        assert!(
+            (game.tnts[0].velocity.y - (-0.4)).abs() < 1.0e-9,
+            "TNT starts with vy -0.4, got {:?}",
+            game.tnts[0].velocity
+        );
+        // Piston advances from progress 0 to 0.5 and pushes the TNT down.
+        let pushes: Vec<_> = game
+            .block_ticks
+            .moving_pistons
+            .iter()
+            .map(|&(pos, old)| (pos, old, old.progress + 0.5))
+            .collect();
+        for (_, piston) in &mut game.block_ticks.moving_pistons {
+            piston.progress += 0.5;
+        }
+        game.push_piston_entities(pushes);
+        // The slime block at y=199 bounces the TNT up; vertical velocity must be positive.
+        assert!(
+            game.tnts[0].velocity.y > 0.0,
+            "TNT should bounce up on slime, got vy {:?}",
+            game.tnts[0].velocity
+        );
     }
 }
 

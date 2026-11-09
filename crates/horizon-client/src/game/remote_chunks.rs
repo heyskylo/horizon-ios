@@ -16,9 +16,13 @@ use horizon_protocol::{
     registry::DimensionType,
 };
 use horizon_world::attachments::Holder;
-use std::sync::{
-    Arc,
-    mpsc::{self, TryRecvError},
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
 };
 
 /// What turning a chunk packet into a client column depends on: the
@@ -186,54 +190,178 @@ impl ChunkFormat {
 
 type Decoded = (Box<C>, Result<Chunk, String>);
 
-/// One thread that decodes chunk packets in the order they arrived; its
-/// results come back in that order, one per `submit`.
+struct Job {
+    seq: u64,
+    format: Arc<ChunkFormat>,
+    packet: Box<C>,
+}
+
+struct WorkResult {
+    seq: u64,
+    packet: Box<C>,
+    column: Result<Chunk, String>,
+}
+
+struct DecoderQueue {
+    jobs: VecDeque<Job>,
+    stopped: bool,
+}
+
+struct Retirement {
+    next_submit: u64,
+    next_deliver: u64,
+    ready: BTreeMap<u64, Decoded>,
+    done: mpsc::Receiver<WorkResult>,
+}
+
+/// Worker threads that decode chunk packets in parallel while returning
+/// results strictly in the order they arrived, one per `submit`.
 pub(super) struct ChunkDecoder {
-    jobs: mpsc::Sender<(Arc<ChunkFormat>, Box<C>)>,
-    done: mpsc::Receiver<Decoded>,
+    queue: Arc<(Mutex<DecoderQueue>, Condvar)>,
+    retirement: Mutex<Retirement>,
+    workers_alive: Arc<AtomicUsize>,
 }
 
 impl ChunkDecoder {
     pub(super) fn new() -> Self {
-        let (jobs, todo) = mpsc::channel::<(Arc<ChunkFormat>, Box<C>)>();
         let (finished, done) = mpsc::channel();
-        // The thread ends with the connection, when `jobs` is dropped.
-        let spawned = std::thread::Builder::new()
-            .name("Chunk decoder".into())
-            .spawn(move || {
-                // A frame waits for its columns, as it would for the render
-                // thread's own work.
-                horizon_threads::favour_current();
-                for (format, packet) in todo {
-                    let column = match &*packet {
-                        C::LevelChunkWithLight(p) => format.column(p),
-                        _ => Err("not a chunk packet".into()),
-                    };
-                    if finished.send((packet, column)).is_err() {
-                        break;
+        let queue = Arc::new((
+            Mutex::new(DecoderQueue {
+                jobs: VecDeque::new(),
+                stopped: false,
+            }),
+            Condvar::new(),
+        ));
+        let worker_count = horizon_threads::worker_count().clamp(1, 4);
+        let workers_alive = Arc::new(AtomicUsize::new(0));
+
+        let mut spawned = 0;
+        for i in 0..worker_count {
+            let queue = Arc::clone(&queue);
+            let finished = finished.clone();
+            let alive = Arc::clone(&workers_alive);
+            let builder = std::thread::Builder::new()
+                .name(format!("Chunk decoder {i}"))
+                .spawn(move || {
+                    horizon_threads::favour_current();
+                    'worker: loop {
+                        let job = {
+                            let mut q = match queue.0.lock() {
+                                Ok(q) => q,
+                                Err(_) => break 'worker,
+                            };
+                            loop {
+                                if q.stopped && q.jobs.is_empty() {
+                                    break 'worker;
+                                }
+                                if let Some(job) = q.jobs.pop_front() {
+                                    break job;
+                                }
+                                q = match queue.1.wait(q) {
+                                    Ok(guard) => guard,
+                                    Err(_) => break 'worker,
+                                };
+                            }
+                        };
+                        let column =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &*job
+                                .packet
+                            {
+                                C::LevelChunkWithLight(p) => job.format.column(p),
+                                _ => Err("not a chunk packet".into()),
+                            }))
+                            .unwrap_or_else(|_| Err("chunk decoding panicked".into()));
+                        if finished
+                            .send(WorkResult {
+                                seq: job.seq,
+                                packet: job.packet,
+                                column,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
                     }
-                }
-            });
-        if let Err(e) = spawned {
-            log::warn!("Horizon: no chunk decoder thread ({e}); chunks decode in the frame");
+                    alive.fetch_sub(1, Ordering::Relaxed);
+                });
+            if builder.is_ok() {
+                spawned += 1;
+            } else if let Err(e) = builder {
+                log::warn!("Horizon: no chunk decoder thread ({e}); chunks decode in the frame");
+            }
         }
-        Self { jobs, done }
+        workers_alive.store(spawned, Ordering::Relaxed);
+        Self {
+            queue,
+            retirement: Mutex::new(Retirement {
+                next_submit: 0,
+                next_deliver: 0,
+                ready: BTreeMap::new(),
+                done,
+            }),
+            workers_alive,
+        }
     }
 
     /// Start decoding a chunk packet with the format it arrived under.
     /// Without a decoder thread the packet comes back undecoded.
     pub(super) fn submit(&self, format: Arc<ChunkFormat>, packet: Box<C>) -> Option<Box<C>> {
-        self.jobs.send((format, packet)).err().map(|e| (e.0).1)
+        if self.workers_alive.load(Ordering::Relaxed) == 0 {
+            return Some(packet);
+        }
+        let mut retirement = match self.retirement.lock() {
+            Ok(r) => r,
+            Err(_) => return Some(packet),
+        };
+        let seq = retirement.next_submit;
+        retirement.next_submit += 1;
+        let mut q = match self.queue.0.lock() {
+            Ok(q) => q,
+            Err(_) => {
+                retirement.next_submit -= 1;
+                return Some(packet);
+            }
+        };
+        if q.stopped {
+            retirement.next_submit -= 1;
+            return Some(packet);
+        }
+        q.jobs.push_back(Job {
+            seq,
+            format,
+            packet,
+        });
+        self.queue.1.notify_one();
+        None
     }
 
     /// The oldest submitted packet and its column, unless it is still
     /// decoding: a frame never waits for the decoder.
     pub(super) fn next(&self) -> Next {
-        match self.done.try_recv() {
-            Ok(decoded) => Next::Ready(decoded),
-            Err(TryRecvError::Empty) => Next::Decoding,
-            // The decoder thread panicked: its columns are gone.
-            Err(TryRecvError::Disconnected) => Next::Lost,
+        let mut ret = match self.retirement.lock() {
+            Ok(r) => r,
+            Err(_) => return Next::Lost,
+        };
+        while let Ok(res) = ret.done.try_recv() {
+            ret.ready.insert(res.seq, (res.packet, res.column));
+        }
+        let next_deliver = ret.next_deliver;
+        if let Some(decoded) = ret.ready.remove(&next_deliver) {
+            ret.next_deliver += 1;
+            return Next::Ready(decoded);
+        }
+        if self.workers_alive.load(Ordering::Relaxed) == 0 {
+            return Next::Lost;
+        }
+        Next::Decoding
+    }
+}
+
+impl Drop for ChunkDecoder {
+    fn drop(&mut self) {
+        if let Ok(mut q) = self.queue.0.lock() {
+            q.stopped = true;
+            self.queue.1.notify_all();
         }
     }
 }
@@ -279,16 +407,17 @@ impl Game<'_> {
         };
         let (x, z) = (p.x, p.z);
         // A column sent again while it is resident (a bulk edit): only what changed is lit and meshed again.
-        if self.world.chunks.contains_key(&(x, z)) {
+        let resident = self.world.chunks.contains_key(&(x, z));
+        if resident {
             horizon_client::spans::time("replace_remote", || {
                 self.streaming.replace_remote(&mut self.world, chunk)
             });
+            self.world
+                .block_entities
+                .retain(|k, _| (k.0 >> 4, k.2 >> 4) != (x, z));
         } else {
             self.streaming.insert_remote(&mut self.world, chunk);
         }
-        self.world
-            .block_entities
-            .retain(|k, _| (k.0 >> 4, k.2 >> 4) != (x, z));
         for info in &p.chunk.block_entities {
             let pos = (
                 x * 16 + i32::from(info.packed_xz as u8 >> 4),
@@ -300,6 +429,8 @@ impl Game<'_> {
             // LevelChunk.replaceWithPacketData: the block entity loads its update tag.
             self.remote_block_entity_data([pos.0, pos.1, pos.2], info.kind, &info.tag);
         }
+        // After the column's block entities load: an attachment keeps its block entity if the
+        // packet sent it again, and one left from a forgotten column goes.
         if let Some(r) = self.remote.as_mut() {
             r.attachments.retain(|holder, _| match *holder {
                 Holder::BlockEntity([bx, by, bz]) => {
@@ -333,15 +464,14 @@ impl Game<'_> {
                 log::warn!("Horizon: biomes of chunk {x} {z}: {e}");
             }
         }
+        let mask = horizon_client::section_mask::SectionMask::below(self.world.layout().sections());
         for data in &p.chunks {
             let [x, z] = data.pos;
             for dz in -1..=1 {
                 for dx in -1..=1 {
-                    if !self.world.chunks.contains_key(&(x + dx, z + dz)) {
-                        continue;
-                    }
-                    for sy in 0..self.world.layout().sections() as i32 {
-                        self.world.dirty_sections.insert((x + dx, sy, z + dz));
+                    let n = (x + dx, z + dz);
+                    if self.world.chunks.contains_key(&n) {
+                        self.world.dirty_sections.insert_column_mask(n, mask);
                     }
                 }
             }
@@ -431,6 +561,34 @@ mod tests {
                 // Wire biome 1 is our biome 7.
                 assert_eq!(column.biome(cx, y, cz), 7);
             }
+        }
+        assert!(matches!(decoder.next(), Next::Decoding));
+    }
+
+    /// Large bursts of chunk packets (e.g. 128 columns arriving together)
+    /// decode concurrently and retire in strict sequential FIFO order.
+    #[test]
+    fn the_decoder_handles_large_bursts_in_strict_fifo() {
+        let overworld = DimensionType::vanilla("minecraft:overworld");
+        let format = Arc::new(ChunkFormat::new(&overworld, vec![0, 7, 9], 2));
+        let decoder = ChunkDecoder::new();
+        for x in 0..128 {
+            assert!(decoder.submit(format.clone(), packet(x, 1 + x)).is_none());
+        }
+        for x in 0..128 {
+            let (packet, column) = loop {
+                match decoder.next() {
+                    Next::Ready(decoded) => break decoded,
+                    Next::Decoding => std::thread::yield_now(),
+                    Next::Lost => panic!("the decoder stopped"),
+                }
+            };
+            let C::LevelChunkWithLight(p) = *packet else {
+                panic!("not a chunk packet");
+            };
+            assert_eq!(p.x, x);
+            let column = column.unwrap();
+            assert_eq!((column.x, column.z), (x, -3));
         }
         assert!(matches!(decoder.next(), Next::Decoding));
     }

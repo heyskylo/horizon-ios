@@ -98,6 +98,7 @@ pub(super) fn content_root(
 ) -> std::path::PathBuf {
     use horizon_client::mod_content::{self, ContentMod};
     use horizon_mods::{Capability, Content, Package};
+    let _step = horizon_client::spans::startup::step("mods.content_root");
     let here = std::env::current_dir().unwrap_or_default();
     let mut paths = horizon_mods::find(&here.join(mod_list::DIR));
     paths.retain(|p| !dev.contains(p));
@@ -133,6 +134,10 @@ pub(super) fn content_root(
                 continue;
             }
         };
+        // Read as `Content::read` reads it: `start_mods` need not read it again.
+        if declared.is_empty() {
+            remember_verdict(path, &content);
+        }
         let known = match &mut known {
             Some(types) => types,
             None => match mod_content::known_components(root) {
@@ -173,7 +178,11 @@ pub(super) fn content_root(
             }
         }
     }
-    match mod_content::resource_root(root, &mods, &here.join(".horizon-cache")) {
+    let overlay = {
+        let _step = horizon_client::spans::startup::step("mods.overlay");
+        mod_content::resource_root(root, &mods, &here.join(".horizon-cache"))
+    };
+    match overlay {
         Ok(out) => {
             if announce {
                 horizon_protocol::mod_list::set_local(announced);
@@ -284,7 +293,23 @@ fn register_menu_types(mods: &[horizon_client::mod_content::ContentMod]) {
     let menus = horizon_client::mod_content::menu_types(mods);
     let set = containers::register_mod_menu_types(menus.iter().map(|m| {
         let results = m.results.iter().map(|&r| usize::from(r)).collect();
-        (m.id.clone(), m.slots.into(), m.data_slots.into(), results)
+        let crafting = m.crafting.map(|c| containers::ModCrafting {
+            grid: c.grid.into(),
+            size: c.size.into(),
+            result: c.result.into(),
+        });
+        let links = m.links.map(|l| containers::ModLinks {
+            from: l.from.into(),
+            count: l.count.into(),
+        });
+        (
+            m.id.clone(),
+            m.slots.into(),
+            m.data_slots.into(),
+            results,
+            crafting,
+            links,
+        )
     }));
     if !set
         && containers::mod_menu_types()
@@ -336,25 +361,71 @@ fn native_mods_detail(built: &str) -> Option<String> {
     (!list.is_empty()).then_some(list)
 }
 
+/// Whether a content mod's files can switch with a world open (`mod_content::live_switch`);
+/// `None` when its content can't be read.
+type Verdict = Option<std::result::Result<(), &'static str>>;
+
+/// Each mod's [`Verdict`] by its path and modification time. Reading a mod's content walks and
+/// checks every file (seconds for a large pack), and a start read each mod three times: the
+/// content root, then the window's and the server thread's `start_mods`.
+/// shortcut: a file edited inside an unpacked mod folder keeps the folder's time; `--dev-mod`
+/// folders are never remembered, a player's are replaced whole by the launcher.
+static VERDICTS: std::sync::Mutex<
+    std::collections::BTreeMap<(PathBuf, std::time::SystemTime), Verdict>,
+> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn verdict_key(path: &std::path::Path) -> Option<(PathBuf, std::time::SystemTime)> {
+    let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
+    Some((path.to_owned(), modified))
+}
+
+/// Remembers the verdict of `content`, read from `path` as [`horizon_mods::Content::read`] does.
+fn remember_verdict(path: &std::path::Path, content: &horizon_mods::Content) {
+    if let Some(key) = verdict_key(path) {
+        let verdict = Some(horizon_client::mod_content::live_switch(content));
+        VERDICTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key, verdict);
+    }
+}
+
+/// The mod at `path`'s [`Verdict`], read once per version of it (never remembered for `dev`).
+fn verdict(path: &std::path::Path, manifest: &horizon_mods::Manifest, dev: bool) -> Verdict {
+    let key = if dev { None } else { verdict_key(path) };
+    if let Some(key) = &key
+        && let Some(verdict) = VERDICTS.lock().unwrap_or_else(|e| e.into_inner()).get(key)
+    {
+        return *verdict;
+    }
+    let verdict = horizon_mods::Content::read(path, manifest)
+        .ok()
+        .map(|content| horizon_client::mod_content::live_switch(&content));
+    if let Some(key) = key {
+        VERDICTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key, verdict);
+    }
+    verdict
+}
+
 /// Notes a content mod's id, and whether its files can switch with a world
 /// open (`mod_content::live_switch`).
 fn live_switch_of(
     path: &std::path::Path,
     package: &horizon_mods::Package,
+    dev: bool,
     content_ids: &mut std::collections::BTreeSet<String>,
     live_ids: &mut std::collections::BTreeSet<String>,
 ) {
     let id = &package.manifest.id;
     content_ids.insert(id.clone());
-    let content = horizon_mods::Content::read(path, &package.manifest);
-    match content
-        .as_ref()
-        .map(horizon_client::mod_content::live_switch)
-    {
-        Ok(Ok(())) if package.wasm.is_none() => {
+    match verdict(path, &package.manifest, dev) {
+        Some(Ok(())) if package.wasm.is_none() => {
             live_ids.insert(id.clone());
         }
-        Ok(Err(why)) => log::debug!("Horizon: mod {id} switches on a restart: {why}"),
+        Some(Err(why)) => log::debug!("Horizon: mod {id} switches on a restart: {why}"),
         _ => {}
     }
 }
@@ -431,13 +502,14 @@ impl Game<'_> {
                 };
                 let m = &package.manifest;
                 let problem = package.wasm.is_some().then(|| STOPPED.to_owned());
-                live_switch_of(path, &package, &mut content_ids, &mut live_ids);
+                let dev = self.mods.dev.contains(path);
+                live_switch_of(path, &package, dev, &mut content_ids, &mut live_ids);
                 Installed {
                     id: m.id.clone(),
                     title: format!("{} {}", m.name, m.version),
                     description: m.description.clone(),
                     problem,
-                    dev: self.mods.dev.contains(path),
+                    dev,
                     native: None,
                 }
             })
@@ -827,6 +899,39 @@ mod tests {
             (loaded.kind.id.as_str(), loaded.species()),
             ("ruby:merchant", Species::WanderingTrader)
         );
+    }
+
+    /// A mod's live-switch verdict is read once per version of the mod: a later look finds
+    /// it without reading the files again, a `--dev-mod` is always read, and the mod
+    /// replaced (a new modification time) is read again.
+    #[test]
+    fn a_mods_live_switch_verdict_is_read_once_per_version_of_it() {
+        let dir = std::env::temp_dir().join(format!("horizon-verdict-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ruby = dir.join("ruby");
+        std::fs::create_dir_all(ruby.join("assets/ruby/lang")).unwrap();
+        std::fs::create_dir_all(ruby.join("data/ruby")).unwrap();
+        std::fs::write(ruby.join("assets/ruby/lang/en_us.json"), "{}").unwrap();
+        let manifest = horizon_mods::Manifest::parse(
+            "id = \"ruby\"\nname = \"Ruby\"\nversion = \"0.1.0\"\napi = \"0.2\"\n\
+             side = \"both\"\ncapabilities = [\"registries\"]\n",
+        )
+        .unwrap();
+        assert_eq!(verdict(&ruby, &manifest, false), Some(Ok(())));
+        // Worldgen added below `data/ruby`: the mod folder's own time stays.
+        let worldgen = ruby.join("data/ruby/worldgen/configured_feature");
+        std::fs::create_dir_all(&worldgen).unwrap();
+        std::fs::write(worldgen.join("ore.json"), "{}").unwrap();
+        let switches_on_restart = Some(Err("horizon.mods.switch.worldgen"));
+        assert_eq!(verdict(&ruby, &manifest, true), switches_on_restart);
+        assert_eq!(verdict(&ruby, &manifest, false), Some(Ok(())));
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        std::fs::File::open(&ruby)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        assert_eq!(verdict(&ruby, &manifest, false), switches_on_restart);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Only a build whose `native-mods.json` lists a mod counts as built with mods.

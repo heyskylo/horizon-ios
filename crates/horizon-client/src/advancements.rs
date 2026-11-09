@@ -628,6 +628,11 @@ pub trait World {
     fn block_entity_nbt(&self, _pos: [i32; 3]) -> Option<horizon_world::nbt::Tag> {
         None
     }
+    /// Read-only contents of a loaded named predicate, when this context
+    /// supplies a predicate registry. Other contexts keep references absent.
+    fn predicate(&self, _id: &str) -> Option<&Value> {
+        None
+    }
 }
 /// An item stack as predicates see it.
 #[derive(Clone, Debug, Default)]
@@ -642,9 +647,18 @@ pub struct ItemView {
     /// family unprojected and unsupported; an empty compound is actual absence.
     pub custom_data: Option<horizon_world::nbt::Tag>,
 }
+/// Query snapshot of supported known movement, in blocks/tick, and actual fall distance.
+#[derive(Clone, Copy, Debug)]
+pub struct MovementView {
+    pub per_tick: [f64; 3],
+    pub fall_distance: f64,
+}
+
 /// An entity as predicates see it.
 #[derive(Clone, Debug, Default)]
 pub struct EntityView {
+    /// None is unprojected/unsupported, not a fabricated stationary entity.
+    pub movement: Option<MovementView>,
     pub kind: String,
     pub position: [f64; 3],
     pub on_fire: bool,
@@ -1010,6 +1024,51 @@ pub fn distance(v: &Value, a: [f64; 3], b: [f64; 3]) -> bool {
             (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt(),
         )
 }
+/// `MinMaxBounds.Doubles.matches` and `matchesSqr`, only for movement predicates.
+fn movement_range(v: &Value, value: f64, squared: bool) -> bool {
+    let (mut min, mut max) = match v {
+        Value::Null => (None, None),
+        Value::Number(n) => {
+            let Some(n) = n.as_f64() else { return false };
+            (Some(n), Some(n))
+        }
+        Value::Object(o) => {
+            let read = |key| match o.get(key) {
+                None => Some(None),
+                Some(n) => n.as_f64().map(Some),
+            };
+            let (Some(min), Some(max)) = (read("min"), read("max")) else {
+                return false;
+            };
+            (min, max)
+        }
+        _ => return false,
+    };
+    if squared {
+        min = min.map(|n| n * n);
+        max = max.map(|n| n * n);
+    }
+    if min.is_some_and(|n| n > value) {
+        return false;
+    }
+    max.is_none_or(|n| n >= value)
+}
+
+/// `MovementPredicate.matches`: known movement is scaled by 20 before the ordered tests.
+fn movement(p: &Value, m: MovementView) -> bool {
+    if !p.is_object() {
+        return false;
+    }
+    let [x, y, z] = m.per_tick.map(|v| v * 20.0);
+    movement_range(&p["x"], x, false)
+        && movement_range(&p["y"], y, false)
+        && movement_range(&p["z"], z, false)
+        && movement_range(&p["speed"], x * x + y * y + z * z, true)
+        && movement_range(&p["horizontal_speed"], x * x + z * z, true)
+        && movement_range(&p["vertical_speed"], y.abs(), false)
+        && movement_range(&p["fall_distance"], m.fall_distance, false)
+}
+
 /// `EntityPredicate` (26.x keyed sub-predicates).
 pub fn entity(v: &Value, e: &EntityView, w: &dyn World, origin: [f64; 3]) -> bool {
     if v.is_null() {
@@ -1027,6 +1086,7 @@ pub fn entity(v: &Value, e: &EntityView, w: &dyn World, origin: [f64; 3]) -> boo
                 location(p, [e.position[0], e.position[1] - 0.5, e.position[2]], w)
             }
             "minecraft:distance" => distance(p, e.position, origin),
+            "minecraft:movement" => e.movement.is_some_and(|m| movement(p, m)),
             "minecraft:flags" => {
                 let f = |k: &str, have: bool| p[k].as_bool().is_none_or(|want| want == have);
                 f("is_on_fire", e.on_fire)
@@ -1402,10 +1462,118 @@ pub fn recipe_ingredients(v: &Value, used: &[ItemView], w: &dyn World) -> bool {
 }
 
 /// A `ContextAwarePredicate`: a list of loot conditions (or one condition).
+/// Invalid references are distinct from false: inversion must not accept them.
 pub fn conditions(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
+    references_valid(v, w) && conditions_with(v, ctx, &mut |v, ctx| condition_leaf(v, ctx, w))
+}
+
+/// Every named predicate `v` reaches is loaded, and none reaches itself.
+pub fn references_valid(v: &Value, w: &dyn World) -> bool {
+    predicate_references(v, w, &mut BTreeSet::new()).is_ok()
+}
+
+enum InvalidReference {
+    Missing,
+    Cycle,
+}
+
+/// `Validatable.validateHolder`'s active-name rule, as a defensive check on
+/// this evaluation context. Check every typed reference before boolean
+/// short-circuiting; this does not implement registry/startup admission.
+fn predicate_references(
+    v: &Value,
+    w: &dyn World,
+    active: &mut BTreeSet<String>,
+) -> Result<(), InvalidReference> {
+    match v {
+        Value::String(id) => {
+            let id = full(id).into_owned();
+            if !active.insert(id.clone()) {
+                return Err(InvalidReference::Cycle);
+            }
+            let result = w
+                .predicate(&id)
+                .ok_or(InvalidReference::Missing)
+                .and_then(|v| predicate_references(v, w, active));
+            active.remove(&id);
+            result
+        }
+        Value::Array(list) => list
+            .iter()
+            .try_for_each(|v| predicate_references(v, w, active)),
+        Value::Object(o) => {
+            let kind = o
+                .get("condition")
+                .or_else(|| o.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            match &*full(kind) {
+                "minecraft:inverted" => predicate_references(&v["term"], w, active),
+                "minecraft:all_of" | "minecraft:any_of" => v["terms"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .try_for_each(|v| predicate_references(v, w, active)),
+                _ => Ok(()),
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The existing condition traversal with a caller-owned leaf context.
+/// Leaves run synchronously, in order, with normal boolean short-circuiting.
+pub fn conditions_with(
+    v: &Value,
+    ctx: &Entities,
+    test: &mut dyn FnMut(&Value, &Entities) -> bool,
+) -> bool {
     match v {
         Value::Null => true,
-        Value::Array(list) => list.iter().all(|c| conditions(c, ctx, w)),
+        Value::Array(list) => list.iter().all(|c| conditions_with(c, ctx, test)),
+        Value::Object(o) if o.contains_key("condition") || o.contains_key("type") => {
+            let ty = o
+                .get("condition")
+                .or_else(|| o.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            match &*full(ty) {
+                "minecraft:inverted" => !conditions_with(&v["term"], ctx, test),
+                "minecraft:all_of" => v["terms"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .all(|t| conditions_with(t, ctx, test)),
+                "minecraft:any_of" => v["terms"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|t| conditions_with(t, ctx, test)),
+                _ => test(v, ctx),
+            }
+        }
+        _ => test(v, ctx),
+    }
+}
+
+/// `LootItemRandomChanceCondition.test`: evaluate a literal float chance,
+/// then always draw once, including at zero and one. Other provider forms
+/// and additional fields are not supported by this bounded context.
+pub fn literal_random_chance(v: &Value, draw: &mut dyn FnMut() -> f32) -> Option<bool> {
+    let o = v.as_object()?;
+    let ty = o.get("condition").or_else(|| o.get("type"))?.as_str()?;
+    if full(ty) != "minecraft:random_chance"
+        || o.keys()
+            .any(|k| !matches!(k.as_str(), "condition" | "type" | "chance"))
+    {
+        return None;
+    }
+    let chance = o.get("chance")?.as_f64()? as f32;
+    Some(draw() < chance)
+}
+
+fn condition_leaf(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
+    match v {
         Value::Object(o) if o.contains_key("condition") || o.contains_key("type") => {
             let ty = o
                 .get("condition")
@@ -1475,22 +1643,15 @@ pub fn conditions(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
                     v["raining"].as_bool().is_none_or(|r| r == rain)
                         && v["thundering"].as_bool().is_none_or(|t| t == thunder)
                 }
-                "minecraft:inverted" => !conditions(&v["term"], ctx, w),
-                "minecraft:all_of" => v["terms"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .all(|t| conditions(t, ctx, w)),
-                "minecraft:any_of" => v["terms"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .any(|t| conditions(t, ctx, w)),
                 _ => false,
             }
         }
         // An inline entity predicate (old-style).
         Value::Object(_) => ctx.this.is_some_and(|e| entity(v, e, w, ctx.origin)),
+        // A named predicate reference: its loaded definition, walked like any other.
+        Value::String(id) => w
+            .predicate(&full(id))
+            .is_some_and(|v| conditions_with(v, ctx, &mut |v, ctx| condition_leaf(v, ctx, w))),
         _ => false,
     }
 }
@@ -3359,5 +3520,157 @@ mod tests {
         let all = get_list(&tree, None, "everything");
         let granted_everything = grant(&tree, &mut p, &all);
         assert_eq!(granted_everything, 116);
+    }
+    #[test]
+    fn random_chance_literal_matches_official_seeded_float_and_continuation() {
+        use horizon_core::random::{LegacyRandom, RandomSource};
+        let ctx = Entities {
+            this: None,
+            origin: [0.0; 3],
+            tool: None,
+            block_pos: None,
+        };
+        for line in include_str!("../../../docs/parity/random-chance-seeded.jsonl").lines() {
+            let row: Value = serde_json::from_str(line).unwrap();
+            let mut random = LegacyRandom::new(row["seed"].as_i64().unwrap());
+            let result = conditions_with(&row["input"], &ctx, &mut |v, ctx| {
+                literal_random_chance(v, &mut || random.next_float())
+                    .unwrap_or_else(|| conditions(v, ctx, &Flat))
+            });
+            assert_eq!(result, row["result"].as_bool().unwrap(), "{row}");
+            let next: Vec<i64> = (0..4).map(|_| random.next_long()).collect();
+            let expected: Vec<i64> = row["continuation"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.as_i64().unwrap())
+                .collect();
+            assert_eq!(next, expected, "{row}");
+        }
+    }
+    #[test]
+    fn existing_no_random_context_and_traversal_keep_their_behavior() {
+        let ctx = Entities {
+            this: None,
+            origin: [0.0; 3],
+            tool: None,
+            block_pos: None,
+        };
+        let z = json!({"type":"minecraft:random_chance","chance":0});
+        let o = json!({"type":"minecraft:random_chance","chance":1});
+        for (v, expected) in [
+            (Value::Null, true),
+            (json!([]), true),
+            (z.clone(), false),
+            (o.clone(), false),
+            (json!({"type":"inverted","term":o}), true),
+            (
+                json!({"type":"all_of","terms":[z.clone(),Value::Null]}),
+                false,
+            ),
+            (
+                json!({"type":"any_of","terms":[z.clone(),Value::Null]}),
+                true,
+            ),
+            (json!("h122:unsupported_reference"), false),
+        ] {
+            assert_eq!(conditions(&v, &ctx, &Flat), expected, "{v}");
+        }
+        let mut seen = vec![];
+        let v =
+            json!({"type":"any_of","terms":[{"type":"all_of","terms":[false,true]},true,false]});
+        assert!(conditions_with(&v, &ctx, &mut |v, _| {
+            seen.push(v.as_bool().unwrap());
+            v.as_bool().unwrap()
+        }));
+        assert_eq!(seen, vec![false, true]);
+    }
+    #[test]
+    fn unsupported_chance_shapes_keep_prior_false_without_a_draw() {
+        let ctx = Entities {
+            this: None,
+            origin: [0.0; 3],
+            tool: None,
+            block_pos: None,
+        };
+        let mut draws = 0;
+        for v in [
+            json!({"type":"random_chance","chance":{"type":"minecraft:uniform","min":0,"max":1}}),
+            json!({"type":"random_chance"}),
+            json!({"type":"random_chance","chance":"1"}),
+            json!({"type":"random_chance","chance":1,"unsupported":true}),
+        ] {
+            assert_eq!(
+                literal_random_chance(&v, &mut || {
+                    draws += 1;
+                    0.0
+                }),
+                None
+            );
+            assert!(!conditions(&v, &ctx, &Flat));
+        }
+        assert_eq!(draws, 0);
+    }
+
+    #[cfg(test)]
+    mod movement_model_tests {
+        use super::*;
+        use serde_json::json;
+
+        #[test]
+        fn added_model_movement_units_exact_bounds_and_squared_bounds() {
+            // Source-derived model proof; no moving Java/runtime claim.
+            let m = MovementView {
+                per_tick: [3.0 / 20.0, -4.0 / 20.0, 0.0],
+                fall_distance: 7.25,
+            };
+            assert_eq!(m.per_tick.map(|n| n * 20.0), [3.0, -4.0, 0.0]);
+            for p in [
+                json!({"x":3.0,"y":-4.0,"z":0.0}),
+                json!({"x":{"min":3.0,"max":3.0}}),
+                json!({"speed":5.0,"horizontal_speed":3.0,"vertical_speed":4.0,"fall_distance":7.25}),
+                json!({"speed":{"min":5.0,"max":5.0}}),
+                // Doubles boundsSqr maps each bound through Mth.square, including its sign.
+                json!({"speed":-5.0,"horizontal_speed":{"max":-3.0}}),
+                json!({}),
+            ] {
+                assert!(movement(&p, m), "{p}");
+            }
+            for p in [
+                json!({"x":3.0000000001}),
+                json!({"x":{"min":3.0000000001}}),
+                json!({"y":{"max":-4.0000000001}}),
+                json!({"speed":{"max":4.9999999999}}),
+                json!({"horizontal_speed":{"min":-4.0}}),
+                json!({"vertical_speed":-4.0}),
+                json!({"fall_distance":{"max":7.2499999999}}),
+            ] {
+                assert!(!movement(&p, m), "{p}");
+            }
+            assert!(!movement_range(&json!(3.0000000001), 3.0, false));
+            assert!(
+                range_f(&json!(3.0000000001), 3.0),
+                "existing global tolerance is untouched"
+            );
+        }
+
+        #[test]
+        fn added_model_unprojected_is_distinct_from_actual_stationary() {
+            let p = json!({"minecraft:movement":{}});
+            let view = EntityView {
+                kind: "minecraft:pig".into(),
+                ..Default::default()
+            };
+            // Unprojected is explicitly unsupported, not claimed Java-correct.
+            assert!(!entity(&p, &view, &super::Flat, [0.0; 3]));
+            let view = EntityView {
+                movement: Some(MovementView {
+                    per_tick: [0.0; 3],
+                    fall_distance: 0.0,
+                }),
+                ..view
+            };
+            assert!(entity(&p, &view, &super::Flat, [0.0; 3]));
+        }
     }
 }

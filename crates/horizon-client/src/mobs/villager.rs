@@ -434,6 +434,49 @@ pub fn is_farmer(m: &Mob) -> bool {
 /// `SimpleContainer(8)`: stacks the villager carries.
 const INVENTORY_SLOTS: usize = 8;
 
+/// `SimpleContainer.addItem` on a container of `slots` slots held as its
+/// occupied stacks in slot order: fill the stacks of the same item and
+/// components below `max_stack`, then free slots; the part that did not fit
+/// is returned.
+pub(crate) fn add_to_container(
+    inventory: &mut Vec<ItemStack>,
+    mut stack: ItemStack,
+    max_stack: u32,
+    slots: usize,
+) -> Option<ItemStack> {
+    for s in inventory.iter_mut() {
+        if stack.count > 0 && s.same_item_same_components(&stack) && s.count < max_stack {
+            let n = (max_stack - s.count).min(stack.count);
+            s.count += n;
+            stack.count -= n;
+        }
+    }
+    while stack.count > 0 && inventory.len() < slots {
+        let n = stack.count.min(max_stack);
+        inventory.push(ItemStack {
+            count: n,
+            ..stack.clone()
+        });
+        stack.count -= n;
+    }
+    (stack.count > 0).then_some(stack)
+}
+
+/// `SimpleContainer.fromItemList`: clear, then `addItem` each saved stack
+/// at the type's limit for it; what does not fit is dropped.
+pub(crate) fn load_container(
+    m: &Mob,
+    items: &[horizon_world::nbt::Tag],
+    slots: usize,
+) -> Vec<ItemStack> {
+    let mut inventory = Vec::new();
+    for stack in items.iter().filter_map(crate::save::item_from_nbt) {
+        let max = m.kind.inventory_stack_limit(&stack);
+        let _ = add_to_container(&mut inventory, stack, max, slots);
+    }
+    inventory
+}
+
 impl Ext {
     /// `countFoodPointsInInventory`.
     pub fn food_in_inventory(&self) -> i32 {
@@ -483,23 +526,8 @@ impl Ext {
     }
     /// `SimpleContainer.addItem`: merge into stacks, then free slots; the
     /// part that did not fit is returned.
-    pub fn add_item(&mut self, mut stack: ItemStack, max_stack: u32) -> Option<ItemStack> {
-        for s in &mut self.inventory {
-            if stack.count > 0 && s.same_item_same_components(&stack) && s.count < max_stack {
-                let n = (max_stack - s.count).min(stack.count);
-                s.count += n;
-                stack.count -= n;
-            }
-        }
-        while stack.count > 0 && self.inventory.len() < INVENTORY_SLOTS {
-            let n = stack.count.min(max_stack);
-            self.inventory.push(ItemStack {
-                count: n,
-                ..stack.clone()
-            });
-            stack.count -= n;
-        }
-        (stack.count > 0).then_some(stack)
+    pub fn add_item(&mut self, stack: ItemStack, max_stack: u32) -> Option<ItemStack> {
+        add_to_container(&mut self.inventory, stack, max_stack, INVENTORY_SLOTS)
     }
     /// `SimpleContainer.removeItemType`: take up to `count` of the item from
     /// the first stacks that hold it.
@@ -990,12 +1018,10 @@ pub fn read_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
         _ => None,
     };
     let asleep = e.sleeping_pos.is_some();
+    // InventoryCarrier.readInventoryFromTag -> SimpleContainer.fromItemList.
     if let Some(Tag::List(items)) = tag.get("Inventory") {
-        e.inventory = items
-            .iter()
-            .filter_map(crate::save::item_from_nbt)
-            .take(INVENTORY_SLOTS)
-            .collect();
+        let inventory = load_container(m, items, INVENTORY_SLOTS);
+        ext_mut(m).inventory = inventory;
     }
     if asleep {
         m.extra.ints[1] = bed_facing_code(None);
@@ -1005,6 +1031,79 @@ pub fn read_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Added after the H138 baseline: `add_item` delegates to
+    /// `add_to_container` with the eight villager slots, with the same
+    /// inventories and remainders in the same order.
+    #[test]
+    fn add_item_is_add_to_container_with_eight_slots() {
+        let st = |id: &str, n: u32| ItemStack::new(id, n);
+        let sequences: [&[(&str, u32, u32)]; 3] = [
+            &[
+                ("minecraft:stone", 40, 64),
+                ("minecraft:stone", 40, 64),
+                ("minecraft:dirt", 1, 64),
+            ],
+            &[
+                ("minecraft:ender_pearl", 10, 16),
+                ("minecraft:ender_pearl", 10, 16),
+            ],
+            &[("minecraft:stone", 64, 64); 10],
+        ];
+        for seq in sequences {
+            let mut ext = Ext::default();
+            let mut vec = Vec::new();
+            for &(id, n, max) in seq {
+                let a = ext
+                    .add_item(st(id, n), max)
+                    .map(|s| (s.item.to_string(), s.count));
+                let b = add_to_container(&mut vec, st(id, n), max, INVENTORY_SLOTS)
+                    .map(|s| (s.item.to_string(), s.count));
+                assert_eq!(a, b);
+                let counts = |v: &[ItemStack]| {
+                    v.iter()
+                        .map(|s| (s.item.to_string(), s.count))
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(counts(&ext.inventory), counts(&vec));
+            }
+        }
+    }
+
+    /// Added after the H138 baseline: eight kinds fill the eight slots; a
+    /// later stack of a kind already held still fills its stack, and a
+    /// ninth kind does not fit (fromItemList drops it).
+    #[test]
+    fn a_later_stack_still_merges_into_a_full_set_of_slots() {
+        let kinds = [
+            "stone",
+            "dirt",
+            "cobblestone",
+            "oak_planks",
+            "sand",
+            "gravel",
+            "oak_log",
+            "glass",
+        ];
+        let mut vec = Vec::new();
+        for k in kinds {
+            assert!(
+                add_to_container(
+                    &mut vec,
+                    ItemStack::new(&format!("minecraft:{k}"), 1),
+                    64,
+                    8
+                )
+                .is_none()
+            );
+        }
+        assert!(add_to_container(&mut vec, ItemStack::new("minecraft:stone", 5), 64, 8).is_none());
+        assert_eq!(vec.len(), 8);
+        assert_eq!((vec[0].item.as_ref(), vec[0].count), ("minecraft:stone", 6));
+        let rest = add_to_container(&mut vec, ItemStack::new("minecraft:clay", 1), 64, 8);
+        assert_eq!(rest.map(|s| s.count), Some(1));
+        assert_eq!(vec.len(), 8);
+    }
 
     fn memory_fixture() -> Mob {
         let mut m = villager();

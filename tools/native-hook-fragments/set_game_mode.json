@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "set_game_mode", "target": "horizon_client::game::native_player_state::Game<'_>::native_set_game_mode"}
+  ],
+  "rust_summary": "a player's game mode, changed as `/gamemode` changes it (`native_set_game_mode`).",
+  "doc_summary": "`native_set_game_mode(player, mode)` sets a player's game mode (0 survival, 1 creative, 2 adventure, 3 spectator) on the acting player or a guest of a hosted world or server, as `/gamemode` does: a guest's change runs in their own turn, and `player_game_mode_changed` hears it. True when the mode changed. API @API:set_game_mode@.",
+  "comments": ["crates/horizon-client/src/game/native_player_state.rs"]
+}

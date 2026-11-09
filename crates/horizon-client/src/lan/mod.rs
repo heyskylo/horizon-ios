@@ -268,6 +268,10 @@ pub struct NetConfig {
     /// An integrated server's owner profile: the properties the window's own
     /// (memory) connection logs in with.
     pub owner_profile: Option<Arc<OwnerProfile>>,
+    /// `IntegratedServer.getSingleplayerProfile` (`Minecraft.getGameProfile`): the
+    /// integrated server's own player's name and UUID. A memory login whose name matches
+    /// is that profile (the account's UUID); every other login derives the offline one.
+    pub singleplayer_profile: Option<(String, u128)>,
     /// `horizon-clients-only` (Horizon's own server.properties key, off): a
     /// client whose `minecraft:brand` isn't Horizon's is turned away during
     /// configuration. A brand can be spoofed: a gate, not security.
@@ -334,6 +338,7 @@ impl NetConfig {
             lod_distance: crate::lod_net::DEFAULT_DISTANCE,
             levels: crate::chunk::LevelShapes::VANILLA,
             owner_profile: None,
+            singleplayer_profile: None,
         }
     }
 }
@@ -451,6 +456,8 @@ pub struct Shared {
     closing: AtomicUsize,
     /// Connections turned away since the last report of them, and when that was.
     turned_away: Mutex<(usize, Option<Instant>)>,
+    /// A stop waits for a proxy to move the players out (`arrivals::StopWait`): no login comes in.
+    shutting_down: AtomicBool,
 }
 impl Shared {
     /// The registries and tags a new connection is sent.
@@ -473,6 +480,9 @@ impl Shared {
         uuid: u128,
         name: &str,
     ) -> Option<horizon_world::nbt::Tag> {
+        if self.shutting_down.load(Ordering::Relaxed) {
+            return Some(translatable("multiplayer.disconnect.server_shutdown", &[]));
+        }
         if let Some(gate) = &self.config.gate
             && let Some(reason) = gate(address, uuid, name)
         {
@@ -498,6 +508,10 @@ impl Shared {
         }
         self.online.lock().unwrap().push((uuid, name.to_owned()));
         None
+    }
+    /// A stop has begun: every login from now on is refused as the server's shutdown.
+    pub fn refuse_logins(&self) {
+        self.shutting_down.store(true, Ordering::Relaxed);
     }
     fn is_online(&self, uuid: u128) -> bool {
         self.online.lock().unwrap().iter().any(|(u, _)| *u == uuid)
@@ -687,6 +701,7 @@ impl Lan {
             next_connection: AtomicU64::new(0),
             closing: AtomicUsize::new(0),
             turned_away: Mutex::new((0, None)),
+            shutting_down: AtomicBool::new(false),
             random: Mutex::new(crate::server::java_properties::now_millis() as u64 | 1),
             config,
         });
@@ -1136,6 +1151,25 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    /// Once a stop waits for a proxy, no login takes a place, an op's neither.
+    #[test]
+    fn a_server_that_refuses_logins_takes_no_one_in() {
+        let config = NetConfig {
+            announce: false,
+            listen: false,
+            bypasses_limit: Some(Arc::new(|_| true)),
+            ..NetConfig::loopback(0, "Stopping".into(), 8)
+        };
+        let lan = Lan::start_with(Arc::new(data::SyncData::empty()), config).unwrap();
+        assert!(lan.shared.try_admit(MEMORY_ADDRESS, 1, "Player").is_none());
+        lan.shared.refuse_logins();
+        assert_eq!(
+            lan.shared.try_admit(MEMORY_ADDRESS, 2, "Late"),
+            Some(translatable("multiplayer.disconnect.server_shutdown", &[]))
+        );
+        assert_eq!(lan.shared.online(), 1);
     }
 
     #[test]

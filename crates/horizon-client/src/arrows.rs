@@ -196,6 +196,9 @@ pub struct ArrowState {
     pub was_eye_in_water: bool,
     pub first_tick: bool,
     pub has_been_shot: bool,
+    /// `Projectile.canBreak`: the decoded top-level projectile predicate,
+    /// independent of its pickup item and firing weapon.
+    pub can_break: Option<horizon_world::nbt::Tag>,
     /// `ThrownTrident.dealtDamage`: it has hit an entity (or sat in a block
     /// for over 4 ticks) and hits no more.
     pub dealt_damage: bool,
@@ -257,6 +260,7 @@ impl ArrowState {
             was_eye_in_water: false,
             first_tick: true,
             has_been_shot: false,
+            can_break: None,
             dealt_damage: false,
             removed: false,
             random,
@@ -347,7 +351,7 @@ impl OwnerLookup for () {
     }
 }
 impl ArrowScene<'_, '_> {
-    fn block(&self, p: BlockPos) -> BlockStateId {
+    pub fn block(&self, p: BlockPos) -> BlockStateId {
         self.world.block(p.x, p.y, p.z)
     }
     fn is_air(&self, state: BlockStateId) -> bool {
@@ -404,7 +408,7 @@ impl ArrowScene<'_, '_> {
         Some((hit.location, hit.block, hit.direction.normal()))
     }
     /// `CollisionGetter.noCollision(null, box)` over blocks.
-    fn no_block_collision(&self, b: Aabb) -> bool {
+    pub fn no_block_collision(&self, b: Aabb) -> bool {
         let (lo, hi) = (b.min_position(), b.max_position());
         for x in (lo.x.floor() as i32 - 1)..=(hi.x.floor() as i32 + 1) {
             for y in (lo.y.floor() as i32 - 1)..=(hi.y.floor() as i32 + 1) {

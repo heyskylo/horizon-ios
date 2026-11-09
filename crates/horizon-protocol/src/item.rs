@@ -13,11 +13,13 @@ use std::sync::Arc;
 pub mod custom;
 mod hash;
 mod skip;
+mod trim;
 pub(crate) mod v1_20_3;
 pub(crate) mod v1_20_5;
 mod v1_21_1;
 mod v1_21_4;
 mod v1_21_5;
+pub use trim::{TrimHolder, TrimMaterial, TrimPattern};
 
 pub use hash::{Names, NoNames};
 
@@ -67,6 +69,8 @@ pub mod component {
     pub const LORE: i32 = 11;
     pub const RARITY: i32 = 12;
     pub const ENCHANTMENTS: i32 = 13;
+    /// `AdventureModePredicate`: the blocks an adventure player may place on.
+    pub const CAN_PLACE_ON: i32 = 14;
     /// `AdventureModePredicate`: the blocks an adventure player may break.
     pub const CAN_BREAK: i32 = 15;
     /// `ItemAttributeModifiers`: a list of entries, each with a display from 1.21.6 on.
@@ -76,10 +80,15 @@ pub mod component {
     pub const REPAIR_COST: i32 = 19;
     pub const CREATIVE_SLOT_LOCK: i32 = 20;
     pub const ENCHANTMENT_GLINT_OVERRIDE: i32 = 21;
+    /// `Consumable.STREAM_CODEC`: consumeSeconds first.
+    pub const CONSUMABLE: i32 = 24;
     /// `AttackRange`: six floats, in the record's field order.
     pub const ATTACK_RANGE: i32 = 30;
     pub const EQUIPPABLE: i32 = 32;
     pub const GLIDER: i32 = 34;
+    /// `DeathProtection`: the `death_effects` a stack runs when it saves its holder.
+    pub const DEATH_PROTECTION: i32 = 36;
+    pub const BLOCKS_ATTACKS: i32 = 37;
     pub const STORED_ENCHANTMENTS: i32 = 45;
     pub const PROFILE: i32 = 72;
     pub const BANNER_PATTERNS: i32 = 74;
@@ -96,6 +105,7 @@ pub mod component {
     pub const TRIM: i32 = 58;
     pub const INSTRUMENT: i32 = 63;
     pub const PROVIDES_TRIM_MATERIAL: i32 = 64;
+    pub const PROVIDES_BANNER_PATTERNS: i32 = 67;
     pub const DAMAGE_TYPE: i32 = 8;
     pub const CHICKEN_VARIANT: i32 = 104;
     pub const ZOMBIE_NAUTILUS_VARIANT: i32 = 106;
@@ -187,10 +197,15 @@ pub enum Component {
         tracked: bool,
     },
     /// `ArmorTrim` naming its material and pattern by registry id (`trim_material`,
-    /// `trim_pattern`); a trim with a direct holder stays [`Component::Raw`].
+    /// `trim_pattern`); direct holders use [`Component::TrimDirect`].
     Trim {
         material: i32,
         pattern: i32,
+    },
+    /// ArmorTrim with a direct holder. Named-only trims keep `Trim` unchanged.
+    TrimDirect {
+        material: TrimHolder<TrimMaterial>,
+        pattern: TrimHolder<TrimPattern>,
     },
     /// `SuspiciousStewEffects`: each entry's `minecraft:mob_effect` id and
     /// duration in ticks.
@@ -508,19 +523,14 @@ impl Component {
                     tracked: r.bool()?,
                 }
             }
-            // ArmorTrim.STREAM_CODEC: two holders, each a reference's id plus
-            // one. A direct material or pattern has no registry name: read past.
             TRIM => {
-                let start = r.position();
-                skip::component(TRIM, r)?;
-                let bytes = r.since(start);
-                let mut ids = Reader::new(bytes);
-                match (ids.varint(), ids.varint()) {
-                    (Ok(material @ 1..), Ok(pattern @ 1..)) if ids.remaining() == 0 => Self::Trim {
-                        material: material - 1,
-                        pattern: pattern - 1,
-                    },
-                    _ => Self::Raw(bytes.to_vec()),
+                let material = TrimHolder::read(r, TrimMaterial::read)?;
+                let pattern = TrimHolder::read(r, TrimPattern::read)?;
+                match (material, pattern) {
+                    (TrimHolder::Id(material), TrimHolder::Id(pattern)) => {
+                        Self::Trim { material, pattern }
+                    }
+                    (material, pattern) => Self::TrimDirect { material, pattern },
                 }
             }
             // InstrumentComponent.STREAM_CODEC: a holder, a reference's id plus one.
@@ -572,7 +582,7 @@ impl Component {
     /// registry references (`None` when one is direct).
     fn banner_layers(bytes: &[u8]) -> Option<Vec<(i32, i32)>> {
         let mut r = Reader::new(bytes);
-        let n = r.count(r.remaining()).ok()?;
+        let n = r.count(r.remaining() / 2).ok()?;
         let mut layers = Vec::with_capacity(n);
         for _ in 0..n {
             let pattern = r.varint().ok()?;
@@ -606,6 +616,10 @@ impl Component {
             Self::Trim { material, pattern } => {
                 w.varint(material + 1);
                 w.varint(pattern + 1);
+            }
+            Self::TrimDirect { material, pattern } => {
+                material.write(w, TrimMaterial::write);
+                pattern.write(w, TrimPattern::write);
             }
             Self::Instrument(id) => w.varint(id + 1),
             Self::PaintingVariant(id) => w.varint(id + 1),
@@ -1475,6 +1489,11 @@ mod tests {
         potion.extend([0, 1, 0, 0, 0, 1].repeat(200_000));
         potion.extend([0, 1, 0, 0, 0, 0, 0]);
         assert!(read_on_network_stack(potion).is_err());
+        // A can_break predicate whose exact component matcher holds another can_break, 200,000 deep.
+        let mut predicate = vec![1, 1, 1, 0, component::CAN_BREAK as u8];
+        predicate.extend([1, 0, 0, 0, 1, component::CAN_BREAK as u8].repeat(200_000));
+        predicate.extend([0]);
+        assert!(read_on_network_stack(predicate).is_err());
     }
 
     #[test]
@@ -1765,6 +1784,47 @@ mod tests {
         assert_eq!(
             profile.properties,
             [("textures".to_owned(), "x".to_owned(), None)]
+        );
+    }
+
+    #[test]
+    fn direct_trim_decodes_complete_official_inventory_stack_payload() {
+        // Slot portion of our actual Java26.3 ClientboundContainerSetSlotPacket;
+        // complete packet and official client decode retained with H284 proof.
+        let hex = "01bd080200000a0300046b6565700000011c003a000e6d696e6563726166743a676f6c6408000f496e6c696e65206d6174657269616c000f6d696e6563726166743a636f61737408000e496e6c696e65207061747465726e00";
+        let bytes: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        let mut reader = Reader::new(&bytes);
+        let stack = Slot::read(&mut reader).unwrap();
+        assert_eq!(reader.remaining(), 0);
+        let component = stack.as_ref().unwrap().component(component::TRIM).unwrap();
+        assert_eq!(
+            component,
+            &Component::TrimDirect {
+                material: TrimHolder::Direct(TrimMaterial {
+                    palette_id: "minecraft:gold".into(),
+                    description: Tag::String("Inline material".into()),
+                }),
+                pattern: TrimHolder::Direct(TrimPattern {
+                    asset_id: "minecraft:coast".into(),
+                    description: Tag::String("Inline pattern".into()),
+                    decal: false,
+                }),
+            }
+        );
+        let mut writer = Writer::new();
+        Slot::write(&stack, &mut writer);
+        assert_eq!(writer.data, bytes);
+        // Existing direct HashOps path is reused unchanged.
+        let mut raw = Writer::new();
+        component.write(component::TRIM, &mut raw);
+        let code = component.code(component::TRIM, &NoNames);
+        assert!(code.is_some());
+        assert_eq!(
+            code,
+            Component::Raw(raw.data).code(component::TRIM, &NoNames)
         );
     }
 

@@ -125,6 +125,7 @@ public final class LocatorBarClient {
     private static volatile boolean events;
     private static volatile boolean spawns;
     private static volatile boolean menus;
+    private static volatile boolean components;
     private static com.google.gson.JsonArray spans(net.minecraft.network.chat.Component message) {
         com.google.gson.JsonArray out = new com.google.gson.JsonArray();
         message.visit((style, text) -> {
@@ -232,6 +233,7 @@ public final class LocatorBarClient {
                     case "close-menu" -> players.get(w[1]).send(
                         new net.minecraft.network.protocol.game.ServerboundContainerClosePacket(Integer.parseInt(w[2])));
                     case "menus" -> menus = w[1].equals("on");
+                    case "components" -> components = w[1].equals("on");
                     case "dump" -> {
                         writeSessions(output, sessions);
                         stdout.println("dumped " + w[1]);
@@ -708,9 +710,21 @@ public final class LocatorBarClient {
                     value.addProperty("flags", entry.flags());
                     value.add("display", net.minecraft.world.item.crafting.display.RecipeDisplay.CODEC.encodeStart(
                         ParityData.access.createSerializationContext(com.mojang.serialization.JsonOps.INSTANCE), entry.contents().display()).getOrThrow());
+                    var contents = entry.contents();
+                    if (contents.group().isPresent()) value.addProperty("group", contents.group().getAsInt());
+                    value.addProperty("category", net.minecraft.core.registries.BuiltInRegistries.RECIPE_BOOK_CATEGORY
+                        .getKey(contents.category()).toString());
+                    contents.craftingRequirements().ifPresent(list -> value.add("requirements",
+                        net.minecraft.world.item.crafting.Ingredient.CODEC.listOf().encodeStart(
+                            ParityData.access.createSerializationContext(com.mojang.serialization.JsonOps.INSTANCE), list).getOrThrow()));
                     entries.add(value);
                 }
                 j.add("entries", entries);
+            } else if (p instanceof net.minecraft.network.protocol.game.ClientboundRecipeBookRemovePacket c) {
+                j.addProperty("kind", "recipes-removed");
+                var ids = new com.google.gson.JsonArray();
+                for (var id : c.recipes()) ids.add(id.index());
+                j.add("ids", ids);
             } else if (p instanceof net.minecraft.network.protocol.game.ClientboundPlaceGhostRecipePacket c) {
                 j.addProperty("kind", "ghost");
                 j.addProperty("window", c.containerId());
@@ -763,6 +777,10 @@ public final class LocatorBarClient {
                     }
                     if (state) recordState(p);
                     if (menus) recordMenu(p, r.payload);
+                    if (components) {
+                        var evidence = ComponentWireCapture.inspect(p, r.payload);
+                        if (evidence != null) record("component-wire " + evidence);
+                    }
                     if (hooks && p instanceof net.minecraft.network.protocol.game.ClientboundAddEntityPacket a) {
                         entityTypes.put(a.getId(), net.minecraft.world.entity.EntityType.getKey(a.getType()).toString());
                     }

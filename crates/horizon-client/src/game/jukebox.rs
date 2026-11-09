@@ -82,6 +82,7 @@ impl Game<'_> {
             self.world.block_entities.get_mut(&(pos[0], pos[1], pos[2]))
         {
             j.playing = true;
+            j.song_clock_present = true;
             j.ticks = 0;
         }
         self.set_has_record(pos, true);
@@ -92,16 +93,24 @@ impl Game<'_> {
     /// below taking the disc): the song stops, the block loses its record,
     /// and the neighbours and comparators hear it.
     pub(super) fn jukebox_taken(&mut self, pos: [i32; 3]) {
+        let mut was_playing = false;
         if let Some(BlockEntity::Jukebox(j)) =
             self.world.block_entities.get_mut(&(pos[0], pos[1], pos[2]))
         {
             if j.record().is_some() {
                 return;
             }
+            was_playing = j.playing;
             j.playing = false;
+            j.song_clock_present = false;
             j.ticks = 0;
         }
-        self.stop_song(pos);
+        // `JukeboxSongPlayer.stop` posts only while a song plays.
+        if was_playing {
+            self.stop_song_heard(pos);
+        } else {
+            self.stop_song(pos);
+        }
         self.set_has_record(pos, false);
         self.jukebox_changed(pos);
     }
@@ -119,11 +128,12 @@ impl Game<'_> {
         let was_playing = j.playing;
         j.items[0] = stack;
         j.playing = song.is_some();
+        j.song_clock_present = song.is_some();
         j.ticks = 0;
         self.set_has_record(pos, has_record);
         match song {
             Some(song) => self.start_song(pos, &song),
-            None if was_playing => self.stop_song(pos),
+            None if was_playing => self.stop_song_heard(pos),
             None => {}
         }
         self.jukebox_changed(pos);
@@ -173,6 +183,7 @@ impl Game<'_> {
                 items: [Some(record)],
                 ticks: 0,
                 playing: true,
+                song_clock_present: true,
             }),
         );
         self.set_has_record(pos, true);
@@ -254,6 +265,17 @@ impl Game<'_> {
             self.lan_songs.push((pos, None));
         }
     }
+    /// `JukeboxSongPlayer.stop` of a jukebox whose record left it, taken out by
+    /// hand, pulled by a hopper or finished: the song stops and the
+    /// `JUKEBOX_STOP_PLAY` vibration goes to the listeners around it. A broken
+    /// jukebox is not this path: its removal posts the same event from the
+    /// world's spill, so it must not post it here as well.
+    fn stop_song_heard(&mut self, pos: [i32; 3]) {
+        self.stop_song(pos);
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        self.post_block_game_event("minecraft:jukebox_stop_play", pos, None, Some(state));
+    }
+
     /// `LevelEventHandler.notifyNearbyEntities` (level events 1010 and 1011):
     /// parrots within three blocks of the jukebox start or stop dancing.
     pub(super) fn notify_record_playing(&mut self, pos: [i32; 3], playing: bool) {
@@ -271,15 +293,24 @@ impl Game<'_> {
     /// `popOutTheItem`: the disc above the jukebox, and the song stops.
     fn eject_record(&mut self, pos: [i32; 3]) {
         let key = (pos[0], pos[1], pos[2]);
+        let mut was_playing = false;
         let record = match self.world.block_entities.get_mut(&key) {
             Some(BlockEntity::Jukebox(j)) => {
+                was_playing = j.playing;
                 j.playing = false;
+                j.song_clock_present = false;
                 j.ticks = 0;
                 j.items[0].take()
             }
             _ => None,
         };
-        self.stop_song(pos);
+        // `JukeboxSongPlayer.stop` posts only while a song plays: a disc
+        // taken out after its song ended is silent.
+        if was_playing {
+            self.stop_song_heard(pos);
+        } else {
+            self.stop_song(pos);
+        }
         if let Some(record) = record {
             // atLowerCornerWithOffset(pos, 0.5, 1.01, 0.5).offsetRandomXZ(random, 0.7);
             // `new ItemEntity` moves it with its own random.
@@ -287,7 +318,7 @@ impl Game<'_> {
                 &mut self.world.random,
                 horizon_core::position::BlockPos::new(pos[0], pos[1], pos[2]),
             );
-            self.spawn_item(record, at, super::dispenser::new_item_motion(), 10);
+            self.spawn_item_own(record, at, 10);
         }
         self.set_has_record(pos, false);
         self.jukebox_changed(pos);
@@ -315,9 +346,10 @@ impl Game<'_> {
         if s.finished(ticks) {
             if let Some(BlockEntity::Jukebox(j)) = self.world.block_entities.get_mut(&key) {
                 j.playing = false;
+                j.song_clock_present = false;
                 j.ticks = 0;
             }
-            self.stop_song(pos);
+            self.stop_song_heard(pos);
             self.jukebox_changed(pos);
             return;
         }
@@ -333,7 +365,7 @@ impl Game<'_> {
             let color = f64::from(self.world.random.next_int_bound(4).unwrap_or(0)) / 24.0;
             let at = [
                 f64::from(pos[0]) + 0.5,
-                f64::from(pos[1]) + 1.2,
+                f64::from(pos[1]) + f64::from(1.2_f32), // add(0.0, 1.2F, 0.0)
                 f64::from(pos[2]) + 0.5,
             ];
             self.particles.add(
@@ -531,5 +563,88 @@ mod jukebox_play_tests {
     fn a_stopped_jukebox_posts_no_play_event() {
         let Some(lines) = playing(0) else { return };
         assert!(lines.is_empty(), "{lines:?}");
+    }
+}
+
+#[cfg(test)]
+mod saved_song_clock_tests {
+    use crate::game::native_machines::tests::server_game;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn actual_start_tick_stop_and_loaded_record_use_the_modeled_clock() {
+        let mut game = server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        assert!(game.run_command("forceload add 0 0 15 15"));
+        assert!(game.world.loaded(4, 4));
+        assert!(game.run_command("setblock 4 199 4 stone"));
+        assert!(game.run_command("setblock 4 200 4 jukebox"));
+        let clock = game.world.game_time;
+        let mut failures = Vec::new();
+        let mut check = |label: &str, tag: &horizon_world::nbt::Tag, want: Option<i64>| {
+            let got = tag.get("ticks_since_song_started").cloned();
+            let want = want.map(horizon_world::nbt::Tag::Long);
+            if got != want {
+                failures.push(format!("{label}: {got:?}, expected {want:?}"));
+            }
+        };
+        let pos = [4, 200, 4];
+        check(
+            "actual empty Game writer",
+            &game.block_entity_nbt(pos).unwrap(),
+            None,
+        );
+        assert!(game.run_command("item replace block 4 200 4 container.0 with music_disc_cat[minecraft:custom_data={h032:1}]"));
+        let j = game.jukebox(pos).unwrap();
+        assert!(j.playing);
+        assert_eq!(j.ticks, 0);
+        assert_eq!(j.record().unwrap().count, 1);
+        check(
+            "actual start keeps zero Long",
+            &game.block_entity_nbt(pos).unwrap(),
+            Some(0),
+        );
+        game.tick_jukebox((4, 200, 4));
+        assert_eq!(game.jukebox(pos).unwrap().ticks, 1);
+        check(
+            "actual tick keeps sole counter",
+            &game.block_entity_nbt(pos).unwrap(),
+            Some(1),
+        );
+        let before = game
+            .block_entity_nbt(pos)
+            .unwrap()
+            .get("RecordItem")
+            .cloned();
+        assert!(before.is_some());
+        game.jukebox_set_item(pos, None);
+        let j = game.jukebox(pos).unwrap();
+        assert!(!j.playing);
+        assert_eq!(j.ticks, 0);
+        assert!(j.record().is_none());
+        let saved = game.block_entity_nbt(pos).unwrap();
+        assert!(saved.get("RecordItem").is_none());
+        check("actual stop removes clock", &saved, None);
+        assert!(game.run_command("setblock 8 199 4 stone"));
+        assert!(game.run_command("setblock 8 200 4 jukebox[has_record=true]{RecordItem:{id:\"minecraft:music_disc_cat\",count:1,components:{\"minecraft:custom_data\":{h032:1}}}}"));
+        let j = game.jukebox([8, 200, 4]).unwrap();
+        assert!(j.playing, "preserve legacy record-only adoption");
+        assert_eq!(j.ticks, 0);
+        let saved = game.block_entity_nbt([8, 200, 4]).unwrap();
+        assert_eq!(
+            saved.get("RecordItem"),
+            before.as_ref(),
+            "actual record/components preserved"
+        );
+        check("actual loaded record without clock", &saved, None);
+        assert_eq!(
+            game.world.game_time, clock,
+            "no scene ticks in this caller test; registered runtime progress is separately paired"
+        );
+        assert!(
+            failures.is_empty(),
+            "actual Game saved song-clock mismatches: {failures:?}"
+        );
     }
 }

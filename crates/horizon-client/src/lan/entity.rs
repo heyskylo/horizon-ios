@@ -75,6 +75,13 @@ pub struct EntityState {
     pub horizontal_collision: bool,
     /// `Entity.needsSync`: send its changes this tick, due or not.
     pub needs_sync: bool,
+    /// `Entity.syncPosition`: a living entity bounced this tick; where it is
+    /// becomes a step of the next move sent (`SteppedInterpolationTracker`).
+    pub sync_position: bool,
+    /// `LivingEntity.createInterpolationHandler`: a `SteppedInterpolationTracker`
+    /// on the server, so its moves are sent as stepped paths. Every other entity
+    /// has a no-op tracker and sends a linear one.
+    pub stepped: bool,
     /// Outside `DistanceManager.inEntityTickingRange`: `ChunkMap.tick` sends
     /// its changes only if it changed section or needs sync (its lead aside,
     /// which `Leashable` sends at once).
@@ -119,6 +126,8 @@ impl EntityState {
         self.vertical_collision = false;
         self.horizontal_collision = false;
         self.needs_sync = false;
+        self.sync_position = false;
+        self.stepped = false;
         self.idle = false;
         self.bare = false;
         self.leash = None;
@@ -252,6 +261,11 @@ struct ServerEntity {
     velocity: [f64; 3],
     /// NewMinecartBehavior.lerpSteps accumulated across tracking intervals.
     minecart_steps: Vec<play::MinecartStep>,
+    /// SteppedInterpolationTracker: the positions where it bounced since the
+    /// last move sent, with the ticks between them, and the ticks since the
+    /// last one (-1 before the first update).
+    tracked_steps: Vec<([f64; 3], i32)>,
+    ticks_since_step: i32,
     /// trackedDataValues: the entity data the clients hold.
     meta: Vec<(u8, i32, Value)>,
     equipment: Vec<(u8, Option<Stack>)>,
@@ -294,6 +308,42 @@ fn encode(v: f64) -> i64 {
     horizon_core::jmath::round(v * 4096.0)
 }
 
+/// `VecDeltaCodec.tryEncode`: the path as deltas from `base`, a stepped one
+/// step by step from the step before; None when a delta is too big for a short.
+fn try_encode(base: [f64; 3], path: &PositionPath) -> Option<VecDelta> {
+    let delta = |from: [f64; 3], to: [f64; 3]| {
+        let d = [0, 1, 2].map(|k| encode(to[k]) - encode(from[k]));
+        d.iter()
+            .all(|v| i16::try_from(*v).is_ok())
+            .then(|| d.map(|v| v as i16))
+    };
+    match path {
+        PositionPath::Linear(p) => delta(base, *p).map(VecDelta::Linear),
+        PositionPath::Stepped(steps) => {
+            let mut from = base;
+            let mut out = Vec::with_capacity(steps.len());
+            for (p, ticks) in steps {
+                out.push((delta(from, *p)?, *ticks));
+                from = *p;
+            }
+            Some(VecDelta::Stepped(out))
+        }
+    }
+}
+
+/// `VecDelta.hasDeltaX` and `hasDeltaZ` (any step's, for a stepped delta), as
+/// the nonzero x and z `full_precision_required` reads.
+fn delta_axes(delta: &VecDelta) -> [i64; 3] {
+    match delta {
+        VecDelta::Linear(d) => d.map(i64::from),
+        VecDelta::Stepped(steps) => [
+            i64::from(steps.iter().any(|(d, _)| d[0] != 0)),
+            0,
+            i64::from(steps.iter().any(|(d, _)| d[2] != 0)),
+        ],
+    }
+}
+
 /// `ServerEntity.isFullPrecisionEncodingRequired`: an item whose last move was
 /// stopped by a block rests where the collision solver left it, which is not on
 /// the 1/4096 grid a delta decodes to; vanilla sends its exact position instead.
@@ -331,6 +381,8 @@ impl ServerEntity {
             head: pack_degrees(e.head_yaw),
             velocity: e.velocity,
             minecart_steps: e.minecart_steps.clone().unwrap_or_default(),
+            tracked_steps: Vec::new(),
+            ticks_since_step: -1,
             meta: e.meta.clone(),
             equipment: e.equipment.clone(),
             attributes: e.attributes.clone(),
@@ -404,6 +456,15 @@ impl ServerEntity {
         }
     }
 
+    /// `SteppedInterpolationTracker.addStep`: a step at `position` with the
+    /// ticks since the last one, if any passed.
+    fn add_step(&mut self, position: [f64; 3]) {
+        if self.ticks_since_step > 0 {
+            self.tracked_steps.push((position, self.ticks_since_step));
+            self.ticks_since_step = 0;
+        }
+    }
+
     /// Changes since the last update (ServerEntity.sendChanges): movement and
     /// rotation every update interval (positions at least every 60 ticks, a
     /// full position sync every 400 or when the entity lands or leaves the
@@ -421,6 +482,23 @@ impl ServerEntity {
             self.passengers.extend_from_slice(passengers);
         }
         self.send_leash(e, out);
+        // SteppedInterpolationTracker.updateTracking: a tick more since the
+        // last step, and a step where the entity bounced (Entity.syncPosition,
+        // which only living entities' movement sets).
+        if e.stepped {
+            self.ticks_since_step += 1;
+            if e.sync_position {
+                self.add_step(e.position);
+            }
+        }
+        // ServerEntity.sendChanges: a bounce moves the update clock onto its next
+        // send tick (UpdateInterval.nextInterval; 0 for NEVER), so it goes out now.
+        if e.sync_position {
+            self.tick = self
+                .tick
+                .checked_div(self.interval)
+                .map_or(0, |n| (n + 1) * self.interval);
+        }
         // SynchedEntityData.isDirty: once for every client.
         let dirty = e.meta != self.meta;
         let due = self.interval != 0 && self.tick.is_multiple_of(self.interval);
@@ -443,6 +521,9 @@ impl ServerEntity {
                     )));
                     self.rotation = rotation;
                 }
+                // interpolationTracker.clear: a passenger's steps are never sent.
+                self.tracked_steps.clear();
+                self.ticks_since_step = 0;
                 self.base = e.position;
                 self.was_riding = true;
                 self.send_dirty(e, dirty, out);
@@ -462,9 +543,20 @@ impl ServerEntity {
             self.teleport_delay += 1;
             let d: f64 = (0..3).map(|k| (e.position[k] - self.base[k]).powi(2)).sum();
             let send_position = self.arrow || d >= 7.629_394_5e-6 || self.tick.is_multiple_of(60);
+            // SteppedInterpolationTracker.getPositionPath, then clear: the
+            // current position is the last step of a bounced path.
+            if e.stepped {
+                self.add_step(e.position);
+            }
+            let path = if self.tracked_steps.is_empty() {
+                PositionPath::Linear(e.position)
+            } else {
+                PositionPath::Stepped(std::mem::take(&mut self.tracked_steps))
+            };
+            self.ticks_since_step = 0;
             let sync = EntityPositionSync {
                 id: e.id,
-                path: PositionPath::Linear(e.position),
+                path: path.clone(),
                 yaw: e.yaw,
                 pitch: e.pitch,
                 on_ground: e.on_ground,
@@ -480,15 +572,12 @@ impl ServerEntity {
                 self.was_riding = false;
                 Some(play::Clientbound::EntityPositionSync(sync))
             } else if send_position {
-                let delta = [0, 1, 2].map(|k| encode(e.position[k]) - encode(self.base[k]));
-                if delta.iter().any(|v| i16::try_from(*v).is_err())
-                    || full_precision_required(e, delta)
-                {
-                    Some(play::Clientbound::EntityPositionSync(sync))
-                } else {
+                let delta = try_encode(self.base, &path)
+                    .filter(|d| !full_precision_required(e, delta_axes(d)));
+                if let Some(delta) = delta {
                     let m = MoveEntity {
                         id: e.id,
-                        delta: Some(VecDelta::Linear(delta.map(|v| v as i16))),
+                        delta: Some(delta),
                         rotation: rotate.then_some((rotation.1, rotation.0)),
                         on_ground: e.on_ground,
                     };
@@ -497,6 +586,8 @@ impl ServerEntity {
                     } else {
                         play::Clientbound::MoveEntityPos(MoveEntityPos(m))
                     })
+                } else {
+                    Some(play::Clientbound::EntityPositionSync(sync))
                 }
             } else if rotate {
                 Some(play::Clientbound::MoveEntityRot(MoveEntityRot(
@@ -874,7 +965,6 @@ pub struct Entities {
     /// The entities in each of `chunks` (indices into `probes`): a client
     /// that moved checks only the chunks within its view distance.
     chunk_members: Vec<Vec<u32>>,
-    held: Vec<u8>,
     flags: Vec<Vec<u8>>,
     /// Whether a client starts tracking each entity this tick.
     pairs: Vec<bool>,
@@ -883,6 +973,11 @@ pub struct Entities {
     /// flag per entity.
     moved: Vec<usize>,
     is_moved: Vec<bool>,
+    /// The entities with nothing to send this tick (idle, not moved, no sync
+    /// asked, leash as sent, paired before): unless a client starts tracking
+    /// them, the send pass skips them without looking their state up again.
+    /// Thousands of items frozen past the simulation distance cost a flag each.
+    quiet: Vec<bool>,
     /// One entity's packets and their bodies, kept between entities.
     packets: Vec<play::Clientbound>,
     bodies: Vec<Vec<u8>>,
@@ -1061,12 +1156,19 @@ impl Entities {
         self.moved.clear();
         self.is_moved.clear();
         self.is_moved.resize(entities.len(), false);
+        self.quiet.clear();
+        self.quiet.resize(entities.len(), false);
+        // The states stamped this tick: when that is all of them, none left.
+        let mut stamped = 0;
         for (index, e) in entities.iter().enumerate() {
             let mut added = false;
             let s = self.states.entry(e.id).or_insert_with(|| {
                 added = true;
                 ServerEntity::new(e, kind(&e.kind), riding)
             });
+            if s.seen != now {
+                stamped += 1;
+            }
             s.seen = now;
             s.index = index;
             // ChunkMap.addEntity, ChunkMap.tick's section change, and a
@@ -1087,6 +1189,8 @@ impl Entities {
                 self.moved.push(index);
                 self.is_moved[index] = true;
             }
+            self.quiet[index] =
+                !self.is_moved[index] && !s.added && e.idle && !e.needs_sync && e.leash == s.leash;
             let at = (
                 (e.position[0].floor() as i32) >> 4,
                 (e.position[2].floor() as i32) >> 4,
@@ -1131,126 +1235,161 @@ impl Entities {
                 .range_percent
                 .map_or(range * 16, |p| p * (range * 16) / 100);
         }
-        self.flags.resize_with(viewers.len(), Vec::new);
         self.pairs.clear();
         self.pairs.resize(entities.len(), false);
-        for (v, flags) in viewers.iter_mut().zip(&mut self.flags) {
-            flags.clear();
-            self.held.clear();
-            self.held.resize(self.chunks.len(), 0);
-            let (chunks, held, pairs) = (&self.chunks, &mut self.held, &mut self.pairs);
-            let members = &self.chunk_members;
-            let mut kept = 0;
-            // A client that moved (ChunkMap.move), or whose own entity
-            // appeared or changed section (ChunkMap.tick's movedPlayers), has
-            // every pair checked again.
-            let all = v.moved
-                || self
-                    .states
-                    .get(&v.entity_id)
-                    .is_none_or(|s| s.seen != now || self.is_moved[s.index]);
-            if all {
-                // `sees` caps the range at its view distance, so only the
-                // entities in chunks that far from its own can be seen; the
-                // rest stay 0, as checking each of them gave.
-                flags.resize(self.probes.len(), 0);
-                let reach = v.view_distance + 1;
-                let (vx, vz) = (
-                    (v.position[0].floor() as i32) >> 4,
-                    (v.position[2].floor() as i32) >> 4,
-                );
-                for (&(cx, cz), members) in chunks.iter().zip(members) {
-                    if (cx - vx).abs() > reach || (cz - vz).abs() > reach {
-                        continue;
+        // The per-player sweep runs shared out (#8158): every player's flags,
+        // tracker and packets are its own, and the entities' state is only
+        // read, so one player's sweep never depends on another's. What the
+        // players start tracking meets the pairs after, in their order; each
+        // player's packets keep their order, as vanilla's do.
+        let mut flags = std::mem::take(&mut self.flags);
+        flags.resize_with(viewers.len(), Vec::new);
+        let mut starts: Vec<Vec<usize>> = vec![Vec::new(); viewers.len()];
+        let mut players: Vec<(&mut Viewer, &mut Vec<u8>, &mut Vec<usize>)> = viewers
+            .iter_mut()
+            .zip(&mut flags)
+            .zip(&mut starts)
+            .map(|((viewer, flags), starts)| (viewer, flags, starts))
+            .collect();
+        {
+            let (probes, chunks, members, states, is_moved, moved) = (
+                &self.probes,
+                &self.chunks,
+                &self.chunk_members,
+                &self.states,
+                &self.is_moved,
+                &self.moved,
+            );
+            horizon_threads::par_chunks_mut(&mut players, 16, |players| {
+                for (v, flags, starts) in players {
+                    flags.clear();
+                    let mut held = vec![0; chunks.len()];
+                    let (chunks, held) = (&**chunks, &mut held);
+                    let mut kept = 0;
+                    // A client that moved (ChunkMap.move), or whose own entity
+                    // appeared or changed section (ChunkMap.tick's movedPlayers), has
+                    // every pair checked again.
+                    let all = v.moved
+                        || states
+                            .get(&v.entity_id)
+                            .is_none_or(|s| s.seen != now || is_moved[s.index]);
+                    if all {
+                        // `sees` caps the range at its view distance, so only the
+                        // entities in chunks that far from its own can be seen; the
+                        // rest stay 0, as checking each of them gave.
+                        flags.resize(probes.len(), 0);
+                        let reach = v.view_distance + 1;
+                        let (vx, vz) = (
+                            (v.position[0].floor() as i32) >> 4,
+                            (v.position[2].floor() as i32) >> 4,
+                        );
+                        for (&(cx, cz), members) in chunks.iter().zip(members) {
+                            if (cx - vx).abs() > reach || (cz - vz).abs() > reach {
+                                continue;
+                            }
+                            for &index in members {
+                                let index = index as usize;
+                                let p = &probes[index];
+                                if p.id == v.entity_id || !sees(v, p, chunks, held) {
+                                    continue;
+                                }
+                                if v.tracker.seen.contains_key(&p.id) {
+                                    flags[index] = SEES | TRACKS;
+                                    kept += 1;
+                                } else {
+                                    flags[index] = SEES;
+                                    starts.push(index);
+                                }
+                            }
+                        }
+                    } else if v.tracker.seen.len() * 4 > probes.len() {
+                        // Otherwise its pairs stay as they were, but for the
+                        // entities that appeared or changed section; a client
+                        // tracking much of the level goes through it in order.
+                        flags.reserve(probes.len());
+                        for (index, (p, &entity_moved)) in probes.iter().zip(is_moved).enumerate() {
+                            let tracks = v.tracker.seen.contains_key(&p.id);
+                            let flag = if p.id == v.entity_id
+                                || (entity_moved && !sees(v, p, chunks, held))
+                            {
+                                0
+                            } else if tracks {
+                                kept += 1;
+                                SEES | TRACKS
+                            } else if entity_moved {
+                                starts.push(index);
+                                SEES
+                            } else {
+                                0
+                            };
+                            flags.push(flag);
+                        }
+                    } else {
+                        // One tracking little of it, from what it tracks.
+                        flags.resize(probes.len(), 0);
+                        for id in v.tracker.seen.keys() {
+                            if let Some(s) = states.get(id).filter(|s| s.seen == now) {
+                                flags[s.index] = SEES | TRACKS;
+                                kept += 1;
+                            }
+                        }
+                        for &index in moved {
+                            let p = &probes[index];
+                            let tracks = flags[index] & TRACKS != 0;
+                            if p.id != v.entity_id && sees(v, p, chunks, held) {
+                                if !tracks {
+                                    flags[index] = SEES;
+                                    starts.push(index);
+                                }
+                            } else if tracks {
+                                flags[index] = 0;
+                                kept -= 1;
+                            }
+                        }
                     }
-                    for &index in members {
-                        let index = index as usize;
-                        let p = &self.probes[index];
-                        if p.id == v.entity_id || !sees(v, p, chunks, held) {
-                            continue;
-                        }
-                        if v.tracker.seen.contains_key(&p.id) {
-                            flags[index] = SEES | TRACKS;
-                            kept += 1;
-                        } else {
-                            flags[index] = SEES;
-                            pairs[index] = true;
-                        }
-                    }
-                }
-            } else if v.tracker.seen.len() * 4 > self.probes.len() {
-                // Otherwise its pairs stay as they were, but for the entities
-                // that appeared or changed section; a client tracking much
-                // of the level goes through it in order.
-                let is_moved = &self.is_moved;
-                flags.extend(self.probes.iter().zip(pairs.iter_mut()).zip(is_moved).map(
-                    |((p, pairs), &moved)| {
-                        let tracks = v.tracker.seen.contains_key(&p.id);
-                        if p.id == v.entity_id || (moved && !sees(v, p, chunks, held)) {
-                            0
-                        } else if tracks {
-                            kept += 1;
-                            SEES | TRACKS
-                        } else if moved {
-                            *pairs = true;
-                            SEES
-                        } else {
-                            0
-                        }
-                    },
-                ));
-            } else {
-                // One tracking little of it, from what it tracks.
-                flags.resize(self.probes.len(), 0);
-                for id in v.tracker.seen.keys() {
-                    if let Some(s) = self.states.get(id).filter(|s| s.seen == now) {
-                        flags[s.index] = SEES | TRACKS;
-                        kept += 1;
-                    }
-                }
-                for &index in &self.moved {
-                    let p = &self.probes[index];
-                    let tracks = flags[index] & TRACKS != 0;
-                    if p.id != v.entity_id && sees(v, p, chunks, held) {
-                        if !tracks {
-                            flags[index] = SEES;
-                            pairs[index] = true;
-                        }
-                    } else if tracks {
-                        flags[index] = 0;
-                        kept -= 1;
-                    }
-                }
-            }
-            // Usually the client still sees all it tracks.
-            let mut removed = Vec::new();
-            if kept != v.tracker.seen.len() {
-                let states = &self.states;
-                let Tracker { seen, events, .. } = &mut *v.tracker;
-                seen.retain(|id, tracked| match states.get(id) {
-                    Some(s) if s.seen == now && flags[s.index] & TRACKS != 0 => true,
-                    other => {
-                        if let (Some(gone), Some(s)) = (v.gone.as_deref_mut(), other) {
-                            gone.push(s.base);
-                        }
-                        removed.push(*id);
-                        events.push(TrackEvent {
-                            start: false,
-                            entity: *id,
-                            tracked: Arc::clone(tracked),
+                    // Usually the client still sees all it tracks.
+                    let mut removed = Vec::new();
+                    if kept != v.tracker.seen.len() {
+                        let Tracker { seen, events, .. } = &mut *v.tracker;
+                        seen.retain(|id, tracked| match states.get(id) {
+                            Some(s) if s.seen == now && flags[s.index] & TRACKS != 0 => true,
+                            other => {
+                                if let (Some(gone), Some(s)) = (v.gone.as_deref_mut(), other) {
+                                    gone.push(s.base);
+                                }
+                                removed.push(*id);
+                                events.push(TrackEvent {
+                                    start: false,
+                                    entity: *id,
+                                    tracked: Arc::clone(tracked),
+                                });
+                                false
+                            }
                         });
-                        false
                     }
-                });
-            }
-            if !removed.is_empty() {
-                v.out.push(
-                    play::Clientbound::RemoveEntities(play::RemoveEntities { ids: removed })
-                        .encode(),
-                );
+                    if !removed.is_empty() {
+                        v.out.push(
+                            play::Clientbound::RemoveEntities(play::RemoveEntities {
+                                ids: removed,
+                            })
+                            .encode(),
+                        );
+                    }
+                }
+            });
+        }
+        self.flags = flags;
+        for starts in &starts {
+            for &index in starts {
+                self.pairs[index] = true;
             }
         }
         for (index, e) in entities.iter().enumerate() {
+            // Nothing to send and nobody to pair with: what the pass below
+            // would do with it (an unchanged leash) is nothing.
+            if self.quiet[index] && !self.pairs[index] {
+                continue;
+            }
             let Some(s) = self.states.get_mut(&e.id) else {
                 continue;
             };
@@ -1325,7 +1464,10 @@ impl Entities {
                 }
             }
         }
-        self.states.retain(|_, s| s.seen == now);
+        // ChunkMap.removeEntity for the ones no longer in the level.
+        if self.states.len() > stamped {
+            self.states.retain(|_, s| s.seen == now);
+        }
     }
 }
 
@@ -1363,6 +1505,8 @@ mod tests {
             vertical_collision: false,
             horizontal_collision: false,
             needs_sync: false,
+            sync_position: false,
+            stepped: false,
             idle: false,
             bare: false,
             leash: None,

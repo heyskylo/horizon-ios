@@ -49,9 +49,17 @@ impl Game<'_> {
                 creative,
                 options,
             } => self.open_world(&folder, Some(&name), seed, creative, Some(&options))?,
-            Action::Connect { address, lan } => {
-                self.connect_server_with_options(&address, &self.options.player_name(), None, lan)?
-            }
+            Action::Connect {
+                address,
+                lan,
+                realm,
+            } => self.connect_server_with_options(
+                &address,
+                &self.options.player_name(),
+                None,
+                lan,
+                realm,
+            )?,
             Action::DataPacks { dir, selected } => {
                 self.keys.clear();
                 self.screen = Screen::Options;
@@ -120,6 +128,14 @@ impl Game<'_> {
                 if let Err(e) = std::fs::write(&file, json.to_string()) {
                     log::warn!("Horizon: data packs for {folder}: {}: {e}", file.display());
                 }
+            }
+        }
+        // A new world opened without the Create screen still gets the game folder's packs.
+        if create.is_none() {
+            let game_dir = std::env::current_dir()?;
+            let world = game_dir.join("saves").join(folder);
+            if let Err(e) = horizon_client::datapack::install_new_world_packs(&game_dir, &world) {
+                log::warn!("Horizon: data packs for {folder}: {e}");
             }
         }
         // IntegratedServer.initServer's line, which other launchers read in `latest.log` to

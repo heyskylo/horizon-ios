@@ -131,7 +131,13 @@ impl RingWork {
         rings
     }
 }
-const START_CACHE_LIMIT: usize = 65536;
+/// Chunks kept per generation of the cache. Each player's generated area
+/// reads the starts of some 2,000 chunks (its view distance plus the
+/// references' reach, at view distance 10): at 65,536, a server with 200
+/// players spread over the map overflowed it every few ticks and rebuilt
+/// outposts' and trial chambers' jigsaws on the server thread, where natural
+/// spawning asks about them. Most entries are chunks with no start.
+const START_CACHE_LIMIT: usize = 262_144;
 const START_SHARDS: usize = 64;
 
 /// The built starts by chunk, in shards: a lookup locks one shard for
@@ -562,7 +568,7 @@ impl StructureState {
                     .structures
                     .iter()
                     .position(|s| s.name == name.to_string_lossy())?;
-                read_jigsaw_start(
+                read_saved_start(
                     index,
                     &self.registry.structures[index],
                     chunk,
@@ -701,6 +707,7 @@ impl StructureState {
                 .find(|s| wanted(s.structure) && !skip(&s.name, chunk))
                 .map(|s| s.name.clone())
         };
+        let mut spaced_sets = Vec::new();
         for &si in &self.possible_sets {
             let set = &self.registry.sets[si];
             if !set.structures.iter().any(|(s, _)| wanted(*s)) {
@@ -733,36 +740,50 @@ impl StructureState {
                     }
                 }
                 Some(spacing) => {
-                    let (cx, cz) = (from[0] >> 4, from[2] >> 4);
-                    'search: for r in 0..=radius {
-                        for dx in -r..=r {
-                            let x_edge = dx == -r || dx == r;
-                            for dz in -r..=r {
-                                if !(x_edge || dz == -r || dz == r) {
-                                    continue;
+                    spaced_sets.push((si, spacing));
+                }
+            }
+        }
+        if !spaced_sets.is_empty() {
+            let (cx, cz) = (from[0] >> 4, from[2] >> 4);
+            // ChunkGenerator.findNearestMapStructure: expands outward ring by ring across all
+            // candidate sets, stops at the first ring with any hit, and takes the first hit in
+            // each ring for each set.
+            for r in 0..=radius {
+                let mut found_in_ring = false;
+                for &(si, spacing) in &spaced_sets {
+                    let set = &self.registry.sets[si];
+                    'ring: for dx in -r..=r {
+                        let x_edge = dx == -r || dx == r;
+                        for dz in -r..=r {
+                            if !(x_edge || dz == -r || dz == r) {
+                                continue;
+                            }
+                            let (sx, sz) = (cx + spacing * dx, cz + spacing * dz);
+                            let Some(c) = StructureRegistry::potential_chunk(set, seed, sx, sz)
+                            else {
+                                continue;
+                            };
+                            if !self
+                                .registry
+                                .is_structure_chunk(set, seed, c.x, c.z, &rings)
+                            {
+                                continue;
+                            }
+                            if let Some(name) = found_at(self, context, c) {
+                                let p = set.locate_pos(c);
+                                let d = dist(p);
+                                if best.as_ref().is_none_or(|(b, ..)| d < *b) {
+                                    best = Some((d, name, p));
                                 }
-                                let (sx, sz) = (cx + spacing * dx, cz + spacing * dz);
-                                let Some(c) = StructureRegistry::potential_chunk(set, seed, sx, sz)
-                                else {
-                                    continue;
-                                };
-                                if !self
-                                    .registry
-                                    .is_structure_chunk(set, seed, c.x, c.z, &rings)
-                                {
-                                    continue;
-                                }
-                                if let Some(name) = found_at(self, context, c) {
-                                    let p = set.locate_pos(c);
-                                    let d = dist(p);
-                                    if best.as_ref().is_none_or(|(b, ..)| d < *b) {
-                                        best = Some((d, name, p));
-                                    }
-                                    break 'search;
-                                }
+                                found_in_ring = true;
+                                break 'ring;
                             }
                         }
                     }
+                }
+                if found_in_ring {
+                    break;
                 }
             }
         }
@@ -839,9 +860,9 @@ fn pieces_box(pieces: &[Piece]) -> Option<[i32; 6]> {
     }
     union.map(|b| [b.min[0], b.min[1], b.min[2], b.max[0], b.max[1], b.max[2]])
 }
-/// `StructureStart.loadStaticStart` / `PiecesContainer.load`, restricted to complete jigsaw
+/// `StructureStart.loadStaticStart` / `PiecesContainer.load`, restricted to complete supported
 /// starts. Unsupported or unreadable children leave the entire start to regeneration.
-fn read_jigsaw_start(
+pub(super) fn read_saved_start(
     index: usize,
     def: &StructureDef,
     chunk: ChunkPos,
@@ -869,8 +890,17 @@ fn read_jigsaw_start(
     let pieces = children
         .iter()
         .map(|piece| {
-            // `PiecesContainer.load`'s RENAMES: only jigsaw pieces are read back.
-            saved_piece_id(piece)?;
+            // `PiecesContainer.load`'s RENAMES read the old jigsaw ids as `jigsaw`; the other
+            // supported types are template pieces.
+            if saved_piece_id(piece).is_none() {
+                let Tag::String(id) = piece.get("id")? else {
+                    return None;
+                };
+                let id = id.to_string_lossy();
+                let id = id.strip_prefix("minecraft:").unwrap_or(&id);
+                return super::structure::saved_templates::read(id, piece, resources, bindings)
+                    .map(Piece::Legacy);
+            }
             // Pool pieces have no orientation and depth 0. Preserve other values by falling
             // back until the representation can hold them, rather than silently losing them.
             if piece.get("O") != Some(&Tag::Int(-1)) || piece.get("GD") != Some(&Tag::Int(0)) {
@@ -906,7 +936,7 @@ fn saved_piece_id(piece: &crate::nbt::Tag) -> Option<&'static str> {
 }
 /// A saved piece's tag as the JSON `PoolPiece::from_saved` reads: compounds and lists as they
 /// are, numbers as numbers.
-fn tag_json(tag: &crate::nbt::Tag) -> Value {
+pub(crate) fn tag_json(tag: &crate::nbt::Tag) -> Value {
     use crate::nbt::Tag;
     match tag {
         Tag::Byte(v) => Value::from(i64::from(*v)),
@@ -1016,7 +1046,7 @@ mod tests {
         let mut original = StructureStart::new(7, &def, chunk, pieces);
         original.references = 3;
         let tag = original.save().unwrap();
-        let read = |tag: &Tag| read_jigsaw_start(7, &def, chunk, tag, &resources, &bindings);
+        let read = |tag: &Tag| read_saved_start(7, &def, chunk, tag, &resources, &bindings);
         let loaded = read(&tag).expect("complete jigsaw start");
         assert_eq!(loaded.save(), Some(tag.clone()));
         assert_eq!(

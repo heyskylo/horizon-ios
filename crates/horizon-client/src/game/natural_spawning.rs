@@ -13,8 +13,8 @@ use horizon_client::{
         seen_grid::SeenGrid,
         spawn_rules::SpawnLevel,
         spawn_selection::{
-            self, Category, Counted, Heightmap, NaturalLevel, SpawnCost, SpawnPlayer, SpawnRequest,
-            SpawnState, Spawned, StructureAt, StructureSpawns,
+            self, Category, Counted, Heightmap, NaturalLevel, PlayerSquares, SpawnCost,
+            SpawnPlayer, SpawnRequest, SpawnState, Spawned, StructureAt, StructureSpawns,
         },
     },
 };
@@ -295,6 +295,8 @@ impl<'p> NearestPlayers<'p> {
     }
 }
 
+/// Up to this many players, a spawn start measures to every one.
+const PLAYERS_SCANNED: usize = 8;
 /// The game level as natural spawning reads it.
 pub(super) struct GameLevel<'g, 'a> {
     pub(super) game: &'g Game<'a>,
@@ -303,6 +305,9 @@ pub(super) struct GameLevel<'g, 'a> {
     pub(super) players: Vec<LevelPlayer>,
     /// Where the non-spectators among them are (`getNearestPlayer`).
     pub(super) nearest: Vec<[f64; 3]>,
+    /// `nearest` by square, built when a spawn start first asks with more
+    /// than [`PLAYERS_SCANNED`] players.
+    pub(super) player_squares: std::cell::OnceCell<PlayerSquares>,
     /// Boxes of the mobs this pass created, not yet in the game's list.
     pub(super) pending: std::cell::RefCell<Vec<Aabb>>,
     /// The types and boxes of what a spawner created this tick.
@@ -528,6 +533,14 @@ impl NaturalLevel for GameLevel<'_, '_> {
     fn nearest_player_positions(&self) -> &[[f64; 3]] {
         &self.nearest
     }
+    fn player_positions_near(&self, x: f64, z: f64, extent: f64, out: &mut Vec<[f64; 3]>) {
+        if self.nearest.len() <= PLAYERS_SCANNED {
+            out.extend_from_slice(&self.nearest);
+            return;
+        }
+        let squares = (self.player_squares).get_or_init(|| PlayerSquares::new(&self.nearest));
+        squares.near(x, z, extent, out);
+    }
     fn respawn(&self) -> Option<[i32; 3]> {
         // The world spawn point lives in the overworld.
         if self.game.dim != Dim::Overworld {
@@ -649,6 +662,7 @@ impl<'a> Game<'a> {
             w: self.mob_world_base(&[]),
             players,
             nearest,
+            player_squares: Default::default(),
             pending: Default::default(),
             pending_ids: Default::default(),
             boxes: Default::default(),

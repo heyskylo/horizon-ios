@@ -312,11 +312,13 @@ impl Opt {
             Opt::PadRepeatInterval => "horizon.options.repeat_interval",
             Opt::PadInvertX => "horizon.options.invert_x",
             Opt::PadInvertY => "horizon.options.invert_y",
+            Opt::PadCraftOnServers => "horizon.options.craft_on_servers",
             Opt::PadToggleSneak => "horizon.options.sneak_button",
             Opt::PadMoveDeadzone => "horizon.options.move_deadzone",
             Opt::PadLookDeadzone => "horizon.options.look_deadzone",
             Opt::PadTriggerThreshold => "horizon.options.trigger_threshold",
             Opt::PadGlyphs => "horizon.options.button_glyphs",
+            Opt::PadNintendoButtons => "horizon.options.nintendo_buttons",
             Opt::PadKeyboard => "horizon.options.on_screen_keyboard",
             Opt::PadGameplayGuide => "horizon.options.gameplay_guide",
             Opt::ModelPart(i) => [
@@ -848,6 +850,7 @@ impl Opt {
             }),
             Opt::PadInvertX => on_off(s.controller.invert_x),
             Opt::PadInvertY => on_off(s.controller.invert_y),
+            Opt::PadCraftOnServers => on_off(s.controller.craft_on_servers),
             Opt::PadToggleSneak => tr(if s.controller.toggle_sneak {
                 "options.key.toggle"
             } else {
@@ -863,6 +866,11 @@ impl Opt {
                 GlyphStyle::Xbox => "horizon.options.glyphs.xbox",
                 GlyphStyle::PlayStation => "horizon.options.glyphs.playstation",
                 GlyphStyle::Nintendo => "horizon.options.glyphs.nintendo",
+            }),
+            Opt::PadNintendoButtons => tr(if s.controller.nintendo_letters {
+                "horizon.options.nintendo_buttons.letter"
+            } else {
+                "horizon.options.nintendo_buttons.position"
             }),
             Opt::PadKeyboard => tr(match s.controller.keyboard {
                 gamepad::TextKeyboard::Auto => "horizon.options.keyboard.auto",
@@ -1150,7 +1158,13 @@ impl Opt {
             }
             Opt::PadInvertX => s.controller.invert_x = !s.controller.invert_x,
             Opt::PadInvertY => s.controller.invert_y = !s.controller.invert_y,
+            Opt::PadCraftOnServers => {
+                s.controller.craft_on_servers = !s.controller.craft_on_servers
+            }
             Opt::PadToggleSneak => s.controller.toggle_sneak = !s.controller.toggle_sneak,
+            Opt::PadNintendoButtons => {
+                s.controller.nintendo_letters = !s.controller.nintendo_letters
+            }
             Opt::PadLightbar => {
                 let all = gamepad::Lightbar::ALL;
                 let i = all
@@ -1320,6 +1334,8 @@ pub enum Page {
     ShaderPacks,
     /// The picked pack's options: the shader screen (`shader_ui`) at the pack's main screen.
     ShaderOptions,
+    /// The selected resource packs' Polytone options (`pack_options_ui`), from the pack screen.
+    PackOptions,
     /// Horizon's graphics settings (`graphics_ui`).
     Graphics,
     GraphicsAdvanced,
@@ -1472,6 +1488,12 @@ fn matches_focus(id: &FocusId, i: usize, wd: &Widget) -> bool {
 /// What the game must do after an interaction.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
+    /// The Pack Options page closed with changes: the player's choices of its entries, the
+    /// ones that differ from their defaults (the others went back to theirs).
+    PackOptions {
+        entries: Vec<String>,
+        chosen: std::collections::BTreeMap<String, horizon_polytone::pack::ConfigValue>,
+    },
     /// An accepted button press or the release of a slider.
     ButtonClick,
     /// Horizon's own: download the Modrinth hit at this index of the pack
@@ -1598,11 +1620,9 @@ pub struct OptionsUi {
     selected_native_key: Option<(usize, usize)>,
     /// Bindings: the action waiting for a pad button.
     pub selected_pad_action: Option<&'static str>,
-    /// The glyphs the binds list shows (the setting, else the pad's family).
-    pub pad_style: GlyphStyle,
-    /// The pad goes by its letters (`PadSettings::nintendo_letters`) and the glyphs are
-    /// Nintendo's: each part shows the letter of the button playing it.
-    pub pad_by_letter: bool,
+    /// The glyphs menus show (`Glyphs::of`: the setting, else the pad's family, and a Nintendo
+    /// pad's letters when it goes by them). The game sets it each frame.
+    pub pad_glyphs: crate::pad_glyph::Glyphs,
     /// The pad's focus drives the page: its hidden pointer sits mid-widget, so a tooltip goes
     /// under the widget instead of beside the pointer.
     pub pad_driving: bool,
@@ -1645,11 +1665,16 @@ pub struct OptionsUi {
     pub minecart_improvements: bool,
     /// Scroll the selected language into the middle on the next layout.
     center_language: bool,
-    pub graphics: crate::graphics_ui::GraphicsUi,
-    pub controller: crate::controller_ui::ControllerUi,
+    graphics: shell::Shell<crate::graphics_ui::GraphicsScreen>,
+    /// Controller Settings, on the settings shell.
+    controller: shell::Shell<crate::controller_ui::ControllerScreen>,
     /// Horizon Extras, on the settings shell.
     extras: shell::Shell<crate::extras_ui::ExtrasScreen>,
     pub shader: crate::shader_ui::ShaderUi,
+    /// The Pack Options page, and the packs' Polytone config entries by pack id (the game
+    /// fills them beside `pack_infos`).
+    pub pack_options: crate::pack_options_ui::PackOptionsUi,
+    pub pack_configs: std::collections::BTreeMap<String, horizon_polytone::pack::Configs>,
     pub split_profiles: crate::split_profiles::SplitProfiles,
     /// HDR calibration while its page is open.
     pub calibration: Option<crate::hdr_calibration::Calibration>,
@@ -1701,8 +1726,7 @@ impl Default for OptionsUi {
             selected_key: None,
             selected_native_key: None,
             selected_pad_action: None,
-            pad_style: GlyphStyle::Xbox,
-            pad_by_letter: false,
+            pad_glyphs: crate::pad_glyph::Glyphs::default(),
             pad_driving: false,
             languages: Vec::new(),
             language_choice: None,
@@ -1729,6 +1753,8 @@ impl Default for OptionsUi {
             controller: Default::default(),
             extras: Default::default(),
             shader: Default::default(),
+            pack_options: Default::default(),
+            pack_configs: Default::default(),
             split_profiles: Default::default(),
             calibration: None,
             calibration_fullscreen: None,
@@ -2086,10 +2112,6 @@ impl OptionsUi {
                     .pack_screen
                     .as_ref()
                     .is_some_and(|p| p.search_focused()),
-                Page::Graphics | Page::GraphicsAdvanced | Page::GraphicsHdr => {
-                    self.graphics.typing()
-                }
-                Page::Controller | Page::PadBinds => self.controller.typing(),
                 _ if Self::shader_page(self.page()).is_some() => self.shader.typing(),
                 _ => match self.shell() {
                     Some(shell) => shell.typing(),
@@ -2201,17 +2223,17 @@ impl OptionsUi {
         if page == Page::Packs {
             self.pack_screen = None;
         }
-        if let Some(at) = Self::graphics_page(page) {
-            self.graphics.open(at);
-        }
-        if let Some(at) = Self::controller_page(page) {
-            self.controller.open(at);
-        }
         if let Some(at) = Self::shader_page(page) {
             self.shader.open(at);
         }
         if let Some(shell) = self.shell_mut() {
             shell.open();
+        }
+        if let Some(at) = Self::graphics_page(page) {
+            self.graphics.show(at);
+        }
+        if let Some(at) = Self::controller_page(page) {
+            self.controller.show(at);
         }
         if page == Page::SplitSetup {
             self.split_setup.reset();
@@ -2229,14 +2251,38 @@ impl OptionsUi {
     fn shell(&self) -> Option<&dyn shell::Hosted> {
         match self.page() {
             Page::Extras => Some(&self.extras),
+            page if Self::graphics_page(page).is_some() => Some(&self.graphics),
+            page if Self::controller_page(page).is_some() => Some(&self.controller),
             _ => None,
         }
     }
     fn shell_mut(&mut self) -> Option<&mut dyn shell::Hosted> {
         match self.page() {
             Page::Extras => Some(&mut self.extras),
+            page if Self::graphics_page(page).is_some() => Some(&mut self.graphics),
+            page if Self::controller_page(page).is_some() => Some(&mut self.controller),
             _ => None,
         }
+    }
+    /// A controller's or the keyboard's focus landed on `rect`: a row of a shell screen's list
+    /// that is partly hidden scrolls all into view. How far it moved down, when it moved.
+    pub fn reveal(&mut self, s: &Settings, size: (f32, f32), rect: [f32; 4]) -> Option<f32> {
+        self.shell_mut()?.reveal(s, size, rect)
+    }
+    /// The window's size, for the graphics and controller screens' rows that step an option
+    /// (`Opt::cycle`, which a fullscreen resolution needs): before each input that can press one.
+    fn shell_framebuffers(&mut self) {
+        self.graphics.screen.framebuffer = self.framebuffer;
+        self.controller.screen.framebuffer = self.framebuffer;
+    }
+    /// Who and what Controller Settings is about: the game sets it before each draw.
+    pub fn set_controller_context(&mut self, context: crate::controller_ui::Context) {
+        self.controller.screen.context = context;
+    }
+    /// The binding the screen waits on: a controller button's, else a key's.
+    fn waiting(&self) -> Option<shell::Capture> {
+        let pad = self.selected_pad_action.map(shell::Capture::Pad);
+        pad.or(self.selected_key.map(shell::Capture::Key))
     }
     /// What a shell screen's outputs do to these options.
     fn shell_events(&mut self, s: &mut Settings, outputs: Vec<shell::Output>) -> Vec<Event> {
@@ -2244,59 +2290,17 @@ impl OptionsUi {
         for output in outputs {
             match output {
                 shell::Output::Event(event) => events.push(event),
-                shell::Output::BindKey(name) => self.selected_key = Some(name),
-                shell::Output::Push(page) => self.push(page),
+                shell::Output::Bind(shell::Capture::Key(name)) => self.selected_key = Some(name),
+                shell::Output::Bind(shell::Capture::Pad(action)) => {
+                    self.selected_pad_action = Some(action)
+                }
+                shell::Output::Push(page) => {
+                    if page == Page::HdrCalibration {
+                        self.calibration = Some(crate::hdr_calibration::Calibration::new(s));
+                    }
+                    self.push(page);
+                }
                 shell::Output::Done => events.extend(self.back(s)),
-            }
-        }
-        events
-    }
-    /// What the graphics screen's actions do to these options.
-    fn graphics_events(
-        &mut self,
-        s: &mut Settings,
-        actions: Vec<crate::graphics_ui::Action>,
-    ) -> Vec<Event> {
-        use crate::graphics_ui::Action;
-        let mut events = Vec::new();
-        for action in actions {
-            match action {
-                Action::ButtonClick => events.push(Event::ButtonClick),
-                Action::Changed => events.push(Event::Changed),
-                Action::SliderDrag => events.push(Event::SliderDrag),
-                Action::BindKey(name) => self.selected_key = Some(name),
-                Action::Calibrate => {
-                    self.calibration = Some(crate::hdr_calibration::Calibration::new(s));
-                    self.push(Page::HdrCalibration);
-                }
-                // The Shaders page's Shader Packs...: the list of either kind, as the page
-                // opens it from anywhere.
-                Action::ShaderPacks => {
-                    events.push(Event::ListShaderPacks);
-                    s.shader_options = None;
-                    events.push(Event::OpenShaderOptions);
-                    self.push(Page::ShaderPacks);
-                }
-                Action::Done => events.extend(self.back(s)),
-            }
-        }
-        events
-    }
-    /// What the controller screen's actions do to these options.
-    fn controller_events(
-        &mut self,
-        s: &mut Settings,
-        actions: Vec<crate::controller_ui::Action>,
-    ) -> Vec<Event> {
-        use crate::controller_ui::Action;
-        let mut events = Vec::new();
-        for action in actions {
-            match action {
-                Action::ButtonClick => events.push(Event::ButtonClick),
-                Action::Changed => events.push(Event::Changed),
-                Action::SliderDrag => events.push(Event::SliderDrag),
-                Action::BindPad(action) => self.selected_pad_action = Some(action),
-                Action::Done => events.extend(self.back(s)),
             }
         }
         events
@@ -2388,6 +2392,7 @@ impl OptionsUi {
             Page::NativeMod(_) => "Mod Settings",
             Page::ShaderPacks => "horizon.pages.shader_packs",
             Page::ShaderOptions => "horizon.pages.shader_options",
+            Page::PackOptions => "horizon.pack.options.title",
             Page::Graphics | Page::GraphicsAdvanced | Page::GraphicsHdr | Page::HdrCalibration => {
                 "options.videoTitle"
             }
@@ -3690,24 +3695,20 @@ impl OptionsUi {
             c.draw(batch, atlas, cursor);
             return;
         }
-        if Self::graphics_page(self.page()).is_some() {
-            self.graphics.binding = self.selected_key;
-            self.graphics.draw(s, batch, atlas, cursor, self.in_world);
-            return;
-        }
-        if Self::controller_page(self.page()).is_some() {
-            self.controller.binding = self.selected_pad_action;
-            self.controller.draw(s, batch, atlas, cursor, self.in_world);
-            return;
-        }
         if Self::shader_page(self.page()).is_some() {
             self.shader.draw(s, batch, atlas, cursor, self.in_world);
             return;
         }
-        let waiting = self.selected_key;
+        if self.page() == Page::PackOptions {
+            self.pack_options.draw(batch, atlas, cursor, self.in_world);
+            return;
+        }
+        let waiting = self.waiting();
         let in_world = self.in_world;
         if let Some(shell) = self.shell_mut() {
             shell.draw(s, batch, atlas, cursor, in_world, waiting);
+            // The keys lay the screen out at the size it was drawn at.
+            self.size = (batch.width, batch.height);
             return;
         }
         if self.page() == Page::SplitSetup {
@@ -3719,7 +3720,7 @@ impl OptionsUi {
         }
         if self.page() == Page::SplitProfiles {
             self.split_profiles
-                .draw(batch, atlas, cursor, self.in_world, self.pad_style);
+                .draw(batch, atlas, cursor, self.in_world, self.pad_glyphs);
             return;
         }
         if self.page() == Page::Studio {
@@ -3797,22 +3798,16 @@ impl OptionsUi {
             }
             match &wd.kind {
                 WKind::Button { label, active, act } => {
-                    if matches!(act, Act::Done) {
-                        ui::action_button(
-                            batch,
-                            atlas,
-                            crate::widgets::Action::Done,
-                            wd.x,
-                            wd.y,
-                            wd.w,
-                            wd.h,
-                            label,
-                            *active,
-                            hover,
-                        );
-                    } else {
-                        ui::button(batch, atlas, wd.x, wd.y, wd.w, wd.h, label, *active, hover);
-                    }
+                    ui::focused_button(
+                        batch,
+                        atlas,
+                        [wd.x, wd.y, wd.w, wd.h],
+                        label,
+                        *active,
+                        pointer_over,
+                        is_focused,
+                        matches!(act, Act::Done).then_some(crate::widgets::Action::Done),
+                    );
                     crate::widgets::last_narratable(|n| {
                         narrate_widget(n, s, wd, hover, list_key, framebuffer);
                     });
@@ -4061,22 +4056,11 @@ impl OptionsUi {
             let outcome = c.click((x, y), size, drag);
             return self.calibration_outcome(s, outcome);
         }
-        if Self::graphics_page(self.page()).is_some() {
-            // Waiting on a key: a mouse button binds, as on Key Binds.
-            if self.selected_key.is_some() && !drag {
-                let button = if right {
-                    winit::event::MouseButton::Right
-                } else {
-                    winit::event::MouseButton::Left
-                };
-                return self.bind_mouse(s, button);
-            }
-            let actions =
-                self.graphics
-                    .click(s, (x, y), size, framebuffer, drag, right, self.shift);
-            return self.graphics_events(s, actions);
-        }
         if self.shell().is_some() {
+            // Waiting on a controller button: a click cancels the wait.
+            if !drag && self.selected_pad_action.take().is_some() {
+                return Vec::new();
+            }
             // Waiting on a key: a mouse button binds, as on Key Binds.
             if self.selected_key.is_some() && !drag {
                 let button = if right {
@@ -4087,24 +4071,32 @@ impl OptionsUi {
                 return self.bind_mouse(s, button);
             }
             let shift = self.shift;
+            self.framebuffer = framebuffer;
+            self.shell_framebuffers();
             let outputs = self.shell_mut().map_or_else(Vec::new, |shell| {
                 shell.click(s, (x, y), size, drag, right, shift)
             });
             return self.shell_events(s, outputs);
         }
-        if Self::controller_page(self.page()).is_some() {
-            // Waiting on a button: a click cancels the wait.
-            if !drag && self.selected_pad_action.take().is_some() {
-                return Vec::new();
-            }
-            let actions =
-                self.controller
-                    .click(s, (x, y), size, framebuffer, drag, right, self.shift);
-            return self.controller_events(s, actions);
-        }
         if Self::shader_page(self.page()).is_some() {
-            let actions = self.shader.click(s, (x, y), size, drag, right, self.shift);
+            let actions = self
+                .shader
+                .click(s, atlas, (x, y), size, drag, right, self.shift);
             return self.shader_events(s, actions);
+        }
+        if self.page() == Page::PackOptions {
+            let mut events = Vec::new();
+            for action in self
+                .pack_options
+                .click((x, y), size, drag, right || self.shift)
+            {
+                match action {
+                    crate::pack_options_ui::Action::ButtonClick => events.push(Event::ButtonClick),
+                    crate::pack_options_ui::Action::SliderDrag => {}
+                    crate::pack_options_ui::Action::Done => events.extend(self.back(s)),
+                }
+            }
+            return events;
         }
         if self.page() == Page::Packs {
             let mut events = Vec::new();
@@ -4133,6 +4125,14 @@ impl OptionsUi {
                 crate::pack_screen::Action::Done => events.extend(self.back(s)),
                 crate::pack_screen::Action::BrowsePick(i) => {
                     events.push(Event::DownloadPack(i));
+                }
+                crate::pack_screen::Action::Options(id) => {
+                    let mut configs = horizon_polytone::pack::Configs::default();
+                    if let Some(own) = self.pack_configs.get(&id) {
+                        configs.merge(own);
+                    }
+                    self.pack_options = crate::pack_options_ui::PackOptionsUi::open(configs);
+                    self.push(Page::PackOptions);
                 }
                 crate::pack_screen::Action::None => {}
             }
@@ -4227,6 +4227,11 @@ impl OptionsUi {
             }
             if wd.list && (y < top || y >= bottom) {
                 continue;
+            }
+            // AbstractWidget.mouseClicked rejects inactive buttons before the
+            // container can focus them.
+            if matches!(wd.kind, WKind::Button { active: false, .. }) {
+                return events;
             }
             // A click focuses the widget for its highlight only: vanilla's wheel
             // steps a keyboard-focused widget from anywhere, not a clicked one.
@@ -4368,9 +4373,9 @@ impl OptionsUi {
         // release, even if the pointer has left the widget or its value stayed.
         let slider = self.dragging.take().is_some();
         let (shader_slider, shader_pack) = self.shader.release();
+        self.pack_options.release();
         let shell_slider = self.shell_mut().is_some_and(|shell| shell.release());
-        let graphics_slider =
-            self.graphics.release() | self.controller.release() | shader_slider | shell_slider;
+        let graphics_slider = shader_slider | shell_slider;
         let calibration_slider = self.calibration.as_mut().is_some_and(|c| c.release());
         let split_drop = self.split_setup.release();
         if slider || graphics_slider || calibration_slider {
@@ -4437,7 +4442,6 @@ impl OptionsUi {
     /// wheel wherever the cursor is. Focus left by a click does not count
     /// (`focus_from_keyboard`): honouring it toggled the clicked option on every
     /// later wheel event, from anywhere on the screen, while the list never scrolled.
-    /// The graphics screen has its own wheel (`GraphicsUi::wheel`).
     pub fn wheel(
         &mut self,
         s: &mut Settings,
@@ -4451,24 +4455,21 @@ impl OptionsUi {
         if self.resource_error.is_some() {
             return Vec::new();
         }
+        self.shell_framebuffers();
         if let Some(shell) = self.shell_mut() {
             let outputs = shell.wheel(s, size, cursor, amount);
             return self.shell_events(s, outputs);
-        }
-        if Self::graphics_page(self.page()).is_some() {
-            let actions = self.graphics.wheel(s, size, cursor, framebuffer, amount);
-            return self.graphics_events(s, actions);
         }
         if self.page() == Page::Studio {
             self.studio.wheel(amount);
             return Vec::new();
         }
-        if Self::controller_page(self.page()).is_some() {
-            let actions = self.controller.wheel(s, size, cursor, framebuffer, amount);
-            return self.controller_events(s, actions);
-        }
         if Self::shader_page(self.page()).is_some() {
             self.shader.scroll(s, size, amount);
+            return Vec::new();
+        }
+        if self.page() == Page::PackOptions {
+            self.pack_options.scroll(size, amount);
             return Vec::new();
         }
         let plain = self.resource_error.is_none()
@@ -4550,20 +4551,16 @@ impl OptionsUi {
             shell.scroll(s, size, amount);
             return;
         }
-        if Self::graphics_page(self.page()).is_some() {
-            self.graphics.scroll(s, size, amount);
-            return;
-        }
         if self.page() == Page::Studio {
             self.studio.wheel(amount);
             return;
         }
-        if Self::controller_page(self.page()).is_some() {
-            self.controller.scroll(s, size, amount);
-            return;
-        }
         if Self::shader_page(self.page()).is_some() {
             self.shader.scroll(s, size, amount);
+            return;
+        }
+        if self.page() == Page::PackOptions {
+            self.pack_options.scroll(size, amount);
             return;
         }
         match &mut self.pack_screen {
@@ -4631,7 +4628,19 @@ impl OptionsUi {
                 self.pack_screen = Some(screen);
             }
         }
-        self.pack_screen.as_mut().expect("made above")
+        // The cards of packs with Polytone options carry their button (data packs have none).
+        let with_options = if self.data_pack_dir.is_none() {
+            self.pack_configs
+                .iter()
+                .filter(|(_, c)| !c.entries().is_empty())
+                .map(|(id, _)| id.clone())
+                .collect()
+        } else {
+            Default::default()
+        };
+        let screen = self.pack_screen.as_mut().expect("made above");
+        screen.with_options = with_options;
+        screen
     }
     /// Escape or Done: leave the current page, applying page results.
     /// After an input on HDR calibration: Save keeps what it landed on, Cancel what was
@@ -4688,6 +4697,16 @@ impl OptionsUi {
         self.language_search.focused = false;
         self.can_change_value = false;
         match page {
+            Page::PackOptions => {
+                let ui = std::mem::take(&mut self.pack_options);
+                if ui.changed {
+                    let entries = ui.configs.entries().keys().cloned().collect();
+                    events.push(Event::PackOptions {
+                        entries,
+                        chosen: ui.configs.chosen(),
+                    });
+                }
+            }
             Page::ShaderOptions | Page::ShaderPacks => {
                 if s.shader_options.as_ref().is_some_and(|o| o.changed) {
                     events.push(Event::ShaderOptions);
@@ -4750,10 +4769,6 @@ impl OptionsUi {
             if shell.typing() {
                 shell.type_text(text);
             }
-        } else if Self::graphics_page(self.page()).is_some() && self.graphics.typing() {
-            self.graphics.type_text(text);
-        } else if Self::controller_page(self.page()).is_some() && self.controller.typing() {
-            self.controller.type_text(text);
         } else if Self::shader_page(self.page()).is_some() && self.shader.typing() {
             self.shader.type_text(text);
         } else if self.settings_search_active() {
@@ -4789,12 +4804,6 @@ impl OptionsUi {
         }
         if let Some(shell) = self.shell_mut() {
             return shell.shortcut(shortcut, clipboard);
-        }
-        if Self::graphics_page(self.page()).is_some() {
-            return self.graphics.shortcut(shortcut, clipboard);
-        }
-        if Self::controller_page(self.page()).is_some() {
-            return self.controller.shortcut(shortcut, clipboard);
         }
         if Self::shader_page(self.page()).is_some() {
             return self.shader.shortcut(shortcut, clipboard);
@@ -4909,41 +4918,20 @@ impl OptionsUi {
             return Vec::new();
         }
 
-        if Self::graphics_page(self.page()).is_some() {
-            let size = (self.size.0.max(480.0), self.size.1.max(240.0));
-            let fb = [self.framebuffer[0].max(480), self.framebuffer[1].max(240)];
-            let (actions, handled) = self.graphics.key_modifiers(s, key, text, shift, size, fb);
-            let mut events = self.graphics_events(s, actions);
-            if key == K::Escape {
-                events.extend(self.back(s));
-                return events;
-            }
-            if handled {
-                return events;
-            }
-            return events;
-        }
-        let gui = (
-            self.size.0.max(MIN_KEY_GUI.0),
-            self.size.1.max(MIN_KEY_GUI.1),
-        );
+        // The size it was drawn at; before the first draw, one its keys can lay out at.
+        let gui = if self.size.0 > 0.0 && self.size.1 > 0.0 {
+            self.size
+        } else {
+            MIN_KEY_GUI
+        };
+        self.shell_framebuffers();
         if let Some(shell) = self.shell_mut() {
             let outputs = shell.key(s, key, text, shift, gui);
             return self.shell_events(s, outputs);
         }
-        if Self::controller_page(self.page()).is_some() {
-            let size = (self.size.0.max(480.0), self.size.1.max(240.0));
-            let fb = [self.framebuffer[0].max(480), self.framebuffer[1].max(240)];
-            let (actions, _) = self.controller.key_modifiers(s, key, text, shift, size, fb);
-            let mut events = self.controller_events(s, actions);
-            if key == K::Escape {
-                events.extend(self.back(s));
-            }
-            return events;
-        }
         if Self::shader_page(self.page()).is_some() {
             let size = (self.size.0.max(480.0), self.size.1.max(240.0));
-            let (actions, handled) = self.shader.key_modifiers(s, key, text, shift, size);
+            let (actions, handled) = self.shader.key_modifiers(s, atlas, key, text, shift, size);
             let mut events = self.shader_events(s, actions);
             // Escape leaves a screen a link opened first, then the shader screen.
             if key == K::Escape && !handled {
@@ -6102,6 +6090,104 @@ mod tests {
     }
 
     #[test]
+    fn pointer_cursor_leaves_a_clicked_option_while_its_focus_stays() {
+        use crate::widgets::{Cursor, take_cursor};
+        let atlas = atlas();
+        let mut s = Settings::default();
+        let mut ui = OptionsUi::default();
+        ui.show(Page::Video);
+        let size = (480.0, 480.0);
+        let (widgets, top, bottom, _) = ui.layout(&s, size.0, size.1);
+        let button = widgets
+            .iter()
+            .find(|wd| {
+                matches!(
+                    wd.kind,
+                    WKind::Button {
+                        active: true,
+                        act: Act::Cycle(_),
+                        ..
+                    }
+                ) && (!wd.list || wd.y >= top && wd.y + wd.h <= bottom)
+            })
+            .expect("visible cycle button");
+        let over = (button.x + 1.0, button.y + 1.0);
+        ui.click(
+            &mut s,
+            &atlas,
+            over.0,
+            over.1,
+            size,
+            [480, 480],
+            false,
+            false,
+        );
+        ui.release();
+        assert!(
+            ui.focus.is_some(),
+            "the accepted click keeps vanilla's focus"
+        );
+        assert!(!ui.focus_from_keyboard);
+        let _ = take_cursor();
+        ui.draw(&s, &mut HudBatch::new([480, 480]), &atlas, over);
+        assert_eq!(take_cursor(), Cursor::PointingHand);
+        ui.draw(&s, &mut HudBatch::new([480, 480]), &atlas, (-10.0, -10.0));
+        assert_eq!(take_cursor(), Cursor::Arrow, "focus is not mouse hover");
+        assert!(
+            ui.focus.is_some(),
+            "moving the pointer does not clear focus"
+        );
+        ui.focus_from_keyboard = true;
+        ui.draw(&s, &mut HudBatch::new([480, 480]), &atlas, (-10.0, -10.0));
+        assert_eq!(
+            take_cursor(),
+            Cursor::Arrow,
+            "keyboard focus is not mouse hover either"
+        );
+    }
+
+    #[test]
+    fn pointer_cursor_leaves_a_disabled_option_without_focusing_it() {
+        use crate::widgets::{Cursor, take_cursor};
+        let atlas = atlas();
+        let mut s = Settings::default();
+        let mut ui = OptionsUi::default();
+        ui.show(Page::KeyBinds);
+        let size = (480.0, 480.0);
+        let (widgets, top, bottom, _) = ui.layout(&s, size.0, size.1);
+        let button = widgets
+            .iter()
+            .find(|wd| {
+                matches!(wd.kind, WKind::Button { active: false, .. })
+                    && (!wd.list || wd.y >= top && wd.y + wd.h <= bottom)
+            })
+            .expect("visible disabled button");
+        let over = (button.x + 1.0, button.y + 1.0);
+        let _ = take_cursor();
+        ui.draw(&s, &mut HudBatch::new([480, 480]), &atlas, over);
+        assert_eq!(take_cursor(), Cursor::NotAllowed);
+        assert!(
+            ui.click(
+                &mut s,
+                &atlas,
+                over.0,
+                over.1,
+                size,
+                [480, 480],
+                false,
+                false
+            )
+            .is_empty()
+        );
+        assert!(
+            ui.focus.is_none(),
+            "an inactive widget rejects the click before focus"
+        );
+        ui.draw(&s, &mut HudBatch::new([480, 480]), &atlas, (-10.0, -10.0));
+        assert_eq!(take_cursor(), Cursor::Arrow);
+    }
+
+    #[test]
     fn a_clicked_extras_tooltip_leaves_with_the_pointer() {
         let atlas = atlas();
         let mut s = Settings::default();
@@ -6589,6 +6675,42 @@ mod tests {
             vec![Event::Changed]
         );
         assert_eq!(ui.page(), Page::Horizon);
+    }
+
+    /// A Bindings row pressed waits for a controller button: the next click or key cancels the
+    /// wait, Escape unbinds the action as on Key Binds, and none of them leaves the screen.
+    #[test]
+    fn a_controller_binding_waits_and_a_click_or_a_key_ends_the_wait() {
+        use crate::controller_ui::Item;
+        use winit::keyboard::KeyCode as K;
+        let atlas = atlas();
+        let mut s = Settings::default();
+        let mut ui = OptionsUi::default();
+        ui.show(Page::PadBinds);
+        let size = (854.0, 480.0);
+        ui.size = size;
+        let jump = Item::Bind("key.jump");
+        let (x, y) = ui.controller.point_at(&s, size, jump);
+        let press = |ui: &mut OptionsUi, s: &mut Settings| {
+            ui.click(s, &atlas, x, y, size, [1708, 960], false, false)
+        };
+        assert_eq!(press(&mut ui, &mut s), vec![Event::ButtonClick]);
+        assert_eq!(ui.selected_pad_action, Some("key.jump"));
+        assert!(press(&mut ui, &mut s).is_empty());
+        assert_eq!(ui.selected_pad_action, None);
+        press(&mut ui, &mut s);
+        assert_eq!(ui.key(&mut s, &atlas, K::KeyQ, None), vec![Event::Changed]);
+        assert_eq!(
+            (ui.selected_pad_action, s.controller.is_default("key.jump")),
+            (None, true)
+        );
+        press(&mut ui, &mut s);
+        assert_eq!(
+            ui.key(&mut s, &atlas, K::Escape, None),
+            vec![Event::Changed]
+        );
+        assert_eq!(s.controller.binding("key.jump"), None);
+        assert_eq!(ui.page(), Page::PadBinds);
     }
 
     /// Every way a pad or a wheel scrolls a page on the shell moves the same list: Replay Studio's
@@ -7616,7 +7738,7 @@ mod tests {
     /// Packs... opens the pack list, listed afresh, and Done comes back to that page.
     #[test]
     fn the_graphics_shaders_page_opens_the_shader_pack_list() {
-        use crate::graphics_ui::{H, Item, Target};
+        use crate::graphics_ui::{H, Item};
         use winit::keyboard::KeyCode;
         let atlas = atlas();
         let mut s = Settings::default();
@@ -7625,15 +7747,15 @@ mod tests {
             ..Default::default()
         };
         ui.show(Page::Graphics);
-        ui.graphics.open(crate::graphics_ui::Page::Shaders);
-        let packs = Target::Item(Item::Horizon(H::ShaderPacks));
+        ui.graphics.show(crate::graphics_ui::Page::Shaders);
+        let packs = Item::Horizon(H::ShaderPacks);
         assert!(
             (0..40).any(|_| {
                 ui.key(&mut s, &atlas, KeyCode::Tab, None);
-                ui.graphics.focus == Some(packs)
+                ui.graphics.focused_row() == Some(packs)
             }),
             "{:?}",
-            ui.graphics.focus
+            ui.graphics.focused()
         );
         let events = ui.key(&mut s, &atlas, KeyCode::Enter, None);
         assert_eq!(ui.page(), Page::ShaderPacks);
@@ -7642,7 +7764,10 @@ mod tests {
         assert!(events.contains(&Event::OpenShaderOptions), "{events:?}");
         ui.back(&mut s);
         assert_eq!(ui.page(), Page::Graphics);
-        assert_eq!(ui.graphics.page(), crate::graphics_ui::Page::Shaders);
+        assert_eq!(
+            ui.graphics.open_page(),
+            Some(crate::graphics_ui::Page::Shaders)
+        );
     }
 
     #[test]
@@ -7865,14 +7990,20 @@ mod tests {
 
     #[test]
     fn the_graphics_screens_wheel_scrolls_even_over_a_slider_being_changed() {
-        use crate::graphics_ui::{H, Item, Target};
+        use crate::graphics_ui::{H, Item};
+        use winit::keyboard::KeyCode as K;
         let mut s = Settings::default();
         let mut ui = OptionsUi::default();
         ui.show(Page::Graphics);
+        ui.graphics.show(crate::graphics_ui::Page::Performance);
         let size = (640.0, 360.0);
         s.horizon.chunk_updates = 16;
-        ui.graphics.focus = Some(Target::Item(Item::Horizon(H::ChunkUpdates)));
-        ui.graphics.can_change_value = true;
+        let chunk_updates = Item::Horizon(H::ChunkUpdates);
+        // Tab onto it: the arrows change it.
+        while ui.graphics.focused_row() != Some(chunk_updates) {
+            shell::Hosted::key(&mut ui.graphics, &mut s, K::Tab, None, false, size);
+        }
+        assert!(ui.graphics.changes_value());
         let before = ui.graphics.scroll_amount();
         ui.wheel(&mut s, size, (320.0, 150.0), [1920, 1080], -1.0);
         assert_eq!(s.horizon.chunk_updates, 16);
@@ -7902,29 +8033,21 @@ mod tests {
         // 2. Horizon Graphics page through OptionsUi:
         // Tab onto ChunkUpdates slider, ArrowRight adjusts value, Space toggles can_change_value
         ui.show(Page::Graphics);
-        ui.graphics.open(crate::graphics_ui::Page::Performance);
+        ui.graphics.show(crate::graphics_ui::Page::Performance);
         s.horizon.chunk_updates = 10;
+        let chunk_updates = crate::graphics_ui::Item::Horizon(crate::graphics_ui::H::ChunkUpdates);
         ui.size = size;
         ui.framebuffer = [854, 480];
 
         // Tab into controls
         for _ in 0..80 {
             ui.key(&mut s, &atlas, K::Tab, None);
-            if ui.graphics.focus
-                == Some(crate::graphics_ui::Target::Item(
-                    crate::graphics_ui::Item::Horizon(crate::graphics_ui::H::ChunkUpdates),
-                ))
-            {
+            if ui.graphics.focused_row() == Some(chunk_updates) {
                 break;
             }
         }
-        assert_eq!(
-            ui.graphics.focus,
-            Some(crate::graphics_ui::Target::Item(
-                crate::graphics_ui::Item::Horizon(crate::graphics_ui::H::ChunkUpdates)
-            ))
-        );
-        assert!(ui.graphics.can_change_value);
+        assert_eq!(ui.graphics.focused_row(), Some(chunk_updates));
+        assert!(ui.graphics.changes_value());
 
         // Right arrow steps ChunkUpdates to 11
         let events = ui.key(&mut s, &atlas, K::ArrowRight, None);
@@ -7933,7 +8056,7 @@ mod tests {
 
         // Space toggles can_change_value to false
         ui.key(&mut s, &atlas, K::Space, None);
-        assert!(!ui.graphics.can_change_value);
+        assert!(!ui.graphics.changes_value());
 
         // ArrowRight does not change ChunkUpdates when can_change_value is false
         ui.key(&mut s, &atlas, K::ArrowRight, None);

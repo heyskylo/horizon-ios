@@ -519,11 +519,7 @@ impl Game<'_> {
             }
             self.boats[i].tick_bubble_wobble();
             if !driven {
-                Self::tick_boat_paddles(
-                    &mut self.boats[i],
-                    &mut self.audio,
-                    &mut self.world.random,
-                );
+                Self::tick_boat_paddles(&mut self.boats[i], &mut self.audio);
             }
         }
     }
@@ -554,41 +550,33 @@ impl Game<'_> {
         self.mobs.iter().find(|m| m.id == id && self.drives(m))
     }
 
-    /// `LocalPlayer.aiStep` and `LivingEntity.travelRidden` on the
-    /// controlling client: a released jump goes to the server
-    /// (`sendRidingJump`), and the mount takes the rider's input and moves
-    /// here (`tickRidden`, then `travel`).
+    /// `LivingEntity.travelRidden`, then `LocalPlayer.aiStep`, on the
+    /// controlling client. The vehicle ticks before its passenger
+    /// (`ClientLevel.tickNonPassenger`), so the mount moves (`tickRidden`,
+    /// then `travel`) on what the rider's previous tick left: `xxa`/`zza` from
+    /// `applyInput` (the keys through `modifyInput`: ×0.98, square movement),
+    /// the sprint and the jump `onPlayerJump` set. Only then does this tick's
+    /// aiStep read the keys, send a released jump (`sendRidingJump`) and run
+    /// `onPlayerJump`, for the mount's next tick. Moving on this tick's keys
+    /// put every ridden move a tick ahead of the server's view of the input.
     fn drive_mount(&mut self, i: usize, keys: Keys, jump: f32) {
-        if jump > 0.0
-            && let Some(id) = self.remote.as_ref().map(|r| r.entity_id)
-        {
-            self.send(riding_jump(id, self.mount.jump_scale));
-        }
-        let strafe = f32::from(u8::from(keys.left)) - f32::from(u8::from(keys.right));
-        let forward = f32::from(u8::from(keys.forward)) - f32::from(u8::from(keys.backward));
         let steer = self.steers_mount(&self.mobs[i]);
+        let (yaw, pitch) = (self.yaw, self.pitch);
+        // The first ridden tick reads what the player's last walking tick applied.
+        let walked = self.player.as_ref().map_or([0.0; 2], |p| p.applied_input);
         let m = &mut self.mobs[i];
-        if jump > 0.0 && equine::is_equine(m.species()) {
-            // LocalPlayer.aiStep also runs `onPlayerJump` here: the mount slides
-            // on the rider's keys and rears while the server does the same.
-            equine::on_player_jump(m);
-        }
-        // playerJumpPendingScale waits for the ground.
-        let pending = m.rider.map_or(0.0, |r| r.jump);
-        // The rider's sprint state, not the key: Camel.getRiddenSpeed reads
-        // `controller.isSprinting()`, which keeps the double-tapped sprint
-        // after the key is let go (`shouldStopRunSprinting` decides the end).
-        let sprinting = self.player.as_ref().is_some_and(|p| p.sprinting);
+        let last = m.rider.unwrap_or(equine::Rider {
+            strafe: walked[0],
+            forward: walked[1],
+            ..Default::default()
+        });
+        // tickRidden reads the controller's look as it is now.
         m.rider = Some(equine::Rider {
-            strafe,
-            forward,
-            yaw: self.yaw,
-            pitch: self.pitch,
-            jump: if jump > 0.0 { jump } else { pending },
+            yaw,
+            pitch,
             steer,
-            sprint: sprinting,
-            jumping: keys.jump,
             client: false,
+            ..last
         });
         let mut mob = self.mobs.remove(i);
         let mut random = self.world.random.clone();
@@ -601,6 +589,36 @@ impl Game<'_> {
         mob.removed = false;
         self.world.random = random;
         self.mobs.insert(i, mob);
+        // LocalPlayer.aiStep, after the vehicle's tick.
+        if jump > 0.0
+            && let Some(id) = self.remote.as_ref().map(|r| r.entity_id)
+        {
+            self.send(riding_jump(id, self.mount.jump_scale));
+        }
+        let [strafe, forward] = horizon_client::input::modify_input(keys.direction(), None, None);
+        // The rider's sprint state, not the key: Camel.getRiddenSpeed reads
+        // `controller.isSprinting()`, which keeps the double-tapped sprint
+        // after the key is let go (`shouldStopRunSprinting` decides the end).
+        let sprinting = self.player.as_ref().is_some_and(|p| p.sprinting);
+        let m = &mut self.mobs[i];
+        if jump > 0.0 && equine::is_equine(m.species()) {
+            // `onPlayerJump`: the mount slides on the rider's keys and rears
+            // while the server does the same.
+            equine::on_player_jump(m);
+        }
+        // playerJumpPendingScale waits for the ground (the tick spends it).
+        let pending = m.rider.map_or(0.0, |r| r.jump);
+        m.rider = Some(equine::Rider {
+            strafe,
+            forward,
+            yaw,
+            pitch,
+            jump: if jump > 0.0 { jump } else { pending },
+            steer,
+            sprint: sprinting,
+            jumping: keys.jump,
+            client: false,
+        });
         // #4821: footstep, gallop, breathe, splash and landing sounds from mob.tick
         let _ = self.handle_mob_events(events);
     }
@@ -854,6 +872,74 @@ mod tests {
         assert!(!client_moves(&m, false, false), "behind another rider");
         m.extra.age = -1;
         assert!(!client_moves(&m, true, false), "baby ghast");
+    }
+
+    /// The mount ticks before its rider (`ClientLevel.tickNonPassenger`): it
+    /// moves on the input the rider's previous tick applied (`zza`, the key
+    /// ×0.98 through `LocalPlayer.modifyInput`), so a press reaches it a tick
+    /// late and a release a tick late too, as the server's anticheats expect.
+    #[test]
+    #[ignore = "requires prepared resources (HORIZON_TEST_RESOURCES)"]
+    fn a_driven_horse_moves_on_the_riders_last_tick_input() {
+        use super::super::{
+            Audio, Options, Progress, Settings, execution_role::ExecutionRole, load_resources,
+        };
+        use horizon_client::{items::ItemStack, motion::PlayerMotion};
+        use horizon_protocol::connection::Pipe;
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!("no menu handoff"),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = ExecutionRole::Client;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let (client, _server) = Pipe::pair();
+        game.connect_local(client, "RiderTest").unwrap();
+        game.remote.as_mut().unwrap().joined = true;
+        game.remote.as_mut().unwrap().first_passenger = true;
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 300.0, 0.5)).unwrap());
+        let types = MobTypes::load(&root).unwrap();
+        let t = std::sync::Arc::new(types.types["minecraft:horse"].clone());
+        let mut horse = Mob::new(7, t, Vec3::new(0.5, 300.0, 0.5), 0.0);
+        horse.set_saddle(Some(ItemStack::new("minecraft:saddle", 1)));
+        game.mobs.push(horse);
+        game.riding = Some(7);
+        let forward = Keys {
+            forward: true,
+            ..Keys::default()
+        };
+        let zza = |game: &mut Game, keys| {
+            assert!(game.remote_ride(keys, 0).unwrap());
+            game.mobs[0].ai.zza
+        };
+        assert_eq!(zza(&mut game, forward), 0.0, "the press waits a tick");
+        assert_eq!(zza(&mut game, forward), 0.98, "modifyInput's 0.98");
+        assert_eq!(
+            zza(&mut game, Keys::default()),
+            0.98,
+            "the release waits a tick"
+        );
+        assert_eq!(zza(&mut game, Keys::default()), 0.0);
     }
 
     /// #2920: the client reports where it moved the mount, and a released

@@ -100,12 +100,18 @@ pub struct HudAtlas {
     /// A resource pack's own `core/rendertype_lines` shader for the block outline, translated;
     /// none draws the outline natively.
     pub lines_shader: Option<std::sync::Arc<horizon_shaders::CoreProgram>>,
+    /// The packs' `core/sky` and `core/stars`, when a pack replaces them.
+    pub sky_shader: Option<std::sync::Arc<horizon_shaders::CoreProgram>>,
+    pub stars_shader: Option<std::sync::Arc<horizon_shaders::CoreProgram>>,
     /// The packs' OptiFine random entity textures, whose variants this atlas packs.
     pub random_textures: horizon_optifine::random_textures::RandomTextures,
     /// Their emissive overlays (`_e`), packed here too.
     pub emissive: std::sync::Arc<horizon_optifine::emissive::Emissive>,
     /// ETF's blinking frames (`_blink`), packed here too.
     pub blinks: horizon_optifine::blink::Blinks,
+    /// Of the shared atlas's textures, their LabPBR normal and specular maps as paged maps
+    /// (`paged_maps.rs`), read while loading for shader packs (`sprites::labpbr_maps`).
+    pub material_maps: std::sync::Arc<[Option<crate::paged_maps::PagedMap>; 2]>,
     white: Rect,
 }
 /// Atlas rows reserved for glyphs rasterized at run time.
@@ -888,22 +894,28 @@ impl HudAtlas {
             &[],
             &crate::gfx::core_lines::GLUE,
         );
+        let sky =
+            |name| pack_text::load_core(root, defaults, name, &[], &crate::gfx::core_sky::GLUE);
+        atlas.sky_shader = sky("sky");
+        atlas.stars_shader = sky("stars");
         Ok(atlas)
     }
     /// Empty slots written at run time: map textures (game/maps.rs), the
     /// minimap, a native mod's own image, downloaded skins, world and pack
-    /// icons and the on-screen keyboard's text.
+    /// icons and the on-screen keyboard's text. Their pixels are already zero
+    /// in the destination atlas, so keep the source buffers empty and avoid
+    /// duplicating the atlas-sized allocation during packing.
     fn slots(images: &mut Vec<PackedImage>, trim: (u32, u32), mod_image: bool) {
         for i in 0..MAP_SLOTS {
             let name = map_slot_sprite(i).unwrap_or_default();
-            images.push((name.into(), 128, 128, vec![0; 128 * 128 * 4]));
+            images.push((name.into(), 128, 128, Vec::new()));
         }
         // The minimap extra's image (game/extras.rs).
         images.push((
             MINIMAP_SPRITE.into(),
             crate::minimap::SIZE as u32,
             crate::minimap::SIZE as u32,
-            vec![0; crate::minimap::SIZE * crate::minimap::SIZE * 4],
+            Vec::new(),
         ));
         // A mod's own image (native `mod_image`), only when a mod is loaded.
         if mod_image {
@@ -911,45 +923,29 @@ impl HudAtlas {
                 MOD_IMAGE_SPRITE.into(),
                 MOD_IMAGE_SIZE,
                 MOD_IMAGE_SIZE,
-                vec![0; (MOD_IMAGE_SIZE * MOD_IMAGE_SIZE * 4) as usize],
+                Vec::new(),
             ));
         }
         // Downloaded skins (game/scoreboard.rs).
         for i in 0..SKIN_SLOTS {
-            images.push((format!("horizon/skin{i}"), 64, 64, vec![0; 64 * 64 * 4]));
+            images.push((format!("horizon/skin{i}"), 64, 64, Vec::new()));
         }
         for i in 0..TRIM_SLOTS {
-            images.push((
-                format!("horizon/trim{i}"),
-                trim.0,
-                trim.1,
-                vec![0; (trim.0 * trim.1 * 4) as usize],
-            ));
+            images.push((format!("horizon/trim{i}"), trim.0, trim.1, Vec::new()));
         }
         for i in 0..WORLD_ICON_SLOTS {
-            images.push((
-                format!("horizon/world-icon{i}"),
-                64,
-                64,
-                vec![0; 64 * 64 * 4],
-            ));
+            images.push((format!("horizon/world-icon{i}"), 64, 64, Vec::new()));
         }
-        let side = PACK_ICON_SIZE as usize;
         for i in 0..PACK_ICON_SLOTS {
             images.push((
                 format!("horizon/pack-icon{i}"),
                 PACK_ICON_SIZE,
                 PACK_ICON_SIZE,
-                vec![0; side * side * 4],
+                Vec::new(),
             ));
         }
         // The on-screen keyboard's text and corner masks (ui_theme), rasterized at run time.
-        images.push((
-            "horizon/ui-text".into(),
-            2048,
-            1024,
-            vec![0; 2048 * 1024 * 4],
-        ));
+        images.push(("horizon/ui-text".into(), 2048, 1024, Vec::new()));
     }
     /// Only the font's metrics, for a game that draws nothing (the
     /// integrated or dedicated server): text measures as with the full atlas,
@@ -967,6 +963,7 @@ impl HudAtlas {
             revision: Self::next_revision(),
             pixels: Vec::new(),
             packed: None,
+            material_maps: Default::default(),
             galactic_widths: [0; 128],
             width: 1,
             height: 1,
@@ -981,6 +978,8 @@ impl HudAtlas {
             glint_armor: (Vec::new(), 1, 1),
             text_shader: None,
             lines_shader: None,
+            sky_shader: None,
+            stars_shader: None,
             random_textures: Default::default(),
             emissive: Arc::default(),
             blinks: Default::default(),
@@ -1029,6 +1028,7 @@ impl HudAtlas {
                 (glyph_top, height - glyph_top),
                 white,
             ),
+            material_maps: Default::default(),
             galactic_widths: galactic_widths(&sprites, &pixels, width, height),
             pixels,
             packed: None,
@@ -1045,6 +1045,8 @@ impl HudAtlas {
             white,
             text_shader: None,
             lines_shader: None,
+            sky_shader: None,
+            stars_shader: None,
             random_textures: Default::default(),
             emissive: Default::default(),
             blinks: Default::default(),
@@ -1192,9 +1194,21 @@ impl HudAtlas {
                 }
             }
         }
+        // The title panorama and the New World preset pictures load on their own. The
+        // Realms world-slot pictures are drawn from this atlas (vanilla draws their
+        // textures full size): the three faces and `presets/isles.png` stay, costing
+        // one 1024-tall shelf.
         files.retain(|p| {
-            let s = p.to_string_lossy();
-            !s.contains("title/background") && !s.contains("presets")
+            let s = p.to_string_lossy().replace('\\', "/");
+            let slot_picture = [
+                "textures/gui/title/background/panorama_0.png",
+                "textures/gui/title/background/panorama_2.png",
+                "textures/gui/title/background/panorama_3.png",
+                "textures/gui/presets/isles.png",
+            ]
+            .iter()
+            .any(|kept| s.ends_with(kept));
+            slot_picture || (!s.contains("title/background") && !s.contains("presets"))
         });
         // OptiFine random entity variants, under the names their scan gives them (those
         // outside `textures/` are `<ns>:optifine/random/...`).
@@ -1269,61 +1283,95 @@ impl HudAtlas {
             extra.sort();
             files.extend(extra);
         }
-        type Decoded = (PackedImage, Option<TextureFlags>, Option<(u32, u32)>, bool);
-        let decode_one = |path: &PathBuf| -> Option<Decoded> {
-            let name = if let Some(name) = named.get(path) {
-                name.clone()
-            } else {
-                match path.strip_prefix(&textures) {
-                    Ok(rel) => rel.with_extension("").to_string_lossy().replace('\\', "/"),
-                    Err(_) => {
-                        let rel = path.strip_prefix(&assets).ok()?.with_extension("");
-                        let rel = rel.to_string_lossy().replace('\\', "/");
-                        let (namespace, rest) = rel.split_once("/textures/")?;
-                        format!("{namespace}:{rest}")
+        // A texture's LabPBR maps, as decoded (width, height, RGBA8), for shader packs.
+        type Maps = [Option<(u32, u32, Vec<u8>)>; 2];
+        let read_maps = full && crate::sprites::labpbr_maps();
+        type Decoded = (
+            PackedImage,
+            Option<TextureFlags>,
+            Option<(u32, u32)>,
+            bool,
+            Option<Box<Maps>>,
+        );
+        let decode_one =
+            |path: &PathBuf| -> Option<Decoded> {
+                let name = if let Some(name) = named.get(path) {
+                    name.clone()
+                } else {
+                    match path.strip_prefix(&textures) {
+                        Ok(rel) => rel.with_extension("").to_string_lossy().replace('\\', "/"),
+                        Err(_) => {
+                            let rel = path.strip_prefix(&assets).ok()?.with_extension("");
+                            let rel = rel.to_string_lossy().replace('\\', "/");
+                            let (namespace, rest) = rel.split_once("/textures/")?;
+                            format!("{namespace}:{rest}")
+                        }
                     }
+                };
+                // LabPBR's maps beside a texture are the world's (sprites.rs), not images to draw.
+                if let Some(base) = name.strip_suffix("_n").or_else(|| name.strip_suffix("_s"))
+                    && textures.join(format!("{base}.png")).is_file()
+                {
+                    return None;
                 }
+                let image = decode(path)
+                    .map_err(|e| log::warn!("skipped GUI texture {}: {e}", path.display()))
+                    .ok()?;
+                let mcmeta = horizon_core::prepared_files::read_to_string(
+                    &path.with_extension("png.mcmeta"),
+                )
+                .ok();
+                let animation = animation_of(mcmeta.as_deref());
+                // An animated strip keeps its first frame.
+                let frames =
+                    animation.is_some() || name.starts_with("block/") || name.starts_with("item/");
+                let (w, h, pixels) = if frames {
+                    first_frame(image, animation.as_ref())
+                } else {
+                    image
+                };
+                // The default texture's size, when a pack's differs from it.
+                let gui_size = default_textures
+                    .as_ref()
+                    .and_then(|d| png_size(&d.join(format!("{name}.png"))))
+                    .map(|(dw, dh)| {
+                        let side = dw.min(dh);
+                        if frames { (side, side) } else { (dw, dh) }
+                    })
+                    .filter(|&size| size != (w, h));
+                let flags = mcmeta.as_deref().and_then(TextureFlags::from_mcmeta);
+                let animated = frames && animation.is_some();
+                // The cap below keeps GUI textures small; a particle sprite isn't capped, as
+                // vanilla's particle atlas stitches any size (packs draw light shafts and fog
+                // banks from 1024-wide textures).
+                let particle = name.starts_with("particle/") || name.contains(":particle/");
+                let (gw, gh) = if particle {
+                    (0, 0)
+                } else {
+                    gui_size.unwrap_or((w, h))
+                };
+                let maps = read_maps
+                    .then(|| {
+                        let stem = path.file_stem()?.to_str()?;
+                        let maps: Maps = ["_n", "_s"].map(|suffix| {
+                            decode(&path.with_file_name(format!("{stem}{suffix}.png"))).ok()
+                        });
+                        maps.iter().any(Option::is_some).then(|| Box::new(maps))
+                    })
+                    .flatten();
+                // The Realms world-slot pictures are 1024-tall GUI textures drawn as
+                // they are; the cap that keeps other GUI textures small does not
+                // apply to them.
+                let tall_picture = matches!(
+                    name.as_str(),
+                    "gui/title/background/panorama_0"
+                        | "gui/title/background/panorama_2"
+                        | "gui/title/background/panorama_3"
+                        | "gui/presets/isles"
+                );
+                (gw <= 1024 && (gh <= 512 || tall_picture || name.starts_with("font/")))
+                    .then_some(((name, w, h, pixels), flags, gui_size, animated, maps))
             };
-            // LabPBR's maps beside a texture are the world's (sprites.rs), not images to draw.
-            if let Some(base) = name.strip_suffix("_n").or_else(|| name.strip_suffix("_s"))
-                && textures.join(format!("{base}.png")).is_file()
-            {
-                return None;
-            }
-            let image = decode(path)
-                .map_err(|e| log::warn!("skipped GUI texture {}: {e}", path.display()))
-                .ok()?;
-            let mcmeta =
-                horizon_core::prepared_files::read_to_string(&path.with_extension("png.mcmeta"))
-                    .ok();
-            let animation = animation_of(mcmeta.as_deref());
-            // An animated strip keeps its first frame.
-            let frames =
-                animation.is_some() || name.starts_with("block/") || name.starts_with("item/");
-            let (w, h, pixels) = if frames {
-                first_frame(image, animation.as_ref())
-            } else {
-                image
-            };
-            // The default texture's size, when a pack's differs from it.
-            let gui_size = default_textures
-                .as_ref()
-                .and_then(|d| png_size(&d.join(format!("{name}.png"))))
-                .map(|(dw, dh)| {
-                    let side = dw.min(dh);
-                    if frames { (side, side) } else { (dw, dh) }
-                })
-                .filter(|&size| size != (w, h));
-            let flags = mcmeta.as_deref().and_then(TextureFlags::from_mcmeta);
-            let animated = frames && animation.is_some();
-            let (gw, gh) = gui_size.unwrap_or((w, h));
-            (gw <= 1024 && (gh <= 512 || name.starts_with("font/"))).then_some((
-                (name, w, h, pixels),
-                flags,
-                gui_size,
-                animated,
-            ))
-        };
         let threads = std::thread::available_parallelism().map_or(2, |n| n.get());
         let chunk = files.len().div_ceil(threads).max(1);
         let decoded: Vec<_> = std::thread::scope(|scope| {
@@ -1342,7 +1390,11 @@ impl HudAtlas {
         let mut gui_sizes = HashMap::new();
         let mut animated: Vec<String> = Vec::new();
         let mut images: Vec<PackedImage> = Vec::with_capacity(decoded.len());
-        for (image, image_flags, gui_size, is_animated) in decoded {
+        let mut maps: HashMap<String, Box<Maps>> = HashMap::new();
+        for (image, image_flags, gui_size, is_animated, image_maps) in decoded {
+            if let Some(m) = image_maps {
+                maps.insert(image.0.clone(), m);
+            }
             if let Some(f) = image_flags {
                 flags.insert(image.0.clone(), f);
             }
@@ -1462,10 +1514,12 @@ impl HudAtlas {
             {
                 translucent.insert(name.clone());
             }
-            for row in 0..*h {
-                let src = &data[(row * w * 4) as usize..((row + 1) * w * 4) as usize];
-                let dst = (((py + row) * width + px) * 4) as usize;
-                pixels[dst..dst + (w * 4) as usize].copy_from_slice(src);
+            if !data.is_empty() {
+                for row in 0..*h {
+                    let src = &data[(row * w * 4) as usize..((row + 1) * w * 4) as usize];
+                    let dst = (((py + row) * width + px) * 4) as usize;
+                    pixels[dst..dst + (w * 4) as usize].copy_from_slice(src);
+                }
             }
             let b = u32::from(bordered.contains(name));
             let (px, py, w, h) = (px + b, py + b, w - 2 * b, h - 2 * b);
@@ -1517,6 +1571,28 @@ impl HudAtlas {
             }
             sprite_animations.push((rect, animation));
         }
+        // Each mapped texture's maps at its size in the atlas, paged.
+        let material_maps = if maps.is_empty() {
+            Default::default()
+        } else {
+            let mapped: Vec<crate::paged_maps::SpriteMaps> = maps
+                .iter()
+                .filter_map(|(name, m)| {
+                    let rect = sprites.get(name)?;
+                    let (tw, th) = rect.texels((width, height));
+                    let x = (rect.u0 * width as f32).round() as u32;
+                    let y = (rect.v0 * height as f32).round() as u32;
+                    Some(crate::paged_maps::SpriteMaps {
+                        rect: [x, y, tw, th],
+                        maps: m.each_ref().map(|map| {
+                            let (mw, mh, pixels) = map.as_ref()?;
+                            crate::paged_maps::fit(pixels, (*mw, *mh), (tw, th))
+                        }),
+                    })
+                })
+                .collect();
+            crate::paged_maps::build((width, height), &mapped, MAX_ATLAS_SIZE)
+        };
         let white = sprites["horizon/white"];
         let glint = Self::glint_texture(root, defaults, "enchanted_glint_item");
         let glint_armor = Self::glint_texture(root, defaults, "enchanted_glint_armor");
@@ -1531,6 +1607,7 @@ impl HudAtlas {
         );
         Ok(Self {
             revision: Self::next_revision(),
+            material_maps: std::sync::Arc::new(material_maps),
             galactic_widths: galactic_widths(&sprites, &pixels, width, height),
             pixels,
             packed: None,
@@ -1546,6 +1623,8 @@ impl HudAtlas {
             glint_armor,
             text_shader: None,
             lines_shader: None,
+            sky_shader: None,
+            stars_shader: None,
             random_textures,
             emissive,
             blinks,
@@ -2910,7 +2989,8 @@ impl HudRenderer {
         if vertices.is_empty() || size.contains(&0) {
             return;
         }
-        let mut attachments = vec![Some(wgpu::RenderPassColorAttachment {
+        let mut attachments = [None, None];
+        attachments[0] = Some(wgpu::RenderPassColorAttachment {
             view: target,
             resolve_target: None,
             depth_slice: None,
@@ -2918,9 +2998,13 @@ impl HudRenderer {
                 load: wgpu::LoadOp::Load,
                 store: wgpu::StoreOp::Store,
             },
-        })];
+        });
+        let attachment_count;
         if let Some(view) = coverage {
-            attachments.push(Some(hud_coverage::attachment(view)));
+            attachments[1] = Some(hud_coverage::attachment(view));
+            attachment_count = 2;
+        } else {
+            attachment_count = 1;
         }
         let runs = batch.runs_in(vertices);
         let mut at = 0;
@@ -2940,7 +3024,7 @@ impl HudRenderer {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("HUD"),
                 timestamp_writes: timing.as_deref_mut().and_then(|t| t.writes("HUD")),
-                color_attachments: &attachments,
+                color_attachments: &attachments[..attachment_count],
                 depth_stencil_attachment: clip.map(|_| wgpu::RenderPassDepthStencilAttachment {
                     view: depth,
                     depth_ops: Some(wgpu::Operations {
@@ -3342,6 +3426,32 @@ mod tests {
         assert_eq!(texel_at(&atlas, rect, 0, 0), [0, 0, 200, 255]);
         // Only entity textures: the mods' others reach the atlas through atlas definitions.
         assert!(!atlas.sprites.contains_key("gems:item/ruby"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+    /// A pack's particle sprite of any size packs whole, as vanilla's particle atlas stitches
+    /// it (a light shaft drawn from a 1024-wide texture); the cap on GUI textures stays.
+    #[test]
+    fn large_particle_sprites_pack_and_large_gui_textures_dont() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-atlas-big-particle-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let rays = root.join("assets/mypack/textures/particle/light_rays");
+        fs::create_dir_all(&rays).unwrap();
+        write_strip(
+            &rays.join("02.png"),
+            1024,
+            1024,
+            &[[250, 240, 200, 255]],
+            None,
+        );
+        let gui = root.join("assets/minecraft/textures/gui");
+        fs::create_dir_all(&gui).unwrap();
+        write_strip(&gui.join("huge.png"), 2048, 64, &[[1, 2, 3, 255]], None);
+        let atlas = HudAtlas::build(&root).unwrap();
+        let rect = atlas.sprites["mypack:particle/light_rays/02"];
+        assert_eq!(rect.texels((atlas.width, atlas.height)), (1024, 1024));
+        assert_eq!(texel_at(&atlas, rect, 512, 512), [250, 240, 200, 255]);
+        assert!(!atlas.sprites.contains_key("gui/huge"));
         fs::remove_dir_all(&root).unwrap();
     }
     /// OptiFine random entity variants outside `textures/` pack under the names
