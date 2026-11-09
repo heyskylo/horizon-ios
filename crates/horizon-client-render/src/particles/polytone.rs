@@ -37,6 +37,8 @@ pub struct Registry {
     blocks: &'static BlockRegistry,
     /// Each custom particle type's colormap (`colormap`), by type id.
     tints: HashMap<String, Arc<Tint>>,
+    /// Each model particle type's faces (`model`), by type id.
+    models: HashMap<String, Arc<super::polytone_model::ParticleModel>>,
     /// Sound ids as the engine's sound queue holds them, interned once.
     sound_names: Mutex<HashMap<String, &'static str>>,
     /// Sounds the custom particles played this tick (`ParticleEngine::tick` plays them).
@@ -238,6 +240,12 @@ impl Registry {
                     .clone()
             })
             .collect();
+        let models = super::polytone_model::read_models(
+            pack_root,
+            types
+                .iter()
+                .filter_map(|(id, def)| Some((id, def.render.get("model")?))),
+        );
         let tints = types
             .iter()
             .filter_map(|(id, def)| {
@@ -261,6 +269,7 @@ impl Registry {
             configs,
             blocks,
             tints,
+            models,
             sound_names: Mutex::default(),
             sounds: Mutex::default(),
             particle_modifiers,
@@ -1178,10 +1187,11 @@ pub(super) fn make(
     particle.gravity = 0.0;
     particle.has_physics = def.has_physics;
     let mut frames = 0;
-    // A model particle (`model`) isn't drawn yet: it still ticks and emits. A GPU particle is
-    // drawn from its record instead (`polytone_gpu`).
+    // A model particle draws its model's faces; one whose model is missing still ticks and
+    // emits. A GPU particle is drawn from its record instead (`polytone_gpu`).
+    let model = registry.models.get(name).cloned();
     let hidden = def.render_type == RenderType::Invisible
-        || def.render.contains_key("model")
+        || (def.render.contains_key("model") && model.is_none())
         || def.gpu.is_some();
     match engine.mod_sets.get(name) {
         Some(&(set, _)) => {
@@ -1196,9 +1206,15 @@ pub(super) fn make(
             particle.sprite = Sprite::Index(*sprites.get(pick).or(sprites.first())?);
         }
         None if hidden => {}
+        None if model.is_some() => {}
         None => return None,
     }
     particle.no_render = hidden;
+    if let Some(model) = model {
+        // The sprite lookup that admits a particle to drawing: its first face's.
+        particle.sprite = Sprite::Named(model.quads[0].sprite.clone());
+        particle.model = Some(model);
+    }
     particle.orientation = super::polytone_gpu::Orientation::parse(&def.rotation_mode);
     particle.additive = def.render_type == RenderType::AdditiveTranslucent;
     // `light_level`: the block light the particle gives itself (wiki "Custom Particle Types"),
