@@ -38,6 +38,9 @@ use horizon_protocol::{
 use horizon_world::entity_move::EntityMoveWorld;
 use winit::keyboard::KeyCode;
 
+mod horizon_channels;
+use horizon_channels::horizon_channel;
+
 #[cfg(test)]
 mod crack_feedback_tests;
 
@@ -6956,21 +6959,24 @@ mod guest_close_listener_tests {
     }
 }
 
-/// Whether a guest's plugin channel message is for one of Horizon's own handlers in
-/// `lan_guest_packet` (its `CustomPayload` arms), not for the mods.
-fn horizon_channel(channel: &str) -> bool {
-    [
-        horizon_protocol::quiet::CHANNEL,
-        horizon_protocol::mod_net::CHANNEL,
-        horizon_client::lod_net::CHANNEL,
-        horizon_client::lan::recipes::TRANSFER_CHANNEL,
-    ]
-    .contains(&channel)
-}
-
 #[cfg(test)]
-#[path = "horizon_channel_tests.rs"]
-mod horizon_channel_tests;
+mod horizon_channel_tests {
+    use super::horizon_channel;
+
+    #[test]
+    fn horizon_channels_reach_their_handlers_and_others_go_to_the_mods() {
+        // The recipe viewer's transfer (`native_transfer_recipe`) was handed to the mods
+        // before its own arm could run, so a viewer's "+" never reached the server.
+        assert!(horizon_channel(
+            horizon_client::lan::recipes::TRANSFER_CHANNEL
+        ));
+        assert!(horizon_channel(horizon_protocol::quiet::CHANNEL));
+        assert!(horizon_channel(horizon_protocol::mod_net::CHANNEL));
+        assert!(horizon_channel(horizon_client::lod_net::CHANNEL));
+        assert!(!horizon_channel("mymod:hello"));
+        assert!(!horizon_channel("minecraft:brand"));
+    }
+}
 
 #[cfg(test)]
 #[path = "boat_holder_movement_tests.rs"]
