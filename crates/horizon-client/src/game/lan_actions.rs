@@ -7,7 +7,7 @@
 //! block log, the level events and the entity tracker.
 use super::{
     Dim, Game, GuestUse, Hit, InteractTarget, Mining, Screen,
-    building_players::{BuildingPlayer, BuildingPlayers},
+    building_players::{BuildingPlayer, BuildingPlayers, HubBodies, shared},
     lan::LanHost,
     lan_crafting::MenuRemoval,
     respawn_anchor::RespawnConfig,
@@ -341,19 +341,66 @@ fn guest_open_windows(host: &LanHost, conn: u32) -> Vec<i32> {
     windows
 }
 
+fn building_player(g: &horizon_client::lan::guest::Guest) -> BuildingPlayer {
+    BuildingPlayer {
+        conn: Some(g.conn),
+        dimension: Dim::from_id(&g.dimension),
+        bounds: (g.placed && g.loaded && !g.dead && !g.spectator()).then(|| g.bounds()),
+        borrowed: false,
+    }
+}
+
+thread_local! {
+    /// The hub's bodies for the turns of one `tick_guests`, built once instead
+    /// of for every turn (players x turns a tick). A guest's entry is refreshed
+    /// when its turn ends ([`refresh_building_player`]), so the turns after it
+    /// see it where it went (a pearl, a death, spectator mode).
+    static BUILDING_CACHE: std::cell::RefCell<Option<HubBodies>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// The hub's current bodies, across dimensions. A borrowed ancestor's
 /// live body takes precedence over this saved state until its turn returns.
-fn building_players(host: &LanHost) -> Vec<BuildingPlayer> {
-    host.hub
-        .guests
-        .iter()
-        .map(|g| BuildingPlayer {
-            conn: Some(g.conn),
-            dimension: Dim::from_id(&g.dimension),
-            bounds: (g.placed && g.loaded && !g.dead && !g.spectator()).then(|| g.bounds()),
-            borrowed: false,
-        })
-        .collect()
+fn building_players(host: &LanHost) -> HubBodies {
+    let guests = &host.hub.guests;
+    let kept = BUILDING_CACHE.with(|c| {
+        c.borrow()
+            .as_ref()
+            .filter(|list| {
+                list.len() == guests.len()
+                    && list
+                        .iter()
+                        .zip(guests)
+                        .all(|(p, g)| p.get().conn == Some(g.conn))
+            })
+            .cloned()
+    });
+    kept.unwrap_or_else(|| shared(guests.iter().map(building_player)))
+}
+
+/// Builds the hub's bodies once for the turns to come (`Some`), or drops them.
+pub(super) fn building_cache(host: Option<&LanHost>) {
+    let bodies = host.map(|host| shared(host.hub.guests.iter().map(building_player)));
+    BUILDING_CACHE.with(|c| *c.borrow_mut() = bodies);
+}
+
+/// The cached bodies as they are now in the hub, after `conn`'s turn (or its
+/// death step). Every entry, not only the actor's: a turn can move, kill or
+/// change another guest too (`/tp`, an attack, an explosion), and the turns
+/// after it must see that guest where it is now, as a list built afresh would.
+/// Copies into the shared cells, no allocation.
+fn refresh_building_player(host: &LanHost, _conn: u32) {
+    BUILDING_CACHE.with(|c| {
+        if let Some(list) = c.borrow().as_ref()
+            && list.len() == host.hub.guests.len()
+        {
+            for (p, g) in list.iter().zip(&host.hub.guests) {
+                if p.get().conn == Some(g.conn) {
+                    p.set(building_player(g));
+                }
+            }
+        }
+    });
 }
 
 impl Game<'_> {
@@ -1231,6 +1278,7 @@ impl Game<'_> {
         }
         // The turn's teleports are in the hub now: the mods hear them.
         self.flush_teleport_notes(host);
+        refresh_building_player(host, conn);
         // An inner turn may move, kill or change a player's mode. Once its
         // body is back in the hub, refresh the restored outer snapshot while
         // keeping ancestor bodies that are still held by their GuestSwaps.
@@ -4176,6 +4224,12 @@ impl Game<'_> {
 
     /// Per tick, for every guest: dig, use items, pick up drops, die.
     pub(super) fn tick_guests(&mut self, host: &mut LanHost) {
+        building_cache(Some(host));
+        self.tick_guests_inner(host);
+        building_cache(None);
+    }
+
+    pub(super) fn tick_guests_inner(&mut self, host: &mut LanHost) {
         self.tick_guest_cameras(host);
         self.lan_merchant_tick(host);
         self.lan_stations_tick(host);
@@ -4224,6 +4278,7 @@ impl Game<'_> {
             self.guest_sleep_tick(host, gi);
             if host.hub.guests[gi].dead {
                 self.guest_tick_death(host, gi);
+                refresh_building_player(host, conn);
                 continue;
             }
             if self.on_server_trip(conn) {
@@ -4231,6 +4286,7 @@ impl Game<'_> {
                 // has loaded around the player or not: its respawn request
                 // is taken as soon as it comes.
                 self.guest_die(host, gi, conn);
+                refresh_building_player(host, conn);
                 continue;
             }
             // Native mods, at the start of ServerPlayer.tick: before the
@@ -4380,6 +4436,8 @@ impl Game<'_> {
                 self.guest_orbs(host, gi);
             }
             self.guest_die(host, gi, conn);
+            // The turns after this one see the guest where its turn left it.
+            refresh_building_player(host, conn);
         }
         self.pickup_columns = None;
     }
@@ -6440,92 +6498,8 @@ fn visible_aim_point(
 }
 
 #[cfg(test)]
-mod aim_point_tests {
-    use super::visible_aim_point;
-
-    const EYE: [f64; 3] = [-760.7, 70.27, -450.4];
-    // A zombie one block behind a top slab: its centre is above the 0.5 gap under the slab.
-    const LO: [f64; 3] = [-763.0, 70.0, -450.9];
-    const HI: [f64; 3] = [-762.4, 71.95, -450.3];
-
-    /// A top slab filling x in [-762, -761] with its underside at y 70.5: a point is hidden when
-    /// the line from the eyes is above 70.5 anywhere inside that column.
-    fn behind_top_slab(p: [f64; 3]) -> bool {
-        let y_at = |x: f64| EYE[1] + (p[1] - EYE[1]) * (x - EYE[0]) / (p[0] - EYE[0]);
-        p[0] < -762.0 && (y_at(-761.0) > 70.5 || y_at(-762.0) > 70.5)
-    }
-
-    #[test]
-    fn a_visible_centre_is_kept() {
-        let centre = [
-            (LO[0] + HI[0]) / 2.0,
-            (LO[1] + HI[1]) / 2.0,
-            (LO[2] + HI[2]) / 2.0,
-        ];
-        assert_eq!(visible_aim_point(EYE, LO, HI, |_| false), centre);
-    }
-
-    /// A bottom slab hides everything under y 70.9: the aim goes above it, through the gap over the slab.
-    #[test]
-    fn a_mob_behind_a_bottom_slab_is_aimed_at_above_the_slab() {
-        let centre = [
-            (LO[0] + HI[0]) / 2.0,
-            (LO[1] + HI[1]) / 2.0,
-            (LO[2] + HI[2]) / 2.0,
-        ];
-        let p = visible_aim_point(EYE, LO, HI, |pt| pt[1] < 70.9);
-        assert!(p[1] >= 70.9, "{p:?} is still under the slab");
-        assert!(p[1] > centre[1] - 0.5, "{p:?} is far from the centre");
-    }
-
-    /// With only the centre hidden, two equally near candidates go to the one nearer the eyes.
-    #[test]
-    fn an_equally_near_point_on_the_side_of_the_eyes_wins() {
-        let eye = [5.0, 70.5, 0.0];
-        let (lo, hi) = ([-0.3, 70.0, -0.3], [0.3, 71.9, 0.3]);
-        let centre = [
-            (lo[0] + hi[0]) / 2.0,
-            (lo[1] + hi[1]) / 2.0,
-            (lo[2] + hi[2]) / 2.0,
-        ];
-        let p = visible_aim_point(eye, lo, hi, |pt| pt == centre);
-        assert!(p[0] > centre[0], "{p:?} is on the far side from the eyes");
-    }
-
-    #[test]
-    fn a_mob_seen_only_through_a_gap_is_aimed_at_through_the_gap() {
-        let centre = [
-            (LO[0] + HI[0]) / 2.0,
-            (LO[1] + HI[1]) / 2.0,
-            (LO[2] + HI[2]) / 2.0,
-        ];
-        assert!(behind_top_slab(centre), "the slab hides the centre");
-        let p = visible_aim_point(EYE, LO, HI, behind_top_slab);
-        assert!(!behind_top_slab(p), "{p:?} is still hidden");
-        for k in 0..3 {
-            assert!(LO[k] <= p[k] && p[k] <= HI[k], "{p:?} is outside the mob");
-        }
-        assert!(p[1] < centre[1], "{p:?} is not lower than the centre");
-    }
-
-    #[test]
-    fn a_fully_hidden_mob_keeps_the_centre() {
-        let centre = [
-            (LO[0] + HI[0]) / 2.0,
-            (LO[1] + HI[1]) / 2.0,
-            (LO[2] + HI[2]) / 2.0,
-        ];
-        assert_eq!(visible_aim_point(EYE, LO, HI, |_| true), centre);
-    }
-
-    #[test]
-    fn the_choice_is_deterministic() {
-        assert_eq!(
-            visible_aim_point(EYE, LO, HI, behind_top_slab),
-            visible_aim_point(EYE, LO, HI, behind_top_slab)
-        );
-    }
-}
+#[path = "aim_point_tests.rs"]
+mod aim_point_tests;
 
 /// The first target `(id, removed, bounds)` whose box meets the swept box,
 /// skipping removed ones and the vehicle the player rides.
