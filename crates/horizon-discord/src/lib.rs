@@ -19,7 +19,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
-use horizon_platform::hooks::{Activity, Client, Dimension, GameMode, Hooks, Play};
+use horizon_platform::hooks::{self, Activity, Dimension, GameMode, Hooks, Play};
 
 /// The "Horizon" application on Discord's developer portal (public: it names the game). Its
 /// Rich Presence assets: `horizon`, the logo.
@@ -51,7 +51,7 @@ pub struct Presence;
 
 impl Hooks for Presence {
     /// Starts the presence thread with the game's window (never for a dedicated server).
-    fn client_started(&self, client: &Client) {
+    fn client_started(&self, client: &hooks::Client) {
         start(client.automated);
     }
 
