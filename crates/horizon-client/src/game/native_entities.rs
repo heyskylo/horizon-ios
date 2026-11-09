@@ -271,7 +271,7 @@ impl Game<'_> {
     /// passenger in `nbt` is held by an entity of the level
     /// (`ServerLevel.tryAddFreshEntityWithPassengers`: `/summon` fails with
     /// "duplicate UUIDs"); nothing is spawned then. API
-    /// @API:native_summon_with_uuid@.
+    /// @API:summon_with_uuid@.
     pub(super) fn native_summon_with_uuid(
         &mut self,
         dimension: &str,
@@ -823,3 +823,7 @@ mod tests {
         assert!(!position_ok([0.5, f64::NAN, 0.5]));
     }
 }
+
+#[cfg(test)]
+#[path = "native_summon_tests.rs"]
+mod native_summon_tests;

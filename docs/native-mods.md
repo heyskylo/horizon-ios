@@ -880,7 +880,7 @@ loaded level or a server's player already holds it or a passenger's `UUID` in `n
 UUIDs"). Passengers in `nbt` are spawned and mounted as in `/summon`; mount and dismount are `native_mount`,
 `native_dismount` and `native_eject_passengers`, and an item frame's `ItemRotation` and a hanging entity's `Facing` change
 through `native_entity_merge_nbt` (`/data merge entity`, which refuses players). Bundles need
-`"hooks": @API:native_summon_with_uuid@`.
+`"hooks": @API:summon_with_uuid@`.
 
 API 60 adds `native_item_bar(stack, bar)`: the small bar `GuiGraphicsExtractor.itemDecorations` draws under an item,
 wherever the game shows one. `bar` arrives holding

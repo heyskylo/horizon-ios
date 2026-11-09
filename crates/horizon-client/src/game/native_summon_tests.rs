@@ -1,6 +1,6 @@
 //! `native_summon` and `native_summon_with_uuid` build an entity tree from data as `/summon` does, and
 //! `native_entity_merge_nbt` changes a living entity as `/data merge entity` does and refuses players.
-use super::*;
+use super::super::*;
 use horizon_client::mod_api::NativeAuthority;
 use horizon_world::nbt::{Compound, Tag};
 
