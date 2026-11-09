@@ -1783,7 +1783,7 @@ impl Launcher {
             .settings
             .minecraft_dir
             .clone()
-            .unwrap_or_else(|| horizon_prepare::artifacts::minecraft_dir(None));
+            .unwrap_or_else(|| horizon_platform::prepare::artifacts::minecraft_dir(None));
         self.prepare_log.clear();
         self.prepare_error = None;
         self.prepare_log
