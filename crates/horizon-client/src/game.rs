@@ -2083,12 +2083,6 @@ fn follow_keymap(event: &mut WindowEvent) {
 #[cfg(test)]
 mod keymap_tests;
 
-/// Q throws the whole stack with Control down: the same modifier word the
-/// screens read (`has_control_down`), never a latched sprint toggle.
-fn drop_whole_stack(modifiers: winit::keyboard::ModifiersState) -> bool {
-    modifiers.control_key()
-}
-
 fn select_creative_tab(
     creative: &mut Creative,
     clicks: &mut horizon_client::container_screen::Clicks,
@@ -2229,7 +2223,7 @@ struct Game<'a> {
     /// The wheel and hovered slot of `BundleMouseActions`.
     bundle_mouse: bundles::BundleMouse,
     /// The last inventory click, for the double click that gathers a stack.
-    last_inv_click: Option<(std::time::Instant, usize, bool)>,
+    last_inv_click: Option<(std::time::Instant, Option<usize>, bool)>,
     /// `lastQuickMoved`: what the last Shift click moved, which a Shift
     /// double click moves every stack of.
     last_quick_moved: Option<ItemStack>,
@@ -12053,6 +12047,7 @@ impl Game<'_> {
                             self.stats_click(size);
                         }
                         Screen::Stats if button == MouseButton::Left => self.stats_release(),
+                        Screen::GameModeSwitcher if !pressed => self.switcher_release(button),
                         _ => {}
                     }
                 }
@@ -12407,9 +12402,8 @@ impl Game<'_> {
                     let updated = Instant::now();
                     self.track_toggle_screens();
                     self.heal_hold_latches();
-                    // For the "I'm playing" ping: an atomic, sent on when it changes.
-                    #[cfg(feature = "heartbeat")]
-                    horizon_client::heartbeat::set_lan(self.is_published());
+                    // For the hooks above the engine (the "I'm playing" ping): said when it changes.
+                    horizon_hooks::engine::published(self.is_published());
                     #[cfg(feature = "discord")]
                     self.update_discord_presence();
                     let steps = self.clock.advance(elapsed);
@@ -13672,8 +13666,8 @@ pub fn run_with() -> Result<()> {
     // for a server, a benchmark, a run that quits by itself, a harness's fixture or a run that
     // horizon-ctl drives: those start in a source checkout and wrote the list there.
     if !options.offscreen && !synchronous_startup(&options) {
-        #[cfg(feature = "heartbeat")]
-        horizon_client::heartbeat::start();
+        let version = horizon_client::telemetry::version();
+        horizon_hooks::engine::started(&horizon_hooks::Started::new(&version));
         let player_dir = horizon_client::logging::player_dir();
         // horizon-extras: the official server is Horizon's (docs/forking.md).
         if cfg!(feature = "horizon-extras")

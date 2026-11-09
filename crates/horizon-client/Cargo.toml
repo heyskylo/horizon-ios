@@ -20,6 +20,8 @@ horizon-client-render = { path = "../horizon-client-render" }
 horizon-command = { path = "../horizon-command" }
 horizon-items = { path = "../horizon-items" }
 horizon-core = { path = "../horizon-core" }
+# Extension points for the crates above the engine (docs/layers.md, "How a Horizon crate plugs in").
+horizon-hooks = { path = "../horizon-hooks" }
 # OptiFine-format pack files: custom entity models, random entity textures.
 horizon-optifine = { path = "../horizon-optifine" }
 # The server thread ahead of the workers (MinecraftServer.spin's Thread.setPriority).
