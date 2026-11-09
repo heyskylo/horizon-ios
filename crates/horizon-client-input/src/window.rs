@@ -681,7 +681,8 @@ pub fn with_icon(attributes: winit::window::WindowAttributes) -> winit::window::
     #[cfg(not(target_os = "windows"))]
     let icon = icon();
     #[cfg(target_os = "windows")]
-    let icon = icon_png().map(|png| decode_icon(png).expect("the window icon must decode on Windows"));
+    let icon =
+        icon_png().map(|png| decode_icon(png).expect("the window icon must decode on Windows"));
 
     let attributes = attributes.with_window_icon(icon.clone());
     #[cfg(target_os = "windows")]
