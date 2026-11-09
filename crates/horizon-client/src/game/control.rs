@@ -1039,6 +1039,7 @@ impl Game<'_> {
                     path: path.trim().into(),
                     size: None,
                     scaled: false,
+                    background: false,
                 });
                 self.pending_screenshot = Some(reply.clone());
                 Ok(None)

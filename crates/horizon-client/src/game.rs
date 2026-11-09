@@ -11548,17 +11548,18 @@ impl Game<'_> {
                         server.set_legacy_rules(self.settings.extras.pvp.combat.rules);
                     }
                     self.clock.end_frame(self.pause);
-                    let mut consumed = false;
+                    let saved = self
+                        .renderer
+                        .as_mut()
+                        .map(|r| std::mem::take(&mut r.saved_screenshots))
+                        .unwrap_or_default();
+                    for saved in saved {
+                        self.finish_screenshot(saved);
+                    }
                     let finished = self
                         .renderer
                         .as_mut()
                         .and_then(|r| r.screenshot_result.take());
-                    if let Some(result) = &finished
-                        && self.ui.screenshot_message.is_some()
-                    {
-                        self.finish_screenshot(result);
-                        consumed = true;
-                    }
                     if let Some(result) = &finished
                         && let Some(reply) = self.pending_screenshot.take()
                     {
@@ -11571,7 +11572,6 @@ impl Game<'_> {
                             }
                             .to_string(),
                         );
-                        consumed = true;
                     }
                     if let Some(result) =
                         self.renderer.as_mut().and_then(|r| r.capture_result.take())
@@ -11579,12 +11579,6 @@ impl Game<'_> {
                     {
                         let value = result.unwrap_or_else(|e| serde_json::json!({ "error": e }));
                         let _ = reply.send(value.to_string());
-                    }
-                    // A result nobody asked for was the world icon's
-                    // (`tick_world_icon`): a failure tries again a second
-                    // later, as `tryTakeScreenshotIfNeeded` does.
-                    if !consumed && let Some(Err(error)) = finished {
-                        log::warn!("Horizon: couldn't save the world icon: {error}");
                     }
                     if rendered {
                         self.frame_stats.record(elapsed.as_secs_f32() * 1000.0);
