@@ -305,6 +305,9 @@ pub(crate) struct Colormap {
     /// (`temperature`, `downfall`, `biome_id`) blend: Polytone 6.8.6's water by `biome_id`
     /// fades over a biome edge.
     pub(crate) biome_blend: bool,
+    /// Its axes read nothing that changes up a column of one biome (no `o.y`): a section of
+    /// one biome can sample it once per column.
+    pub(crate) column: bool,
     width: u32,
     height: u32,
     rgba: Vec<u8>,
@@ -323,6 +326,18 @@ enum Axis {
 }
 
 impl Axis {
+    /// Whether the axis reads only what stays the same up a column of one biome.
+    fn column(&self) -> bool {
+        use horizon_polytone::expr::Root;
+        let flat = |root: Root, name: &str| match root {
+            Root::Object => matches!(name, "x" | "z" | "biome" | "temperature" | "downfall"),
+            Root::Random => name == "noise",
+            _ => false,
+        };
+        match self {
+            Self::Expr(program) | Self::BiomeId(_, program) => program.reads_only(&flat),
+        }
+    }
     fn value(&self, host: &mut dyn horizon_polytone::expr::Host) -> Option<f64> {
         match self {
             Self::Expr(program) => Some(program.eval(host).ok()?.num()),
@@ -383,6 +398,7 @@ impl Colormap {
             triangular: false,
             rounds: true,
             biome_blend: false,
+            column: true,
             width: 1,
             height: 1,
             rgba: vec![r, g, b, 255],
@@ -440,9 +456,11 @@ impl Colormap {
             axis("x_axis", "o.temperature")?,
             axis("y_axis", "o.downfall")?,
         );
+        let column = [&x, &y].iter().all(|axis| axis.column());
         Some(Self {
             x,
             y,
+            column,
             biome_blend: json["biome_blend"].as_bool().unwrap_or(by_biome),
             triangular: json["triangular"].as_bool() == Some(true),
             rounds: json["rounds"].as_bool() != Some(false),
