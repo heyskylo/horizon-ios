@@ -7033,7 +7033,7 @@ impl Game<'_> {
             {
                 m.heal(25.0);
                 consume = true;
-                sound = Some("entity.iron_golem.repair");
+                eat = Some(("entity.iron_golem.repair", 1.0, m.golem_repair_pitch()));
             }
             Species::Creeper if creeper_igniter => {
                 m.extra.flag = true;
