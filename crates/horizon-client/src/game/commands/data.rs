@@ -780,6 +780,13 @@ impl Game<'_> {
         if self.pot_data(pos).is_some() {
             return self.set_pot_data(pos, &tag).unwrap_or(false);
         }
+        if let Some(changed) = self.load_comparator_output(pos, &tag) {
+            let changed = changed.unwrap_or(false);
+            if changed {
+                self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
+            }
+            return changed;
+        }
         let key = (pos[0], pos[1], pos[2]);
         let was_auto = self.command_block_auto(key);
         let Some(e) = self.world.block_entities.get(&key) else {
@@ -889,6 +896,28 @@ impl Game<'_> {
 
     /// `ComparatorBlockEntity.saveAdditional`: expose the circuit's live output,
     /// rather than keeping a second copy in the ordinary block entity map.
+    /// `ComparatorBlockEntity.loadAdditional` (`getIntOr("OutputSignal", 0)`)
+    /// for a comparator at `p`: None for any other block; else whether the
+    /// loaded output differs from the one it had (None inside when the tag
+    /// does not decode). The block's own metadata comes from `comparator_data`.
+    fn load_comparator_output(&mut self, p: [i32; 3], tag: &Tag) -> Option<Option<bool>> {
+        let mut input = self.comparator_data(p)?;
+        let before = input.get("OutputSignal").cloned();
+        if let Some(value) = tag.get("OutputSignal") {
+            set_key(&mut input, "OutputSignal", value.clone());
+        } else if let Tag::Compound(map) = &mut input {
+            map.remove(&"OutputSignal".into());
+        }
+        let Some(normalized) = horizon_client::block_entity_nbt::canonical(&input) else {
+            return Some(None);
+        };
+        let output = normalized.get("OutputSignal").cloned();
+        if let Some(Tag::Int(value)) = output {
+            let pos = horizon_core::position::BlockPos::new(p[0], p[1], p[2]);
+            self.block_ticks.comparator_outputs.insert(pos, value);
+        }
+        Some(Some(output != before))
+    }
     fn comparator_data(&self, p: [i32; 3]) -> Option<Tag> {
         if self.data_block_name(p) != "minecraft:comparator" {
             return None;
@@ -1050,22 +1079,8 @@ impl Game<'_> {
                     return Ok(());
                 }
                 let key = (p[0], p[1], p[2]);
-                if let Some(mut input) = self.comparator_data(*p) {
-                    // ComparatorBlockEntity.loadAdditional reads getIntOr(0).
-                    // Reuse the existing codec, with the block's own metadata.
-                    if let Some(value) = tag.get("OutputSignal") {
-                        set_key(&mut input, "OutputSignal", value.clone());
-                    } else if let Tag::Compound(map) = &mut input {
-                        map.remove(&"OutputSignal".into());
-                    }
-                    let normalized = horizon_client::block_entity_nbt::canonical(&input)
-                        .ok_or_else(|| err("commands.data.block.invalid", &[]))?;
-                    if let Some(Tag::Int(output)) = normalized.get("OutputSignal") {
-                        self.block_ticks.comparator_outputs.insert(
-                            horizon_core::position::BlockPos::new(p[0], p[1], p[2]),
-                            *output,
-                        );
-                    }
+                if let Some(changed) = self.load_comparator_output(*p, &tag) {
+                    changed.ok_or_else(|| err("commands.data.block.invalid", &[]))?;
                     self.mark_block_entity_updated(key);
                     return Ok(());
                 }
