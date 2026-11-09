@@ -114,7 +114,6 @@
     "horizon-client-render -> horizon-polytone",
     "horizon-client-render -> horizon-shader-api",
     "horizon-client-render -> horizon-shaders",
-    "horizon-client-render -> horizon-theme",
     "horizon-launcher -> horizon-core",
     "horizon-launcher -> horizon-prepare",
     "horizon-launcher -> horizon-protocol",
