@@ -61,6 +61,7 @@ impl Game<'_> {
         // For mods (`render.frame-stats`, `native_frame_rate`).
         let now = self.extras_now();
         self.extras.fps.record(now, elapsed.as_secs_f32() * 1000.0);
+        self.recipe_lookups_now();
         self.native_frame(elapsed);
         self.pvp_frame();
         self.recipes_received_now();

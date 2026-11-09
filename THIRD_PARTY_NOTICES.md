@@ -347,3 +347,7 @@ Horizon (Copyright (c) 2026 Ludovic Marie and the Horizon contributors).
 
 `crates/horizon-client-render/src/keypad.rs` is adapted from Starling's keypad profile
 (`crates/horizon-client-render/src/keypad.rs`) at the same commit.
+
+`crates/horizon-client-render/src/android_gamepad.rs` is adapted from Starling's controller decoder
+(`crates/horizon-client-render/src/android_gamepad.rs`) and the input-mode part of its
+`android_runtime.rs`, at the same commit.

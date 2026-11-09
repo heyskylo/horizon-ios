@@ -19,6 +19,8 @@ pub fn main_with(mods: crate::mod_api::Mods) {
             .store(false, std::sync::atomic::Ordering::Relaxed);
     }
     horizon_client::telemetry::mark_start();
+    // Opt-in telemetry keeps each crash report (docs/telemetry.md), whatever the mode.
+    crash::on_report(horizon_client::telemetry::keep_crash);
     horizon_client::spans::startup::init(std::time::Instant::now());
     horizon_client::spans::trace::start_from_env();
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -153,6 +155,26 @@ pub fn main_with(mods: crate::mod_api::Mods) {
                 message,
                 replies,
                 cancel,
+            );
+        },
+        player_chat_v2: |player, name, level, message, replies, cancel| {
+            crate::mod_api::dispatch_player_chat_v2(
+                crate::mod_api::mods(),
+                player,
+                name,
+                level,
+                message,
+                replies,
+                cancel,
+            );
+        },
+        chat_decorate: |player, name, message, decorated| {
+            crate::mod_api::dispatch_chat_decorate(
+                crate::mod_api::mods(),
+                player,
+                name,
+                message,
+                decorated,
             );
         },
         sound_play: |sound, volume, pitch, cancel| {
