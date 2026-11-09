@@ -2,7 +2,7 @@
 //! reports.
 use super::tests::{CHANGED, CLICK, DRAGGED, FB, NONE, SIZE, Ui, offering, press, row, ui};
 use super::*;
-use crate::settings_shell::{Capture, Columns, Hosted};
+use crate::settings_shell::{Columns, Hosted};
 use winit::keyboard::KeyCode as K;
 
 #[test]
@@ -64,16 +64,11 @@ fn hdr_auto_can_be_selected_before_querying_and_brightness_waits_for_output() {
     let peak = row(&mut ui, &s, Item::Horizon(H::HdrPeak));
     assert_eq!(press(&mut ui, &mut s, (tx + 2.0, peak[1] + 4.0)), [DRAGGED]);
     ui.release();
-    // Calibrate starts the calibration; the shortcut row waits for a key.
+    // Calibrate starts the calibration.
     let calibrate = row(&mut ui, &s, Item::Horizon(H::HdrCalibrate));
     assert_eq!(
         press(&mut ui, &mut s, at(calibrate)),
         [CLICK, Output::Push(OptionsPage::HdrCalibration)]
-    );
-    let key = row(&mut ui, &s, Item::Horizon(H::HdrKey));
-    assert_eq!(
-        press(&mut ui, &mut s, at(key)),
-        [CLICK, Output::Bind(Capture::Key(crate::graphics::HDR_KEY))]
     );
     assert!(ui.changed());
 }
@@ -133,4 +128,108 @@ fn hdr_setup_follows_what_the_system_reported() {
     g.hdr_paper_white = 80;
     assert_eq!(setup_of(&g, true), Setup::Changed);
     assert_eq!(setup_of(&g, false), Setup::Unknown);
+}
+
+/// UI Brightness reads as Paper White does, in nits apart from it: Auto shows the paper white
+/// in use, and a value set by hand its own nits, whatever Paper White is. Its slider has Paper
+/// White's steps: Auto, then 10 to 480 nits by 10.
+#[test]
+fn ui_brightness_reads_in_nits_on_paper_whites_steps() {
+    let mut s = Settings::default();
+    s.horizon.hdr = HdrMode::On;
+    let reporting = offering(true, Some(true));
+    let label = |s: &Settings, out| Item::Horizon(H::HdrUiBrightness).label(s, out).plain();
+    assert_eq!(label(&s, &reporting), "UI Brightness: Auto (400)");
+    assert_eq!(label(&s, &NONE), "UI Brightness: Auto (203)");
+    s.horizon.hdr_paper_white = 250;
+    assert_eq!(label(&s, &reporting), "UI Brightness: Auto (250)");
+    s.horizon.hdr_ui_nits = 160;
+    for paper_white in [0, 80, 250] {
+        s.horizon.hdr_paper_white = paper_white;
+        assert_eq!(label(&s, &reporting), "UI Brightness: 160");
+    }
+    let item = Item::Horizon(H::HdrUiBrightness);
+    assert_eq!(
+        H::HdrUiBrightness.slider_steps(),
+        H::HdrPaperWhite.slider_steps()
+    );
+    H::HdrUiBrightness.set_slider(&mut s, 0.0);
+    let mut reached = vec![s.horizon.hdr_ui_nits];
+    for _ in 0..H::HdrUiBrightness.slider_steps().unwrap() {
+        item.step_slider(&mut s, true, 200.0, &reporting);
+        reached.push(s.horizon.hdr_ui_nits);
+    }
+    let paper: Vec<u32> = std::iter::once(0).chain((10..=480).step_by(10)).collect();
+    assert_eq!(reached, paper);
+    // Each value sits where Paper White's same value does.
+    for nits in paper {
+        s.horizon.hdr_ui_nits = nits;
+        s.horizon.hdr_paper_white = nits;
+        assert_eq!(item.slider(&s), Item::Horizon(H::HdrPaperWhite).slider(&s));
+    }
+}
+
+/// While HDR output is held back on this window's driver, the HDR row says so and keeps
+/// the mode; any change of the mode drops the hold, and HDR is asked for again.
+#[test]
+fn a_held_hdr_start_is_said_on_the_page_and_a_mode_change_tries_again() {
+    use crate::gfx::{HdrOutput, output::tests};
+    let mut s = Settings::default();
+    s.horizon.hdr = HdrMode::Auto;
+    s.horizon.hdr_failed_start = Some("Vulkan 10de:2684 GPU; driver; 1.0".into());
+    let (mut caps, reading) = tests::window(Some(HdrOutput::Pq), Some(true));
+    caps.held = true;
+    let out = tests::snapshot(&s.horizon, Default::default(), caps, reading);
+    let hdr = Item::Horizon(H::Hdr);
+    let setting = h(
+        H::Hdr,
+        Cost::None,
+        "Lava, fire and sunlight shine brighter than white.",
+    );
+    let held = super::row(setting, &s, &out);
+    assert_eq!(held.chosen.as_deref(), Some(HDR_HELD));
+    assert_eq!(held.why, None);
+    assert_eq!(hdr.label(&s, &out).plain(), "HDR: Auto");
+    assert_eq!(Item::Horizon(H::HdrPeak).blocked(&s, &out), Some(HDR_HELD));
+    // Not held, the row says what HDR does.
+    caps.held = false;
+    let free = tests::snapshot(&s.horizon, Default::default(), caps, reading);
+    assert_eq!(super::row(setting, &s, &free).chosen, None);
+    // Any step of the mode, either way, tries again.
+    for back in [false, true] {
+        let mut s = s.clone();
+        hdr.cycle(&mut s, back, FB, &out);
+        assert_ne!(s.horizon.hdr, HdrMode::Auto);
+        assert_eq!(s.horizon.hdr_failed_start, None);
+    }
+}
+
+/// Undo never brings the hold back: held Auto, changed to On (HDR tried again), then
+/// undone, is Auto without the hold. With the mode left alone, it keeps the hold as it is.
+#[test]
+fn undo_never_restores_a_held_hdr_start() {
+    let mut screen = GraphicsScreen {
+        framebuffer: FB,
+        output: NONE,
+    };
+    let mut opened = Settings::default();
+    opened.horizon.hdr = HdrMode::Auto;
+    opened.horizon.hdr_failed_start = Some("Vulkan 10de:2684 GPU; driver; 1.0; os".into());
+    let mut s = opened.clone();
+    let out = offering(true, Some(true));
+    Item::Horizon(H::Hdr).cycle(&mut s, true, FB, &out);
+    assert_eq!(
+        (s.horizon.hdr, &s.horizon.hdr_failed_start),
+        (HdrMode::On, &None)
+    );
+    screen.undo(&mut s, &opened);
+    assert_eq!(
+        (s.horizon.hdr, &s.horizon.hdr_failed_start),
+        (HdrMode::Auto, &None)
+    );
+    // Another row changed and undone: the hold stays.
+    let mut s = opened.clone();
+    s.horizon.fxaa = !s.horizon.fxaa;
+    screen.undo(&mut s, &opened);
+    assert_eq!(s.horizon, opened.horizon);
 }

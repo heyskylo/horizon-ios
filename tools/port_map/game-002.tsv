@@ -50,7 +50,7 @@ ServerLevel.tickBlock	port	crates/horizon-world/src/level/tick.rs::Behaviours::s
 ServerLevel.tickPassenger	inline	crates/horizon-client/src/game/passengers.rs::Game::sync_riders	a rider whose vehicle is gone or dead lets go; others are re-seated each tick
 ServerLevel.updateNeighboursOnBlockSet	inline	crates/horizon-world/src/level/update.rs::Sim::set_block_limit	neighbour and comparator updates inside setBlock
 ServerLevel.mayInteract	inline	crates/horizon-client/src/game/lan_actions.rs::Game::under_spawn_protection	gap: minor: spawn protection only for guests on a dedicated server; the world border check is a stub that always allows (hand.rs within_border), so blocks can be built and broken outside the border
-ServerLevel.save	port	crates/horizon-client/src/game.rs::Game::save_level	
+ServerLevel.save	port	crates/horizon-client/src/game/saving.rs::Game::save_level	
 ServerLevel.saveLevelData	port	crates/horizon-client/src/game/autosave.rs::Game::save_game_metadata	
 ServerLevel.getEntities	inline	crates/horizon-client/src/game/commands.rs::Game::select_in_level	entity selectors filter the per-kind entity lists
 ServerLevel.addDuringTeleport	inline	crates/horizon-client/src/game/nether_portal.rs::Game::resolve_arrivals	mobs, items, boats and carts waiting for a portal exit join the level with the chunk entities; players go through Hub::respawn
@@ -61,7 +61,7 @@ ServerLevel.unload	inline	crates/horizon-client/src/game/world_update.rs::Game::
 ServerLevel.playSeededSound	port	crates/horizon-client/src/lan/containers.rs::Hub::sound	
 ServerLevel.sendBlockUpdated	inline	crates/horizon-client-render/src/world.rs::World::set	gap: minor: mobs never re-plan a path when a block on it changes (Mob::recompute_path is never triggered by a block update), so they walk a stale path until a goal re-paths
 ServerLevel.neighborChanged	port	crates/horizon-world/src/level/hooks.rs::Sim::neighbor_changed	
-ServerLevel.getDestroyType	port	crates/horizon-client/src/game.rs::Game::explode	mob explosions pick Keep, Destroy or DestroyWithDecay from mob_griefing and mob_explosion_drop_decay
+ServerLevel.getDestroyType	port	crates/horizon-client/src/game/explosion.rs::Game::explode	mob explosions pick Keep, Destroy or DestroyWithDecay from mob_griefing and mob_explosion_drop_decay
 ServerLevel.doBlockEvent	inline	crates/horizon-world/src/level/pistons.rs::Behaviours::run_block_events	
 ServerLevel.getEntityInAnyDimension	missing		minor: owner and target references resolve in the level in place only; parked levels are not searched
 ServerLevel.getEntityOrPart	inline	crates/horizon-client/src/game/lan_actions.rs::Game::look_at_entity	an entity id from a guest finds a mob, an object or a tracked dragon part or end crystal

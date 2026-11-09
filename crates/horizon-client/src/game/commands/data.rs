@@ -461,19 +461,20 @@ impl Game<'_> {
                     // Wolf.readAdditionalSaveData initializes persistent anger at
                     // the live level clock, just as load_mob does on admission.
                     if slot.species() == horizon_client::mobs::Species::Wolf {
-                        slot.extra.anger = horizon_client::mobs::anger_left(
-                            slot.extra.anger_end,
-                            self.world.game_time,
-                        );
+                        horizon_client::mobs::adopt_anger_end(slot, self.world.game_time);
+                    } else {
+                        // `readPersistentAngerSaveData` set the end time as written.
+                        slot.extra.anger_stamp = Some((slot.extra.anger, slot.age));
                     }
                 }
             }
             Target::Item(id) => {
                 let new = entity_nbt::item_entity_from_nbt(&tag, id, 0.0).ok_or_else(stale)?;
                 if let Some(slot) = self.dropped.iter_mut().find(|e| e.id == id) {
-                    let bob = slot.bob_offset;
-                    *slot = new;
-                    slot.bob_offset = bob;
+                    // `/data` loads into the same entity: its bobOffs and own random stay.
+                    let kept = std::mem::replace(slot, new);
+                    slot.bob_offset = kept.bob_offset;
+                    slot.random = kept.random;
                 }
             }
             Target::Fangs(id) => {
@@ -781,7 +782,7 @@ impl Game<'_> {
                 }
             }
         }
-        let Some((_, mut new)) = horizon_client::save::decode_block_entity(&tag) else {
+        let Some((_, mut new)) = self.decode_block_entity_at(key, &tag) else {
             return false;
         };
         let rolled = self.take_loot_table(key, &tag, &mut new);
@@ -1056,7 +1057,7 @@ impl Game<'_> {
                     self.mark_block_entity_updated(key);
                     return Ok(());
                 }
-                if let Some((_, mut new)) = save::decode_block_entity(&tag) {
+                if let Some((_, mut new)) = self.decode_block_entity_at(key, &tag) {
                     let was_auto = self.command_block_auto(key);
                     if self.data_block_name(*p) == "minecraft:hopper" {
                         self.hoppers

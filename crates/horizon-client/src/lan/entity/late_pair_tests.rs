@@ -42,7 +42,7 @@ fn late_pairing_does_not_duplicate_or_spend_the_next_arrow_update() {
     let mut e = trident();
     level.pair_after_tick(std::slice::from_ref(&e), &riding, &mut viewers, |_| Some(0));
     assert_eq!(level.tick, 1);
-    assert_eq!(level.states[&37].tick, 0);
+    assert_eq!(level.states.get(&37).unwrap().tick, 0);
     assert!(viewers[0].tracker.is_tracking(37));
     assert_eq!(
         viewers[0]
@@ -57,14 +57,14 @@ fn late_pairing_does_not_duplicate_or_spend_the_next_arrow_update() {
     level.pair_after_tick(std::slice::from_ref(&e), &riding, &mut viewers, |_| Some(0));
     assert!(viewers[0].out.is_empty());
     assert!(viewers[0].tracker.take_events().is_empty());
-    assert_eq!(level.states[&37].tick, 0);
+    assert_eq!(level.states.get(&37).unwrap().tick, 0);
     // It hits a block between its introduction and the next tracking pass.
     e.position[0] += 0.25;
     e.velocity = [0.0; 3];
     e.meta.push((10, serializer::BOOLEAN, Value::Bool(true)));
     level.tick(&[&e], &riding, &mut viewers, |_| Some(0));
     assert_eq!(level.tick, 2);
-    assert_eq!(level.states[&37].tick, 1);
+    assert_eq!(level.states.get(&37).unwrap().tick, 1);
     assert!(
         !viewers[0]
             .out

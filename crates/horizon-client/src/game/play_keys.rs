@@ -1,4 +1,5 @@
 //! A key press while a world is open (`KeyboardHandler.keyPress` and the gameplay mappings).
+use super::inventory_input::drop_whole_stack;
 use super::*;
 
 impl Game<'_> {
@@ -62,7 +63,6 @@ impl Game<'_> {
             return Ok(());
         }
         if self.sort_key_press(key)
-            || self.hdr_key_press(key)
             || horizon_client::keybinds::key_name(key)
                 .is_some_and(|name| self.hud_editor_key_press(name))
         {
