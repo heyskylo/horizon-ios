@@ -13,7 +13,11 @@ impl Game<'_> {
         };
         if info.consumable.is_none()
             || (info.food.is_some()
-                && (self.player.is_none() || !self.can_eat(&stack, info.can_always_eat)))
+                && (self.player.is_none()
+                    || !self.can_eat(
+                        &stack,
+                        horizon_client::item_sync::can_always_eat(&stack, info.can_always_eat),
+                    )))
         {
             return false;
         }
