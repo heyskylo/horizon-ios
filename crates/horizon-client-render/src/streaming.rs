@@ -1070,8 +1070,10 @@ pub struct WorkerContext {
     pub light: Arc<LightTables>,
 }
 mod bounded;
+mod forced_cover;
 mod relight_now;
 use bounded::nearest_first;
+use forced_cover::ForcedCover;
 impl Streaming {
     pub fn new<G: ChunkGenerator>(
         generator: Arc<G>,
@@ -2624,60 +2626,6 @@ impl Band {
     }
 }
 
-/// `Streaming::forced` and `mod_forced` as the Chebyshev distance from each column within
-/// `REACH` of one to the nearest: `Ranges::in_main_range` answers by one lookup instead of going
-/// through every forced chunk (it is asked for every column, several times a tick).
-struct ForcedCover {
-    forced: HashSet<(i32, i32)>,
-    mod_forced: HashSet<(i32, i32)>,
-    near: FxHashMap<(i32, i32), u8>,
-}
-impl ForcedCover {
-    /// The widest ring `in_main_range` asks of a forced chunk (margins 1 to 4).
-    const REACH: i32 = FORCED_TERRAIN_RING + 1;
-    /// Past this many forced chunks the cover is not made: the scan answers.
-    const MOST: usize = 4096;
-    fn refresh(
-        cover: &mut Option<Self>,
-        forced: &HashSet<(i32, i32)>,
-        mod_forced: &HashSet<(i32, i32)>,
-    ) {
-        if cover
-            .as_ref()
-            .is_some_and(|c| c.forced == *forced && c.mod_forced == *mod_forced)
-        {
-            return;
-        }
-        if forced.len() + mod_forced.len() > Self::MOST {
-            *cover = None;
-            return;
-        }
-        let mut near = FxHashMap::default();
-        for &(fx, fz) in forced.iter().chain(mod_forced) {
-            for dx in -Self::REACH..=Self::REACH {
-                for dz in -Self::REACH..=Self::REACH {
-                    let d = dx.abs().max(dz.abs()) as u8;
-                    near.entry((fx + dx, fz + dz))
-                        .and_modify(|e: &mut u8| *e = (*e).min(d))
-                        .or_insert(d);
-                }
-            }
-        }
-        *cover = Some(Self {
-            forced: forced.clone(),
-            mod_forced: mod_forced.clone(),
-            near,
-        });
-    }
-    /// Whether a forced chunk lies within `reach` of `(x, z)`, or `None` past `REACH`.
-    fn within(&self, x: i32, z: i32, reach: i32) -> Option<bool> {
-        (reach <= Self::REACH).then(|| {
-            self.near
-                .get(&(x, z))
-                .is_some_and(|&d| i32::from(d) <= reach)
-        })
-    }
-}
 /// For every column near the extra areas, how far it lies outside the
 /// nearest one's square (Chebyshev distance less its radius; 0 inside). A server has an area per player, and streaming asks of every
 /// loaded and wanted column whether one reaches it, several times a tick:
@@ -2985,16 +2933,6 @@ impl Ranges<'_> {
             .iter()
             .any(|&(c, radius)| (x - c.0).abs().max((z - c.1).abs()) <= radius + margin)
     }
-    /// Whether a `/forceload` or a native mod's ticket holds the chunk.
-    fn is_forced(&self, x: i32, z: i32) -> bool {
-        self.forced.contains(&(x, z)) || self.mod_forced.contains(&(x, z))
-    }
-    /// Every chunk a `/forceload` or a native mod's ticket holds, once each.
-    fn forced_chunks(&self) -> impl Iterator<Item = &(i32, i32)> + '_ {
-        self.forced
-            .iter()
-            .chain(self.mod_forced.iter().filter(|c| !self.forced.contains(c)))
-    }
     /// The columns meshed for drawing: those vanilla draws around the
     /// player (`in_view_distance`), and forced ones.
     fn in_view(&self, x: i32, z: i32) -> bool {
@@ -3006,21 +2944,7 @@ impl Ranges<'_> {
         if self.radius >= 0 && dx * dx + dz * dz <= r * r {
             return true;
         }
-        // A forced chunk holds a FORCED ticket at level 31
-        // (`ChunkMap.FORCED_TICKET_LEVEL`), and the level rises one per ring
-        // (`ChunkTracker.computeLevelFromNeighbor`): the margin is the
-        // vanilla status ring the caller asks for.
-        let reach = match margin {
-            1 => FORCED_FULL_RING,
-            2 => FORCED_FEATURES_RING,
-            3 => FORCED_TERRAIN_RING,
-            _ => margin + 1,
-        };
-        if let Some(hit) = self.forced_cover.and_then(|c| c.within(x, z, reach)) {
-            return hit;
-        }
-        self.forced_chunks()
-            .any(|f| (x - f.0).abs() <= reach && (z - f.1).abs() <= reach)
+        self.near_forced(x, z, margin)
     }
 }
 impl Drop for Streaming {
