@@ -126,8 +126,8 @@ horizon-extras = ["horizon-client-lib/horizon-extras", "discord", "friends"]
 # Online extras a server or a port can leave out; the server build has none of them. "Playing Horizon"
 # on Discord (game/discord.rs).
 discord = ["horizon-client-lib/discord"]
-# Play with Friends: sharing a world behind an invite code (game/friends.rs) and joining one
-# (game/friends/tunnel.rs, on the engine's `net::tunnel` hook).
+# Play with Friends: sharing a world behind an invite code (game/friends.rs). Joining one is
+# horizon-friends' `game` side, which horizon-official registers (`horizon_hooks::tunnel`).
 friends = ["dep:horizon-friends"]
 # Records the call sites of mob random draws (`mob_ai_probe` traces).
 rng-trace = ["horizon-core/rng-trace", "horizon-client-lib/rng-trace"]

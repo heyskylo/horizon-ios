@@ -49,12 +49,14 @@ LAN's defaults), then the host's game, on its own:
 Horizon host gets the handshake, the others are dropped. On the same LAN, over a VPN, with IPv6, with a
 router that opened the port, or with a forwarded port, that's it: no server took part.
 
-**In the code.** The engine knows only the address form `friend:<code>` and a hook, `net::tunnel`
-(horizon-client-lib): a resolver registered at startup reads codes and opens the tunnel, which the join
-then reaches on a loopback port like any server. Play with Friends registers its resolver
-(`game/friends/tunnel.rs`) when the `friends` feature is on (it comes with `horizon-extras`); without one
-a `friend:` address is refused. Hosting needs no hook: the host end connects to the world's LAN port
-over loopback, so tunnelled guests are LAN guests.
+**In the code.** The engine knows only the address form `friend:<code>` and a hook, `Hooks::tunnel`
+(`horizon_hooks::tunnel`, `horizon_platform::hooks::tunnel` for the Horizon layer): the resolver a hook offers
+reads codes and opens the tunnel, which the join (`net.rs`) then reaches on a loopback port like any server.
+horizon-friends' `game` side offers it, and the official executable (`horizon-official`) registers it;
+horizon-client's own executable has none, so there a `friend:` address is refused. Hosting needs no hook: the
+host end connects to the world's LAN port over loopback, so tunnelled guests are LAN guests. It still lives in
+horizon-client (`game/friends.rs`, `game/friends/screen.rs`, the `friends` feature, which comes with
+`horizon-extras`) until the pause menu and `horizon-ctl` offer entries to crates above the engine.
 
 **Codes.** Crockford base32 (`0-9 A-Z` without `I L O U`; input ignores case, spaces and dashes and reads
 `O` as `0`, `I`/`L` as `1`) in groups of five, with a 16-bit checksum so a typo is caught before
