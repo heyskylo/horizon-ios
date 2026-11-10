@@ -1,4 +1,5 @@
 Strider.checkStriderSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	strider arm: climbs lava upward, then needs air above
+Strider.checkFallDamage	port	crates/horizon-client/src/mobs/living.rs::Mob::check_fall_damage	in lava the fall distance is reset and the base's landing never runs: no damage and no dust
 Strider.onSyncedDataUpdated	skip:other		client copy of the boost sync; Horizon keeps one boost state on the server side (equine.rs boost)
 Strider.defineSynchedData	skip:java		SynchedEntityData builder; the synced values are Mob fields (extra.flag, extra.counter2)
 Strider.canUseSlot	port	crates/horizon-client/src/game/dispenser.rs::mob_can_use_slot	saddle needs alive and adult
