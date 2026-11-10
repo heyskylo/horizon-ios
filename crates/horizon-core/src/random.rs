@@ -177,7 +177,11 @@ impl RandomSource for LegacyRandom {
         LegacyPositionalRandom::new(self.next_long())
     }
     fn set_seed(&mut self, seed: i64) {
-        *self = Self::new(seed);
+        // LegacyRandomSource.setSeed resets the stream and its gaussian cache, not the lane.
+        // Reseeding is an ordered mutation even when this item makes no draws afterwards.
+        self.sync();
+        self.state = (seed as u64 ^ Self::MULTIPLIER) & Self::MASK;
+        self.gaussian = None;
     }
 
     fn next_int(&mut self) -> i32 {
@@ -379,6 +383,24 @@ mod tests {
     fn invalid_inputs_preserve_both_streams() {
         invalid_bounds_do_not_consume_state(LegacyRandom::new(0));
         invalid_bounds_do_not_consume_state(XoroshiroRandom::new(0));
+    }
+
+    #[test]
+    fn legacy_reseed_resets_the_gaussian_cache_and_stream() {
+        let mut rng = LegacyRandom::new(42);
+        for seed in [i64::MIN, -1, 0, 42, i64::MAX] {
+            // Leave a cached second gaussian before reseeding.
+            rng.next_gaussian();
+            rng.set_seed(seed);
+            let mut fresh = LegacyRandom::new(seed);
+            for _ in 0..3 {
+                assert_eq!(
+                    rng.next_gaussian().to_bits(),
+                    fresh.next_gaussian().to_bits()
+                );
+                assert_eq!(rng.next_long(), fresh.next_long());
+            }
+        }
     }
 
     #[test]
