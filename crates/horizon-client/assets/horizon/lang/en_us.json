@@ -577,6 +577,8 @@
   "horizon.osk.type": "Type",
   "horizon.osk.symbols": "Symbols",
   "horizon.osk.close": "Close",
+  "horizon.osk.new_line": "New Line",
+  "horizon.osk.complete": "Complete",
   "horizon.extras.chat_animation.tooltip": "A new chat line slides in from the left while it fades in, instead of appearing whole.",
   "horizon.extras.chat_indicator.tooltip": "The coloured bar at the left of a chat line.",
   "horizon.extras.pack_browser.tooltip": "Select Resource Packs gets an Add button that searches Modrinth and installs a pack into your packs folder. Off, the game never contacts Modrinth.",

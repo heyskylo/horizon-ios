@@ -66,6 +66,11 @@ Cases:
   it, and Undo shows once the pack is picked.
 - extras_shell_edges: on Extras, which has no page list, down from the search field lands on the first row, not Done;
   a row the right stick leaves mostly hidden scrolls back into view when A presses it, and A changes it.
+- osk_book_done: on a book and quill's page the keyboard's New Line key makes a line and keeps typing; Done (Menu)
+  is the book's Done: it saves what was typed and closes the book, never a new line.
+- osk_sign_done: on a sign Done (Menu) closes the sign with what was typed, as its Done button.
+- osk_chat_suggestions: over chat with the keyboard open, RT fills in the selected command suggestion (Tab) and the
+  right stick picks another first (Up and Down), without closing the keyboard.
 Needs built fast binaries (`cargo build --profile fast -p horizon-client -p horizon-client-lib --bins`)
 and prepared resources in .local/horizon-client/26.3. Exit status 0 when every case passes.
 - radial_commit: holding the opener shows the overlay and pauses nothing; the stick selects; releasing runs the action once.
@@ -2313,6 +2318,137 @@ def osk_book(args, name):
     return check.failures
 
 
+def open_book_keyboard(game, check):
+    """A book and quill in hand, opened by the pad, and A on its page: the keyboard is open."""
+    game.ctl('command', 'give @s writable_book')
+    time.sleep(1)
+    game.ctl('pad', 'trigger', 'left', 1)
+    time.sleep(0.4)
+    game.ctl('pad', 'trigger', 'left', 0)
+    time.sleep(1.5)
+    field = next((t for t in game.menu()['targets'] if t['kind'] == 'field'), None)
+    check(field is not None, f"the page isn't a field: {game.menu()['targets']}")
+    if field is None:
+        return False
+    x, y, w, h = field['rect']
+    for _ in range(40):
+        pointer = game.menu()['pointer']
+        if pointer and x <= pointer[0] < x + w and y <= pointer[1] < y + h:
+            break
+        step = 'left' if pointer and pointer[0] >= x + w else 'right' if pointer and pointer[0] < x else 'up' if pointer and pointer[1] >= y + h else 'down'
+        game.pad(step)
+    game.pad('south')
+    check(game.menu()['keyboard'], 'A on the page opened no keyboard')
+    return game.menu()['keyboard']
+
+
+def book_open(game):
+    try:
+        return not game.ctl('book').get('closed')
+    except RuntimeError as e:
+        if 'no book is open' in str(e):
+            return False
+        raise
+
+
+# From Q (where the keyboard opens) to the bottom row's New Line key on a field of many lines: down to Shift, then
+# right past the symbols switch and Space.
+TO_NEW_LINE = ['down'] * 3 + ['right'] * 3
+
+
+def osk_book_done(args, name):
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        if open_book_keyboard(game, check):
+            game.pad('south')  # q
+            for step in TO_NEW_LINE:
+                game.pad(step)
+            game.pad('south')
+            check(game.menu()['keyboard'], 'New Line closed the keyboard')
+            check(book_open(game), 'New Line closed the book')
+            shot(game, 'osk-book-new-line')
+            game.pad('start')
+            check(not game.menu()['keyboard'], 'Done left the keyboard open')
+            check(not book_open(game), 'Done did not close the book')
+            game.ctl('command', 'data get entity @s SelectedItem')
+            time.sleep(SETTLE)
+            log = ' '.join(map(str, game.ctl('chat-log', 3)['chat']))
+            check('q\\n' in log, f'the book did not keep "q" and its new line: {log}')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def osk_sign_done(args, name):
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('command', 'give @s oak_sign')
+        game.ctl('command', 'setblock ~ ~-1 ~ stone')
+        time.sleep(1)
+        game.ctl('turn', '0', '90')
+        time.sleep(0.5)
+        game.ctl('pad', 'trigger', 'left', 1)
+        time.sleep(0.4)
+        game.ctl('pad', 'trigger', 'left', 0)
+        time.sleep(1.5)
+        check(game.menu()['keyboard'], 'a sign the pad placed opened no keyboard')
+        screen = game.ctl('state')['screen']
+        game.pad('south')  # q
+        game.pad('start')
+        check(not game.menu()['keyboard'], 'Done left the keyboard open')
+        check(game.ctl('state')['screen'] != screen, f'Done did not close the sign ({screen})')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def sent_command(game, typed, picks):
+    """Over chat with the keyboard open: type, push the right stick down `picks` times, RT, then Done (Menu) sends
+    it. The command's error names what was filled in (`.../gamerule<--[HERE]`)."""
+    game.pad('up')
+    time.sleep(SETTLE)
+    if not game.menu()['keyboard']:
+        return None
+    game.ctl('type', typed)
+    time.sleep(SETTLE)
+    for _ in range(picks):
+        # Held long enough for a poll to see it.
+        game.ctl('pad', 'stick', 'right', 0, -1)
+        time.sleep(0.3)
+        game.ctl('pad', 'stick', 'right', 0, 0)
+        time.sleep(SETTLE)
+    # Triggers are axes, on a real pad too.
+    game.ctl('pad', 'trigger', 'right', 1)
+    time.sleep(0.3)
+    game.ctl('pad', 'trigger', 'right', 0)
+    time.sleep(SETTLE)
+    open_after = game.menu()['keyboard']
+    shot(game, f'osk-chat-suggestions-{picks}')
+    game.pad('start')
+    time.sleep(SETTLE)
+    # The newest line first: this command's error.
+    here = [line for line in map(str, game.ctl('chat-log', 3)['chat']) if '<--' in line]
+    return open_after, here[0].split('<--')[0].strip() if here else None
+
+
+def osk_chat_suggestions(args, name):
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        first = sent_command(game, '/game', 0)
+        check(first is not None, 'the keyboard did not open over chat')
+        second = sent_command(game, '/game', 1)
+        if first and second:
+            check(first[0] and second[0], 'RT closed the keyboard')
+            check(first[1] and first[1].endswith('gamemode'), f'RT did not fill in the first suggestion: {first[1]}')
+            check(second[1] and second[1].endswith('gamerule'), f'the stick did not pick the next one: {second[1]}')
+    finally:
+        game.quit()
+    return check.failures
+
+
 def osk_sign(args, name):
     """A keeps a sign's keyboard to hand: Enter goes to the next line, and B then A opens it again."""
     game = Game(args, name, world=True)
@@ -4413,6 +4549,9 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'prompt_keeps_crosshair': prompt_keeps_crosshair,
          'osk_social': osk_social,
          'osk_book': osk_book,
+         'osk_book_done': osk_book_done,
+         'osk_sign_done': osk_sign_done,
+         'osk_chat_suggestions': osk_chat_suggestions,
          'recipe_search_keyboard': recipe_search_keyboard,
          'chat_suggestion_rows': chat_suggestion_rows,
          'server_list_bumpers': server_list_bumpers,

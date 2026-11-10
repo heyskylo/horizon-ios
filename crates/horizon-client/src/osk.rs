@@ -1,7 +1,10 @@
 //! The on-screen keyboard a controller types with in focus mode (Horizon's
 //! own; docs/controllers.md, "Text fields"): a QWERTY grid and a symbols
 //! grid in Horizon's design language, moved over with the D-pad or stick.
-//! A types the key, X deletes, Y is a space, Start is Enter, B closes it.
+//! A types the key, X deletes, Y is a space, Start is the Done key, B closes it.
+//! A field of many lines (a book's page, a sign) gets a New Line key, so Done
+//! never makes a line. Over chat, RT is Tab (fill in the suggestion, again for
+//! the next) and the right stick moves through the suggestions.
 //! It only produces [`Output`]s; the game feeds them to the focused field
 //! the way typed keys reach it.
 use crate::gamepad::{Button, MenuJob};
@@ -19,7 +22,16 @@ fn tr(key: &str, english: &str) -> String {
 pub enum Output {
     Text(String),
     Backspace,
+    /// The Enter key: a new line on a field of many lines.
     Enter,
+    /// The typing is done: the field's own Done (a book's, a sign's), or Enter on a field of
+    /// one line.
+    Done,
+    /// Tab: fill in the selected suggestion (vanilla's `CommandSuggestions`), again for the next.
+    Complete,
+    /// Up and Down: the suggestion before or after (or chat's history, as the arrow keys).
+    Previous,
+    Next,
     /// The keyboard closes; the field keeps its text.
     Close,
 }
@@ -31,6 +43,7 @@ enum Key {
     Layer,
     Space,
     Backspace,
+    NewLine,
     Done,
 }
 
@@ -44,6 +57,15 @@ const BOTTOM: Row = &[
     (Key::Shift, 1.5),
     (Key::Layer, 1.5),
     (Key::Space, 4.0),
+    (Key::Backspace, 1.5),
+    (Key::Done, 1.5),
+];
+/// The bottom row on a field of many lines: New Line beside Done.
+const BOTTOM_LINES: Row = &[
+    (Key::Shift, 1.5),
+    (Key::Layer, 1.5),
+    (Key::Space, 2.5),
+    (Key::NewLine, 1.5),
     (Key::Backspace, 1.5),
     (Key::Done, 1.5),
 ];
@@ -149,6 +171,13 @@ const SYMBOLS: [Row; 5] = [
     ],
     BOTTOM,
 ];
+const LETTERS_LINES: [Row; 5] = [LETTERS[0], LETTERS[1], LETTERS[2], LETTERS[3], BOTTOM_LINES];
+const SYMBOLS_LINES: [Row; 5] = [SYMBOLS[0], SYMBOLS[1], SYMBOLS[2], SYMBOLS[3], BOTTOM_LINES];
+
+/// The right stick, up (+) or down (-), past this picks the suggestion before or after; it picks
+/// again once back under [`STICK_REST`].
+const STICK_PICK: f32 = 0.6;
+const STICK_REST: f32 = 0.3;
 
 /// The keyboard's state while open.
 #[derive(Clone, Debug, PartialEq)]
@@ -159,6 +188,12 @@ pub struct Keyboard {
     /// The next letter is upper case (Shift), or every letter (double Shift).
     shift: bool,
     caps: bool,
+    /// The field takes many lines: a New Line key, and Done finishes.
+    lines: bool,
+    /// The field has suggestions (chat): RT fills them in, the right stick picks one.
+    suggests: bool,
+    /// The right stick has picked and not come back to rest.
+    stick_out: bool,
 }
 impl Default for Keyboard {
     fn default() -> Self {
@@ -169,13 +204,49 @@ impl Default for Keyboard {
             symbols: false,
             shift: false,
             caps: false,
+            lines: false,
+            suggests: false,
+            stick_out: false,
         }
     }
 }
 
 impl Keyboard {
+    /// A keyboard over a field of many `lines` (New Line beside Done), and one with
+    /// suggestions (`suggests`: RT and the right stick reach them).
+    pub fn new(lines: bool, suggests: bool) -> Self {
+        Self {
+            lines,
+            suggests,
+            ..Self::default()
+        }
+    }
     fn rows(&self) -> &'static [Row; 5] {
-        if self.symbols { &SYMBOLS } else { &LETTERS }
+        match (self.symbols, self.lines) {
+            (false, false) => &LETTERS,
+            (true, false) => &SYMBOLS,
+            (false, true) => &LETTERS_LINES,
+            (true, true) => &SYMBOLS_LINES,
+        }
+    }
+    /// The right stick's height (up is +): the suggestion before or after, once per push.
+    pub fn stick(&mut self, y: f32) -> Option<Output> {
+        if !self.suggests {
+            return None;
+        }
+        if self.stick_out {
+            self.stick_out = y.abs() >= STICK_REST;
+            return None;
+        }
+        if y.abs() < STICK_PICK {
+            return None;
+        }
+        self.stick_out = true;
+        Some(if y > 0.0 {
+            Output::Previous
+        } else {
+            Output::Next
+        })
     }
     /// A key's left edge and width in key units.
     fn span(row: Row, col: usize) -> (f32, f32) {
@@ -244,7 +315,8 @@ impl Keyboard {
             }
             Key::Space => Some(Output::Text(" ".into())),
             Key::Backspace => Some(Output::Backspace),
-            Key::Done => Some(Output::Enter),
+            Key::NewLine => Some(Output::Enter),
+            Key::Done => Some(Output::Done),
         }
     }
     /// A pad button while the keyboard is open; `None` when it does nothing
@@ -255,7 +327,8 @@ impl Keyboard {
             Some(MenuJob::Confirm) => self.press(),
             Some(MenuJob::Alternate) => Some(Output::Backspace),
             Some(MenuJob::Extra) => Some(Output::Text(" ".into())),
-            Some(MenuJob::Start) => Some(Output::Enter),
+            Some(MenuJob::Start) => Some(Output::Done),
+            Some(MenuJob::GroupNext) if self.suggests => Some(Output::Complete),
             Some(MenuJob::Back) => Some(Output::Close),
             Some(MenuJob::LeftStick | MenuJob::GroupPrev) => {
                 self.shift = !self.shift;
@@ -284,6 +357,7 @@ impl Keyboard {
         const UNIT: f32 = 50.0;
         const GAP: f32 = 6.0;
         const KEY_H: f32 = 38.0;
+        const LABEL_PAD: f32 = 4.0;
         let width = 10.0 * UNIT + 9.0 * GAP;
         let height = 5.0 * KEY_H + 4.0 * GAP + 24.0 + 30.0;
         let x0 = ((ui.w - width) / 2.0).round();
@@ -329,12 +403,17 @@ impl Keyboard {
                     Key::Layer => "&123".into(),
                     Key::Space => tr("horizon.osk.space", "Space"),
                     Key::Backspace => tr("horizon.osk.delete", "Delete"),
+                    Key::NewLine => tr("horizon.osk.new_line", "New Line"),
                     Key::Done => tr("gui.done", "Done"),
                 };
-                let lw = ui.measure(Face::Medium, ui_theme::body(), &label);
+                // Smaller when the label is wider than its key (a long translation).
+                let room = w - 2.0 * LABEL_PAD;
+                let wide = ui.measure(Face::Medium, ui_theme::body(), &label);
+                let size = ui_theme::body() * (room / wide).min(1.0);
+                let lw = ui.measure(Face::Medium, size, &label);
                 ui.text_line(
                     Face::Medium,
-                    ui_theme::body(),
+                    size,
                     KEY_H,
                     x + ((w - lw) / 2.0).round(),
                     y,
@@ -343,18 +422,23 @@ impl Keyboard {
                 );
             }
         }
+        let complete = self
+            .suggests
+            .then(|| (MenuJob::GroupNext, tr("horizon.osk.complete", "Complete")));
         let hints = [
-            (MenuJob::Confirm, tr("horizon.osk.type", "Type")),
-            (MenuJob::Alternate, tr("horizon.osk.delete", "Delete")),
-            (MenuJob::Extra, tr("horizon.osk.space", "Space")),
-            (MenuJob::GroupPrev, tr("horizon.osk.shift", "Shift")),
-            (MenuJob::PageNext, tr("horizon.osk.symbols", "Symbols")),
-            (MenuJob::Start, tr("gui.done", "Done")),
-            (MenuJob::Back, tr("horizon.osk.close", "Close")),
+            Some((MenuJob::Confirm, tr("horizon.osk.type", "Type"))),
+            Some((MenuJob::Alternate, tr("horizon.osk.delete", "Delete"))),
+            Some((MenuJob::Extra, tr("horizon.osk.space", "Space"))),
+            Some((MenuJob::GroupPrev, tr("horizon.osk.shift", "Shift"))),
+            complete,
+            Some((MenuJob::PageNext, tr("horizon.osk.symbols", "Symbols"))),
+            Some((MenuJob::Start, tr("gui.done", "Done"))),
+            Some((MenuJob::Back, tr("horizon.osk.close", "Close"))),
         ];
         // This font draws no glyph art: each button by its print, "A Type".
         let line: Vec<String> = hints
             .into_iter()
+            .flatten()
             .map(|(job, what)| HintRow::new([Glyph::menu(job, glyphs)], what).text())
             .collect();
         ui.text_centered(
@@ -399,7 +483,7 @@ mod tests {
         k.step(Button::DPadDown);
         k.step(Button::DPadDown);
         k.step(Button::DPadDown);
-        assert_eq!(k.press(), Some(Output::Enter));
+        assert_eq!(k.press(), Some(Output::Done));
         k.col = 2;
         assert_eq!(k.press(), Some(Output::Text(" ".into())));
         k.step(Button::DPadUp);
@@ -420,6 +504,39 @@ mod tests {
         assert_eq!(k.press(), Some(Output::Text("/".into())));
         assert_eq!(k.button(Button::West), Some(Output::Backspace));
         assert_eq!(k.button(Button::East), Some(Output::Close));
-        assert_eq!(k.button(Button::Start), Some(Output::Enter));
+        assert_eq!(k.button(Button::Start), Some(Output::Done));
+        // No suggestions here: RT and the right stick do nothing.
+        assert_eq!(k.button(Button::RightTrigger), None);
+        assert_eq!(k.stick(1.0), None);
+    }
+
+    #[test]
+    fn many_lines_have_a_new_line_key_and_done_still_finishes() {
+        let mut k = Keyboard::new(true, false);
+        // From `q` down to the bottom row's right end: Done; New Line two keys before it.
+        for _ in 0..3 {
+            k.step(Button::DPadDown);
+        }
+        k.col = k.rows()[4].len() - 1;
+        assert_eq!(k.press(), Some(Output::Done));
+        k.step(Button::DPadLeft);
+        k.step(Button::DPadLeft);
+        assert_eq!(k.press(), Some(Output::Enter));
+        assert_eq!(k.button(Button::Start), Some(Output::Done));
+        // The symbols grid keeps it.
+        k.button(Button::RightBumper);
+        assert_eq!(k.press(), Some(Output::Enter));
+    }
+
+    #[test]
+    fn suggestions_take_rt_and_one_pick_per_push_of_the_right_stick() {
+        let mut k = Keyboard::new(false, true);
+        assert_eq!(k.button(Button::RightTrigger), Some(Output::Complete));
+        assert_eq!(k.stick(0.3), None, "a lean isn't a push");
+        assert_eq!(k.stick(0.9), Some(Output::Previous));
+        assert_eq!(k.stick(1.0), None, "held, it picks once");
+        assert_eq!(k.stick(0.4), None, "not yet back at rest");
+        assert_eq!(k.stick(0.1), None);
+        assert_eq!(k.stick(-0.9), Some(Output::Next));
     }
 }
