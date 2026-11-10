@@ -7339,7 +7339,8 @@ def vehicle_fall_clip():
     falls through one block of water and ends the move below it, out of the water's own reset.
     """
     x0, y0, z0 = 3648, 260, 3648
-    chunk = [[x0 >> 4, z0 >> 4]]
+    # Entities tick once the forced chunk's 2-column neighbourhood is loaded (ChunkMap.prepareEntityTickingChunk).
+    chunk = [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]
     ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
            cmd('/tick freeze', False),
            cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', expect_result=256)]
@@ -7420,7 +7421,8 @@ def boat_float_height():
     coarse, and are read for 10 ticks.
     """
     x0, y0, z0 = 3776, 279, 3776
-    chunk = [[x0 >> 4, z0 >> 4]]
+    # Entities tick once the forced chunk's 2-column neighbourhood is loaded (ChunkMap.prepareEntityTickingChunk).
+    chunk = [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]
     ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
            cmd('/tick freeze', False)]
     # (x, water blocks to set, boat y, motion y)
