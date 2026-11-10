@@ -1,6 +1,10 @@
 //! The per-tick mob update in vanilla order (`Entity.baseTick`,
 //! `LivingEntity.baseTick/tick/aiStep`, `Mob.serverAiStep`) and the
 //! dispatch to each species family's goals and special behaviour.
+mod feeding;
+
+pub use feeding::takes_food;
+
 use super::{
     Damage, DamageKind, Mob, MobEvent, MobWorld, Species, Who, aquatic,
     control::{BodyRotation, LookControl, MoveControl},
@@ -2425,16 +2429,6 @@ pub fn voice_sounds(m: &Mob) -> [&'static str; 3] {
         _ => m.kind.sounds,
     }
 }
-/// Whether `Animal.mobInteract` takes the animal's food: an adult at age 0
-/// that `canFallInLove` (not in love yet) or a baby that `canAgeUp` (not age
-/// locked). Tamed wolves and cats only sit or stand when it does not.
-pub fn takes_food(m: &Mob) -> bool {
-    // `Turtle.canFallInLove` is `super.canFallInLove() && !this.hasEgg()`: a
-    // turtle that already carries an egg refuses its food instead of breeding.
-    let breedable =
-        m.extra.in_love <= 0 && !(m.species() == Species::Turtle && super::turtle::has_egg(m));
-    (m.extra.age == 0 && breedable) || (m.extra.age < 0 && !m.extra.age_locked)
-}
 /// `Animal.mobInteract` with its food in hand: an adult that can fall in
 /// love does, a baby grows up by a tenth, and either plays its eating sound
 /// (`Strider.mobInteract` plays its own afterwards). `None` when the animal
@@ -4390,6 +4384,36 @@ mod feed_tests {
             m.extra.age = 6000;
             assert!(!takes_food(&m), "{id}: breeding cooldown");
         }
+    }
+
+    /// `Animal.mobInteract`'s growing branch is `canAgeUp()` — `isBaby() &&
+    /// !isAgeLocked()` — and a species `canBeABaby` says is never a baby does
+    /// not grow when fed, however negative its `Age` is: a frog spawned with
+    /// `Age` at `getBabyStartAge` keeps its food. A cow at the same age takes
+    /// it and grows a tenth.
+    #[test]
+    fn a_mob_that_cannot_be_a_baby_never_takes_the_food_that_grows_it() {
+        let mob = |id: &str, species: Species, age: i32| {
+            let mut kind = crate::mobs::sensor_scan_tests::kind();
+            let k = Arc::make_mut(&mut kind);
+            k.id = id.into();
+            k.species = species;
+            let mut m = Mob::new(1, kind, Vec3::ZERO, 0.0);
+            m.extra.age = age;
+            m
+        };
+        let mut level = LegacyRandom::new(0);
+        let mut frog = mob("minecraft:frog", Species::Frog, -24_000);
+        assert!(!frog.is_baby());
+        assert!(!takes_food(&frog), "a frog is never a baby");
+        assert!(feed_animal(&mut frog, &mut level, None).is_none());
+        assert_eq!(frog.extra.age, -24_000, "it does not grow");
+
+        let mut cow = mob("minecraft:cow", Species::Cow, -24_000);
+        assert!(cow.is_baby());
+        assert!(takes_food(&cow));
+        assert!(feed_animal(&mut cow, &mut level, None).is_some());
+        assert_eq!(cow.extra.age, -24_000 + 120 * 20, "it grows a tenth");
     }
 
     /// `Turtle.canFallInLove` (#8612): a turtle that already carries an egg
