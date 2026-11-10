@@ -201,12 +201,17 @@ pub fn consumable(stack: &ItemStack, items: &crate::items::Items) -> Option<Item
     let Some(data) = stack.data() else {
         return out;
     };
+    // `from_network` already wrote the wire patch's consumable here, resolved
+    // through the real registries: decoding the raw bytes again without them
+    // would lose registered effects and sounds.
+    let mut resolved = false;
     if data.other("!minecraft:consumable").is_some() {
         out = None;
     } else if let Some(tag) = data.other("minecraft:consumable")
         && let Some(c) = decode_consumable_tag(tag)
     {
         out = Some(c);
+        resolved = true;
     }
     let Some((added, removed)) = data
         .wire
@@ -220,6 +225,7 @@ pub fn consumable(stack: &ItemStack, items: &crate::items::Items) -> Option<Item
     }
     for (kind, c) in &added {
         if let (component::CONSUMABLE, Component::Raw(bytes)) = (*kind, c)
+            && !resolved
             && let Some(mut c) = decode_consumable_bytes(bytes)
         {
             if c.sound.is_empty() {
@@ -1275,12 +1281,18 @@ mod tests {
         r.varint(2); // Drink
         r.varint(1); // Registered sound holder (id 0 + 1)
         r.bool(true); // particles
-        r.varint(1); // 1 effect
+        r.varint(2); // 2 effects
         r.varint(2); // ClearAllEffects (type 2)
+        r.varint(1); // RemoveEffects (type 1)
+        r.varint(2); // holder set of 1 entry
+        r.varint(0); // mob effect id 0
         let consumable_bytes = r.data;
 
+        // Not the honey bottle's own sound, so a fallback to the prototype shows.
         let mut sounds = horizon_protocol::registry::Ids::default();
-        sounds.names = vec!["minecraft:item.honey_bottle.drink".into()];
+        sounds.names = vec!["minecraft:entity.generic.drink".into()];
+        let mut mob_effects = horizon_protocol::registry::Ids::default();
+        mob_effects.names = vec!["minecraft:poison".into()];
         let mut item_ids = horizon_protocol::registry::Ids::default();
         item_ids.names = vec!["minecraft:honey_bottle".into()];
         let mut comp_ids = horizon_protocol::registry::Ids::default();
@@ -1288,6 +1300,7 @@ mod tests {
         comp_ids.names[component::CONSUMABLE as usize] = "minecraft:consumable".into();
         let mut registries = std::collections::HashMap::new();
         registries.insert("minecraft:sound_event".into(), sounds);
+        registries.insert("minecraft:mob_effect".into(), mob_effects);
         registries.insert("minecraft:item".into(), item_ids);
         registries.insert("minecraft:data_component_type".into(), comp_ids);
         let builtin = Builtin { registries };
@@ -1295,8 +1308,12 @@ mod tests {
         let decoded = decode_consumable_bytes_with(&consumable_bytes, Some(&builtin))
             .expect("decoded with builtin");
         assert_eq!(decoded.animation, UseAnimation::Drink);
-        assert_eq!(decoded.sound, "minecraft:item.honey_bottle.drink");
-        assert_eq!(decoded.effects, vec![ConsumeEffect::ClearAllEffects]);
+        assert_eq!(decoded.sound, "minecraft:entity.generic.drink");
+        let effects = vec![
+            ConsumeEffect::ClearAllEffects,
+            ConsumeEffect::RemoveEffects(vec!["minecraft:poison".into()]),
+        ];
+        assert_eq!(decoded.effects, effects);
 
         // Creative client / network stack via from_network & components_tag
         let mut s = horizon_protocol::item::Stack::new(0, 1);
@@ -1308,8 +1325,8 @@ mod tests {
         let net_stack = from_network(&s, &builtin, &synced);
         let net_c = consumable(&net_stack, &items).expect("network stack consumable");
         assert_eq!(net_c.animation, UseAnimation::Drink);
-        assert_eq!(net_c.sound, "minecraft:item.honey_bottle.drink");
-        assert_eq!(net_c.effects, vec![ConsumeEffect::ClearAllEffects]);
+        assert_eq!(net_c.sound, "minecraft:entity.generic.drink");
+        assert_eq!(net_c.effects, effects);
     }
 
     #[test]
