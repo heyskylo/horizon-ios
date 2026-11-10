@@ -1255,7 +1255,7 @@ impl Game<'_> {
         }
         self.check_inventory_trigger();
         // ServerPlayer.tick: PlayerTrigger.TICK every tick.
-        let me = self.player_entity_for("minecraft:tick");
+        let me = self.player_entity_if_listened("minecraft:tick");
         self.trigger("minecraft:tick", |c, w| {
             let ctx = adv::Entities {
                 this: Some(&me),
@@ -1289,7 +1289,7 @@ impl Game<'_> {
         }
         self.tick_marks();
         if self.ticks.is_multiple_of(20) {
-            let me = self.player_entity_for("minecraft:location");
+            let me = self.player_entity_if_listened("minecraft:location");
             self.trigger("minecraft:location", |c, w| {
                 let ctx = adv::Entities {
                     this: Some(&me),
