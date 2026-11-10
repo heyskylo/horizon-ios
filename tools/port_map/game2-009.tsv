@@ -26,7 +26,7 @@ BlockItemStateProperties.get	port	crates/horizon-client/src/item_tooltip.rs::hon
 BlockItemStateProperties.apply	port	crates/horizon-client/src/game/block_items.rs::Game::apply_item_block_state	sets the item's block state properties on the placed block
 BlockItemStateProperties.updateState	inline	crates/horizon-client/src/game/block_items.rs::Game::apply_item_block_state	the per-property set, only for properties the block has
 BlocksAttacks.onBlocked	port	crates/horizon-client/src/game/shield.rs::Game::after_block	gap: minor: block sound plays on this client only
-BlocksAttacks.hurtBlockingItem	port	crates/horizon-client/src/game/shield.rs::Game::after_block	item damage by the damage function, shield breaks at max damage; gap: minor: no ITEM_USED stat
+BlocksAttacks.hurtBlockingItem	port	crates/horizon-client/src/game/shield.rs::Game::after_block	item damage by the damage function (the shield breaks at max damage), and the hit counts the blocking item as used on the server before the blocked-damage check
 BlocksAttacks.disableBlockingForTicks	port	crates/horizon-client/src/game/shield.rs::Game::blocked_by_attacker	disable seconds times disable scale, rounded to ticks, sets the item cooldown
 BlocksAttacks.resolveBlockedDamage	port	crates/horizon-world/src/blocking_rules.rs::BlockingRules::resolve	damage reductions by angle and damage type
 BundleContents.computeContentWeight	port	crates/horizon-items/src/bundle.rs::contents_weight	sum of item weights times counts; nested bundles add 1/16
