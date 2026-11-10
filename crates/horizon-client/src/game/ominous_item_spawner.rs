@@ -92,10 +92,10 @@ impl Game<'_> {
         let saved = horizon_client::entity_nbt::uuid(&tag);
         // Its saved UUID and the attachments saved under it (#7398).
         self.remember_uuid(id, saved, &tag);
-        // Entity.load's `setXRot` keeps the pitch in -90..90 (after `% 360`),
-        // and the save writes the rotation back from this tag.
+        // Entity.load's `setXRot` keeps the pitch in -90..90 and its `setRot`
+        // takes both `% 360`; the save writes the rotation back from this tag.
         let [yaw, pitch] = horizon_client::entity_nbt::rotation(&tag);
-        let pitch = (pitch % 360.0).clamp(-90.0, 90.0);
+        let (yaw, pitch) = (yaw % 360.0, (pitch % 360.0).clamp(-90.0, 90.0));
         let floats = [yaw, pitch].map(|v| horizon_world::nbt::Tag::Float(v.to_bits()));
         if let horizon_world::nbt::Tag::Compound(map) = &mut tag {
             map.insert(
