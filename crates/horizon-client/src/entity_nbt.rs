@@ -2978,7 +2978,8 @@ pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemE
 /// `OminousItemSpawner.addAdditionalSaveData`: its item (left out when
 /// empty) and `spawn_item_after_ticks`. Its tick count is the entity's
 /// `tickCount`, which isn't saved: a reloaded spawner counts from 0 again.
-/// It never moves, so the `Motion` it was loaded with is what it saves.
+/// It never moves or turns: it saves the Motion, Rotation, OnGround and
+/// fall_distance it was loaded with (`Entity.load`).
 pub fn ominous_item_spawner_to_nbt(
     item: &crate::items::ItemStack,
     position: Vec3,
@@ -2991,13 +2992,12 @@ pub fn ominous_item_spawner_to_nbt(
         uuid,
         position,
         motion: raw.map_or(Vec3::ZERO, loaded_motion),
-        rotation: [0.0, 0.0],
-        on_ground: false,
-        fall_distance: 0.0,
+        rotation: raw.map_or([0.0, 0.0], rotation),
+        on_ground: raw.is_some_and(|t| flag(t, "OnGround")),
+        fall_distance: float(raw.and_then(|t| t.get("fall_distance"))).unwrap_or(0.0),
     };
     let mut tag = base.tag(raw);
-    // `ItemStack.CODEC` can't encode `ItemStack.EMPTY`, so an empty item
-    // writes no key.
+    // `ItemStack.CODEC` can't encode `ItemStack.EMPTY`: an empty item writes no key.
     if let Tag::Compound(map) = &mut tag {
         map.remove(&"item".into());
     }

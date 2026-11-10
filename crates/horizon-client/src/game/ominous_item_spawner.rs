@@ -81,7 +81,7 @@ impl Game<'_> {
     }
     /// A saved spawner, as `readAdditionalSaveData` leaves it: its tick
     /// count starts again from 0.
-    pub(super) fn load_ominous_item_spawner(&mut self, tag: horizon_world::nbt::Tag) {
+    pub(super) fn load_ominous_item_spawner(&mut self, mut tag: horizon_world::nbt::Tag) {
         let Some((item, at, spawn_item_after)) =
             horizon_client::entity_nbt::ominous_item_spawner_from_nbt(&tag)
         else {
@@ -92,6 +92,17 @@ impl Game<'_> {
         let saved = horizon_client::entity_nbt::uuid(&tag);
         // Its saved UUID and the attachments saved under it (#7398).
         self.remember_uuid(id, saved, &tag);
+        // Entity.load's `setXRot` keeps the pitch in -90..90 (after `% 360`),
+        // and the save writes the rotation back from this tag.
+        let [yaw, pitch] = horizon_client::entity_nbt::rotation(&tag);
+        let pitch = (pitch % 360.0).clamp(-90.0, 90.0);
+        let floats = [yaw, pitch].map(|v| horizon_world::nbt::Tag::Float(v.to_bits()));
+        if let horizon_world::nbt::Tag::Compound(map) = &mut tag {
+            map.insert(
+                "Rotation".into(),
+                horizon_world::nbt::Tag::List(floats.into()),
+            );
+        }
         let uuid = self.uuid_for(id);
         self.ominous_spawners.push(OminousItemSpawner {
             id,
