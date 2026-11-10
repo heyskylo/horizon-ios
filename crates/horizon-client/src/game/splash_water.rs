@@ -55,7 +55,13 @@ impl Game<'_> {
     /// face it hit, the cell behind that (the block it hit) and the four
     /// horizontal neighbours of the cell in front. `hit` is the block and
     /// `face` the face it was hit on.
-    pub(super) fn potion_hit_block(&mut self, stack: &ItemStack, hit: [i32; 3], face: Direction) {
+    pub(super) fn potion_hit_block(
+        &mut self,
+        stack: &ItemStack,
+        hit: [i32; 3],
+        face: Direction,
+        owner: Option<Who>,
+    ) {
         // `PotionContents.is(PotionTags.DOUSES_FIRE)` on the stack's `potion_contents`.
         if !self.potion_in_tag(stack, "minecraft:douses_fire") {
             return;
@@ -65,8 +71,8 @@ impl Game<'_> {
             [pos[0] + n[0], pos[1] + n[1], pos[2] + n[2]]
         };
         let effect = relative(hit, face);
-        self.douse_fire(effect);
-        self.douse_fire(relative(effect, face.opposite()));
+        self.douse_fire(effect, owner);
+        self.douse_fire(relative(effect, face.opposite()), owner);
         // Direction.Plane.HORIZONTAL.
         for direction in [
             Direction::North,
@@ -74,14 +80,14 @@ impl Game<'_> {
             Direction::South,
             Direction::West,
         ] {
-            self.douse_fire(relative(effect, direction));
+            self.douse_fire(relative(effect, direction), owner);
         }
     }
 
     /// `AbstractThrownPotion.douseFire`: a fire block is destroyed without
     /// drops, a lit candle or candle cake goes out, and a lit campfire goes
     /// out after level event 1009 and its block-change game event.
-    fn douse_fire(&mut self, pos: [i32; 3]) {
+    fn douse_fire(&mut self, pos: [i32; 3], owner: Option<Who>) {
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
         let state = self.world.block(pos[0], pos[1], pos[2]);
         let name = self.res.facts().get(state).name.clone();
@@ -97,9 +103,9 @@ impl Game<'_> {
             && let Some(mut lit) = self.lit_campfire(state, &name)
         {
             self.level_event_at(1009, pos, 0);
-            // CampfireBlock.douse: the block-change game event, whose source
-            // is the potion's owner (not tracked here).
-            self.post_block_game_event("minecraft:block_change", pos, None, None);
+            // `CampfireBlock.douse(entity, ...)`: the block-change game event,
+            // sourced from the potion's owner as vanilla passes `getOwner()`.
+            self.post_block_game_event("minecraft:block_change", pos, owner, None);
             lit.properties.insert("lit".into(), "false".into());
             if let Ok(unlit) = self.pack.assets.registry.resolve(&lit) {
                 let _ = self.level_set(pos, unlit);
