@@ -48,7 +48,7 @@ CommandSuggestions.extractSuggestions	port	crates/horizon-client-render/src/chat
 CommandSuggestions.extractUsage	port	crates/horizon-client-render/src/chat.rs::ChatScreen::draw	usage lines drawn upward from the bottom, as vanilla's bottom anchor
 CommandSuggestions.getNarrationMessage	inline	crates/horizon-client-render/src/chat.rs::SuggestionList::narration_message	the selected suggestion, said when the selection moves (ChatScreen::select); gap: minor: the chat screen's own narration does not add it (screen_info::chat reads the usage and the typed message)
 CommandSuggestions.hasAllowedInput	port	crates/horizon-client-render/src/chat.rs::ChatAbilities::allows	gap: minor: a /say style command is judged as a command, not a message (see hasMessageArguments)
-CommandSuggestions.SuggestionsList.extractRenderState	port	crates/horizon-client-render/src/chat.rs::ChatScreen::draw_list	rows, scroll marks, highlight and tooltip; gap: minor: no pointing-hand cursor over the rows
+CommandSuggestions.SuggestionsList.extractRenderState	port	crates/horizon-client-render/src/chat.rs::ChatScreen::draw_list	rows, scroll marks, highlight and tooltip, and the pointing hand over the list's rectangle
 CommandSuggestions.SuggestionsList.mouseClicked	port	crates/horizon-client-render/src/chat.rs::ChatScreen::click	row click selects and uses the suggestion
 CommandSuggestions.SuggestionsList.keyPressed	port	crates/horizon-client-render/src/chat.rs::ChatScreen::key	up, down and tab cycle and use the suggestion
 CommandSuggestions.SuggestionsList.cycle	port	crates/horizon-client-render/src/chat.rs::ChatScreen::cycle	moves the selection and the scroll offset
@@ -93,6 +93,7 @@ DebugScreenOverlay.toggleLightmapTexture	port	crates/horizon-client/src/debug_ch
 DebugScreenOverlay.toggleProfilerChart	port	crates/horizon-client/src/debug_chart.rs::DebugCharts::toggle_fps	the chart key turns the FPS chart on (and the F3 overlay with it), turning the network and lightmap charts off
 DebugScreenOverlay.logRemoteSample	missing		minor: unsure: the debug_sample packet is only named in horizon-protocol/src/ids.rs, so a server's samples are not logged
 EditBox.createNarrationMessage	inline	crates/horizon-client/src/screen_narrator.rs::narrate	narrate's edit-box arm: gui.narrate.editBox(message, value); Narratable::edit_box is recorded by ui::EditBox::draw and screen_draw's field
+EditBox.setInvertHighlightedTextColor	port	crates/horizon-client-render/src/ui.rs::EditBox::draw_with_skin	the selected text inverts unless the box turns it off (the anvil's rename box does)
 EditBox.getHighlighted	port	crates/horizon-client-render/src/ui.rs::EditBox::selected_text	the text between cursor and highlight
 EditBox.moveCursorTo	port	crates/horizon-client-render/src/ui.rs::EditBox::set_cursor	sets the cursor and keeps the highlight unless extending
 EditBox.setCursorPosition	port	crates/horizon-client-render/src/ui.rs::EditBox::set_cursor	clamps and scrolls to the cursor
@@ -105,6 +106,7 @@ EditBox.setMaxLength	port	crates/horizon-client-render/src/ui.rs::Caret::sync	ga
 EditBox.setFocused	port	crates/horizon-client-render/src/ui.rs::Caret::draw	focus restarts the blink clock here; gap: minor: no IME or narration side effects
 EditBox.setEditable	missing		minor: unsure: no read-only flag on the box in ui.rs; a box vanilla locks would accept typing
 EditBox.setHighlightPos	port	crates/horizon-client-render/src/ui.rs::EditBox::set_cursor	sets the highlight and scrolls
+EditBox.setCentered	port	crates/horizon-client-render/src/ui.rs::EditBox::text_start_x	the text and a click start (width - text width) / 2 in; BookSignScreen's title box sets it
 EditBox.setHint	inline	crates/horizon-client/src/title/create_world.rs::Title::create_field	the hint is passed when the box is made and drawn while it is empty and unfocused
 FittingMultiLineTextWidget.setWidth	skip:ui		layout: wrap width
 FittingMultiLineTextWidget.minimizeHeight	skip:ui		layout: height to content

@@ -24,7 +24,7 @@ HangingSignEditScreen.extractSignBackground	port	crates/horizon-client/src/game/
 HopperScreen.extractBackground	port	crates/horizon-client/src/game/machines.rs::Game::draw_machine_screen	hopper background for block and minecart hoppers
 HorseInventoryScreen.shouldRenderSaddleSlot	port	crates/horizon-client/src/game/mount_menu.rs::shows_saddle	saddle slot shown for every mount except llamas
 HorseInventoryScreen.shouldRenderArmorSlot	port	crates/horizon-client/src/game/mount_menu.rs::shows_body	armour slot for horse armour wearers and llamas
-InventoryScreen.containerTick	missing		minor: a survival inventory that stays open when the game mode becomes creative is not switched to the creative screen
+InventoryScreen.containerTick	port	crates/horizon-client/src/game/game_mode.rs::inventory_after_mode	the survival inventory becomes the creative one when the player gets infinite materials; a spectator's is still closed
 InventoryScreen.init	inline	crates/horizon-client/src/game/play_keys.rs::Game::key_pressed	gap: minor: the creative screen is chosen when E opens the inventory; no switch while a survival screen is already open
 InventoryScreen.getRecipeBookButtonPosition	port	crates/horizon-client/src/game/recipe_book.rs::Game::book_button_pos	book button at (leftPos+104, height/2-22), same as the crafting placement
 InventoryScreen.extractLabels	inline	crates/horizon-client/src/game.rs::Game::draw_inventory	Crafting title at x 97 in the survival inventory
@@ -34,7 +34,7 @@ InventoryScreen.extractEntityInInventoryFollowsMouse	port	crates/horizon-client/
 InventoryScreen.mouseReleased	inline	crates/horizon-client/src/game/inventory_input.rs::Game::inventory_mouse_release	release goes through the slot path; a recipe-book press is handled first and has no separate release flag
 ItemCombinerScreen.extractBackground	inline	crates/horizon-client/src/game/stations.rs::Game::draw_station	anvil and smithing backgrounds, with the error sprite
 JigsawBlockEditScreen	home	crates/horizon-client/src/game/block_editor.rs	
-LecternScreen.createMenuControls	inline	crates/horizon-client/src/game/books.rs::Game::draw_book	gap: player: Take Book and Done are drawn on every lectern; vanilla shows Take Book only with build permission (mayBuild)
+LecternScreen.createMenuControls	port	crates/horizon-client/src/game/books.rs::Game::book_click	Done is always drawn; Take Book only when the lectern allows building (`Game::may_build`)
 LoomScreen.init	skip:ui		bakes the banner flag model for the preview; the loom is drawn by screen_layout::loom
 LoomScreen.isScrollBarActive	port	crates/horizon-client/src/game/loom.rs::LoomState::offscreen_rows	gap: minor: more than 16 patterns (four rows of four); the displayPatterns check is at the call sites
 LoomScreen.extractBannerOnButton	port	crates/horizon-client/src/game/loom.rs::Game::paint_screen	grey square and pattern sprite on each pattern button (Fill and Atlas draws from screen_layout::loom)

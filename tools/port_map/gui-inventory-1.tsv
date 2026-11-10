@@ -82,7 +82,7 @@ BookEditScreen.appendPageToBook	inline	crates/horizon-client/src/game/books.rs::
 BookEditScreen.extractRenderState	port	crates/horizon-client/src/game/books.rs::Game::draw_book	
 BookEditScreen.visitText	inline	crates/horizon-client/src/game/books.rs::Game::draw_book	page number at the top right
 BookEditScreen.extractBackground	inline	crates/horizon-client/src/game/books.rs::Game::draw_book	book texture
-BookSignScreen.init	port	crates/horizon-client/src/game/books.rs::book_title_box	15 character centred title box; Sign and Cancel buttons are in book_click
+BookSignScreen.init	port	crates/horizon-client/src/game/books.rs::BookScreen::begin_signing	15 character title box opened with the title Cancel kept (titleValue); Sign and Sign and Close are in book_click and the control socket; gap: minor: the box is left aligned, vanilla centres it
 BookSignScreen.saveChanges	port	crates/horizon-client/src/game/books.rs::Game::save_book	sign=true sends the title with the pages
 BookSignScreen.extractRenderState	inline	crates/horizon-client/src/game/books.rs::Game::draw_book	title prompt, by author line, finalize warning
 BookSignScreen.extractBackground	inline	crates/horizon-client/src/game/books.rs::Game::draw_book	
@@ -95,7 +95,7 @@ BookViewScreen.pageBack	port	crates/horizon-client/src/game/books.rs::Game::turn
 BookViewScreen.pageForward	port	crates/horizon-client/src/game/books.rs::Game::turn_page	
 BookViewScreen.updateButtonVisibility	inline	crates/horizon-client/src/game/books.rs::Game::draw_book	back and forward shown by the page index
 BookViewScreen.keyPressed	port	crates/horizon-client/src/game/books.rs::Game::book_input	PageUp and PageDown turn pages
-BookViewScreen.extractRenderState	port	crates/horizon-client/src/game/books.rs::Game::draw_book	
+BookViewScreen.extractRenderState	port	crates/horizon-client/src/game/books.rs::Game::draw_book	pages, page buttons and the hovered word's tooltip and pointing hand (HoveredTextEffects.TOOLTIP_AND_CURSOR)
 BookViewScreen.visitText	inline	crates/horizon-client/src/game/books.rs::Game::draw_book	page lines and page indicator; links are found by book_link_at
 BookViewScreen.extractBackground	inline	crates/horizon-client/src/game/books.rs::Game::draw_book	
 BookViewScreen.BookAccess.getPage	inline	crates/horizon-client/src/game/books.rs::Game::draw_book	pages.get(page) with an empty page past the end

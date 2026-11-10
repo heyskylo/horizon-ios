@@ -407,10 +407,13 @@ fn set_peek(m: &mut Mob, amount: i32, events: &mut Vec<MobEvent>) {
 fn ease_peek(m: &mut Mob) -> (f32, f32) {
     let old = m.anim.v[PEEK];
     let target = m.extra.counter as f32 * 0.01;
+    // `Mth.clamp(float, float, float)` tolerates `max < min` (a negative or
+    // oversized raw `Peek`), where `f32::clamp` would panic.
+    let mth_clamp = |v: f32, lo: f32, hi: f32| if v < lo { lo } else { v.min(hi) };
     let new = if old > target {
-        (old - 0.05).clamp(target, 1.0)
+        mth_clamp(old - 0.05, target, 1.0)
     } else {
-        (old + 0.05).clamp(0.0, target)
+        mth_clamp(old + 0.05, 0.0, target)
     };
     m.anim.v[PEEK] = new;
     (old, new)
@@ -855,9 +858,11 @@ pub fn texture(m: &Mob) -> String {
         "red",
         "black",
     ];
-    match COLORS.get(m.extra.color as usize) {
-        Some(c) => format!("entity/shulker/shulker_{c}"),
-        None => "entity/shulker/shulker".into(),
+    // Shulker.getColor: the saved byte is signed; 16 and above are undyed, and
+    // DyeColor.byId sends a negative id to white (OutOfBoundsStrategy.ZERO).
+    match m.extra.color as i8 {
+        16.. => "entity/shulker/shulker".into(),
+        c => format!("entity/shulker/shulker_{}", COLORS[c.max(0) as usize]),
     }
 }
 /// `attachFace.getOpposite().getRotation()` by attach face: the open
@@ -924,6 +929,18 @@ mod tests {
         assert_eq!(m.position, Vec3::new(0.5, 3.0, 0.5));
         client_set_pos(&mut m, 2.9, 3.0, -0.2);
         assert_eq!(m.position, Vec3::new(2.5, 3.0, -0.5));
+    }
+
+    /// `Mth.clamp` saturates when the target is below the floor: a negative
+    /// raw `Peek` eases the lid there once and then holds, no panic.
+    #[test]
+    fn a_negative_peek_target_does_not_panic() {
+        let mut m = shulker();
+        m.extra.counter = -1;
+        for _ in 0..3 {
+            ease_peek(&mut m);
+        }
+        assert_eq!(m.anim.v[PEEK], -0.01);
     }
 
     /// Shulker.setRawPeekAmount: the lid opening posts CONTAINER_OPEN and shutting
@@ -1142,5 +1159,48 @@ mod tests {
         m.extra.variant3 = DOWN;
         let (_, h, _) = m.dims();
         assert!((h - 1.0).abs() < 1e-9, "{h}");
+    }
+}
+
+#[cfg(test)]
+mod saved_bytes_tests {
+    use super::*;
+
+    /// `Shulker.readAdditionalSaveData`: `AttachFace` is
+    /// `Direction.LEGACY_ID_CODEC` (`from3DDataValue` wraps the id through
+    /// `abs(id % 6)`), while `Peek` and `Color` are raw `getByteOr` bytes. The
+    /// load clamped all three to their setters' ranges instead.
+    #[test]
+    fn a_shulker_reads_its_face_and_lid_bytes_like_vanilla() {
+        use crate::entity_nbt::mob_from_nbt;
+        use horizon_world::nbt::Tag;
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.id = "minecraft:shulker".into();
+        k.species = Species::Shulker;
+        let types = [("minecraft:shulker".into(), kind)].into();
+        let tag = Tag::compound([
+            ("id", Tag::String("minecraft:shulker".into())),
+            (
+                "Pos",
+                Tag::List(vec![
+                    Tag::Double(0.0f64.to_bits()),
+                    Tag::Double(64.0f64.to_bits()),
+                    Tag::Double(0.0f64.to_bits()),
+                ]),
+            ),
+            ("AttachFace", Tag::Byte(7)),
+            ("Peek", Tag::Byte(-1)),
+            ("Color", Tag::Byte(-1)),
+        ]);
+        let m = mob_from_nbt(&tag, &types, 1, None).unwrap();
+        assert_eq!(m.extra.variant3, 1, "abs(7 % 6) is up");
+        assert_eq!(m.extra.counter, -1, "the peek byte is kept");
+        assert_eq!(m.extra.color, 255, "the color byte is kept");
+        assert_eq!(
+            texture(&m),
+            "entity/shulker/shulker_white",
+            "DyeColor.byId(-1)"
+        );
     }
 }

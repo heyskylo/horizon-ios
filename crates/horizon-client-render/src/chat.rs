@@ -16,6 +16,45 @@ use crate::{
 #[path = "chat_tests.rs"]
 mod tests;
 
+/// `FilterMask.applyWithFormatting` over a player message's signed content, as
+/// the packet's mask `(type, bit set)`: as it is when passed through, none when
+/// fully filtered, and when partly filtered each masked UTF-16 unit becomes a
+/// `#` in `FILTERED_STYLE` (dark grey, hover "chat.filtered").
+pub fn filtered_message(
+    content: &str,
+    (kind, bits): &(i32, Vec<i64>),
+) -> Option<serde_json::Value> {
+    match kind {
+        1 => return None,
+        2 => {}
+        _ => return Some(serde_json::Value::from(content)),
+    }
+    let masked = |i: usize| {
+        bits.get(i / 64)
+            .is_some_and(|w| (*w as u64 >> (i % 64)) & 1 != 0)
+    };
+    let units: Vec<u16> = content.encode_utf16().collect();
+    let mut parts = Vec::new();
+    let mut start = 0;
+    while start < units.len() {
+        let filtered = masked(start);
+        let end = (start..units.len())
+            .find(|&i| masked(i) != filtered)
+            .unwrap_or(units.len());
+        parts.push(if filtered {
+            serde_json::json!({
+                "text": "#".repeat(end - start),
+                "color": "dark_gray",
+                "hover_event": {"action": "show_text", "value": {"translate": "chat.filtered"}},
+            })
+        } else {
+            serde_json::Value::from(String::from_utf16_lossy(&units[start..end]))
+        });
+        start = end;
+    }
+    Some(serde_json::json!({"text": "", "extra": parts}))
+}
+
 /// `CommandHistory.PERSISTED_COMMANDS_FILE_NAME` and its size cap.
 const COMMAND_HISTORY_FILE: &str = "command_history.txt";
 const MAX_PERSISTED_COMMAND_HISTORY: usize = 50;
@@ -2047,6 +2086,11 @@ impl ChatScreen {
     ) {
         let limit = l.list.len().min(self.layout.line_limit);
         let [rx, ry, rw, rh] = l.rect;
+        // SuggestionsList.extractRenderState: the whole list asks for the
+        // pointing hand while the pointer is inside its rectangle.
+        if mouse.0 >= rx && mouse.0 < rx + rw && mouse.1 >= ry && mouse.1 < ry + rh {
+            crate::widgets::request_cursor(crate::widgets::Cursor::PointingHand);
+        }
         let has_prev = l.offset > 0;
         let has_next = l.list.len() > l.offset + limit;
         let moved = l.last_mouse != mouse;

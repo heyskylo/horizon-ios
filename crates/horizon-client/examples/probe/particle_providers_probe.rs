@@ -194,6 +194,7 @@ pub fn main() -> Result<()> {
             facts: &facts,
             collision: &collision,
             player: None,
+            cached_chunk: std::cell::Cell::new(None),
         };
         let v = |key: &str| -> [f64; 3] {
             std::array::from_fn(|i| case[key][i].as_f64().unwrap_or(0.0))

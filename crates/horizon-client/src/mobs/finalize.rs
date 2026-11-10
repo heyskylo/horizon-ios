@@ -510,9 +510,6 @@ pub fn base_value(m: &Mob, a: Attr) -> f64 {
 /// [`base_value`] with the type's default given (`default_value`), for a
 /// caller that already looked it up for the mob's type.
 pub fn base_value_with(m: &Mob, a: Attr, default: impl FnOnce() -> Option<f64>) -> f64 {
-    if a == Attr::MovementSpeed && m.species() == Species::Ravager {
-        return m.attrs.speed;
-    }
     m.extra
         .attributes
         .as_ref()
@@ -532,8 +529,7 @@ pub fn base_value_with(m: &Mob, a: Attr, default: impl FnOnce() -> Option<f64>) 
 /// growing up) is saved apart; these are the rest:
 /// - `movement_speed`: Zombie and Piglin.setBaby (the load calls it even for an
 ///   adult), `Enderman.setTarget` (the load ends in `readPersistentAngerSaveData`,
-///   which calls it), a Ravager whose load leaves it immobile, and the first tick of
-///   any mob (`LivingEntity.removeFrost`).
+///   which calls it), and the first tick of any mob (`LivingEntity.removeFrost`).
 /// - `max_health`: `Wolf.applyTamingSideEffects`, through `setTame(false, true)`
 ///   when the load finds no owner (a wolf that is tamed in game makes it too).
 /// - `attack_damage`: `Rabbit.setVariant`, and a baby Goat or Hoglin, whose load's
@@ -541,11 +537,7 @@ pub fn base_value_with(m: &Mob, a: Attr, default: impl FnOnce() -> Option<f64>) 
 pub fn made_at_load(m: &Mob) -> Vec<Attr> {
     let s = m.species();
     let mut made = Vec::new();
-    if super::doors::is_zombie(s)
-        || matches!(s, Species::Piglin | Species::Enderman)
-        || (s == Species::Ravager && super::ravager::immobile(m))
-        || m.age > 0
-    {
+    if super::doors::is_zombie(s) || matches!(s, Species::Piglin | Species::Enderman) || m.age > 0 {
         made.push(Attr::MovementSpeed);
     }
     if s == Species::Wolf {
