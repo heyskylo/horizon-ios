@@ -4,7 +4,7 @@ ActiveTextCollector.acceptScrollingWithDefaultCenter	port	crates/horizon-client-
 ActiveTextCollector.defaultScrollingHelper	port	crates/horizon-client-render/src/screen_draw.rs::scrolling_text	the offset is ui.rs::scroll_offset (screen_draw.rs::scroll_offset for the screen_draw widgets); ui.rs::centered_text, for titles and text lines, still clips because vanilla does not scroll them
 ActiveTextCollector.findElementUnderCursor	port	crates/horizon-client-render/src/chat.rs::Chat::style_at	gap: minor: hit test covers chat lines only; book links use game/books.rs book_link_at
 ActiveTextCollector.isPointInRectangle	port	crates/horizon-client-render/src/ui.rs::hovered	half-open rectangle test with the same bounds
-ActiveTextCollector.ClickableStyleFinder.accept	port	crates/horizon-client-render/src/chat.rs::Chat::style_at	gap: minor: only chat lines are searched for click and hover styles
+ActiveTextCollector.ClickableStyleFinder.accept	port	crates/horizon-client-render/src/chat.rs::Chat::style_at	gap: minor: only chat lines and dialog body lines (dialog_screen.rs::line_style_at, glyph bounds like BakedSheetGlyph.GlyphInstance) are searched for click and hover styles
 ActiveTextCollector.ClickableStyleFinder.acceptScrolling	missing		minor: scrolling text is not hit-tested for click and hover styles (Chat::style_at searches chat lines only)
 ActiveTextCollector.Parameters.withScale	skip:java		record copy-with helper; Horizon has no pose matrix per text
 ActiveTextCollector.Parameters.withOpacity	skip:java		record copy-with helper; opacity is the colour's alpha byte in Horizon

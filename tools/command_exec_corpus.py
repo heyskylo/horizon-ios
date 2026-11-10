@@ -949,6 +949,90 @@ def item_command_damage():
     return ops + setup('/kill @e[tag=item_hurt_actor]', '/scoreboard objectives remove item_hurt', '/tick unfreeze')
 
 
+def vehicle_item_stack_config():
+    """MinecartItem.useOn, BoatItem.use and the dispenser's MinecartDispenseItemBehavior /
+    BoatDispenseItemBehavior apply EntityType.createDefaultStackConfig: the item's custom name
+    (applyComponentsFromItemStack), then minecraft:entity_data (updateCustomEntityTag) when its
+    id is the vehicle's; command block and spawner minecarts take it from an op player only, never
+    from a dispenser. (The op case by a player is left out: this harness's owner is an op in vanilla
+    and not in Horizon.)"""
+    ops = setup('/forceload add 0 0 15 15', '/fill 0 199 0 15 199 15 stone', '/fill 0 200 0 15 203 15 air',
+                '/gamemode creative', '/tp @s 4.5 200 4.5 0 0')
+    ops += [{'op': 'settle'}]
+    near = '@e[type={kind},x={x}.5,y=200,z={z}.5,distance=..1.5,limit=1]'
+    # Placed on a rail by the player.
+    for i, (kind, item, reads) in enumerate((
+        ('minecart', 'minecart[custom_name="Cart A"]', ('CustomName',)),
+        ('tnt_minecart', 'tnt_minecart[entity_data={id:"minecraft:tnt_minecart",fuse:80,Tags:["item_data"]}]',
+         ('Tags', 'fuse')),
+        ('minecart', 'minecart[custom_name="Named",entity_data={id:"minecraft:minecart",Tags:["both"]}]',
+         ('CustomName', 'Tags')),
+        ('minecart', 'minecart[entity_data={id:"minecraft:tnt_minecart",Tags:["wrong_id"]}]', ('Tags',)),
+        # Entity.applyImplicitComponent's other component, saved as `data`; entity_data's merges over it.
+        ('minecart', 'minecart[custom_data={a:1b},entity_data={id:"minecraft:minecart",data:{b:2b}}]', ('data',)),
+    )):
+        x, z = 1 + i * 2, 7
+        ops += setup(f'/setblock {x} 200 {z} rail', f'/item replace entity @s weapon.mainhand with minecraft:{item}')
+        ops += [{'op': 'use_block', 'pos': [x, 200, z], 'face': 1}]
+        sel = near.format(kind=kind, x=x, z=z)
+        ops += [cmd(f'/execute if entity {sel}')]
+        ops += [cmd(f'/data get entity {sel} {r}') for r in reads]
+    ops += setup('/kill @e[type=#minecraft:boat]', '/kill @e[type=minecraft:command_block_minecart]',
+                 '/kill @e[type=minecraft:minecart]', '/kill @e[type=minecraft:tnt_minecart]')
+    # A boat, used looking down ahead at the floor (BoatItem refuses a spot that overlaps the player).
+    ops += setup('/tp @s 8.5 200 3.5 0 45',
+                 '/item replace entity @s weapon.mainhand with minecraft:oak_boat[custom_name="Boaty",'
+                 'entity_data={id:"minecraft:oak_boat",Tags:["boat_data"],Rotation:[90f,10f]}]')
+    # The packet's rotation, on both sides (the plain use_item op sends 0, 0 to Horizon).
+    ops += [{'op': 'use_item', 'sequence': 1, 'yaw': 0.0, 'pitch': 45.0}]
+    boat = '@e[type=minecraft:oak_boat,x=8.5,y=200,z=5,distance=..2,limit=1]'
+    # BoatItem.use turns the boat to the player's yaw after the data loads.
+    ops += [cmd(f'/execute if entity {boat}'), cmd(f'/data get entity {boat} CustomName'),
+            cmd(f'/data get entity {boat} Tags'), cmd(f'/data get entity {boat} Rotation[0] 10')]
+    # Dispensed: a minecart onto a rail and a boat into the air, then a powered dispenser.
+    for i, (item, kind, front) in enumerate((
+        ('tnt_minecart[custom_name="Disp",entity_data={id:"minecraft:tnt_minecart",Tags:["disp_data"]}]',
+         'tnt_minecart', 'rail'),
+        ('oak_boat[custom_name="DispBoat",entity_data={id:"minecraft:oak_boat",Tags:["disp_boat"],Rotation:[90f,0f]}]',
+         'oak_boat', 'air'),
+        ('command_block_minecart[entity_data={id:"minecraft:command_block_minecart",Command:"say no"}]',
+         'command_block_minecart', 'rail'),
+    )):
+        x = 3 + i * 4
+        ops += setup(f'/setblock {x} 200 12 dispenser[facing=south]{{Items:[{{Slot:0b,id:"minecraft:{item.split("[")[0]}",'
+                     f'count:1,components:{{{components(item)}}}}}]}}',
+                     f'/setblock {x} 200 13 {front}', f'/setblock {x} 199 13 {"water" if kind == "oak_boat" else "stone"}',
+                     f'/setblock {x} 201 12 redstone_block')
+        ops += [{'op': 'tick', 'n': 6}]
+        sel = f'@e[type=minecraft:{kind},x={x}.5,y=200,z=13.5,distance=..1.5,limit=1]'
+        ops += [cmd(f'/execute if entity {sel}'), cmd(f'/data get entity {sel} CustomName'),
+                cmd(f'/data get entity {sel} Tags')]
+        if kind == 'command_block_minecart':
+            ops += [cmd(f'/data get entity {sel} Command')]
+        if kind == 'oak_boat':
+            ops += [cmd(f'/data get entity {sel} Rotation[0] 10')]
+    ops += setup('/kill @e[type=#minecraft:boat]', '/kill @e[type=minecraft:command_block_minecart]',
+                 '/kill @e[type=minecraft:tnt_minecart]', '/kill @e[type=minecraft:minecart]',
+                 '/fill 0 200 0 15 203 15 air', '/gamemode survival', '/forceload remove 0 0 15 15')
+    return ops
+
+
+def components(item):
+    """An item argument's components, `a=x,b=y`, as a components compound's body."""
+    body = item[item.index('[') + 1:-1]
+    out, depth, start = [], 0, 0
+    for i, ch in enumerate(body):
+        if ch in '{[':
+            depth += 1
+        elif ch in '}]':
+            depth -= 1
+        elif ch == ',' and depth == 0:
+            out.append(body[start:i])
+            start = i + 1
+    out.append(body[start:])
+    return ','.join(f'"minecraft:{k}":{v}' for k, v in (part.split('=', 1) for part in out))
+
+
 def minecart_numeric_fields():
     """AbstractMinecart / MinecartTNT / MinecartFurnace / MinecartHopper.readAdditionalSaveData read
     their fields through ValueInput's numeric getters, which take any NumericTag: getIntOr
@@ -2251,6 +2335,12 @@ def world_misc():
         cmd('/tp 8.5 230 8.5'),
         cmd('/rotate @s facing 0 230 0'),
         cmd('/rotate @s ~10 ~'),
+        # Relative angles are the command source's rotation plus the offset, not the target's own.
+        cmd('/tp @s 8.5 230 8.5 100 -20'),
+        cmd('/execute rotated 30 10 run rotate @s ~90 ~'),
+        cmd('/data get entity @s Rotation'),
+        cmd('/execute rotated 30 10 run rotate @s 5 ~-5'),
+        cmd('/data get entity @s Rotation'),
         cmd('/tp @s 8.5 230 8.5 0 0'),
         cmd('/locate biome minecraft:plains'),
         cmd('/locate biome #minecraft:is_ocean'),
@@ -4993,6 +5083,36 @@ def sulfur_cube_loaded_health():
     return lines
 
 
+def sulfur_cube_size_ticks():
+    # SulfurCube.ageBoundaryReached grows a cube to size 2 only where setAge crosses
+    # the baby boundary (#14916). Cubes with their AI on: an adult loaded at size 1
+    # and a baby of size 2 keep their size; a baby of size 1 that grows up is size 2.
+    cases = [(None, 0, [(0, 400)] * 4), (1, -24000, [(1, 800)] * 4),
+             (None, -2, [(0, 400), (0, 400), (1, 800), (1, 800)])]
+    lines = [cmd('/forceload add 0 0 31 31'), {'op': 'settle'}]
+    lines.extend(setup('/fill 0 199 0 31 208 31 air'))
+    lines.append(cmd('/fill 0 199 0 31 199 31 stone', expect_result=1024))
+    for i, (size, age, reads) in enumerate(cases):
+        uuid = f'00000000-0000-0000-0000-00e70000000{i + 1}'
+        nbt = f'UUID:[I;0,0,231,{i + 1}],NoGravity:1b,Silent:1b,PersistenceRequired:1b,Age:{age}'
+        if size is not None:
+            nbt += f',Size:{size}'
+        lines.append(cmd(f'/summon sulfur_cube {4.5 + 8 * i} 200 4.5 {{{nbt}}}', expect_result=1))
+    # Reads after 0, 1, 2 and 4 ticks.
+    for step, ticks in enumerate([0, 1, 1, 2]):
+        if ticks:
+            lines.append({'op': 'tick', 'n': ticks})
+        for i, (_, _, reads) in enumerate(cases):
+            uuid = f'00000000-0000-0000-0000-00e70000000{i + 1}'
+            size, health = reads[step]
+            lines.extend([
+                cmd(f'/data get entity {uuid} Size', expect_result=size),
+                cmd(f'/data get entity {uuid} Health 100', expect_result=health),
+            ])
+    lines.extend(setup('/kill @e[type=sulfur_cube]', '/forceload remove 0 0 31 31'))
+    return lines
+
+
 
 def numeric_array_edits(include_storage_side_effects=False):
     """Replay list/string controls before the finite numeric-array edit cases."""
@@ -6831,6 +6951,30 @@ def projectile_fall_distance():
                        f'/forceload remove {x0} {z0}')
 
 
+def thrown_projectile_rotation():
+    """`ThrowableProjectile.tick` and `LlamaSpit.tick` end their move with `Projectile.updateRotation`:
+    the pitch and yaw go a fifth of the way (`lerpRotation`) from the last tick's towards the
+    movement's, the old yaw first brought within 180 degrees of the new one. A snowball that only
+    falls tips over gradually, not at once. Fireballs and shulker bullets turn by
+    `ProjectileUtil.rotateTowardsMovement` instead (#14466)."""
+    x0, y0, z0 = 20, 240, 20
+    # (type, extra NBT): no motion, a sideways throw, a climb, a yaw that wraps (170 to -170),
+    # and the spit, whose drag comes after its turn.
+    cases = [('snowball', ''), ('egg', ',Motion:[0.3d,0.1d,-0.2d]'),
+             ('ender_pearl', ',Motion:[-0.2d,0.4d,0.1d]'),
+             ('experience_bottle', ',Rotation:[170.0f,10.0f],Motion:[-0.0868241d,0.0d,-0.9848078d]'),
+             ('llama_spit', ',Motion:[0.2d,0.0d,-0.4d]')]
+    ops = []
+    for n, (kind, extra) in enumerate(cases, 1):
+        ops.append(cmd(f'/summon {kind} {x0 + 4 * n}.5 {y0} {z0}.5 {{UUID:[I;14600,0,{n},1]{extra}}}',
+                       expect_result=1))
+    for _ in range(3):
+        ops.append({'op': 'tick', 'n': 1})
+        ops += [cmd(f'/data get entity 00003908-0000-0000-0000-{n:04x}00000001 Rotation')
+                for n in range(1, len(cases) + 1)]
+    return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 16},z={z0 - 16},dx=32,dy=32,dz=32]')
+
+
 def living_short_timers():
     """#13846: `LivingEntity` reads `HurtTime` and `DeathTime` with `getShortOr` and writes them back as `(short)`
     casts: a negative value stays."""
@@ -7495,6 +7639,7 @@ def groups():
         ('command block last output', command_block_last_output()),
         ('living short timers', living_short_timers()),
         ('projectile fall distance', projectile_fall_distance()),
+        ('thrown projectile rotation', thrown_projectile_rotation()),
         ('item fall distance', item_fall_distance()),
         ('beacon levels load', beacon_levels_load()),
         ('zombie villager summoned data', zombie_villager_summoned_data()),
@@ -7523,6 +7668,7 @@ def groups():
         ('mannequin pose anchors', mannequin_pose_anchors()),
         ('item command damage', item_command_damage()),
         ('dragon command damage', dragon_command_damage()),
+        ('vehicle item stack config', vehicle_item_stack_config()),
         ('minecart numeric fields', minecart_numeric_fields()),
         ('enderman command damage', enderman_command_damage()),
         ('shulker command damage', shulker_command_damage()),
@@ -7565,6 +7711,7 @@ def groups():
         ('mob NBT damage cooldown', mob_nbt_damage_cooldown()),
         ('mob full resistance hits', mob_full_resistance_hits()),
         ('sulfur cube loaded health', sulfur_cube_loaded_health()),
+        ('sulfur cube size ticks', sulfur_cube_size_ticks()),
         ('function return feedback', function_return_feedback()),
         ('fork function feedback', fork_function_feedback_cases()),
         ('function condition fallthrough', function_condition_fallthrough()),

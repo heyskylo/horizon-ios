@@ -1097,6 +1097,16 @@ impl Game<'_> {
             count: 1,
             ..stack.clone()
         };
+        // A rocket makes its own random in `launch_angled_rocket`: the constructor's draws
+        // and then the shot's spread come from that one.
+        if item == "minecraft:firework_rocket" {
+            self.launch_angled_rocket(at, &one, None, |own| {
+                let mut shot = Projectile::new(ProjectileKind::Snowball, at, None);
+                shot.shoot(own, dir, power, uncertainty);
+                shot.velocity
+            });
+            return;
+        }
         // Projectile.shoot spreads the shot with the projectile's own random.
         let mut own = random_source::entity();
         match item.as_str() {
@@ -1106,11 +1116,6 @@ impl Game<'_> {
                 let mut shot = Projectile::new(ProjectileKind::Snowball, at, None);
                 shot.shoot(&mut own, dir, power, uncertainty);
                 self.launch_thrown(one, at, shot.velocity, None);
-            }
-            "minecraft:firework_rocket" => {
-                let mut shot = Projectile::new(ProjectileKind::Snowball, at, None);
-                shot.shoot(&mut own, dir, power, uncertainty);
-                self.launch_angled_rocket(at, shot.velocity, &one, None);
             }
             _ => {
                 let kind = match item.as_str() {
@@ -1248,7 +1253,12 @@ impl Game<'_> {
             boat = boat.with_chest();
         }
         self.world.modified.insert((front.0 >> 4, front.2 >> 4));
+        let (id, kind, yaw) = (boat.id, boat.entity_type(), boat.yaw);
         self.boats.push(boat);
+        // BoatDispenseItemBehavior: createDefaultStackConfig with no user,
+        // then setYRot(direction.toYRot()).
+        self.apply_vehicle_stack_config(super::commands::Target::Boat(id), &kind, &stack, false);
+        self.set_boat_yaw(id, yaw);
         if self.serving.is_some() || self.options.dedicated.is_some() {
             let boat = self.boats.last().unwrap();
             self.native_vehicle_create(
@@ -1295,6 +1305,14 @@ impl Game<'_> {
         );
         self.world.modified.insert((front.0 >> 4, front.2 >> 4));
         self.carts.push(cart);
+        // AbstractMinecart.createMinecart: createDefaultStackConfig with no user.
+        let id = self.next_entity;
+        self.apply_vehicle_stack_config(
+            super::commands::Target::Cart(id),
+            kind.id(),
+            &stack,
+            false,
+        );
         if self.serving.is_some() || self.options.dedicated.is_some() {
             let cart = self.carts.last().unwrap();
             self.native_vehicle_create(

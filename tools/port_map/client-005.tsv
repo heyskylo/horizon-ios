@@ -8,7 +8,7 @@ WitchRenderer.extractRenderState	port	crates/horizon-client/src/mobs/witch.rs::a
 WitherBossRenderer.getTextureLocation	port	crates/horizon-client/src/mobs/wither.rs::texture	invulnerable blink texture
 WitherBossRenderer.extractRenderState	port	crates/horizon-client/src/mobs/wither.rs::anim	invulnerable clock feeds the texture and scale; the powered glow is render.rs::energy_swirl
 WitherSkullRenderer.createSkullLayer	skip:data		the skull model is baked into entity-models.json
-WitherSkullRenderer.submit	port	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	gap: player: the skull is drawn as a flat sprite (Projectile::item_sprite), not the 3D skull model
+WitherSkullRenderer.submit	port	crates/horizon-client/src/game/creatures/mob_geometry.rs::Game::mob_geometry	gap: player: the skull is drawn as a flat sprite (Projectile::item_sprite), not the 3D skull model
 WitherSkullRenderer.extractRenderState	port	crates/horizon-client/src/projectiles.rs::Projectile::item_sprite	the dangerous (blue) skull texture is chosen here; gap: player: skull turns are not drawn (sprite only)
 WolfRenderer.getModelTint	port	crates/horizon-client/src/mobs/tame.rs::tint	wet shade as a vertex colour
 WolfRenderer.extractRenderState	port	crates/horizon-client/src/mobs/tame.rs::anim	tail angle, head roll and shake body roll; texture, collar and armour are read at draw
@@ -79,7 +79,7 @@ WitchItemLayer.applyTranslation	port	crates/horizon-client/src/mobs/render.rs::h
 WolfArmorLayer.submit	port	crates/horizon-client/src/mobs/render.rs::layers	gap: minor: the armour texture is fixed to the armadillo scute; the equipment asset is not read
 WolfArmorLayer.maybeRenderCracks	port	crates/horizon-client/src/mobs/render.rs::layers	cracks at three damage levels
 WolfCollarLayer.submit	port	crates/horizon-client/src/mobs/render.rs::layers	dyed collar
-AvatarRenderer.<init>	port	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	gap: player: no cape, ears, worn head, parrot or stuck-arrow layer; armour, held items, wings and spin are drawn
+AvatarRenderer.<init>	port	crates/horizon-client/src/game/creatures/mob_geometry.rs::Game::mob_geometry	gap: player: no cape, ears, worn head, parrot or stuck-arrow layer; armour, held items, wings and spin are drawn
 AvatarRenderer.getRenderOffset	port	crates/horizon-client/src/game/perspective.rs::Game::tick_player_model	gap: minor: other players are not lowered 0.125 when sneaking; only the local model is
 AvatarRenderer.submitNameDisplay	port	crates/horizon-client/src/game/names.rs::Game::name_tag_geometry	gap: minor: the 10 unit lift for ears is not applied (no ears)
 AvatarRenderer.extractRenderState	port	crates/horizon-client/src/mobs.rs::Mob::tick_avatar_pose	glide count, wings and swim read here; gap: player: arrow and stinger counts, parrots, cape, ears and the spyglass use are not read
