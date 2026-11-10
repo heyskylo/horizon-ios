@@ -988,15 +988,13 @@ mod tests {
             .map(|i| {
                 let x = f64::from(i / 100 * 1000 + i % 8);
                 let z = f64::from(i % 100 / 8);
-                game.world
-                    .chunks
-                    .entry((x as i32 >> 4, z as i32 >> 4))
-                    .or_insert_with(|| {
-                        Arc::new(horizon_client::chunk::Chunk::empty(
-                            x as i32 >> 4,
-                            z as i32 >> 4,
-                        ))
-                    });
+                let key = (x as i32 >> 4, z as i32 >> 4);
+                if !game.world.chunks.contains_key(&key) {
+                    game.world.chunks.insert(
+                        key,
+                        Arc::new(horizon_client::chunk::Chunk::empty(key.0, key.1)),
+                    );
+                }
                 Mob::new(i, Arc::clone(&kind), Vec3::new(x, 65.0, z), 0.0)
             })
             .collect();
