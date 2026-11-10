@@ -63,15 +63,32 @@ thread_local! {
     static LANES: Cell<Option<usize>> = const { Cell::new(None) };
     /// The groups the last grouped loop ran in.
     static RAN: Cell<usize> = const { Cell::new(0) };
+    static VERIFY: Cell<bool> = const { Cell::new(false) };
+    static CHECK: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
 }
 
-/// The threads the loop may run on.
+fn verifying() -> bool {
+    #[cfg(test)]
+    if VERIFY.with(Cell::get) {
+        return true;
+    }
+    horizon_client::parallel::parallel_tick() == 2
+}
+
+/// Waiting lanes each need a runnable thread, not just a configured worker slot. Failure to
+/// discover the hardware leaves the loop serial; the shared preparation pool is unaffected.
+fn capped_lanes(requested: usize, hardware: Option<usize>) -> usize {
+    requested.clamp(1, 8).min(hardware.unwrap_or(1).max(1))
+}
+
+/// The threads the loop may run on, capped at the machine's available parallelism.
 fn lanes() -> usize {
+    let hardware = std::thread::available_parallelism().ok().map(usize::from);
     #[cfg(test)]
     if let Some(lanes) = LANES.with(Cell::get) {
-        return lanes;
+        return capped_lanes(lanes, hardware);
     }
-    horizon_client::parallel::lanes()
+    capped_lanes(horizon_client::parallel::lanes(), hardware)
 }
 
 /// The mobs of each group, by their place in the list, ascending.
@@ -118,16 +135,13 @@ impl Islands<'_> {
         shared: &Shared,
     ) -> Group<Mob> {
         use horizon_client::random_source;
-        // `HORIZON_PARALLEL_TICK=verify`: the serial loop on copies, compared below. Both runs
-        // take the same seeds: no clock in them, and the counter back.
-        let serial = (horizon_client::parallel::parallel_tick() == 2).then(|| {
-            random_source::pin_seeds(true);
-            let seeds = random_source::uniquifier();
+        // `verify`: allocate seeds only in the serial copy, replay them in the grouped copy.
+        // Neither the global counter nor the client threads' clock/seed policy is changed.
+        let serial = verifying().then(|| {
             let mut serial = Group::new(mobs.clone(), snapshot.clone(), start.clone());
-            serial.run(turns, shared, None);
-            random_source::restore_uniquifier(seeds);
+            let (_, seeds) = random_source::record_seeds(|| serial.run(turns, shared, None));
             turns.cached_difficulty = None;
-            serial
+            (serial, seeds)
         });
         let n = mobs.len();
         let lanes = plan.groups.len();
@@ -173,7 +187,13 @@ impl Islands<'_> {
         #[cfg(test)]
         RAN.with(|r| r.set(lanes));
         let board = Board::new(snapshot, &groups, Arc::clone(&draws));
-        self.run_threads(&mut groups, &board, turns, shared);
+        self.run_threads(
+            &mut groups,
+            &board,
+            turns,
+            shared,
+            serial.as_ref().map(|s| &s.1),
+        );
         // Each mob's entries, in list order: the turns' ranges in its group.
         let mut place = vec![(0u32, 0u32); n];
         for (gi, g) in groups.iter().enumerate() {
@@ -229,9 +249,10 @@ impl Islands<'_> {
         (merged.keep, merged.pushes, merged.snapshot) = (keep, pushes, frozen);
         (merged.dead, merged.corpses, merged.gone) = (dead, corpses, gone);
         merged.guest_events = guest_events;
-        if let Some(serial) = serial {
-            random_source::pin_seeds(false);
-            report_check(difference(&serial, &merged), lanes);
+        if let Some((serial, seeds)) = serial {
+            let diff = difference(&serial, &merged)
+                .or_else(|| (!seeds.complete()).then(|| "new RNG allocation counts differ".into()));
+            report_check(diff, lanes);
         }
         merged
     }
@@ -246,7 +267,10 @@ impl Islands<'_> {
         board: &Board,
         turns: &Turns,
         shared: &Shared,
+        seeds: Option<&Arc<horizon_client::random_source::SeedReplay>>,
     ) {
+        let inherited = horizon_client::random_source::seed_replay();
+        let seeds = seeds.or(inherited.as_ref());
         let level = horizon_client::block_contact::current_level();
         let tnt = horizon_client::mobs::sulfur_cube::tnt_explodes();
         let rebuild = super::prep::hookless(turns.base);
@@ -273,17 +297,33 @@ impl Islands<'_> {
                 difficulty,
                 cached_difficulty: None,
             };
-            g.run(&mut turns, shared, Some(&foreign));
+            if let Some(seeds) = seeds {
+                horizon_client::random_source::replay_seeds(Arc::clone(seeds), || {
+                    g.run(&mut turns, shared, Some(&foreign));
+                });
+            } else {
+                g.run(&mut turns, shared, Some(&foreign));
+            }
         };
         let tickings: Vec<_> = groups.iter().map(|_| (self.ticking)()).collect();
         let mut parts = groups.iter_mut().zip(tickings);
         let (first, first_ticking) = parts.next().expect("a plan has groups");
         std::thread::scope(|s| {
-            for (g, ticking) in parts {
+            // Guards for every not-yet-started lane live inside the scope's callback. If the
+            // OS refuses a spawn, they drop before scope joins any started, waiting threads.
+            let _first_done = first.random.lane_done();
+            let pending: Vec<_> = parts
+                .map(|(g, ticking)| {
+                    let done = g.random.lane_done();
+                    (g, ticking, done)
+                })
+                .collect();
+            for (g, ticking, done) in pending {
                 let run = &run;
                 std::thread::Builder::new()
                     .name("mob-island".into())
                     .spawn_scoped(s, move || {
+                        let _done = done;
                         horizon_client::mobs::sulfur_cube::set_tnt_explodes(tnt);
                         horizon_client::block_contact::in_level(level, || run(g, ticking));
                     })
@@ -367,7 +407,9 @@ fn reaches(mobs: &[Mob], snapshot: &[Seen], turns: &Turns) -> Option<Vec<Reach>>
     }
     let mut out = Vec::with_capacity(mobs.len());
     for (m, s) in mobs.iter().zip(snapshot) {
-        if global(s.species) || !(m.position.x.is_finite() && m.position.z.is_finite()) {
+        if global(s.species)
+            || !(m.position.x.is_finite() && m.position.y.is_finite() && m.position.z.is_finite())
+        {
             return None;
         }
         let (bx, bz) = (m.position.x.floor() as i32, m.position.z.floor() as i32);
@@ -469,7 +511,8 @@ struct Cells {
 impl Cells {
     fn visit(b: Aabb, budget: &mut usize, mut f: impl FnMut((i32, i32))) -> Option<()> {
         let (x0, z0, x1, z1) = cells(b)?;
-        let n = (i64::from(x1) - i64::from(x0) + 1) * (i64::from(z1) - i64::from(z0) + 1);
+        let n =
+            (i64::from(x1) - i64::from(x0) + 1).checked_mul(i64::from(z1) - i64::from(z0) + 1)?;
         *budget = budget.checked_sub(usize::try_from(n).ok()?)?;
         for x in x0..=x1 {
             for z in z0..=z1 {
@@ -635,6 +678,7 @@ struct Board {
     index: FxHashMap<u32, u32>,
     /// Each mob's group.
     lane_of: Vec<u32>,
+    lanes: usize,
     draws: Arc<OrderedDraws>,
 }
 impl Board {
@@ -654,6 +698,7 @@ impl Board {
             frozen,
             index,
             lane_of,
+            lanes: groups.len(),
             draws,
         }
     }
@@ -665,6 +710,18 @@ pub(super) struct Foreign<'b> {
     pub reader: Cell<usize>,
 }
 impl Foreign<'_> {
+    /// A turn's new RNGs, including projectile RNGs and long-jump angle shuffles, follow list
+    /// order too. Waiting here uses the same dependency direction as the level stream.
+    pub(super) fn in_seed_order<R>(&self, at: usize, f: impl FnOnce() -> R) -> R {
+        horizon_client::random_source::in_seed_order(
+            Arc::clone(&self.board.draws),
+            self.board.lane_of[at] as usize,
+            at,
+            self.board.lanes,
+            f,
+        )
+    }
+
     /// Mob `at`'s entry as its turn left it.
     pub(super) fn publish(&self, at: usize, seen: &Seen) {
         let _ = self.board.published[at].set(seen.clone());
@@ -725,17 +782,23 @@ fn difference(serial: &Group<Mob>, grouped: &Group<Mob>) -> Option<String> {
         }
     }
     let debug = |g: &Group<Mob>| {
-        let ids = |v: &[Mob]| v.iter().map(|m| m.id).collect::<Vec<_>>();
-        let gone: Vec<u32> = g.gone.iter().map(|x| x.0).collect();
         format!(
             "{:?} {:?} {:?} {:?} {:?} {:?}",
-            g.events,
-            ids(&g.dead),
-            ids(&g.corpses),
-            gone,
-            g.guest_events,
-            g.targets,
+            g.events, g.dead, g.corpses, g.gone, g.guest_events, g.targets,
         )
+    };
+    let pushed = |g: &Group<Mob>| {
+        let mut pushes = g.pushes.clone();
+        g.mobs
+            .iter()
+            .zip(&g.keep)
+            .filter(|(_, keep)| **keep)
+            .map(|(m, _)| {
+                let mut m = m.clone();
+                horizon_client::mobs::apply_mob_pushes(&mut m, &mut pushes);
+                plain(&m)
+            })
+            .collect::<Vec<_>>()
     };
     [
         (serial.keep != grouped.keep, "the kept mobs"),
@@ -744,7 +807,7 @@ fn difference(serial: &Group<Mob>, grouped: &Group<Mob>) -> Option<String> {
             "the events, deaths or targets",
         ),
         (
-            serial.random.state() != grouped.random.state(),
+            format!("{:?}", serial.random) != format!("{:?}", grouped.random),
             "the level random",
         ),
         (
@@ -752,6 +815,10 @@ fn difference(serial: &Group<Mob>, grouped: &Group<Mob>) -> Option<String> {
             "the death marks or player bindings",
         ),
         (serial.ticked != grouped.ticked, "the ticked mobs"),
+        (
+            pushed(serial) != pushed(grouped),
+            "the pending pushes' results",
+        ),
     ]
     .into_iter()
     .find(|d| d.0)
@@ -761,6 +828,11 @@ fn difference(serial: &Group<Mob>, grouped: &Group<Mob>) -> Option<String> {
 /// `HORIZON_PARALLEL_TICK=verify`: log a grouped loop that differs from the serial one, and how
 /// many were checked, every 100.
 fn report_check(difference: Option<String>, groups: usize) {
+    #[cfg(test)]
+    CHECK.with(|c| {
+        let (checked, differed) = c.get();
+        c.set((checked + 1, differed + usize::from(difference.is_some())));
+    });
     use std::sync::atomic::{AtomicU64, Ordering};
     static CHECKED: AtomicU64 = AtomicU64::new(0);
     static DIFFERED: AtomicU64 = AtomicU64::new(0);
@@ -780,6 +852,23 @@ fn report_check(difference: Option<String>, groups: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn requested_workers_never_exceed_available_hardware() {
+        assert_eq!(capped_lanes(64, Some(3)), 3);
+        assert_eq!(capped_lanes(64, Some(1)), 1);
+        assert_eq!(capped_lanes(64, None), 1);
+        assert_eq!(capped_lanes(2, Some(64)), 2);
+        assert_eq!(capped_lanes(0, Some(64)), 1);
+        assert_eq!(capped_lanes(64, Some(64)), 8);
+    }
+
+    #[test]
+    fn extreme_plan_boxes_fall_back_without_overflow_or_visits() {
+        let b = Aabb::new(Vec3::new(-1e30, 0.0, -1e30), Vec3::new(1e30, 1.0, 1e30));
+        let mut budget = PLAN_BUDGET;
+        assert!(Cells::visit(b, &mut budget, |_| panic!("over budget")).is_none());
+    }
 
     /// A mob with a one-block body at (x, z), reading 34 blocks around it (`MIN_SENSE` + `SLACK`).
     fn at(id: u32, x: f64, z: f64) -> Reach {
@@ -887,6 +976,248 @@ mod tests {
         assert_ne!(of[0], of[150]);
     }
 
+    /// Exercise the actual Mob/Seen-to-reach conversion, not just hand-built planner boxes.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn actual_reaches_cover_links_villages_and_serial_fallbacks() {
+        let mut game = super::super::super::native_machines::tests::server_game();
+        game.spawn_mob("minecraft:cow", [0.5, 65.0, 0.5], true)
+            .unwrap();
+        let kind = Arc::clone(&game.mobs[0].kind);
+        let mut mobs: Vec<_> = (0..400)
+            .map(|i| {
+                let x = f64::from(i / 100 * 1000 + i % 8);
+                let z = f64::from(i % 100 / 8);
+                game.world
+                    .chunks
+                    .entry((x as i32 >> 4, z as i32 >> 4))
+                    .or_insert_with(|| {
+                        Arc::new(horizon_client::chunk::Chunk::empty(
+                            x as i32 >> 4,
+                            z as i32 >> 4,
+                        ))
+                    });
+                Mob::new(i, Arc::clone(&kind), Vec3::new(x, 65.0, z), 0.0)
+            })
+            .collect();
+        let mut snapshot: Vec<_> = mobs.iter().map(|m| m.seen(None)).collect();
+        let base = game.mob_world_base(&[]);
+        let players = super::super::super::natural_spawning::NearestPlayers::new(&[]);
+        let nearest = super::super::prep::MobsNearest::new(&players, &mobs, false);
+        let turns = Turns {
+            base: &base,
+            despawn: base.despawn_view(),
+            ticking: &|_, _| true,
+            nearest: &nearest,
+            single_player: Some(None),
+            canceled: &|_| false,
+            difficulty: &|_| horizon_client::mobs::spawning::LocalDifficulty::new(2, 0, 0, 0.0),
+            cached_difficulty: None,
+        };
+        let plan = |mobs: &[Mob], snapshot: &[Seen]| {
+            islands(&reaches(mobs, snapshot, &turns).unwrap(), 4).unwrap()
+        };
+        assert_eq!(plan(&mobs, &snapshot).groups.len(), 4);
+        for relation in 0..8 {
+            let mut linked = snapshot.clone();
+            match relation {
+                0 => linked[0].target = Some(Who::Mob(100)),
+                1 => linked[0].hurt_by = Some((Who::Mob(100), 1)),
+                2 => linked[0].leash = Some(leash::Holder::Mob(100)),
+                3 => linked[0].vehicle = Some(100),
+                4 => linked[0].caravan = 101,
+                5 => linked[0].school.0 = Some(100),
+                6 => mobs[0].extra.mount = Some(100),
+                _ => mobs[0].extra.rider = Some(100),
+            }
+            let of = group_of(&plan(&mobs, &linked), mobs.len());
+            assert_eq!(of[0], of[100], "relation {relation}");
+            assert_ne!(of[0], of[200]);
+            mobs[0].extra.mount = None;
+            mobs[0].extra.rider = None;
+        }
+        horizon_client::mobs::raider::state_mut(&mut mobs[0]).raid_id = Some(7);
+        horizon_client::mobs::raider::state_mut(&mut mobs[100]).raid_id = Some(7);
+        let of = group_of(&plan(&mobs, &snapshot), mobs.len());
+        assert_eq!(of[0], of[100], "one raid cannot split");
+        horizon_client::mobs::raider::state_mut(&mut mobs[0]).raid_id = None;
+        horizon_client::mobs::raider::state_mut(&mut mobs[100]).raid_id = None;
+        snapshot[0].species = Species::Villager;
+        snapshot[0].bed = Some([2000, 65, 0]);
+        snapshot[200].species = Species::IronGolem;
+        let of = group_of(&plan(&mobs, &snapshot), mobs.len());
+        assert_eq!(of[0], of[200], "a remote bed reaches its village reader");
+        assert_ne!(of[0], of[100]);
+        for species in [Species::Wither, Species::Warden] {
+            snapshot[0].species = species;
+            assert!(reaches(&mobs, &snapshot, &turns).is_none());
+        }
+        snapshot[0].species = Species::Cow;
+        mobs[0].position.y = f64::NAN;
+        assert!(reaches(&mobs, &snapshot, &turns).is_none());
+        assert!(reaches(&mobs, &snapshot[..399], &turns).is_none());
+    }
+
+    /// A later id is visible frozen without waiting; an earlier id waits for its publication,
+    /// and a lane that unwinds without publishing releases the lookup instead of hanging it.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn foreign_lookup_observes_serial_visibility_and_unwind() {
+        let mut game = super::super::super::native_machines::tests::server_game();
+        game.spawn_mob("minecraft:cow", [0.5, 65.0, 0.5], true)
+            .unwrap();
+        let template = game.mobs[0].seen(None);
+        let (sent, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let draws = OrderedDraws::new(&horizon_core::random::LegacyRandom::new(7), 2);
+            let mut frozen = vec![template.clone(), template];
+            frozen[0].id = 10;
+            frozen[1].id = 11;
+            let board = Board {
+                index: [(10, 0), (11, 1)].into_iter().collect(),
+                frozen,
+                published: vec![OnceLock::new(), OnceLock::new()],
+                lane_of: vec![0, 1],
+                lanes: 2,
+                draws,
+            };
+            let foreign = Foreign {
+                board: &board,
+                reader: Cell::new(0),
+            };
+            assert_eq!(foreign.seen(11).unwrap().position, board.frozen[1].position);
+            assert!(foreign.seen(999).is_none());
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    let mut random = board.draws.lane(0);
+                    let _done = random.lane_done();
+                    random.begin_item(0);
+                    let publisher = Foreign {
+                        board: &board,
+                        reader: Cell::new(0),
+                    };
+                    let mut moved = board.frozen[0].clone();
+                    moved.position.x = 42.0;
+                    publisher.publish(0, &moved);
+                });
+                let later = Foreign {
+                    board: &board,
+                    reader: Cell::new(1),
+                };
+                assert_eq!(later.seen(10).unwrap().position.x, 42.0);
+            });
+            let missing = Board {
+                published: vec![OnceLock::new(), OnceLock::new()],
+                draws: OrderedDraws::new(&horizon_core::random::LegacyRandom::new(7), 2),
+                ..board
+            };
+            std::thread::scope(|s| {
+                let earlier = s.spawn(|| {
+                    let random = missing.draws.lane(0);
+                    let _done = random.lane_done();
+                    panic!("turn failed before publication");
+                });
+                let later = Foreign {
+                    board: &missing,
+                    reader: Cell::new(1),
+                };
+                assert!(later.seen(10).is_none());
+                assert!(earlier.join().is_err());
+            });
+            let _ = sent.send(());
+        });
+        finished
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("foreign wait released");
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn moved_riders_use_loaded_and_ticking_state_at_their_turn() {
+        let mut game = super::super::super::native_machines::tests::server_game();
+        game.spawn_mob("minecraft:cow", [0.5, 65.0, 0.5], true)
+            .unwrap();
+        let kind = Arc::clone(&game.mobs[0].kind);
+        game.world.chunks.insert(
+            (62, 0),
+            Arc::new(horizon_client::chunk::Chunk::empty(62, 0)),
+        );
+        let mut mobs: Vec<_> = [1.5, 0.5, 1001.5, 1001.5]
+            .into_iter()
+            .enumerate()
+            .map(|(i, x)| {
+                let mut m = Mob::new(
+                    i as u32 + 10,
+                    Arc::clone(&kind),
+                    Vec3::new(x, 65.0, 0.5),
+                    0.0,
+                );
+                m.no_ai = true;
+                m.persistent = true;
+                m
+            })
+            .collect();
+        horizon_client::mobs::riders::link(&mut mobs, 11, 10);
+        horizon_client::mobs::riders::link(&mut mobs, 13, 12);
+        let snapshot: Vec<_> = mobs.iter().map(|m| m.seen(None)).collect();
+        // A passenger is repositioned after the initial snapshot: one enters the ticking area,
+        // another leaves the loaded area. The turn must not reuse those initial roles.
+        mobs[1].position.x = 1.5;
+        mobs[3].position.x = 1024.5;
+        let base = game.mob_world_base(&[]);
+        let players = super::super::super::natural_spawning::NearestPlayers::new(&[]);
+        let nearest = super::super::prep::MobsNearest::new(&players, &mobs, false);
+        let ticking = |x: i32, _: i32| x.rem_euclid(1000) >= 1;
+        let mut turns = Turns {
+            base: &base,
+            despawn: base.despawn_view(),
+            ticking: &ticking,
+            nearest: &nearest,
+            single_player: Some(None),
+            canceled: &|_| false,
+            difficulty: &|_| horizon_client::mobs::spawning::LocalDifficulty::new(2, 0, 0, 0.0),
+            cached_difficulty: None,
+        };
+        let start = Start {
+            events: Vec::new(),
+            random: horizon_core::random::LegacyRandom::new(7),
+            guests: Vec::new(),
+            player: None,
+            bindings: Default::default(),
+            died: Default::default(),
+            ticked: Default::default(),
+            targets: vec![None; 4],
+        };
+        let shared = Shared {
+            uuid: None,
+            level_id: "minecraft:overworld",
+            path_changes: &[],
+            guest_ids: &[],
+        };
+        let mut serial = Group::new(mobs.clone(), snapshot.clone(), start.clone());
+        serial.run(&mut turns, &shared, None);
+        turns.cached_difficulty = None;
+        let grouped = Islands {
+            uuid: None,
+            mods: false,
+            ticking: &|| Box::new(ticking),
+        }
+        .run(
+            Plan {
+                groups: vec![vec![0, 1], vec![2, 3]],
+            },
+            mobs,
+            snapshot,
+            start,
+            &mut turns,
+            &shared,
+        );
+        let expected: FxHashSet<_> = [10, 11, 12].into_iter().collect();
+        assert_eq!(serial.ticked, expected);
+        assert_eq!(grouped.ticked, expected);
+        assert_eq!(difference(&serial, &grouped), None);
+    }
+
     /// The loop stays serial with too few ticking mobs, one island holding most of them, or one
     /// lane; resting mobs weigh nothing.
     #[test]
@@ -916,6 +1247,14 @@ mod tests {
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn islands_tick_their_mobs_as_one_thread_does() {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                LANES.with(|l| l.set(None));
+                VERIFY.with(|v| v.set(false));
+            }
+        }
+        let _reset = Reset;
         let mut game = super::super::super::native_machines::tests::server_game();
         game.build_registries();
         game.set_allow_commands(true);
@@ -962,13 +1301,23 @@ mod tests {
             game.died.clone(),
         );
         let mut runs = Vec::new();
+        let mut seeds = None;
         for lanes in [1, 3] {
             (game.mobs, game.world.random, game.died) =
                 (mobs.clone(), random.clone(), died.clone());
             LANES.with(|l| l.set(Some(lanes)));
             RAN.with(|r| r.set(0));
-            for _ in 0..20 {
-                game.tick_creature_entities().unwrap();
+            let tick = || {
+                for _ in 0..20 {
+                    game.tick_creature_entities().unwrap();
+                }
+            };
+            if lanes == 1 {
+                seeds = Some(horizon_client::random_source::record_seeds(tick).1);
+            } else {
+                let seeds = seeds.as_ref().unwrap();
+                horizon_client::random_source::replay_seeds(Arc::clone(seeds), tick);
+                assert!(seeds.complete(), "the same new RNGs were created");
             }
             // `section_seq`'s counter runs on across the runs (see `difference`).
             let left: Vec<String> = game
@@ -989,9 +1338,15 @@ mod tests {
                 RAN.with(Cell::get),
             ));
         }
-        LANES.with(|l| l.set(None));
         assert_eq!(runs[0].3, 0, "one lane runs serially");
-        assert_eq!(runs[1].3, 3, "the islands ran in three groups");
+        assert_eq!(
+            runs[1].3,
+            capped_lanes(
+                3,
+                std::thread::available_parallelism().ok().map(usize::from)
+            ),
+            "the islands ran on available hardware"
+        );
         assert_eq!(runs[0].0.len(), 330);
         assert!(
             runs[0]
@@ -1005,6 +1360,17 @@ mod tests {
         }
         assert_eq!(runs[0].1, runs[1].1, "the level random");
         assert_eq!(runs[0].2, runs[1].2, "the death marks");
+        (game.mobs, game.world.random, game.died) = (mobs, random, died);
+        VERIFY.with(|v| v.set(true));
+        CHECK.with(|c| c.set((0, 0)));
+        for _ in 0..20 {
+            game.tick_creature_entities().unwrap();
+        }
+        assert_eq!(
+            CHECK.with(Cell::get),
+            (20, 0),
+            "the actual verify path checked every tick"
+        );
     }
 
     /// Islands are packed heaviest first, each into the lightest group.

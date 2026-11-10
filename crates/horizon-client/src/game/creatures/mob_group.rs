@@ -170,7 +170,11 @@ impl<M: MobSlot> Group<M> {
             if let Some(foreign) = foreign {
                 foreign.reader.set(at);
             }
-            self.turn(i, turns, shared);
+            if let Some(foreign) = foreign {
+                foreign.in_seed_order(at, || self.turn(i, turns, shared));
+            } else {
+                self.turn(i, turns, shared);
+            }
             let ends = [
                 self.events.len(),
                 self.dead.len(),
