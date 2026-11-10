@@ -73,6 +73,13 @@ pub struct TickRow {
     pub before_capture: bool,
     pub complete: bool,
     pub spans: Vec<TickSpanRow>,
+    /// `tick` only: the top functions of the time blocks around the tick, from `samples_from` to `samples_to` seconds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hot: Vec<HotRow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub samples_from: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub samples_to: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -508,13 +515,6 @@ pub struct MemoryRow {
     pub unit: MemoryUnit,
 }
 
-/// A megabyte path with its value in the first snapshot, the second and the change.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct MbChange(pub String, pub f64, pub f64, pub f64);
-
-/// A count path with its value in the first snapshot, the second and the change.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct CountChange(pub String, pub Amount, pub Amount, pub Amount);
 /// One memory snapshot of `memory_labels`: its label, when it was taken and how many rows it holds.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -538,6 +538,13 @@ pub struct CounterRow {
     pub samples: usize,
 }
 
+/// A megabyte path with its value in the first snapshot, the second and the change.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MbChange(pub String, pub f64, pub f64, pub f64);
+
+/// A count path with its value in the first snapshot, the second and the change.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CountChange(pub String, pub Amount, pub Amount, pub Amount);
 
 /// What grew and shrank between two memory snapshots.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

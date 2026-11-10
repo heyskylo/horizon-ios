@@ -779,7 +779,7 @@ horizon-perf mcp                                                       §8
 | `frames` | `NAME…` (id, exact short name or `/regex/`) | inclusive and self per name; one column per capture | `s1_breakdown.py`, `s1_table.py`, `s3_table.py` |
 | `spans` | `--names a,b`, `--slow` | per span: ms/tick, cpu, waited, seen; one column per capture | `slowticks.py`, `spikes.py`, `s1a_spans.py` |
 | `ticks` | `--worst N`, `--over MS` | worst ticks/frames with span trees, from `spans.worst`, `slow_history` and `slow` | worst-ticks lines |
-| `tick` | `k:ID` | one tick's span tree, and its samples if the tick was slow | |
+| `tick` | `k:ID` | one tick's span tree, and `hot`: the top 30 functions of the samples in the 1 s blocks overlapping the tick (slow samples only when the tick is slow), with `samples_from`/`samples_to` for the window used; a second's worth, not the tick's own samples | |
 | `series` | `FIELD…` (`h:` fields, `span:NAME`, `x:` counters), `--every S` | time series, resampled; `--from` before 0 reaches into `history`; the web UI and MCP can add `stats` (min, mean over the window, median, p95, max, last) to each series | `s3_windows.py`, `s3_counters.py` |
 | `world`, `net`, `gpu`, `gpu_frames`, `meta`, `bench`, `marks`, `warnings` | section filters | the section, filtered and ranked | `s3a_table.py`, `s1b_table.py` |
 | `memory` | `--diff [LABEL_A LABEL_B]`, `--min-mb X` | a snapshot, or spec D's diff of two (`grew_mb`, `shrank_mb`, `counts`, `only_in_a/b`) | spec D's `memory-diff` |
