@@ -224,7 +224,9 @@ impl Goal for DefendTrader {
         let Some(t) = cx.w.target_info(by) else {
             return false;
         };
-        if !t.alive || t.is_player && t.creative {
+        if !t.alive
+            || t.is_player && (t.creative || cx.w.player.as_ref().is_some_and(|p| p.spectator))
+        {
             return false;
         }
         let follow = m.attrs.follow_range;
