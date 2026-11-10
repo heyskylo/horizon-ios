@@ -115,3 +115,12 @@ ssh desktop 'sudo -n rm -f /var/lib/gha-control/pause && sudo -n systemctl start
 ```
 
 With the desktop paused, set `SELF_HOSTED_CI=light`, or `checks` waits for it.
+
+## When our runners are offline
+
+`.github/workflows/runner-watch.yml` runs every 30 minutes on GitHub's runners (never ours) and calls
+`tools/ci/runner_watch.py`. When a job has waited over 2 hours for a self-hosted runner, in a pool where no job is
+running at all (offline, not just busy), it opens one issue, "CI: self-hosted runners are not taking jobs", listing
+each pool, what stops and what to do, and keeps its text current; it closes the issue once nothing waits. It needs
+only the workflow token (`actions: read`, `issues: write`). What the Team and the council do meanwhile:
+[operations.md](operations.md#self-hosted-runners-are-offline).

@@ -75,6 +75,12 @@ def cases(cmd, setup):
         *setup('/setblock 13 201 10 minecraft:dispenser[facing=up]{Items:[{Slot:0b,id:"minecraft:armor_stand",count:1}]}'),
         sync(12), {'op': 'crafter_tick', 'pos': [13, 201, 10]},
         *get('@e[type=armor_stand,x=13.5,y=202,z=10.5,distance=..2,limit=1]', 'UUID'),
+        # A dispensed firework rocket (FireworkRocketItem.asProjectile, then Projectile.spawnProjectileUsingShoot): one
+        # Entity.random makes the UUID, the constructor's motion and lifetime, and then the shot's spread.
+        *setup('/setblock 13 201 13 minecraft:dispenser[facing=up]{Items:[{Slot:0b,id:"minecraft:firework_rocket",count:2}]}'),
+        sync(14), {'op': 'crafter_tick', 'pos': [13, 201, 13]},
+        *get('@e[type=firework_rocket,x=13.5,y=202,z=13.5,distance=..6,sort=nearest,limit=1]', 'UUID', 'LifeTime', 'Motion'),
+        *setup('/kill @e[type=!player]', '/setblock 13 201 13 minecraft:air'),
         # A chicken due to lay lays on its first tick and draws the next egg time from its own random, which carries
         # on through the load of a summon's NBT.
         sync(13), *setup('/summon chicken 7.5 201 13.5 {NoAI:1b,EggLayTime:1}'), {'op': 'tick'},

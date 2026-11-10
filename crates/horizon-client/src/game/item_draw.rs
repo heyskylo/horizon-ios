@@ -21,6 +21,43 @@ use horizon_core::geometry::{Aabb, Vec3};
 use serde_json::Value;
 use std::{cell::RefCell, collections::HashMap};
 
+/// The game's painter for the HUD kit's icons (`hud_kit::icon`): items by their models, the
+/// player's face from `face`, their skin's texture.
+pub(super) struct IconPainter<'g, 'a> {
+    pub(super) game: &'g Game<'a>,
+    pub(super) face: Option<&'g str>,
+}
+
+impl horizon_client::hud_kit::icon::IconPainter for IconPainter<'_, '_> {
+    fn item(&self, batch: &mut HudBatch, id: &str, [x, y, size]: [f32; 3]) -> bool {
+        let start = batch.vertices.len();
+        self.game
+            .draw_item_model(batch, &ItemStack::new(id, 1), x, y);
+        let scale = size / horizon_client::hud_kit::icon::ITEM_SIZE;
+        batch.scale_since(start, x, y, scale, scale);
+        batch.vertices.len() > start
+    }
+    fn face(&self, batch: &mut HudBatch, [x, y, size]: [f32; 3]) -> bool {
+        let Some(skin) = self.face else {
+            return false;
+        };
+        let mut draws = Vec::new();
+        // `PlayerFaceExtractor`: the face, then its hat layer.
+        horizon_client::tab_list::face(
+            &mut draws,
+            skin,
+            x as i32,
+            y as i32,
+            size as i32,
+            true,
+            false,
+            u32::MAX,
+        );
+        horizon_client::hud_layout::paint(batch, &self.game.gui.atlas, &draws);
+        true
+    }
+}
+
 /// The game's answers to what the resolver cannot read from the stack.
 pub(super) struct Env<'a, 'g> {
     game: &'a Game<'g>,

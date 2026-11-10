@@ -142,8 +142,11 @@ pub struct EffectiveOutput {
     /// Paper white, peak and black level in nits, as HDR output's last pass and its
     /// metadata take them, while it is on.
     pub(crate) nits: [f32; 3],
-    /// The HUD and menus' brightness, as a share of paper white.
+    /// The HUD and menus' brightness, as a share of paper white: their nits over its.
     pub(crate) ui_brightness: f32,
+    /// The running shader pack lights the world itself: Horizon lifts none of it, so HDR
+    /// Lighting has nothing to switch (`with_pack`).
+    pub(crate) pack_lights: bool,
 }
 impl Default for EffectiveOutput {
     fn default() -> Self {
@@ -166,7 +169,22 @@ impl EffectiveOutput {
         },
         nits: [203.0, 1000.0, 0.0],
         ui_brightness: 1.0,
+        pack_lights: false,
     };
+    /// This output under the running shader pack: a `shaders/` one (`shaders`), or one of
+    /// Horizon's own of API `native`. Under a 0.1 pack on the 8- or 16-bit frame the last pass
+    /// still lifts the light sources and the sun its marks hold (`lifts_world` in
+    /// `Renderer::render`); under the rest Horizon lifts nothing.
+    pub(crate) fn with_pack(self, shaders: bool, native: Option<horizon_shader_api::Api>) -> Self {
+        let pack_lights = shaders
+            || native.is_some_and(|api| {
+                api != horizon_shader_api::Api::V0_1 || self.frame.format == super::LINEAR_FRAME
+            });
+        Self {
+            pack_lights,
+            ..self
+        }
+    }
     /// Whether the destination offers HDR output.
     pub fn hdr_offered(&self) -> bool {
         self.offered.is_some()
@@ -271,7 +289,9 @@ pub(crate) fn resolve_output(
             settings.peak_nits(reading.luminance) as f32,
             settings.black_level_nits(),
         ],
-        ui_brightness: settings.hdr_ui_brightness as f32 / 100.0,
+        ui_brightness: settings.ui_nits(reading.luminance) as f32
+            / settings.paper_white_nits(reading.luminance) as f32,
+        pack_lights: false,
     }
 }
 
@@ -299,6 +319,7 @@ pub(crate) mod tests {
                 luminance: Some(Reported {
                     paper_white: 400,
                     peak: 1000,
+                    peak_guessed: false,
                 }),
                 hdr: system,
             },
@@ -566,6 +587,39 @@ pub(crate) mod tests {
         );
     }
 
+    /// UI Brightness reaches HDR output as its nits over paper white's: 1 on Auto, whatever
+    /// paper white is; a value set by hand holds its nits, Paper White on Auto or set by hand.
+    #[test]
+    fn ui_brightness_is_its_nits_over_paper_whites() {
+        let (caps, reading) = window(Some(Output::Pq), Some(true));
+        let share = |paper_white, ui_nits, reading| {
+            let settings = Graphics {
+                hdr: HdrMode::On,
+                hdr_paper_white: paper_white,
+                hdr_ui_nits: ui_nits,
+                ..Graphics::default()
+            };
+            let frame = resolve_frame(
+                &settings,
+                FrameRequest::default(),
+                caps,
+                reading,
+                Bgra8Unorm,
+            );
+            resolve_output(&settings, caps, reading, frame, true).ui_brightness
+        };
+        // Auto: the report's 400 nits, 203 without one, or the player's 250.
+        let unreported = DisplayReading::default();
+        for (paper_white, reading) in [(0, reading), (0, unreported), (250, reading)] {
+            assert_eq!(share(paper_white, 0, reading), 1.0);
+        }
+        assert_eq!(share(0, 100, reading), 0.25);
+        assert_eq!(share(0, 480, reading), 1.2);
+        assert_eq!(share(0, 406, unreported), 2.0);
+        assert_eq!(share(250, 100, reading), 0.4);
+        assert_eq!(share(250, 480, reading), 1.92);
+    }
+
     /// Two renderers' states, a window's and an offscreen one's, made and changed in turn:
     /// neither's offer or report shows in the other's snapshot, and the offscreen one
     /// stopping its watch (HDR Off) leaves the window's report alone.
@@ -616,6 +670,7 @@ pub(crate) mod tests {
         window_reading.luminance = Some(Reported {
             paper_white: 300,
             peak: 800,
+            peak_guessed: false,
         });
         assert_eq!(window_output(window_reading).nits[..2], [300.0, 800.0]);
         assert_eq!(

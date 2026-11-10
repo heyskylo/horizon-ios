@@ -1084,7 +1084,7 @@ fn block_of(p: Vec3) -> [i32; 3] {
 }
 /// `Swim`: deeper than the jump threshold, or in lava.
 fn swim_condition(m: &Mob) -> bool {
-    m.fluids.water > m.fluid_jump_threshold() || m.fluids.in_lava
+    m.floats()
 }
 /// `PositionTracker.isVisibleBy`.
 fn tracker_visible(m: &mut Mob, w: &MobWorld, t: Tracker) -> bool {
@@ -1264,7 +1264,7 @@ fn long_jump_can_run(m: &mut Mob, cx: &mut Bx) -> bool {
     if !m.on_ground && !m.fluids.in_water {
         return false;
     }
-    if m.fluids.water > m.fluid_jump_threshold() || m.fluids.in_lava {
+    if m.floats() {
         return false;
     }
     if mem(m).breeze_jump_target.present() {

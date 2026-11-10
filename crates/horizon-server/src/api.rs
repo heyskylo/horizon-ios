@@ -583,8 +583,8 @@ pub fn same_token(a: &str, b: &str) -> bool {
 }
 
 /// Writes a file only its owner can read: through a private temporary file renamed over it
-/// (`horizon_server_files::private_file`), so an older, wider-readable file never keeps the token.
-pub use horizon_server_files::private_file::write_private;
+/// (`horizon_platform::server_files::private_file`), so an older, wider-readable file never keeps the token.
+pub use horizon_platform::server_files::private_file::write_private;
 
 /// Removes the endpoint file when the supervisor ends.
 pub struct Endpoint(PathBuf);

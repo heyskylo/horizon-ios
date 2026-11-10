@@ -895,6 +895,22 @@ impl Projectile {
         self.previous_yaw = self.yaw;
         self.previous_pitch = self.pitch;
     }
+    /// The kinds whose tick turns them with `Projectile.updateRotation`: a
+    /// `ThrowableProjectile` (the thrown kinds and the experience bottle) and
+    /// llama spit.
+    fn turns_with_update_rotation(&self) -> bool {
+        self.is_thrown() || self.kind == ProjectileKind::ExperienceBottle
+    }
+    /// `Projectile.updateRotation`: a fifth of the way (`lerpRotation`) from
+    /// the rotation the tick started with toward the motion's direction.
+    fn turn_towards_movement(&mut self) {
+        use horizon_core::geometry::trig::atan2_degrees;
+        let v = self.velocity;
+        let x_rot = atan2_degrees(v.y, v.horizontal_distance());
+        let y_rot = atan2_degrees(v.x, v.z);
+        self.pitch = crate::arrows::lerp_rotation(self.previous_pitch, x_rot);
+        self.yaw = crate::arrows::lerp_rotation(self.previous_yaw, y_rot);
+    }
     /// `Entity.setOldPosAndRot`: where the renderer interpolates from.
     pub fn set_old_pos_and_rot(&mut self) {
         self.previous = self.position;
@@ -1207,7 +1223,7 @@ impl Projectile {
     /// through (`applyEffectsFromBlocks`), bubble columns among them:
     /// `ThrowableProjectile`, `AbstractHurtingProjectile` and `ShulkerBullet`.
     /// Arrows push themselves (`arrows::tick`); llama spit applies none.
-    fn applies_block_effects(&self) -> bool {
+    pub fn applies_block_effects(&self) -> bool {
         self.is_throwable_projectile()
             || matches!(
                 self.kind,
@@ -1257,6 +1273,17 @@ impl Projectile {
     /// the blocks the box swept through from `from`, each once, pushing when
     /// the move was long or the final box (deflated by 1e-5F) is inside it.
     fn bubble_columns_along(&mut self, w: &impl ProjectileWorld, from: Vec3) {
+        self.bubble_columns_since(from, |p| w.bubble_column(p));
+    }
+    /// [`bubble_columns_along`](Self::bubble_columns_along) with the bubble
+    /// columns read by `column`, for a move made by something else: a
+    /// piston's push applies the block effects too (`moveEntityByPiston`'s
+    /// `applyEffectsFromBlocks`).
+    pub fn bubble_columns_since(
+        &mut self,
+        from: Vec3,
+        column: impl Fn([i32; 3]) -> Option<(bool, bool)>,
+    ) {
         let to = self.position;
         let eps = f64::from(1.0e-5_f32);
         let deflated = self.bounds().deflate(Vec3::new(eps, eps, eps));
@@ -1298,7 +1325,7 @@ impl Projectile {
             if cells[..i].contains(&p) {
                 continue;
             }
-            let Some((drag, surface)) = w.bubble_column([p.x, p.y, p.z]) else {
+            let Some((drag, surface)) = column([p.x, p.y, p.z]) else {
                 continue;
             };
             let cell = Aabb::new(
@@ -1449,6 +1476,11 @@ impl Projectile {
                 );
             }
         }
+        // ThrowableProjectile.tick and LlamaSpit.tick turn with this move's
+        // motion, hit or not (a spit's drag and gravity come after).
+        if self.turns_with_update_rotation() {
+            self.turn_towards_movement();
+        }
         let from = self.position;
         let to = Vec3::new(
             from.x + self.velocity.x,
@@ -1542,11 +1574,12 @@ impl Projectile {
                 self.velocity.y * drag - self.get_gravity(),
                 self.velocity.z * drag,
             );
-            self.update_rotation();
             return (self.position.y > -128.0 && self.age < 6000, spit_hit);
         }
         self.position = to;
-        if !self.is_fireball() {
+        // Wind charges still face their motion at once; vanilla turns every
+        // `AbstractHurtingProjectile` gradually (#14466).
+        if !self.is_fireball() && !self.turns_with_update_rotation() {
             self.update_rotation();
         }
         // Entity.baseTick's updateFluidInteraction, after the move.

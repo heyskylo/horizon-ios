@@ -3,8 +3,9 @@
 //! where a tween is at the frame's [`Clock`]; nothing here holds state or runs on its own, and
 //! no motion ever decides what input does.
 //!
-//! The curves are the design system's (`horizon_theme::QUICK`, `MOVE`): a [`Tween`] takes one
-//! of them, at the theme's duration or a shorter one of its own.
+//! A [`Tween`] takes a duration and a CSS `cubic-bezier` curve: Horizon's overlays use the design
+//! system's (`horizon_theme::QUICK`, `MOVE`), at the theme's duration or a shorter one of their
+//! own.
 //!
 //! The game builds the clock once a frame (`Clock::new(now, still)`). A still clock (the game is
 //! paused, frame-stepped by `HORIZON_STILL` or a screenshot sequence, or a repro recording or
@@ -16,7 +17,7 @@
 //! use std::time::{Duration, Instant};
 //!
 //! let opened = Instant::now();
-//! let open = Tween::new(Duration::from_millis(90), horizon_theme::QUICK);
+//! let open = Tween::new(Duration::from_millis(90), [0.4, 0.0, 0.2, 1.0]);
 //! // Half way through: partly faded in, partly grown from 94%.
 //! let clock = Clock::new(opened + Duration::from_millis(45), false);
 //! let alpha = motion::fade(open, clock, opened);
@@ -26,7 +27,6 @@
 //! let still = Clock::new(opened, true);
 //! assert_eq!(motion::fade(open, still, opened), 1.0);
 //! ```
-use horizon_theme::Motion;
 use std::time::{Duration, Instant};
 
 /// The time a frame shows, built once a frame by the game.
@@ -50,28 +50,20 @@ impl Clock {
     }
 }
 
-/// A duration and one of the design system's easing curves.
+/// A duration and an easing curve.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tween {
     /// How long it runs.
     pub duration: Duration,
-    /// The CSS `cubic-bezier` control points of its curve (a `horizon_theme::Motion`'s).
+    /// The CSS `cubic-bezier` control points of its curve.
     pub curve: [f32; 4],
 }
 
 impl Tween {
-    /// `motion`'s curve over `duration`: the dial's motions are shorter than the launcher's, on
-    /// the same curves.
-    pub const fn new(duration: Duration, motion: Motion) -> Self {
-        Self {
-            duration,
-            curve: motion.curve,
-        }
-    }
-
-    /// A theme motion as it is: its own duration and curve.
-    pub const fn of(motion: Motion) -> Self {
-        Self::new(motion.duration(), motion)
+    /// `curve` over `duration`: the dial's motions are shorter than the launcher's, on the same
+    /// curves.
+    pub const fn new(duration: Duration, curve: [f32; 4]) -> Self {
+        Self { duration, curve }
     }
 
     /// The linear progress, 0 to 1, `since` a start at this clock; 1 on a still clock.
@@ -84,7 +76,7 @@ impl Tween {
 
     /// The eased progress, 0 to 1, on the tween's curve.
     pub fn progress(self, clock: Clock, since: Instant) -> f32 {
-        horizon_theme::bezier(self.curve, self.linear(clock, since))
+        bezier(self.curve, self.linear(clock, since))
     }
 
     /// Whether it has finished (always, on a still clock).
@@ -96,6 +88,29 @@ impl Tween {
     pub fn lerp(self, clock: Clock, since: Instant, from: f32, to: f32) -> f32 {
         from + (to - from) * self.progress(clock, since)
     }
+}
+
+/// A CSS `cubic-bezier(x1, y1, x2, y2)` at `t` in 0..1: solves x for the curve parameter,
+/// returns y.
+pub fn bezier([x1, y1, x2, y2]: [f32; 4], t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    if t == 0.0 || t == 1.0 {
+        return t;
+    }
+    let at = |a: f32, b: f32, s: f32| {
+        let u = 1.0 - s;
+        3.0 * u * u * s * a + 3.0 * u * s * s * b + s * s * s
+    };
+    let (mut lo, mut hi) = (0f32, 1f32);
+    for _ in 0..24 {
+        let mid = (lo + hi) / 2.0;
+        if at(x1, x2, mid) < t {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    at(y1, y2, (lo + hi) / 2.0)
 }
 
 /// An alpha from 0 to 1 as something fades in.
@@ -145,7 +160,7 @@ mod tests {
     #[test]
     fn a_tween_runs_from_its_start_to_its_end_and_holds() {
         let t0 = Instant::now();
-        let tween = Tween::new(MS(80), horizon_theme::MOVE);
+        let tween = Tween::new(MS(80), horizon_theme::MOVE.curve);
         assert_eq!(tween.progress(at(t0, 0), t0), 0.0);
         assert_eq!(tween.progress(at(t0, 80), t0), 1.0);
         assert_eq!(tween.progress(at(t0, 500), t0), 1.0);
@@ -160,8 +175,7 @@ mod tests {
     fn a_still_clock_shows_every_motion_settled() {
         let t0 = Instant::now();
         let still = Clock::new(t0, true);
-        let tween = Tween::of(horizon_theme::QUICK);
-        assert_eq!(tween.duration, horizon_theme::QUICK.duration());
+        let tween = Tween::new(horizon_theme::QUICK.duration(), horizon_theme::QUICK.curve);
         assert_eq!(fade(tween, still, t0), 1.0);
         assert_eq!(fade_out(tween, still, t0), 0.0);
         assert_eq!(scale_in(tween, still, t0, 0.94), 1.0);
@@ -173,7 +187,7 @@ mod tests {
     #[test]
     fn the_helpers_start_where_they_say() {
         let t0 = Instant::now();
-        let tween = Tween::new(MS(100), horizon_theme::QUICK);
+        let tween = Tween::new(MS(100), horizon_theme::QUICK.curve);
         let c = at(t0, 0);
         assert_eq!(fade(tween, c, t0), 0.0);
         assert_eq!(fade_out(tween, c, t0), 1.0);
@@ -185,9 +199,24 @@ mod tests {
     }
 
     #[test]
+    fn the_curve_is_the_design_systems() {
+        for motion in horizon_theme::MOTION {
+            for i in 0..=20 {
+                let t = i as f32 / 20.0;
+                assert_eq!(
+                    bezier(motion.curve, t),
+                    motion.ease(t),
+                    "{} at {t}",
+                    motion.name
+                );
+            }
+        }
+    }
+
+    #[test]
     fn a_turn_takes_the_short_way_round() {
         let t0 = Instant::now();
-        let tween = Tween::new(MS(80), horizon_theme::MOVE);
+        let tween = Tween::new(MS(80), horizon_theme::MOVE.curve);
         // From up-left (7/8 of a turn) to up-right: through up, not round the bottom.
         let from = 7.0 * FRAC_PI_4;
         let half = turn(tween, at(t0, 1), t0, from, FRAC_PI_4);

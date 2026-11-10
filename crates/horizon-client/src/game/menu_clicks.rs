@@ -899,4 +899,32 @@ impl Game<'_> {
             f.input_clicked(world_recipes!(self), before);
         }
     }
+
+    /// `AbstractContainerScreen` keeps `isQuickCrafting` and the drag it
+    /// belongs to on the screen. Horizon keeps both on `Game` (`inv_clicks`,
+    /// `inv_drag`, `last_inv_click`), so they are dropped when the pointer
+    /// changes hands: a screen that opens or closes starts with its own
+    /// state, and a press whose release never reached the screen -- the
+    /// pointer left the window, or the screen closed first -- would
+    /// otherwise leave every later press on every later screen swallowed.
+    pub(super) fn reset_inventory_clicks(&mut self) {
+        self.inv_clicks.cancel_drag();
+        self.inv_drag = None;
+        self.last_inv_click = None;
+    }
+
+    /// A sound a menu click made the player play (a bundle's insert or
+    /// remove): `Entity.playSound` at the player.
+    pub(super) fn player_menu_sound(&mut self, sound: &str) {
+        let Some(p) = self.player.as_ref() else {
+            return;
+        };
+        let at = [p.position.x, p.position.y, p.position.z];
+        let (volume, pitch) = if sound == horizon_client::bundle::INSERT_FAIL {
+            (1.0, 1.0)
+        } else {
+            (0.8, 0.8 + self.world.random.next_float() * 0.4)
+        };
+        self.audio.play(sound, Some(at), volume, pitch);
+    }
 }

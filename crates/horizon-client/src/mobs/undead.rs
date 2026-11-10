@@ -508,8 +508,10 @@ fn zombified_piglin_step(m: &mut Mob, cx: &mut Cx) {
             }
         }
         if m.extra.anger == 0 {
+            // `stopBeingAngry`.
             m.ai.target = None;
             m.extra.angry_at = None;
+            m.extra.anger_end = -1;
             m.extra.flag2 = false;
         }
     } else {

@@ -44,6 +44,8 @@ Feature → files → harness for the most-changed areas: [docs/architecture.md]
 - **Machine translations stay unreviewed.** `tools/lang_review/` records only text a person who speaks the language
   wrote or checked; never `lang_coverage.py --mark-reviewed` machine text ([docs/translations.md](docs/translations.md)).
 - **Controllers reach what registers.** Draw controls with a registering helper (`ui::button`, `settings_shell::foot_button`); `graphics_style::button` and `screen_draw::button` only paint, and registering one part of a screen ends its crosshair, so register all of it.
+- **Render passes keep HDR's light.** A pass that reads, filters or redraws the world's picture (upscaling,
+  anti-aliasing, sharpening, frame generation, post effects, captures) follows [docs/hdr-passes.md](docs/hdr-passes.md).
 
 ## Crates
 

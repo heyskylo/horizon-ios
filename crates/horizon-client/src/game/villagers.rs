@@ -275,6 +275,11 @@ impl Game<'_> {
         if due.is_empty() {
             return;
         }
+        // Reuse the existing item-cell index only for large, spread-out item
+        // sets with many due sensors. Small and clustered scenes retain the
+        // original full scan without building an index.
+        let mut nearby = super::item_areas::ItemAreas::worthwhile(&self.dropped, due.len())
+            .then(super::item_areas::ItemAreas::default);
         let w = self.mob_world_base(&[]);
         let mut found = Vec::new();
         for i in due {
@@ -283,7 +288,18 @@ impl Game<'_> {
             let requested = villager::requested_items(m);
             let eye = Vec3::new(m.position.x, m.eye_y(), m.position.z);
             let mut best: Option<(f64, Vec3)> = None;
-            for e in &self.dropped {
+            let mut scan = nearby
+                .as_mut()
+                .map(|index| index.scan(&self.dropped, self.next_entity, area));
+            let mut j = 0;
+            loop {
+                if let Some(indexed) = &mut scan {
+                    j = indexed.next_from(j, self.dropped.len());
+                }
+                let Some(e) = self.dropped.get(j) else {
+                    break;
+                };
+                j += 1;
                 let d = e.position.distance_squared(m.position);
                 if best.is_some_and(|(b, _)| d >= b)
                     || !e.bounds().intersects(area)

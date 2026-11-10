@@ -17,6 +17,7 @@ use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 /// Where overlay roots are built (beside options.txt).
@@ -367,6 +368,9 @@ impl Game<'_> {
             ui_metadata,
             language,
         } = staged;
+        // The packs' Polytone creative tab modifiers.
+        let tab_modifiers = horizon_client::polytone_creative_tabs::TabModifier::read_all(&root);
+        self.creative_screen.set_pack_modifiers(tab_modifiers);
         // Keep the working GPU resources, and hand its window surface over.
         if let Some(renderer) = &mut self.renderer {
             renderer.release_surface();
@@ -416,6 +420,7 @@ impl Game<'_> {
         self.random_tick_sections.clear();
         self.portals.sections.clear();
         self.options.resources = root.clone();
+        self.falling_vertices.get_mut().clear();
         self.pack = pack;
         self.gui = gui;
         // The new atlas's skin and map slots are blank: players and maps
@@ -644,11 +649,29 @@ pub(super) struct PackReload {
     pub(super) progress: super::Progress,
     kind: ReloadKind,
     handle: Option<std::thread::JoinHandle<StageResult>>,
+    /// When the overlay went up. `LoadingOverlay.fadeInStart`, set on the
+    /// first frame it draws.
+    started: Instant,
+    /// How long the overlay stays up before the reload may be applied.
+    hold: Duration,
 }
+/// `LoadingOverlay.isReadyToFadeOut`: a reload started from inside the game
+/// (`fadeIn`) is not ready while `Util.getMillis() - fadeInStart < 1000L`, so
+/// a pack that stages in a few frames still shows its overlay for a second
+/// instead of flashing.
+pub(super) const OVERLAY_HOLD: Duration = Duration::from_millis(1000);
 impl PackReload {
     /// Starts `stage` on its own thread and returns at once.
     fn spawn(
         kind: ReloadKind,
+        stage: impl FnOnce(&super::Progress) -> StageResult + Send + 'static,
+    ) -> std::io::Result<Self> {
+        Self::spawn_holding(kind, OVERLAY_HOLD, stage)
+    }
+    /// `spawn` with the overlay's hold spelled out, so a test need not wait it.
+    fn spawn_holding(
+        kind: ReloadKind,
+        hold: Duration,
         stage: impl FnOnce(&super::Progress) -> StageResult + Send + 'static,
     ) -> std::io::Result<Self> {
         let progress = super::Progress::with(&RELOAD_LINES);
@@ -660,14 +683,17 @@ impl PackReload {
             progress,
             kind,
             handle: Some(handle),
+            started: Instant::now(),
+            hold,
         })
     }
     pub(super) fn kind(&self) -> ReloadKind {
         self.kind
     }
-    /// The staged pack once the worker is done (taken once); none while it runs.
+    /// The staged pack once the worker is done and the overlay has had its
+    /// second (taken once); none while either is outstanding.
     fn finished(&mut self) -> Option<(ReloadKind, StageResult)> {
-        if !self.handle.as_ref()?.is_finished() {
+        if self.started.elapsed() < self.hold || !self.handle.as_ref()?.is_finished() {
             return None;
         }
         let staged = self
@@ -729,6 +755,36 @@ mod tests {
             staged.err().as_deref(),
             Some("the pack reload worker panicked")
         );
+    }
+
+    /// `LoadingOverlay.isReadyToFadeOut`: a reload that stages at once still
+    /// keeps its overlay up - the 1000 ms `fadeInStart` gate - so a small pack
+    /// does not flash the Mojang logo for a frame or two.
+    #[test]
+    fn a_fast_reload_keeps_the_overlay_up_before_it_applies() {
+        assert_eq!(OVERLAY_HOLD, Duration::from_millis(1000));
+        let mut quick = PackReload::spawn_holding(ReloadKind::Selection, Duration::ZERO, |_| {
+            Err("staged".into())
+        })
+        .unwrap();
+        assert_eq!(wait(&mut quick).0, ReloadKind::Selection);
+        // A hold no test machine outlasts, however loaded: the worker is done long
+        // before the overlay has had its time.
+        let hold = Duration::from_secs(3600);
+        let mut held =
+            PackReload::spawn_holding(ReloadKind::Selection, hold, |_| Err("staged".into()))
+                .unwrap();
+        for _ in 0..500 {
+            if held.handle.as_ref().is_some_and(|h| h.is_finished()) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(held.handle.as_ref().is_some_and(|h| h.is_finished()));
+        assert!(held.finished().is_none(), "the overlay is still up");
+        // Once the hold has passed, the staged pack is handed over.
+        held.hold = Duration::ZERO;
+        assert_eq!(wait(&mut held).0, ReloadKind::Selection);
     }
 
     #[test]
