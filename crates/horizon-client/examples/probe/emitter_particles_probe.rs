@@ -97,6 +97,7 @@ pub fn main() -> Result<()> {
         facts: &facts,
         collision: &collision,
         player: None,
+        cached_chunk: std::cell::Cell::new(None),
     };
     let mut engine = ParticleEngine::new(&root, &Default::default(), &Default::default());
     let mut out = BufWriter::new(File::create(&args[2])?);

@@ -3832,12 +3832,9 @@ impl Game<'_> {
                     return;
                 }
                 g.spawn = None;
-                g.respawn_config = Some(super::respawn_anchor::RespawnConfig {
-                    dim: level,
-                    pos,
-                    yaw,
-                    forced: true,
-                });
+                g.respawn_config = Some(super::respawn_anchor::RespawnConfig::forced(
+                    level, pos, yaw, pitch,
+                ));
             });
         }
         let dim = Text::literal(self.dim.id());

@@ -9,6 +9,7 @@ use crate::{
     text::Text,
     ui,
 };
+use std::time::{Duration, Instant};
 
 pub const TITLE: &str = "gui.socialInteractions.title";
 /// `SocialInteractionsScreen`'s page.
@@ -185,8 +186,35 @@ pub fn click(size: (f32, f32), cursor: (f32, f32), view: &SocialView) -> Option<
     }
     None
 }
-/// The tooltip of what the cursor is over.
-fn tooltip(size: (f32, f32), cursor: (f32, f32), view: &SocialView) -> Option<Text> {
+/// `PlayerEntry.TOOLTIP_DELAY`: a row button's tooltip shows once the cursor
+/// has rested on that same button for half a second.
+pub const TOOLTIP_DELAY: Duration = Duration::from_millis(500);
+
+/// The row button whose tooltip the cursor is over.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Tip {
+    Report(u128),
+    Toggle { id: u128, hidden: bool },
+}
+
+impl Tip {
+    fn text(self) -> Text {
+        match self {
+            Tip::Report(_) => {
+                Text::translate("gui.socialInteractions.tooltip.report.disabled", &[])
+            }
+            Tip::Toggle { hidden: true, .. } => {
+                Text::translate("gui.socialInteractions.tooltip.show", &[])
+            }
+            Tip::Toggle { hidden: false, .. } => {
+                Text::translate("gui.socialInteractions.tooltip.hide", &[])
+            }
+        }
+    }
+}
+
+/// The tooltip of what the cursor is over: the row button it names.
+fn tip_at(size: (f32, f32), cursor: (f32, f32), view: &SocialView) -> Option<Tip> {
     let (w, h) = size;
     if cursor.1 < LIST_START || cursor.1 >= list_end(h) {
         return None;
@@ -198,21 +226,41 @@ fn tooltip(size: (f32, f32), cursor: (f32, f32), view: &SocialView) -> Option<Te
         }
         let (hide, report) = row_buttons(w, y);
         if ui::hovered(cursor, hide[0], hide[1], 20.0, 20.0) {
-            let key = if e.hidden {
-                "gui.socialInteractions.tooltip.show"
-            } else {
-                "gui.socialInteractions.tooltip.hide"
-            };
-            return Some(Text::translate(key, &[]));
+            return Some(Tip::Toggle {
+                id: e.id,
+                hidden: e.hidden,
+            });
         }
         if ui::hovered(cursor, report[0], report[1], 20.0, 20.0) {
-            return Some(Text::translate(
-                "gui.socialInteractions.tooltip.report.disabled",
-                &[],
-            ));
+            return Some(Tip::Report(e.id));
         }
     }
     None
+}
+
+/// `WidgetTooltipHolder`'s delay: the tooltip of the control the cursor has
+/// rested on for `TOOLTIP_DELAY`, and nothing while it moves between them.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TooltipDelay {
+    hovered: Option<(Tip, Instant)>,
+}
+
+impl TooltipDelay {
+    /// The tip to draw at `now`, starting the wait when the cursor reaches a
+    /// new button (vanilla's `displayStartTime`).
+    pub fn shown(&mut self, hovered: Option<Tip>, now: Instant) -> Option<Tip> {
+        let Some(tip) = hovered else {
+            self.hovered = None;
+            return None;
+        };
+        match self.hovered {
+            Some((t, at)) if t == tip => (now.duration_since(at) > TOOLTIP_DELAY).then_some(tip),
+            _ => {
+                self.hovered = Some((tip, now));
+                None
+            }
+        }
+    }
 }
 pub fn draw(
     batch: &mut HudBatch,
@@ -220,6 +268,7 @@ pub fn draw(
     cursor: (f32, f32),
     view: &SocialView,
     search: &mut ui::EditBox,
+    tooltip: &mut TooltipDelay,
     in_world: bool,
 ) {
     let (w, h) = (batch.width, batch.height);
@@ -419,8 +468,8 @@ pub fn draw(
             );
         }
     }
-    if let Some(text) = tooltip((w, h), cursor, view) {
-        ui::tooltip(batch, atlas, &[text], cursor);
+    if let Some(tip) = tooltip.shown(tip_at((w, h), cursor, view), Instant::now()) {
+        ui::tooltip(batch, atlas, &[tip.text()], cursor);
     }
 }
 
@@ -516,5 +565,36 @@ mod tests {
         sort_entries(&mut rows);
         let names: Vec<_> = rows.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["me", "_x", "Alpha", "zed", "§odd"]);
+    }
+
+    /// `PlayerEntry.TOOLTIP_DELAY` (500 ms): the row buttons' tooltips wait
+    /// while container item tooltips do not. Moving to another button, or
+    /// away and back, starts the wait again.
+    #[test]
+    fn a_row_buttons_tooltip_waits_half_a_second() {
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        let mut delay = TooltipDelay::default();
+        let tip = Tip::Toggle {
+            id: 7,
+            hidden: false,
+        };
+        assert_eq!(delay.shown(Some(tip), at(0)), None);
+        assert_eq!(delay.shown(Some(tip), at(499)), None);
+        assert_eq!(delay.shown(Some(tip), at(500)), None, "500 ms is not > 500");
+        assert_eq!(delay.shown(Some(tip), at(501)), Some(tip));
+        // Another row button is another widget: its own wait.
+        let other = Tip::Toggle {
+            id: 8,
+            hidden: true,
+        };
+        assert_eq!(delay.shown(Some(other), at(502)), None);
+        assert_eq!(delay.shown(Some(other), at(1002)), None);
+        assert_eq!(delay.shown(Some(other), at(1003)), Some(other));
+        // Leaving hides it at once; coming back starts over.
+        assert_eq!(delay.shown(None, at(1004)), None);
+        assert_eq!(delay.shown(Some(tip), at(1005)), None);
+        assert_eq!(delay.shown(Some(tip), at(1505)), None);
+        assert_eq!(delay.shown(Some(tip), at(1506)), Some(tip));
     }
 }

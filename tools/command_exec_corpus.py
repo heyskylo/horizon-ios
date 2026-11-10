@@ -6299,6 +6299,14 @@ def moving_piston_presentation_diagnostic():
     return moving_piston_presentation(cmd, setup)
 
 
+def piston_mob_bounce():
+    try:
+        from .piston_bounce_corpus import piston_bounce
+    except ImportError:
+        from piston_bounce_corpus import piston_bounce
+    return piston_bounce(cmd, setup)
+
+
 def piston_entity_tick_order():
     """#9337: entities travel before moving pistons push them, not afterward."""
     ops = []
@@ -6846,6 +6854,27 @@ def living_short_timers():
     return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
                        f'/forceload remove {x0} {z0}')
 
+def command_block_last_output():
+    """#13077: `BaseCommandBlock` keeps the feedback it got as a component (stamped with the time:
+    `Component.literal("[HH:mm:ss] ").append(message)`) and saves it with
+    `ComponentSerialization.CODEC`: a failed command keeps its red, click-to-suggest error."""
+    x0, y0, z0 = 3904, 260, 3648
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd('/scoreboard objectives add cb_out dummy', False)]
+    # Two failures, whose styled feedback (red, click to suggest the command) is what the save must keep.
+    # A success's feedback names an entity, a new score holder or a bracketed value, whose components
+    # the two engines build differently (or which change later groups' scoreboard lists).
+    commands = ['say', 'scoreboard players get #nobody cb_out']
+    at = [(x0 + 2 + 3 * n, y0, z0 + 4) for n in range(len(commands))]
+    for command, (x, y, z) in zip(commands, at):
+        ops.append(cmd(f'/setblock {x} {y} {z} minecraft:command_block{{Command:"{command}"}}', expect_result=1))
+        ops.append(cmd(f'/setblock {x} {y + 1} {z} minecraft:redstone_block', expect_result=1))
+    ops.append({'op': 'tick', 'n': 3})
+    for x, y, z in at:
+        ops.append(cmd(f'/data get block {x} {y} {z} LastOutput'))
+    return ops + setup(f'/fill {x0} {y0} {z0} {x0 + 15} {y0 + 1} {z0 + 15} air',
+                       '/scoreboard objectives remove cb_out', f'/forceload remove {x0} {z0}')
+
 def loaded_ticket_removal(blocks=False):
     """Entity-ticking command visibility after forced tickets leave; FULL is separate."""
     targets = [(d, x, z) for d in range(2, 7)
@@ -7207,6 +7236,47 @@ def vehicle_fall_clip():
                        f'/forceload remove {x0} {z0}')
 
 
+def mob_fall_clip():
+    """Entity.move on a mob: a move of a block or more casts along it (FALLDAMAGE_RESETTING as a full
+    block, WATER) and a hit resets the fall before the move's own drop counts. Pigs and husks fall
+    fast past a vine on a wall and with nothing in the way; a husk falls through one block of water.
+    """
+    x0, y0, z0 = 4160, 260, 4160
+    chunk = [[x0 >> 4, z0 >> 4]]
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
+           cmd('/tick freeze', False),
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', expect_result=256)]
+    # A pig in water floats up at random (FloatGoal): only the husk falls through it.
+    subjects = [('pig', 'vine'), ('husk', 'vine'), ('pig', None), ('husk', None), ('husk', 'water')]
+    for n, (kind, block) in enumerate(subjects, 1):
+        x, z = x0 + 1 + (n - 1) % 5 * 3, z0 + 4 + (n - 1) // 5 * 6
+        ops.append(cmd(f'/fill {x - 1} {y0 + 10} {z} {x - 1} {y0 + 30} {z} stone', expect_result=21))
+        if block == 'vine':
+            ops.append(cmd(f'/setblock {x} {y0 + 18} {z} vine[west=true]', expect_result=1))
+        # A move of 2.5 passes the vine's block or the water whole (in it, a climbable or the water would
+        # reset the fall anyway).
+        y = y0 + 20
+        if block == 'water':
+            ops.append(cmd(f'/setblock {x} {y0 + 19} {z} water', expect_result=1))
+            y = y0 + 21
+        dy = '-2.5d'
+        ops.append(cmd(f'/summon {kind} {x}.7 {y} {z}.5 {{UUID:[I;14000,0,{n},1],'
+                       f'fall_distance:5d,Motion:[0d,{dy},0d],PersistenceRequired:1b}}', expect_result=1))
+
+    def reads():
+        for n, _ in enumerate(subjects, 1):
+            for key in ('fall_distance', 'Pos[1]'):
+                ops.append(cmd(f'/data get entity 000036b0-0000-0000-0000-{n:04x}00000001 {key}'))
+
+    reads()
+    for _ in range(3):
+        ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 1}, cmd('/tick freeze', False)]
+        reads()
+    return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=48,dz=16]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 30} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
 def boat_float_height():
     """#13022: `AbstractBoat.checkInWater` and `isUnderwater` sum a block's y and its water height
     in float (`y + FluidState.getHeight`), and `floatBoat` lands a falling boat at the float
@@ -7429,8 +7499,10 @@ def groups():
         ('wither spawn', wither_spawn()),
         ('riding teleport', riding_teleport()),
         ('piston entity tick order', piston_entity_tick_order()),
+        ('piston mob bounce', piston_mob_bounce()),
         ('primed tnt box', primed_tnt_box()),
         ('primed tnt fall', primed_tnt_fall()),
+        ('command block last output', command_block_last_output()),
         ('living short timers', living_short_timers()),
         ('projectile fall distance', projectile_fall_distance()),
         ('item fall distance', item_fall_distance()),
@@ -7534,6 +7606,7 @@ def groups():
         ('projectile saved ground', projectile_saved_ground()),
         ('teleport lands', teleport_lands()),
         ('rocket data merge', rocket_data_merge()),
+        ('mob fall clip', mob_fall_clip()),
         ('vehicle ground and fall', vehicle_ground_and_fall()),
         ('vehicle saved ground and fall', vehicle_saved_ground_and_fall()),
         ('ravager saved movement speed', ravager_saved_movement_speed()),
