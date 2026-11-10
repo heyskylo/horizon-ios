@@ -7,9 +7,10 @@ use horizon_bench::{Frames, Summary};
 use serde::{Deserialize, Serialize};
 
 use crate::wire::{
-    Amount, BoundName, GpuBackendName, GpuFragmentUnitName, GpuModeName, GpuPartsModeName,
-    GpuPassSplitName, GpuSourceName, KindName, MemoryUnit, ModKindName, SampleBy, SeriesUnit,
-    SideName, StopReasonName, SymbolsName, ThreadSelectionName, TriggerName, WarningCodeName,
+    Amount, BoundName, CounterKindName, GpuBackendName, GpuFragmentUnitName, GpuModeName,
+    GpuPartsModeName, GpuPassSplitName, GpuSourceName, KindName, MemoryUnit, ModKindName, SampleBy,
+    SeriesUnit, SideName, StopReasonName, SymbolsName, ThreadSelectionName, TriggerName,
+    WarningCodeName,
 };
 
 /// A row of whichever op answered; each op's rows are all of one kind, except `net`'s first.
@@ -34,6 +35,8 @@ pub enum Row {
     Meta(MetaRow),
     Memory(MemoryRow),
     MemoryDiff(MemoryDiffRow),
+    MemoryLabel(MemoryLabelRow),
+    Counter(CounterRow),
     Warning(WarningRow),
     Mark(MarkRow),
     Hot(HotRow),
@@ -512,6 +515,29 @@ pub struct MbChange(pub String, pub f64, pub f64, pub f64);
 /// A count path with its value in the first snapshot, the second and the change.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CountChange(pub String, pub Amount, pub Amount, pub Amount);
+/// One memory snapshot of `memory_labels`: its label, when it was taken and how many rows it holds.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryLabelRow {
+    pub label: String,
+    pub t: f64,
+    pub side: SideName,
+    pub rows: usize,
+}
+
+/// One counter of `counters`; `samples` is how many counter samples carry it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CounterRow {
+    pub id: String,
+    pub name: String,
+    pub unit: String,
+    pub kind: CounterKindName,
+    pub labels: BTreeMap<String, String>,
+    pub side: SideName,
+    pub samples: usize,
+}
+
 
 /// What grew and shrank between two memory snapshots.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

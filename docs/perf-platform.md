@@ -784,6 +784,8 @@ horizon-perf mcp                                                       §8
 | `world`, `net`, `gpu`, `gpu_frames`, `meta`, `bench`, `marks`, `warnings` | section filters | the section, filtered and ranked | `s3a_table.py`, `s1b_table.py` |
 | `memory` | `--diff [LABEL_A LABEL_B]`, `--min-mb X` | a snapshot, or spec D's diff of two (`grew_mb`, `shrank_mb`, `counts`, `only_in_a/b`) | spec D's `memory-diff` |
 
+| `memory_labels` (`memory-labels`) | | every snapshot as `{label, t, side, rows}` in time order | |
+| `counters` | | every counter as `{id, name, unit, kind, labels, side, samples}` | |
 Filters, common to the sample-based ops:
 
 | Filter | Meaning |

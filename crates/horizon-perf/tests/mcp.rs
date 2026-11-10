@@ -232,6 +232,8 @@ fn tools_list_names_the_five_tools_with_schemas_that_match_their_arguments() {
             "net",
             "meta",
             "memory",
+            "memory_labels",
+            "counters",
             "marks",
             "warnings",
             "hot",

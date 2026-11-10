@@ -427,6 +427,8 @@ const CASES: &[(&str, &[&str])] = &[
         "hot_window",
         &["query", "hot", "--from", "6", "--to", "8", "{samples}"],
     ),
+    ("memory_labels", &["query", "memory_labels", "{hand}"]),
+    ("counters", &["query", "counters", "{hand}"]),
     ("tick_incomplete", &["query", "tick", "100", "{hand}"]),
     ("tick_missing", &["query", "tick", "k:55", "{hand}"]),
     ("tick_bad_id", &["query", "tick", "x", "{hand}"]),
