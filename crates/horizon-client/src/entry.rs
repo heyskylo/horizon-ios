@@ -230,6 +230,14 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         living_jump: |entity, kind| {
             crate::mod_api::dispatch_living_jump(crate::mod_api::mods(), entity, kind);
         },
+        living_death_message: |entity, kind, message| {
+            crate::mod_api::dispatch_living_death_message(
+                crate::mod_api::mods(),
+                entity,
+                kind,
+                message,
+            );
+        },
         register_goals: |mob| {
             crate::mod_api::dispatch_register_goals(crate::mod_api::mods(), mob);
         },
