@@ -4407,6 +4407,21 @@ mod tests {
         assert_eq!(load("Age:5999s,PickupDelay:10s"), (5999, 10));
         // A float or double floors first (`Mth.floor`), as `Health` does.
         assert_eq!(load("Age:-0.5f,PickupDelay:9.9d"), (-1, 9));
+        // The sentinels `ItemEntity.tick` tests for (`age != -32768`: never
+        // ages; `pickupDelay != 32767`: never counts down), given as ints,
+        // and the ints that narrow onto them.
+        assert_eq!(load("Age:-32768,PickupDelay:32767"), (-32768, 32767));
+        assert_eq!(load("Age:32768,PickupDelay:98303"), (-32768, 32767));
+        // They save as the shorts vanilla writes.
+        let tag = horizon_world::nbt::parse_snbt(
+            "{Pos:[0d,0d,0d],Item:{id:\"minecraft:stone\",count:1},Age:32768,PickupDelay:98303}",
+        )
+        .unwrap()
+        .0;
+        let item = super::item_entity_from_nbt(&tag, 1, 0.0).unwrap();
+        let saved = super::item_entity_to_nbt(&item, [1; 4], None);
+        assert_eq!(saved.get("Age"), Some(&super::Tag::Short(i16::MIN)));
+        assert_eq!(saved.get("PickupDelay"), Some(&super::Tag::Short(i16::MAX)));
     }
 
     // Added after the actual old Game proof: live mutation and a fresh absent
