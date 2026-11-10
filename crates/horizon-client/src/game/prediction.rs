@@ -199,3 +199,124 @@ fn entity_near(entities: &[EntityState], own: i32, at: [f64; 3], slack: f64) -> 
             )
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The scan `excused` ran over the entities before `entity_near`, verbatim.
+    fn old_entity(entities: &[EntityState], own: i32, at: [f64; 3], slack: f64) -> bool {
+        let close = |p: [f64; 3]| {
+            let r = 3.0 + slack;
+            (p[0] - at[0]).abs() <= r
+                && (p[2] - at[2]).abs() <= r
+                && (-3.0 - slack..=4.0 + slack).contains(&(p[1] - at[1]))
+        };
+        entities.iter().any(|e| {
+            e.id != own
+                && !matches!(
+                    e.kind.as_str(),
+                    "minecraft:item" | "minecraft:experience_orb"
+                )
+                && close(e.position)
+        })
+    }
+
+    /// xorshift64*: a fixed stream, so a failure reruns the same inputs.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next_u64(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+
+        fn below(&mut self, n: u64) -> u64 {
+            self.next_u64() % n
+        }
+
+        /// A multiple of 1/8 in `[-n/8, n/8]`: every edge of the box (multiples of 1/4) is exact.
+        fn step(&mut self, n: i64) -> f64 {
+            (self.below(2 * n as u64 + 1) as i64 - n) as f64 * 0.125
+        }
+
+        /// An offset from the guest: half the time on or next to an edge of the box.
+        fn offset(&mut self, edges: [f64; 4]) -> f64 {
+            if self.below(2) == 0 {
+                edges[self.below(4) as usize] + self.step(2)
+            } else {
+                self.step(160)
+            }
+        }
+    }
+
+    fn entity(rng: &mut Rng, at: [f64; 3], slack: f64) -> EntityState {
+        const KINDS: [&str; 4] = [
+            "minecraft:item",
+            "minecraft:experience_orb",
+            "minecraft:zombie",
+            "minecraft:pig",
+        ];
+        let r = 3.0 + slack;
+        let xz = [r, -r, r, -r];
+        let y = [-3.0 - slack, 4.0 + slack, -3.0 - slack, 4.0 + slack];
+        let off = [rng.offset(xz), rng.offset(y), rng.offset(xz)];
+        EntityState {
+            id: rng.below(6) as i32,
+            kind: KINDS[rng.below(4) as usize].to_string(),
+            position: [at[0] + off[0], at[1] + off[1], at[2] + off[2]],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn entity_near_matches_the_scan_it_replaced() {
+        const SLACKS: [f64; 6] = [0.0, 0.25, 0.5, 1.5, 3.0, 16.0];
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+        let (mut yes, mut no) = (0, 0);
+        for seed in 0..2_000 {
+            let slack = SLACKS[rng.below(6) as usize];
+            let at = [rng.step(160), rng.step(160), rng.step(160)];
+            let n = rng.below(40) as usize;
+            let entities: Vec<EntityState> = (0..n).map(|_| entity(&mut rng, at, slack)).collect();
+            for own in 0..6 {
+                let new = entity_near(&entities, own, at, slack);
+                let old = old_entity(&entities, own, at, slack);
+                assert_eq!(new, old, "seed {seed}, own {own}, at {at:?}, slack {slack}");
+                if new {
+                    yes += 1;
+                } else {
+                    no += 1;
+                }
+            }
+        }
+        assert!(yes > 0 && no > 0, "the inputs must give both answers");
+    }
+
+    #[test]
+    fn box_edges_are_inclusive_and_own_and_drops_are_skipped() {
+        let at = [0.0, 0.0, 0.0];
+        let zombie = |id, position| EntityState {
+            id,
+            kind: "minecraft:zombie".to_string(),
+            position,
+            ..Default::default()
+        };
+        let s = 0.5;
+        assert!(entity_near(&[zombie(1, [3.5, 0.0, 0.0])], 0, at, s));
+        assert!(!entity_near(&[zombie(1, [3.625, 0.0, 0.0])], 0, at, s));
+        assert!(entity_near(&[zombie(1, [0.0, 4.5, 0.0])], 0, at, s));
+        assert!(!entity_near(&[zombie(1, [0.0, 4.625, 0.0])], 0, at, s));
+        assert!(entity_near(&[zombie(1, [0.0, -3.5, 0.0])], 0, at, s));
+        assert!(!entity_near(&[zombie(1, [0.0, -3.625, 0.0])], 0, at, s));
+        // The guest's own entity, and items and orbs, never excuse.
+        assert!(!entity_near(&[zombie(7, [0.0, 0.0, 0.0])], 7, at, s));
+        let item = EntityState {
+            kind: "minecraft:item".to_string(),
+            ..zombie(2, [0.0, 0.0, 0.0])
+        };
+        assert!(!entity_near(&[item], 0, at, s));
+    }
+}
