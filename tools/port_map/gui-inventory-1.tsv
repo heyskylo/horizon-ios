@@ -95,7 +95,7 @@ BookViewScreen.pageBack	port	crates/horizon-client/src/game/books.rs::Game::turn
 BookViewScreen.pageForward	port	crates/horizon-client/src/game/books.rs::Game::turn_page	
 BookViewScreen.updateButtonVisibility	inline	crates/horizon-client/src/game/books.rs::Game::draw_book	back and forward shown by the page index
 BookViewScreen.keyPressed	port	crates/horizon-client/src/game/books.rs::Game::book_input	PageUp and PageDown turn pages
-BookViewScreen.extractRenderState	port	crates/horizon-client/src/game/books.rs::Game::draw_book	
+BookViewScreen.extractRenderState	port	crates/horizon-client/src/game/books.rs::Game::draw_book	pages, page buttons and the hovered word's tooltip and pointing hand (HoveredTextEffects.TOOLTIP_AND_CURSOR)
 BookViewScreen.visitText	inline	crates/horizon-client/src/game/books.rs::Game::draw_book	page lines and page indicator; links are found by book_link_at
 BookViewScreen.extractBackground	inline	crates/horizon-client/src/game/books.rs::Game::draw_book	
 BookViewScreen.BookAccess.getPage	inline	crates/horizon-client/src/game/books.rs::Game::draw_book	pages.get(page) with an empty page past the end

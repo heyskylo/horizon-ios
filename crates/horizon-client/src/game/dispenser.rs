@@ -1097,6 +1097,16 @@ impl Game<'_> {
             count: 1,
             ..stack.clone()
         };
+        // A rocket makes its own random in `launch_angled_rocket`: the constructor's draws
+        // and then the shot's spread come from that one.
+        if item == "minecraft:firework_rocket" {
+            self.launch_angled_rocket(at, &one, None, |own| {
+                let mut shot = Projectile::new(ProjectileKind::Snowball, at, None);
+                shot.shoot(own, dir, power, uncertainty);
+                shot.velocity
+            });
+            return;
+        }
         // Projectile.shoot spreads the shot with the projectile's own random.
         let mut own = random_source::entity();
         match item.as_str() {
@@ -1106,11 +1116,6 @@ impl Game<'_> {
                 let mut shot = Projectile::new(ProjectileKind::Snowball, at, None);
                 shot.shoot(&mut own, dir, power, uncertainty);
                 self.launch_thrown(one, at, shot.velocity, None);
-            }
-            "minecraft:firework_rocket" => {
-                let mut shot = Projectile::new(ProjectileKind::Snowball, at, None);
-                shot.shoot(&mut own, dir, power, uncertainty);
-                self.launch_angled_rocket(at, shot.velocity, &one, None);
             }
             _ => {
                 let kind = match item.as_str() {

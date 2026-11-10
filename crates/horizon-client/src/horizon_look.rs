@@ -33,6 +33,8 @@ pub(crate) fn give() {
             rule: dark.rule,
             accent: dark.accent,
             on_accent: dark.on_accent,
+            lit: theme::night::NIGHT.accent,
+            lit_edge: theme::night::NIGHT.accent_hi,
         },
         sizes: Sizes {
             caption: theme::CAPTION.px,
