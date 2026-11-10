@@ -170,10 +170,7 @@ fn excused(g: &Guest, world: &World, entities: &[EntityState], guests: &[Guest])
         .is_some_and(|m: &PlayerMotion| m.auto_spin_attack_ticks > 0);
     let entity = entity_near(entities, g.entity_id, at, slack);
     let player = guests.iter().any(|o| {
-        o.conn != g.conn
-            && o.placed
-            && o.dimension == g.dimension
-            && close(at, slack, o.position)
+        o.conn != g.conn && o.placed && o.dimension == g.dimension && close(at, slack, o.position)
     });
     unsent || pistons || unloaded || riptide || entity || player
 }
