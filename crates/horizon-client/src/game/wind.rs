@@ -63,6 +63,46 @@ fn triggers(name: &str) -> bool {
         || n == "bell"
 }
 impl Game<'_> {
+    /// `Player.itemAttackInteraction` applies trigger-only held-item effects
+    /// after an EnderDragonPart is successfully hit.
+    pub(super) fn post_attack_dragon_burst(&mut self) {
+        if let Some(held) = self.held().cloned() {
+            self.post_attack_bursts(&held, "minecraft:ender_dragon");
+        }
+    }
+
+    /// `ServerExplosion.hurtEntities` knockback for a trigger-only blast such
+    /// as Wind Burst. The dragon is not in the normal entity lists, but its
+    /// body still receives the blast impulse (without taking damage).
+    pub(super) fn wind_burst_knockback(
+        &mut self,
+        center: [f64; 3],
+        radius: f32,
+        blocks: &[[i32; 3]],
+    ) {
+        let Some(d) = self.dragon.as_ref() else {
+            return;
+        };
+        let whole = d.whole_box();
+        let (lo, hi) = (whole.min_position(), whole.max_position());
+        let exposure = self.seen_percent(center, [lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]);
+        let Some((id, mut push)) = self
+            .dragon
+            .as_ref()
+            .and_then(|d| Some((d.id, d.explosion_knockback(center, radius, exposure)?)))
+        else {
+            return;
+        };
+        self.native_explosion_knockback(self.dim.id(), center, blocks, Some(id), &mut push);
+        if let Some(d) = self.dragon.as_mut() {
+            d.velocity = Vec3::new(
+                d.velocity.x + push[0],
+                d.velocity.y + push[1],
+                d.velocity.z + push[2],
+            );
+        }
+    }
+
     /// `WindChargeItem.use`.
     pub(super) fn throw_wind_charge(&mut self) -> Result<bool> {
         let (Some(eye), Some(p)) = (self.eye_position(), self.player.as_ref()) else {
@@ -466,6 +506,7 @@ impl Game<'_> {
         self.post_game_event("minecraft:explode", center, ctx);
         let mut targets = self.wind_positions(center, radius);
         let pushed = self.wind_knockback(center, radius, multiplier, breeze, wind_charge, &targets);
+        self.wind_burst_knockback(center, radius, &targets);
         let block_count = targets.len();
         // Explosion.canTriggerBlocks: a breeze's charge needs mob griefing.
         if !breeze || self.ui.rules.bool("mob_griefing") {
@@ -634,6 +675,10 @@ impl Game<'_> {
         }
     }
 }
+#[cfg(test)]
+#[path = "wind_dragon_tests.rs"]
+mod wind_dragon_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
