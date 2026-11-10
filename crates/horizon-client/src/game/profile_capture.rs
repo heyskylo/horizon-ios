@@ -22,6 +22,7 @@ use horizon_perf_format::{
     files,
     v1::{BenchResult, StopReason, Trigger},
 };
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
@@ -106,6 +107,9 @@ pub(super) struct Profile {
     memory_due: Option<(f64, u32)>,
     /// Where the answer to a `/profiler` request that finishes later arrives.
     chat_answer: Option<Receiver<String>>,
+    uploads: VecDeque<PathBuf>,
+    upload: Option<(PathBuf, Receiver<std::result::Result<String, String>>)>,
+    last_capture: Option<PathBuf>,
     /// `profile stop` waits for the file to be whole.
     reply: Option<Sender<String>>,
     spans_were_on: bool,
@@ -140,6 +144,9 @@ impl Profile {
             started_by: Trigger::Unspecified,
             memory_due: None,
             chat_answer: None,
+            uploads: VecDeque::new(),
+            upload: None,
+            last_capture: None,
             reply: None,
             spans_were_on: false,
             trace_file: None,
@@ -584,6 +591,14 @@ impl Game<'_> {
 
     /// `/profiler start|stop|status|mark`: the requests of `horizon-ctl profile`, answered in chat.
     pub(super) fn profiler_chat(&mut self, args: &str) {
+        if args.trim() == "share" {
+            if let Some(path) = self.profile.last_capture.clone() {
+                self.queue_profile_upload(path);
+            } else {
+                self.system_message(Text::translate("horizon.perf.share_missing", &[]));
+            }
+            return;
+        }
         let words = profiler_words(args);
         let Ok(parsed) = request::parse(&words) else {
             let usage = if words == ["mark"] {
@@ -696,15 +711,74 @@ impl Game<'_> {
             },
         );
         self.system_message(Text::translate("horizon.perf.saved", &[file]));
-        let link = Text::styled(
-            files::PERF_UI_URL,
-            Style {
-                underlined: Some(true),
-                click: Some(ClickEvent::OpenUrl(files::PERF_UI_URL.to_owned())),
-                ..Style::default()
-            },
-        );
-        self.system_message(Text::translate("horizon.perf.open_in_browser", &[link]));
+        self.profile.last_capture = Some(full.clone());
+        self.queue_profile_upload(full);
+    }
+
+    fn queue_profile_upload(&mut self, path: PathBuf) {
+        if !self.profile.uploads.contains(&path)
+            && !self
+                .profile
+                .upload
+                .as_ref()
+                .is_some_and(|(active, _)| *active == path)
+        {
+            self.profile.uploads.push_back(path);
+            self.system_message(Text::translate("horizon.perf.uploading", &[]));
+        }
+    }
+
+    fn poll_profile_upload(&mut self) {
+        if let Some((_, receiver)) = &self.profile.upload {
+            let result = match receiver.try_recv() {
+                Ok(result) => result,
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => {
+                    Err(horizon_client::lang::get("horizon.perf.upload_interrupted"))
+                }
+            };
+            self.profile.upload = None;
+            match result {
+                Ok(url) => {
+                    let link = Text::styled(
+                        &url,
+                        Style {
+                            underlined: Some(true),
+                            click: Some(ClickEvent::OpenUrl(url.clone())),
+                            ..Style::default()
+                        },
+                    );
+                    log::info!("Horizon: shared performance capture: {url}");
+                    self.system_message(Text::translate("horizon.perf.shared", &[link]));
+                }
+                Err(error) => self.system_message(Text::translate(
+                    "horizon.perf.upload_failed",
+                    &[Text::literal(error), command_link("/profiler share")],
+                )),
+            }
+        }
+        if let Some(path) = self.profile.uploads.pop_front() {
+            let endpoint = std::env::var("PERF_UPLOAD_URL")
+                .unwrap_or_else(|_| horizon_perf::sharing::DEFAULT_UPLOAD_URL.to_owned());
+            let (send, receive) = std::sync::mpsc::channel();
+            let file = path.clone();
+            match std::thread::Builder::new()
+                .name("perf-upload".into())
+                .spawn(move || {
+                    let result =
+                        horizon_perf::sharing::share_saved(&endpoint, &file).map(|reply| reply.url);
+                    let _ = send.send(result);
+                }) {
+                Ok(_) => self.profile.upload = Some((path, receive)),
+                Err(error) => self.system_message(Text::translate(
+                    "horizon.perf.upload_failed",
+                    &[
+                        Text::literal(error.to_string()),
+                        command_link("/profiler share"),
+                    ],
+                )),
+            }
+        }
     }
 
     fn take_memory_snapshot(&mut self, label: &str) {
@@ -839,6 +913,7 @@ impl Game<'_> {
         for saved in self.profile.perf.take_saved(false) {
             self.profile_saved(saved);
         }
+        self.poll_profile_upload();
     }
 
     /// Ends the capture a closing game still has, and waits for its file.

@@ -1,4 +1,5 @@
 use std::io::Read;
+use std::path::Path;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -6,6 +7,7 @@ use url::Url;
 
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 const CONTENT_TYPE: &str = "application/vnd.horizon.perf";
+pub const DEFAULT_UPLOAD_URL: &str = "https://playsunrise.net/api/perf/captures";
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CaptureSummary {
@@ -46,6 +48,7 @@ struct ErrorDetail {
 
 fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
+        .user_agent("Horizon/0.1")
         .timeout(Duration::from_secs(60))
         .redirects(0)
         .build()
@@ -137,27 +140,76 @@ pub fn upload(endpoint: &str, bytes: &[u8], share: bool) -> Result<UploadReply, 
     let mut upload: UploadReply =
         serde_json::from_reader(result.into_reader().take(64 * 1024)).map_err(|e| e.to_string())?;
     if share {
-        endpoint.set_path(&format!("/api/perf/captures/{}/share", upload.id));
-        let result = response(
-            agent()
-                .post(endpoint.as_str())
-                .set("Authorization", &format!("Bearer {}", upload.delete_token))
-                .call(),
-        )
-        .map_err(|e| {
-            format!(
-                "{e}; temporary upload {} can be deleted with token {}",
-                upload.url, upload.delete_token
-            )
-        })?;
-        let shared: ShareReply = serde_json::from_reader(result.into_reader().take(64 * 1024))
-            .map_err(|e| e.to_string())?;
-        if shared.id != upload.id || !shared.shared {
-            return Err("the share reply did not match the uploaded capture".into());
-        }
-        upload.url = shared.url;
-        upload.shared = true;
-        upload.expires_utc = shared.expires_utc;
+        pin(endpoint, &mut upload)?;
     }
     Ok(upload)
+}
+
+fn pin(mut endpoint: Url, upload: &mut UploadReply) -> Result<(), String> {
+    endpoint.set_path(&format!("/api/perf/captures/{}/share", upload.id));
+    let result = response(
+        agent()
+            .post(endpoint.as_str())
+            .set("Authorization", &format!("Bearer {}", upload.delete_token))
+            .call(),
+    )?;
+    let shared: ShareReply =
+        serde_json::from_reader(result.into_reader().take(64 * 1024)).map_err(|e| e.to_string())?;
+    if shared.id != upload.id || !shared.shared {
+        return Err("the share reply did not match the uploaded capture".into());
+    }
+    let link = url(&shared.url)?;
+    if link.origin() != endpoint.origin() || link.path() != format!("/perf/c/{}", upload.id) {
+        return Err("the share link did not match the upload endpoint".into());
+    }
+    upload.url = shared.url;
+    upload.shared = true;
+    upload.expires_utc = shared.expires_utc;
+    Ok(())
+}
+
+#[derive(Serialize, Deserialize)]
+struct Receipt {
+    endpoint: String,
+    upload: UploadReply,
+}
+
+pub fn share_saved(endpoint: &str, path: &Path) -> Result<UploadReply, String> {
+    let mut endpoint = url(endpoint)?;
+    endpoint.set_query(None);
+    endpoint.set_fragment(None);
+    let receipt_path = path.with_extension("hzperf.share.json");
+    let mut receipt: Receipt = match std::fs::File::open(&receipt_path) {
+        Ok(file) => serde_json::from_reader(file.take(64 * 1024)).map_err(|e| e.to_string())?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let mut bytes = Vec::new();
+            std::fs::File::open(path)
+                .map_err(|e| e.to_string())?
+                .take(MAX_BYTES + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|e| e.to_string())?;
+            let receipt = Receipt {
+                endpoint: endpoint.to_string(),
+                upload: upload(endpoint.as_str(), &bytes, false)?,
+            };
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let file = options
+                .open(&receipt_path)
+                .map_err(|e| format!("could not save upload ownership: {e}"))?;
+            serde_json::to_writer(file, &receipt).map_err(|e| e.to_string())?;
+            receipt
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+    if receipt.endpoint != endpoint.as_str() {
+        return Err("the saved upload belongs to another endpoint".into());
+    }
+    pin(endpoint, &mut receipt.upload)?;
+    Ok(receipt.upload)
 }

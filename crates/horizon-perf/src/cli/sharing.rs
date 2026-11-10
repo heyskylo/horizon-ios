@@ -15,9 +15,13 @@ pub(super) fn run(
         env,
         true,
     )?;
-    let bytes = std::fs::read(&path).map_err(failed)?;
     let endpoint =
         std::env::var("PERF_UPLOAD_URL").unwrap_or_else(|_| super::DEFAULT_UPLOAD_URL.to_string());
-    let reply = crate::sharing::upload(&endpoint, &bytes, share).map_err(failed)?;
+    let reply = if share {
+        crate::sharing::share_saved(&endpoint, &path).map_err(failed)?
+    } else {
+        let bytes = std::fs::read(&path).map_err(failed)?;
+        crate::sharing::upload(&endpoint, &bytes, false).map_err(failed)?
+    };
     out.write_all(json_line(&reply)?.as_bytes()).map_err(failed)
 }

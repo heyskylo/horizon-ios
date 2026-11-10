@@ -159,7 +159,7 @@ fn json_line<T: Serialize>(reply: &T) -> Result<String, CliError> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) const DEFAULT_UPLOAD_URL: &str = "https://playsunrise.net/api/perf/captures";
+pub(super) const DEFAULT_UPLOAD_URL: &str = crate::sharing::DEFAULT_UPLOAD_URL;
 
 const FOLLOW_CHUNK: usize = 64 * 1024;
 

@@ -484,10 +484,7 @@ Notes on fields:
   (`perf/sampler-viewer:crates/horizon-client/src/game/profile_control.rs:10-12`). Moving to the game home also keeps
   agent runs isolated by their scratch `HORIZON_HOME`. `HORIZON_PROFILE=DIR` overrides the folder.
 - **Names:** `profile-<YYYYMMDD-HHMMSS>Z.hzperf` (UTC).
-- **On finish:** the game prints the path and the web UI's address (in the game through translation keys
-  `horizon.perf.saved` and `horizon.perf.open_in_browser`; on the dedicated console as one log line), for example:
-  `Saved reports/profile-20261107-143204Z.hzperf. Open it at <PERF_UI_URL> (the file stays on your computer)`.
-  The address is one constant; its final path is open (§12).
+- **On finish:** an in-game `/profiler` capture shows its local path, uploads in the background, and displays a clickable capture URL through `horizon.perf.shared`. Upload failure keeps the file and offers `/profiler share` to retry. Control-socket, environment and dedicated-console captures print the local path and viewer homepage; `horizon-perf share FILE` uploads those explicitly.
 - **Retention:** after writing, the game deletes the oldest `profile-*.hzperf` beyond 30 files or 1 GiB in that folder,
   and logs what it deleted. Files that don't match the pattern, for example files the user renamed, are never touched.
   Old `perf-*.json` and `.txt` files are left alone.
@@ -637,7 +634,7 @@ server (build with `cargo build --profile fast -p horizon-client -p horizon-bots
 `python3 tools/server_perf_e2e.py --bin-dir target/fast`). It is not in CI yet: run it by hand before merging a change to what a capture holds.
 
 Uploads (§7.3) change nothing in the file: what a shared capture holds is exactly what the local one holds. Sharing is
-always an explicit action (the UI's Share button or `horizon-perf share`), shown with a one-line notice of the above;
+an explicit action (the UI's Share button, `horizon-perf share`, or starting an in-game `/profiler` capture, whose message announces uploading);
 the upload server stores the bytes as sent, keeps no account data, logs no capture contents, and drops IPs from its
 logs after the rate-limit window.
 
@@ -971,8 +968,7 @@ working when mounted on playhorizon.dev.
   are only ever served with the capture content type).
 - **The CLI:** `horizon-perf share FILE` uploads and pins (posts to `PERF_UPLOAD_URL`, default the self-hosted API) and
   prints the link and delete token; `horizon-perf upload FILE` makes a 1-hour temporary upload; `horizon-perf summary|query|diff` accept a share link wherever they accept a file.
-- **The game** never uploads by itself. A later in-game "Share" button would call the same endpoint after the same
-  notice; not in v1.
+- **The game:** captures started with `/profiler` upload in the background after saving and print a clickable `/perf/c/<id>` link in chat. Timed captures use the same flow. The local file is retained; upload failures offer `/profiler share` to retry the latest completed capture in the session. An adjacent `.hzperf.share.json` receipt stores the endpoint and owner/delete token (mode 0600 on Unix), so a retry after a failed share pin reuses the upload. Control-socket, environment and dedicated report captures remain local unless explicitly shared through the CLI. Do not share the owner receipt.
 
 ## 8. `horizon-perf mcp`
 

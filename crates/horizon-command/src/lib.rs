@@ -873,6 +873,8 @@ impl Dispatcher {
         }
         let status = d.literal(command, "status");
         d.executes(status, MOD_COMMAND);
+        let share = d.literal(command, "share");
+        d.executes(share, MOD_COMMAND);
         let mark = d.literal(command, "mark");
         let name = d.argument(mark, "name", ArgType::Greedy);
         d.executes(name, MOD_COMMAND);
