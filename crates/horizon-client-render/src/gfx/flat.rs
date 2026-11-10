@@ -202,34 +202,57 @@ pub fn is_adreno_dx12(info: &wgpu::AdapterInfo) -> bool {
     info.backend == wgpu::Backend::Dx12 && matches!(info.vendor, 0x4d4f_4351 | 0x5143)
 }
 
+/// Parse Mesa major version from driver info string (e.g. "Mesa 26.0.8-1ubuntu0.3" -> Some(26)).
+fn parse_mesa_major_version(driver_info: &str) -> Option<u32> {
+    let mesa_part = driver_info.strip_prefix("Mesa ")?;
+    let version_part = mesa_part.split(['.', '-', ' ']).next()?;
+    version_part.parse().ok()
+}
+
 /// Intel Gen11 (Ice Lake) and Gen12 (Tiger Lake, Rocket Lake, Alder Lake,
-/// Raptor Lake) ANV Vulkan drivers have broken `first_instance` for
+/// Raptor Lake) ANV Vulkan drivers had broken `first_instance` for
 /// instance-step vertex attributes (#3529, #4599), causing terrain sections to
 /// be drawn with another section's origin and flicker.
+///
+/// On Mesa 26.0 and later, ANV on Raptor Lake (RPL, 0xa700..=0xa7ff) handles
+/// `first_instance` properly without terrain flicker, allowing indirect multi-draw
+/// and GPU culling without forcing flat draws.
 pub fn is_broken_intel_vulkan(info: &wgpu::AdapterInfo) -> bool {
-    info.backend == wgpu::Backend::Vulkan
-        && info.vendor == 0x8086
-        && (matches!(
-            info.device,
-            0x8a50..=0x8a71 // Gen11: Ice Lake
-                | 0x9a40..=0x9a7f // Gen12: Tiger Lake
-                | 0x4c80..=0x4c9a // Gen12: Rocket Lake
-                | 0x4600..=0x46ff // Gen12: Alder Lake (incl. 0x46a8 in #4599)
-                | 0xa700..=0xa7ff // Gen12: Raptor Lake
-        ) || [
-            "ICL",
-            "Ice Lake",
-            "TGL",
-            "Tiger Lake",
-            "RKL",
-            "Rocket Lake",
-            "ADL",
-            "Alder Lake",
-            "RPL",
-            "Raptor Lake",
-        ]
-        .iter()
-        .any(|tag| info.name.contains(tag)))
+    if info.backend != wgpu::Backend::Vulkan || info.vendor != 0x8086 {
+        return false;
+    }
+
+    let is_raptor_lake = matches!(info.device, 0xa700..=0xa7ff)
+        || info.name.contains("RPL")
+        || info.name.contains("Raptor Lake");
+
+    if is_raptor_lake
+        && parse_mesa_major_version(&info.driver_info).is_some_and(|major| major >= 26)
+    {
+        return false;
+    }
+
+    matches!(
+        info.device,
+        0x8a50..=0x8a71 // Gen11: Ice Lake
+            | 0x9a40..=0x9a7f // Gen12: Tiger Lake
+            | 0x4c80..=0x4c9a // Gen12: Rocket Lake
+            | 0x4600..=0x46ff // Gen12: Alder Lake (incl. 0x46a8 in #4599)
+            | 0xa700..=0xa7ff // Gen12: Raptor Lake
+    ) || [
+        "ICL",
+        "Ice Lake",
+        "TGL",
+        "Tiger Lake",
+        "RKL",
+        "Rocket Lake",
+        "ADL",
+        "Alder Lake",
+        "RPL",
+        "Raptor Lake",
+    ]
+    .iter()
+    .any(|tag| info.name.contains(tag))
 }
 
 fn supported(adapter: &wgpu::Adapter, device: &wgpu::Device) -> bool {
@@ -1132,6 +1155,36 @@ mod tests {
         info.backend = wgpu::Backend::Dx12;
         info.vendor = 0x10de;
         assert!(!is_adreno_dx12(&info));
+    }
+
+    #[test]
+    fn intel_vulkan_detection_preserves_workaround_on_older_mesa_and_allows_modern_raptor_lake() {
+        let mut info = wgpu::AdapterInfo {
+            name: "Intel(R) Iris(R) Xe Graphics (RPL-U)".into(),
+            vendor: 0x8086,
+            device: 0xa7a1,
+            device_type: wgpu::DeviceType::IntegratedGpu,
+            device_pci_bus_id: String::new(),
+            driver: "Intel open-source Mesa driver".into(),
+            driver_info: "Mesa 26.0.8-1ubuntu0.3".into(),
+            backend: wgpu::Backend::Vulkan,
+            subgroup_min_size: 0,
+            subgroup_max_size: 0,
+            transient_saves_memory: None,
+            limit_bucket: None,
+        };
+        // Modern Mesa (>= 26) on Raptor Lake does not require flat draws
+        assert!(!is_broken_intel_vulkan(&info));
+
+        // Older Mesa on Raptor Lake keeps the workaround
+        info.driver_info = "Mesa 25.2.0".into();
+        assert!(is_broken_intel_vulkan(&info));
+
+        // Tiger Lake continues to keep workaround regardless of Mesa version
+        info.device = 0x9a49;
+        info.name = "Intel(R) Iris(R) Xe Graphics (TGL GT2)".into();
+        info.driver_info = "Mesa 26.0.8".into();
+        assert!(is_broken_intel_vulkan(&info));
     }
 
     /// Draws as `render` writes them: solid (page, quads at a base vertex)
