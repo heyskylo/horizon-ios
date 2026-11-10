@@ -871,6 +871,20 @@ impl Projectile {
         let horizontal = (v.x * v.x + v.z * v.z).sqrt();
         let y_rot = (v.z.atan2(v.x) * 180.0 / std::f64::consts::PI) as f32 + 90.0;
         let x_rot = (horizontal.atan2(v.y) * 180.0 / std::f64::consts::PI) as f32 - 90.0;
+        // Shift the old angles by whole turns so the lerp takes the shortest
+        // way; the shifted old angles are what rendering interpolates from.
+        while x_rot - self.previous_pitch < -180.0 {
+            self.previous_pitch -= 360.0;
+        }
+        while x_rot - self.previous_pitch >= 180.0 {
+            self.previous_pitch += 360.0;
+        }
+        while y_rot - self.previous_yaw < -180.0 {
+            self.previous_yaw -= 360.0;
+        }
+        while y_rot - self.previous_yaw >= 180.0 {
+            self.previous_yaw += 360.0;
+        }
         self.pitch = self.previous_pitch + t * (x_rot - self.previous_pitch);
         self.yaw = self.previous_yaw + t * (y_rot - self.previous_yaw);
     }
@@ -2446,6 +2460,23 @@ mod tests {
         }
         assert!((p.yaw - 8.996_265).abs() < 0.05, "yaw {}", p.yaw);
         assert!((p.pitch + 18.704_494).abs() < 0.05, "pitch {}", p.pitch);
+    }
+    #[test]
+    fn a_fireball_turns_the_short_way_across_the_wrap_boundary() {
+        let mut p = Projectile::new(
+            ProjectileKind::DragonFireball,
+            Vec3::new(8.5, 231.0, 8.5),
+            None,
+        );
+        // Movement along -z aims at yaw 0 and pitch 0.
+        p.velocity = Vec3::new(0.0, 0.0, -1.0);
+        p.previous_yaw = 350.0;
+        p.previous_pitch = 350.0;
+        p.rotate_towards_movement(0.2);
+        assert!((p.yaw + 8.0).abs() < 1e-3, "yaw {}", p.yaw);
+        assert!((p.pitch + 8.0).abs() < 1e-3, "pitch {}", p.pitch);
+        assert!((p.previous_yaw + 10.0).abs() < 1e-3);
+        assert!((p.previous_pitch + 10.0).abs() < 1e-3);
     }
     #[test]
     fn fireball_accelerates_along_its_direction() {
