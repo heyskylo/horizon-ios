@@ -118,7 +118,7 @@ public final class VanillaProtocolClient {
     private EntityTranscript entities;
     /** With {@code ride}: the entity mode, plus the order of what the player sees of a ride through a portal (RideTranscript). */
     private RideTranscript ride;
-    /** With {@code goat-voices}, {@code elder-curse}, {@code level-events} or {@code allay-dance}: the entity mode, plus a phased scene (PhasedTranscript). */
+    /** With {@code goat-voices}, {@code elder-curse} or {@code level-events}: the entity mode, plus a phased scene (PhasedTranscript). */
     private PhasedTranscript phased;
 
     public static void main(String[] args) throws Exception {
@@ -144,10 +144,6 @@ public final class VanillaProtocolClient {
         if (args.length > 4 && args[4].equals("level-events")) {
             client.entities = new EntityTranscript();
             client.phased = new LevelEventTranscript();
-        }
-        if (args.length > 4 && args[4].equals("allay-dance")) {
-            client.entities = new EntityTranscript();
-            client.phased = new AllayDanceTranscript();
         }
         try {
             client.status(host, port);
