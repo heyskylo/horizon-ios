@@ -305,7 +305,11 @@ fn summary_row(view: &View, sides: &[Side]) -> GpuSummaryRow {
 /// Each timed frame of the window (`--from`/`--to` narrow them): its total and its passes' times, and whether it was a slow frame.
 pub(super) fn gpu_frames(ctx: &Ctx) -> Result<Reply, QueryError> {
     let view = &ctx.views[0];
-    let side = ctx.side(0)?;
+    let timed = view.capture.gpu_frames.iter().map(|b| b.side()).next();
+    let side = match (ctx.q.filters.side, timed) {
+        (None, Some(side)) => side,
+        _ => ctx.side(0)?,
+    };
     let window = ctx.window(0, side, f64::NEG_INFINITY)?;
     let mut slow: Vec<(f64, f64)> = view
         .capture

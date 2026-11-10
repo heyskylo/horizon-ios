@@ -196,9 +196,13 @@ def check_gpu(bins, resources):
             print('PASS: --gpu on a device that gives no pass times writes the warning')
             return True
         rows = perf('query', 'gpu', file)['rows']
-        passes = [r for r in rows if r['id'] != 'g:device']
+        passes = [r for r in rows if r['id'] not in ('g:device', 'g:frame')]
         assert passes and all(r['ms'] > 0 for r in passes if r['ms'] is not None), rows
-        print(f'PASS: --gpu recorded {len(passes)} passes on {rows[0]["adapter"]}, the biggest {passes[0]["name"]} at {passes[0]["ms"]} ms')
+        summary = next(r for r in rows if r['id'] == 'g:frame')
+        assert summary['gpu_frame']['samples'] > 0 and summary['bound'] in ('gpu', 'cpu', 'mixed'), summary
+        frames = perf('query', 'gpu_frames', file)['rows']
+        assert len(frames) == summary['gpu_frame']['samples'] and all(f['total_ms'] > 0 for f in frames), frames[:3]
+        print(f'PASS: --gpu recorded {len(passes)} passes over {len(frames)} frames on {rows[0]["adapter"]} ({summary["bound"]}-bound), the biggest {passes[0]["name"]} at {passes[0]["ms"]} ms')
         return True
     except (ac.Failed, AssertionError) as e:
         print(f'FAIL: {e!r}')

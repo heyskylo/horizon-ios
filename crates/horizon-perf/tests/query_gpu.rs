@@ -457,3 +457,14 @@ fn the_frame_series_is_in_time_order_and_tags_the_frame_inside_a_slow_one() {
     assert_eq!(slow.passes[1].name, "HUD");
     assert!(got[0].passes[0].parts.is_empty());
 }
+
+#[test]
+fn a_single_player_capture_lists_the_client_frames_without_a_side() {
+    let dir = TempDir::new("two-sides");
+    let mut fields = vec![start(SERVER, Kind::Integrated)];
+    fields.extend(timed_fields());
+    fields.push(stop(SERVER, 10.0));
+    let path = save(&dir, "two.hzperf", &fields);
+    assert_eq!(rows(&query(&["gpu_frames", &path])).len(), 10);
+    assert!(rows(&query(&["gpu_frames", "--side", "server", &path])).is_empty());
+}
