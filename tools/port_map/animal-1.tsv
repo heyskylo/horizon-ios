@@ -139,7 +139,7 @@ Cow.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_fro
 Cow.getBreedOffspring	port	crates/horizon-client/src/game/creatures.rs::Game::breed	gap: baby copies the first parent's variant, no random parent
 Cow.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	variant by biome and a random sound variant
 CowVariants	skip:data		cow variants come from the registry data files
-MushroomCow.getWalkTargetValue	port	crates/horizon-client/src/mobs/spawn_selection.rs::mob_spawn_rules	gap: only the spawn check has the mycelium rule; ai.rs walk_target_value uses the grass rule for strolling
+MushroomCow.getWalkTargetValue	port	crates/horizon-client/src/mobs/ai/walk_target.rs::walk_target_value	mycelium 10, anything else by the light: its own override replaces Animal's grass rule, in the stroll's score and the spawn check
 MushroomCow.checkMushroomSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	
 MushroomCow.thunderHit	port	crates/horizon-client/src/game/lightning.rs::Game::thunder_hit	swaps colour once per bolt, convert sound
 MushroomCow.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	the type entry
