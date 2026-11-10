@@ -150,12 +150,6 @@ impl Game<'_> {
 fn excused(g: &Guest, world: &World, entities: &[EntityState], guests: &[Guest]) -> bool {
     let at = g.position;
     let slack = slack(std::array::from_fn(|i| at[i] - g.previous_position[i]));
-    let close = |p: [f64; 3]| {
-        let r = 3.0 + slack;
-        (p[0] - at[0]).abs() <= r
-            && (p[2] - at[2]).abs() <= r
-            && (-3.0 - slack..=4.0 + slack).contains(&(p[1] - at[1]))
-    };
     let unsent = world
         .block_log
         .iter()
@@ -174,17 +168,34 @@ fn excused(g: &Guest, world: &World, entities: &[EntityState], guests: &[Guest])
         .motion
         .as_deref()
         .is_some_and(|m: &PlayerMotion| m.auto_spin_attack_ticks > 0);
-    // Items and experience orbs neither push nor hold anyone up; the list holds the player itself.
-    let entity = entities.iter().any(|e| {
-        e.id != g.entity_id
+    let entity = entity_near(entities, g.entity_id, at, slack);
+    let player = guests.iter().any(|o| {
+        o.conn != g.conn
+            && o.placed
+            && o.dimension == g.dimension
+            && close(at, slack, o.position)
+    });
+    unsent || pistons || unloaded || riptide || entity || player
+}
+
+/// Whether `p` is in the box around `at` that a player's moves are excused for.
+fn close(at: [f64; 3], slack: f64, p: [f64; 3]) -> bool {
+    let r = 3.0 + slack;
+    (p[0] - at[0]).abs() <= r
+        && (p[2] - at[2]).abs() <= r
+        && (-3.0 - slack..=4.0 + slack).contains(&(p[1] - at[1]))
+}
+
+/// Whether an entity in `entities` other than the guest's own (`own`) is close to `at`. The
+/// distance test runs first: most entities are far, and the kind is a string compare. Items and
+/// experience orbs neither push nor hold anyone up; the list holds the player itself.
+fn entity_near(entities: &[EntityState], own: i32, at: [f64; 3], slack: f64) -> bool {
+    entities.iter().any(|e| {
+        close(at, slack, e.position)
+            && e.id != own
             && !matches!(
                 e.kind.as_str(),
                 "minecraft:item" | "minecraft:experience_orb"
             )
-            && close(e.position)
-    });
-    let player = guests
-        .iter()
-        .any(|o| o.conn != g.conn && o.placed && o.dimension == g.dimension && close(o.position));
-    unsent || pistons || unloaded || riptide || entity || player
+    })
 }
