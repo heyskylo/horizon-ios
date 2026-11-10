@@ -961,4 +961,21 @@ mod tests {
         assert_eq!(drag_scroll(31.5 + 112.0, 10), 3);
         assert_eq!(drag_scroll(500.0, 10), 3);
     }
+
+    /// `MerchantScreen.extractScroller`: the thumb, not the whole track, takes
+    /// the cursor; the vertical resize while it is dragged.
+    #[test]
+    fn the_scroller_thumb_asks_for_its_cursor() {
+        // 8 offers: steps 2, the thumb at the track's top, 139 px tall.
+        let rect = scroller_rect(8, 0).unwrap();
+        assert_eq!(rect, [44.0, 18.0, 6.0, 27.0]);
+        let at = |x: f32, y: f32, dragging: bool| scroller_cursor((x, y), rect, dragging);
+        assert_eq!(at(45.0, 19.0, false), Some(Cursor::PointingHand));
+        assert_eq!(at(45.0, 19.0, true), Some(Cursor::ResizeNs));
+        assert_eq!(at(43.0, 19.0, false), None);
+        assert_eq!(at(45.0, 46.0, false), None);
+        assert_eq!(at(45.0, 45.0, false), Some(Cursor::PointingHand));
+        // 7 offers: the disabled scroller takes no cursor.
+        assert!(scroller_rect(7, 0).is_none());
+    }
 }
