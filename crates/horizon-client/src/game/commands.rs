@@ -307,7 +307,7 @@ impl Game<'_> {
         self.command_source = outer;
         ok
     }
-    fn syntax_failure(&mut self, e: &CommandError, command: &str) {
+    pub(in crate::game) fn syntax_failure(&mut self, e: &CommandError, command: &str) {
         self.command_failure(e.message.clone());
         let Some(input) = &e.input else { return };
         let cursor = e.cursor.min(input.len());

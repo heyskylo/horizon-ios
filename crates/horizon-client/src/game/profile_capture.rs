@@ -17,7 +17,8 @@ use horizon_client::client_perf::{
 use horizon_client::perf_net::Link;
 use horizon_client::server_perf::{self, TickDetail, WorldCounts};
 use horizon_client::spans::{self, Span};
-use horizon_client::text::{ClickEvent, RED, Style, Text};
+use horizon_client::command::{Arg, Dispatcher, PROFILER_GPU, Registries};
+use horizon_client::text::{ClickEvent, DARK_GRAY, GOLD, GRAY, RED, Style, Text};
 use horizon_perf_format::{
     files,
     v1::{BenchResult, StopReason, Trigger},
@@ -317,6 +318,7 @@ fn command_link(command: &str) -> Text {
     Text::styled(
         command,
         Style {
+            color: Some(GOLD),
             underlined: Some(true),
             click: Some(ClickEvent::RunCommand(command.to_owned())),
             ..Style::default()
@@ -324,20 +326,31 @@ fn command_link(command: &str) -> Text {
     )
 }
 
-/// `/profiler ACTION [client|server] ...` as the words `request::parse` reads.
-fn profiler_words(args: &str) -> Vec<&str> {
-    let mut words = args.split_whitespace();
-    let action = words.next();
-    let rest: Vec<&str> = words.collect();
-    let sided = matches!(action, Some("start" | "stop"));
-    let (side, rest) = match rest.split_first() {
-        Some((&side @ ("client" | "server"), tail)) if sided => (Some(side), tail),
-        _ => (None, &rest[..]),
-    };
-    side.into_iter()
-        .chain(action)
-        .chain(rest.iter().copied())
-        .collect()
+/// A `/profiler` line the tree parsed, as the words `request::parse` reads: `[SIDE] ACTION [--gpu=MODE] [NAME]`.
+fn profiler_words(literals: &[String], name: Option<&str>) -> Vec<String> {
+    let mut words: Vec<String> = literals
+        .iter()
+        .skip(1)
+        .filter(|w| matches!(w.as_str(), "client" | "server"))
+        .cloned()
+        .collect();
+    words.extend(literals.get(1).cloned());
+    let [passes, detail] = PROFILER_GPU;
+    words.extend(literals.iter().find_map(|w| {
+        (w == passes)
+            .then(|| "--gpu=passes".to_owned())
+            .or_else(|| (w == detail).then(|| "--gpu=detail".to_owned()))
+    }));
+    words.extend(name.map(str::to_owned));
+    words
+}
+
+/// Spark's chat shape: a dim `[⚡]` tag, then the line in gray.
+fn profiler_line(body: Text, color: u32) -> Text {
+    Text::colored("[", DARK_GRAY)
+        .append(Text::colored("⚡", GOLD))
+        .append(Text::colored("] ", DARK_GRAY))
+        .append(body.with_style(&Style::color(color)))
 }
 
 impl Game<'_> {
@@ -591,23 +604,32 @@ impl Game<'_> {
 
     /// `/profiler start|stop|status|mark`: the requests of `horizon-ctl profile`, answered in chat.
     pub(super) fn profiler_chat(&mut self, args: &str) {
-        if args.trim() == "share" {
+        let line = format!("profiler{args}");
+        let tree = Dispatcher::profiler();
+        let parse = tree.parse(&line, &Registries::default());
+        let (literals, name) = match parse.executable() {
+            Ok((context, _)) => (
+                context.literals.clone(),
+                match context.get("name") {
+                    Some(Arg::Str(name)) => Some(name.clone()),
+                    _ => None,
+                },
+            ),
+            Err(e) => return self.syntax_failure(&e, &line),
+        };
+        if literals.get(1).map(String::as_str) == Some("share") {
             if let Some(path) = self.profile.last_capture.clone() {
-                self.queue_profile_upload(path);
+                self.queue_profile_upload(path, true);
             } else {
-                self.system_message(Text::translate("horizon.perf.share_missing", &[]));
+                self.profiler_refused(Text::translate("horizon.perf.share_missing", &[]));
             }
             return;
         }
-        let words = profiler_words(args);
-        let Ok(parsed) = request::parse(&words) else {
-            let usage = if words == ["mark"] {
-                "horizon.perf.mark_usage"
-            } else {
-                "horizon.perf.usage"
-            };
-            self.profiler_refused(Text::translate(usage, &[]));
-            return;
+        let owned = profiler_words(&literals, name.as_deref());
+        let words: Vec<&str> = owned.iter().map(String::as_str).collect();
+        let parsed = match request::parse(&words) {
+            Ok(parsed) => parsed,
+            Err(e) => return self.profiler_error(&e.to_string()),
         };
         let running = self.profile.status().capturing;
         let refused = match parsed.request {
@@ -630,14 +652,14 @@ impl Game<'_> {
         match self.run_profile(&words, &reply, Trigger::Command) {
             Ok(None) => {
                 if matches!(parsed.request, Request::Stop { .. }) {
-                    self.system_message(Text::translate("horizon.perf.saving", &[]));
+                    self.profiler_say(Text::translate("horizon.perf.saving", &[]));
                 }
                 self.profile.chat_answer = Some(answer);
             }
             Ok(Some(_)) => match parsed.request {
                 Request::Start(_) => self.profiler_started(parsed.side),
                 Request::Status => self.profiler_status(),
-                Request::Mark(name) => self.system_message(Text::translate(
+                Request::Mark(name) => self.profiler_say(Text::translate(
                     "horizon.perf.marked",
                     &[Text::literal(name)],
                 )),
@@ -647,8 +669,12 @@ impl Game<'_> {
         }
     }
 
+    fn profiler_say(&mut self, line: Text) {
+        self.system_message(profiler_line(line, GRAY));
+    }
+
     fn profiler_refused(&mut self, line: Text) {
-        self.system_message(line.with_style(&Style::color(RED)));
+        self.system_message(profiler_line(line, RED));
     }
 
     fn profiler_started(&mut self, side: Option<ProfileSide>) {
@@ -657,7 +683,7 @@ impl Game<'_> {
             Some(ProfileSide::Client) => "horizon.perf.started.client",
             Some(ProfileSide::Server) => "horizon.perf.started.server",
         };
-        self.system_message(Text::translate(key, &[command_link("/profiler stop")]));
+        self.profiler_say(Text::translate(key, &[command_link("/profiler stop")]));
     }
 
     fn profiler_status(&mut self) {
@@ -675,7 +701,7 @@ impl Game<'_> {
             ),
             None => Text::translate("horizon.perf.idle", &[command_link("/profiler start")]),
         };
-        self.system_message(line);
+        self.profiler_say(line);
     }
 
     fn profiler_error(&mut self, error: &str) {
@@ -688,7 +714,7 @@ impl Game<'_> {
     /// A capture from chat that asked for both sides, told the server refused to join it.
     pub(super) fn profiler_client_only(&mut self, why: &str) {
         if self.profile.started_by == Trigger::Command {
-            self.system_message(Text::translate(
+            self.profiler_refused(Text::translate(
                 "horizon.perf.client_only",
                 &[Text::literal(why)],
             ));
@@ -697,25 +723,27 @@ impl Game<'_> {
 
     fn profiler_saved(&mut self, path: &str) {
         let full = horizon_client::logging::game_home().join(path);
-        let folder = full
-            .parent()
-            .unwrap_or(&full)
-            .to_string_lossy()
-            .into_owned();
-        let file = Text::styled(
-            path,
+        self.profile.last_capture = Some(full.clone());
+        self.queue_profile_upload(full, false);
+    }
+
+    /// The saved file as a chat link that opens its folder.
+    fn capture_file_link(path: &Path) -> Text {
+        let folder = path.parent().unwrap_or(path).to_string_lossy().into_owned();
+        let home = horizon_client::logging::game_home();
+        let shown = path.strip_prefix(&home).unwrap_or(path).to_string_lossy().into_owned();
+        Text::styled(
+            shown,
             Style {
                 underlined: Some(true),
                 click: Some(ClickEvent::OpenFile(folder)),
                 ..Style::default()
             },
-        );
-        self.system_message(Text::translate("horizon.perf.saved", &[file]));
-        self.profile.last_capture = Some(full.clone());
-        self.queue_profile_upload(full);
+        )
     }
 
-    fn queue_profile_upload(&mut self, path: PathBuf) {
+    /// `announce`: say it starts; a stop already said it uploads.
+    fn queue_profile_upload(&mut self, path: PathBuf, announce: bool) {
         if !self.profile.uploads.contains(&path)
             && !self
                 .profile
@@ -724,12 +752,15 @@ impl Game<'_> {
                 .is_some_and(|(active, _)| *active == path)
         {
             self.profile.uploads.push_back(path);
-            self.system_message(Text::translate("horizon.perf.uploading", &[]));
+            if announce {
+                self.profiler_say(Text::translate("horizon.perf.uploading", &[]));
+            }
         }
     }
 
     fn poll_profile_upload(&mut self) {
-        if let Some((_, receiver)) = &self.profile.upload {
+        if let Some((file, receiver)) = &self.profile.upload {
+            let file = file.clone();
             let result = match receiver.try_recv() {
                 Ok(result) => result,
                 Err(TryRecvError::Empty) => return,
@@ -740,20 +771,31 @@ impl Game<'_> {
             self.profile.upload = None;
             match result {
                 Ok(url) => {
+                    let saved = Text::translate(
+                        "horizon.perf.saved",
+                        &[Text::literal(Self::capture_file_link(&file).plain())],
+                    );
                     let link = Text::styled(
                         &url,
                         Style {
+                            color: Some(GRAY),
                             underlined: Some(true),
                             click: Some(ClickEvent::OpenUrl(url.clone())),
+                            hover: Some(Box::new(saved)),
                             ..Style::default()
                         },
                     );
                     log::info!("Horizon: shared performance capture: {url}");
-                    self.system_message(Text::translate("horizon.perf.shared", &[link]));
+                    self.profiler_say(Text::translate("horizon.perf.shared", &[]));
+                    self.system_message(link);
                 }
-                Err(error) => self.system_message(Text::translate(
+                Err(error) => self.profiler_refused(Text::translate(
                     "horizon.perf.upload_failed",
-                    &[Text::literal(error), command_link("/profiler share")],
+                    &[
+                        Text::literal(error),
+                        Self::capture_file_link(&file),
+                        command_link("/profiler share"),
+                    ],
                 )),
             }
         }
@@ -770,10 +812,11 @@ impl Game<'_> {
                     let _ = send.send(result);
                 }) {
                 Ok(_) => self.profile.upload = Some((path, receive)),
-                Err(error) => self.system_message(Text::translate(
+                Err(error) => self.profiler_refused(Text::translate(
                     "horizon.perf.upload_failed",
                     &[
                         Text::literal(error.to_string()),
+                        Self::capture_file_link(&path),
                         command_link("/profiler share"),
                     ],
                 )),
@@ -981,17 +1024,45 @@ impl Game<'_> {
 mod tests {
     use super::*;
 
+    fn chat_request(line: &str) -> std::result::Result<request::Parsed, String> {
+        let tree = Dispatcher::profiler();
+        let parse = tree.parse(line, &Registries::default());
+        let (context, _) = parse.executable().map_err(|e| e.message.plain())?;
+        let name = match context.get("name") {
+            Some(Arg::Str(name)) => Some(name.as_str()),
+            _ => None,
+        };
+        let owned = profiler_words(&context.literals, name);
+        let words: Vec<&str> = owned.iter().map(String::as_str).collect();
+        request::parse(&words).map_err(|e| e.to_string())
+    }
+
     #[test]
-    fn profiler_words_put_the_side_where_the_request_parser_reads_it() {
-        assert_eq!(profiler_words(" start"), ["start"]);
-        assert_eq!(profiler_words(" start client"), ["client", "start"]);
-        assert_eq!(profiler_words(" stop server"), ["server", "stop"]);
+    fn a_chat_profiler_line_becomes_the_request_it_names() {
+        let started = |line| match chat_request(line).unwrap() {
+            request::Parsed {
+                side,
+                request: Request::Start(options),
+            } => (side, options.gpu),
+            other => panic!("{line}: {other:?}"),
+        };
+        assert_eq!(started("profiler start"), (None, GpuSwitch::Off));
+        assert_eq!(started("profiler start gpu"), (None, GpuSwitch::Passes));
         assert_eq!(
-            profiler_words(" start server --seconds 30"),
-            ["server", "start", "--seconds", "30"]
+            started("profiler start client gpu_detail"),
+            (Some(ProfileSide::Client), GpuSwitch::Detail)
         );
-        assert_eq!(profiler_words(" mark client"), ["mark", "client"]);
-        assert!(profiler_words("").is_empty());
+        assert_eq!(
+            chat_request("profiler stop server").unwrap().side,
+            Some(ProfileSide::Server)
+        );
+        assert_eq!(
+            chat_request("profiler mark slow chunk").unwrap().request,
+            Request::Mark("slow chunk".into())
+        );
+        for line in ["profiler start --gpu", "profiler start --seconds 30", "profiler stop gpu"] {
+            assert!(chat_request(line).is_err(), "{line}");
+        }
     }
 
     fn start<'a>(

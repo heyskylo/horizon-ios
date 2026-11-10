@@ -764,6 +764,8 @@ impl Default for Dispatcher {
         Self::new()
     }
 }
+/// `/profiler start`'s GPU literals: pass timings, and pass timings with their parts and counters.
+pub const PROFILER_GPU: [&str; 2] = ["gpu", "gpu_detail"];
 impl Dispatcher {
     pub fn new() -> Self {
         Self {
@@ -856,6 +858,10 @@ impl Dispatcher {
         }
         d
     }
+    /// `/profiler` alone, which the client parses its chat line with.
+    pub fn profiler() -> Dispatcher {
+        Dispatcher::new().with_profiler()
+    }
     /// This tree plus `/profiler`, which the client answers itself, so chat completes its real options.
     pub fn with_profiler(&self) -> Dispatcher {
         let mut d = self.clone();
@@ -864,11 +870,23 @@ impl Dispatcher {
         }
         let command = d.literal(0, "profiler");
         for action in ["start", "stop"] {
-            let action = d.literal(command, action);
-            d.executes(action, MOD_COMMAND);
+            let action_node = d.literal(command, action);
+            d.executes(action_node, MOD_COMMAND);
             for side in ["client", "server"] {
-                let side = d.literal(action, side);
+                let side = d.literal(action_node, side);
                 d.executes(side, MOD_COMMAND);
+                if action == "start" {
+                    for gpu in PROFILER_GPU {
+                        let gpu = d.literal(side, gpu);
+                        d.executes(gpu, MOD_COMMAND);
+                    }
+                }
+            }
+            if action == "start" {
+                for gpu in PROFILER_GPU {
+                    let gpu = d.literal(action_node, gpu);
+                    d.executes(gpu, MOD_COMMAND);
+                }
             }
         }
         let status = d.literal(command, "status");

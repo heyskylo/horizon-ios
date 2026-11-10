@@ -1275,6 +1275,8 @@ fn profiler_commands_parse_and_complete_for_a_player_without_operator_permission
     for line in [
         "profiler start",
         "profiler start client",
+        "profiler start gpu",
+        "profiler start client gpu_detail",
         "profiler stop server",
         "profiler status",
         "profiler share",
@@ -1294,6 +1296,13 @@ fn profiler_commands_parse_and_complete_for_a_player_without_operator_permission
         .into_iter()
         .map(|s| s.text)
         .collect();
-    assert_eq!(sides, ["client", "server"]);
+    assert_eq!(sides, ["client", "gpu", "gpu_detail", "server"]);
+    for line in [
+        "profiler start --gpu",
+        "profiler stop gpu",
+        "profiler start gpu client",
+    ] {
+        assert!(tree.parse(line, &reg).executable().is_err(), "{line}");
+    }
     assert!(vanilla::game_dispatcher().find("profiler").is_none());
 }
