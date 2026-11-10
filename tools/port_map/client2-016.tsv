@@ -34,7 +34,7 @@ InventoryScreen.extractEntityInInventoryFollowsMouse	port	crates/horizon-client/
 InventoryScreen.mouseReleased	inline	crates/horizon-client/src/game/inventory_input.rs::Game::inventory_mouse_release	release goes through the slot path; a recipe-book press is handled first and has no separate release flag
 ItemCombinerScreen.extractBackground	inline	crates/horizon-client/src/game/stations.rs::Game::draw_station	anvil and smithing backgrounds, with the error sprite
 JigsawBlockEditScreen	home	crates/horizon-client/src/game/block_editor.rs	
-LecternScreen.createMenuControls	inline	crates/horizon-client/src/game/books.rs::Game::draw_book	gap: player: Take Book and Done are drawn on every lectern; vanilla shows Take Book only with build permission (mayBuild)
+LecternScreen.createMenuControls	port	crates/horizon-client/src/game/books.rs::Game::book_click	Done is always drawn; Take Book only when the lectern allows building (`Game::may_build`)
 LoomScreen.init	skip:ui		bakes the banner flag model for the preview; the loom is drawn by screen_layout::loom
 LoomScreen.isScrollBarActive	port	crates/horizon-client/src/game/loom.rs::LoomState::offscreen_rows	gap: minor: more than 16 patterns (four rows of four); the displayPatterns check is at the call sites
 LoomScreen.extractBannerOnButton	port	crates/horizon-client/src/game/loom.rs::Game::paint_screen	grey square and pattern sprite on each pattern button (Fill and Atlas draws from screen_layout::loom)
