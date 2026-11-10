@@ -38,7 +38,7 @@ fn read_bytes(path: &Path) -> Result<Vec<u8>, String> {
         .to_str()
         .filter(|s| s.starts_with("https://") || s.starts_with("http://"))
     {
-        return crate::sharing::download(link);
+        return horizon_perf_share::fetch(link);
     }
     std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))
 }

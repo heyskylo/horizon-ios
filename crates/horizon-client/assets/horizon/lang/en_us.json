@@ -1125,6 +1125,7 @@
   "horizon.perf.shared": "Profiler results:",
   "horizon.perf.upload_failed": "Upload failed: %s. The capture is saved as %s; %s retries.",
   "horizon.perf.upload_interrupted": "the upload worker stopped",
+  "horizon.perf.unavailable": "Opening and sharing captures is not available in this build.",
   "horizon.perf.share_missing": "No completed capture in this session. Start and stop a profile first.",
   "horizon.perf.saved": "Saved as %s",
   "horizon.perf.open_in_browser": "Open it at %s (the file stays on your computer)",

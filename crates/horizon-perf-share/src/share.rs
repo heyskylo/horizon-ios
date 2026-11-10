@@ -7,11 +7,20 @@ use url::Url;
 
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 const CONTENT_TYPE: &str = "application/vnd.horizon.perf";
-pub const DEFAULT_UPLOAD_URL: &str = "https://playsunrise.net/api/perf/captures";
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    Dedicated,
+    Integrated,
+    Client,
+    #[serde(other)]
+    Unknown,
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CaptureSummary {
-    pub kind: crate::wire::KindName,
+    pub kind: Kind,
     pub seconds: f64,
     pub version: String,
 }
@@ -80,7 +89,7 @@ fn url(text: &str) -> Result<Url, String> {
     Ok(url)
 }
 
-pub fn download(link: &str) -> Result<Vec<u8>, String> {
+pub fn fetch(link: &str) -> Result<Vec<u8>, String> {
     let mut target = url(link)?;
     let id = target
         .path()
@@ -119,7 +128,6 @@ pub fn download(link: &str) -> Result<Vec<u8>, String> {
     if bytes.len() as u64 > MAX_BYTES {
         return Err("the capture exceeds 64 MiB".into());
     }
-    crate::read_capture(&bytes).map_err(|e| e.to_string())?;
     Ok(bytes)
 }
 
@@ -127,7 +135,9 @@ pub fn upload(endpoint: &str, bytes: &[u8], share: bool) -> Result<UploadReply, 
     if bytes.len() as u64 > MAX_BYTES {
         return Err("the capture exceeds 64 MiB".into());
     }
-    crate::read_capture(bytes).map_err(|e| e.to_string())?;
+    if !bytes.starts_with(&[0x1f, 0x8b]) {
+        return Err("not a capture: a .hzperf file is gzip".into());
+    }
     let mut endpoint = url(endpoint)?;
     endpoint.set_query(None);
     endpoint.set_fragment(None);

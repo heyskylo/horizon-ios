@@ -280,8 +280,15 @@ pub struct Stopped {
     pub ok: bool,
     pub sides: Vec<ProfileSide>,
     pub path: String,
-    pub open_at: String,
+    /// The viewer page, when the build has a part that opens captures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_at: Option<String>,
     pub removed: Vec<String>,
+}
+
+/// The viewer page a registered captures hook offers.
+pub fn viewer() -> Option<String> {
+    horizon_hooks::engine::captures().map(|c| c.viewer().to_owned())
 }
 
 /// The reply to `profile status`.

@@ -17,8 +17,7 @@ serde_json = { version = "1", features = ["float_roundtrip", "raw_value"] }
 horizon-bench = { path = "../horizon-bench" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-ureq = { version = "2", default-features = false, features = ["tls"] }
-url = "2"
+horizon-perf-share = { path = "../horizon-perf-share" }
 
 [lib]
 # `cdylib` is what `cargo xtask perf-wasm` builds for the browser; the rlib is everything else.

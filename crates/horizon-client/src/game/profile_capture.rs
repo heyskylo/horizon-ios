@@ -306,7 +306,7 @@ pub(super) fn reply_text<T: serde::Serialize>(reply: &T) -> String {
 struct ChatAnswer {
     error: Option<String>,
     path: Option<String>,
-    open_at: Option<String>,
+    removed: Option<Vec<String>>,
 }
 
 /// The words after `/profiler` when `command`, without its slash, is that command.
@@ -816,15 +816,15 @@ impl Game<'_> {
             }
         }
         if let Some(path) = self.profile.uploads.pop_front() {
-            let endpoint = std::env::var("PERF_UPLOAD_URL")
-                .unwrap_or_else(|_| horizon_perf::sharing::DEFAULT_UPLOAD_URL.to_owned());
             let (send, receive) = std::sync::mpsc::channel();
             let file = path.clone();
             match std::thread::Builder::new()
                 .name("perf-upload".into())
                 .spawn(move || {
-                    let result =
-                        horizon_perf::sharing::share_saved(&endpoint, &file).map(|reply| reply.url);
+                    let result = match horizon_hooks::engine::captures() {
+                        Some(captures) => captures.share(&file),
+                        None => Err(horizon_client::lang::get("horizon.perf.unavailable")),
+                    };
                     let _ = send.send(result);
                 }) {
                 Ok(_) => self.profile.upload = Some((path, receive)),
@@ -886,7 +886,7 @@ impl Game<'_> {
         match serde_json::from_str::<ChatAnswer>(&text) {
             Ok(ChatAnswer { error: Some(e), .. }) => self.profiler_error(&e),
             Ok(ChatAnswer {
-                open_at: Some(_),
+                removed: Some(_),
                 path: Some(path),
                 ..
             }) => self.profiler_saved(&path),
@@ -1024,7 +1024,7 @@ impl Game<'_> {
                         .flatten()
                         .collect(),
                         path: shown(&saved.path),
-                        open_at: files::PERF_UI_URL.to_owned(),
+                        open_at: horizon_client::client_perf::request::viewer(),
                         removed: saved.deleted.iter().map(|p| shown(p)).collect(),
                     }));
                 }
