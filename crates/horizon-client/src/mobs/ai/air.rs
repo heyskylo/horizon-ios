@@ -14,6 +14,14 @@ fn can_breathe_under_water(m: &Mob) -> bool {
         || m.species() == Species::SulfurCube && crate::mobs::sulfur_cube::has_body(m)
 }
 
+/// `IronGolem.decreaseAirSupply` hands back the air it is given (`iload_1;
+/// ireturn`), so a golem under water is in `baseTick`'s drowning branch with a
+/// consume of 0: it never loses a bubble, never reaches the -20 that hurts, and
+/// never refills either, though the tag does not list its type.
+fn keeps_its_air(m: &Mob) -> bool {
+    m.species() == Species::IronGolem
+}
+
 pub(super) fn tick_air(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     // Air supply and drowning (WaterAnimal.handleAirSupply for aquatic mobs).
     // Nautilus.baseTick: NoAI skips only the custom handler; the
@@ -49,7 +57,7 @@ pub(super) fn tick_air(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         let held = submerged && nautilus && !water_breathing;
         let vanilla = Breath {
             can_breathe: !drowns,
-            consume: 1,
+            consume: if keeps_its_air(m) { 0 } else { 1 },
             refill: if drowns || held { 0 } else { 4 },
         };
         let breath = breathe(m.id, &m.kind.id, vanilla);
@@ -72,8 +80,9 @@ mod tests {
     use std::sync::Arc;
 
     /// `LivingEntity.canBreatheUnderWater` on the drown path: the
-    /// `can_breathe_under_water` tag (an iron golem is not in it, a guardian is),
-    /// with the baby happy ghast and the sulfur cube holding a block on top of it.
+    /// `can_breathe_under_water` tag (a guardian and a copper golem are in it, an
+    /// iron golem is not), with the baby happy ghast and the sulfur cube holding a
+    /// block on top of it and the golem's own `decreaseAirSupply` holding its air.
     /// 300 ticks take the air from 300 to 0 and 20 more deal the drown's 2.
     #[test]
     fn the_types_the_jar_lists_breathe_under_water() {
@@ -92,16 +101,22 @@ mod tests {
                 for _ in 0..320 {
                     tick_air(&mut m, w, &mut events);
                 }
-                start - m.health
+                (start - m.health, m.air)
             };
-            assert_eq!(drowned("minecraft:guardian", false, None), 0.0);
-            assert_eq!(drowned("minecraft:iron_golem", false, None), 2.0);
-            assert_eq!(drowned("minecraft:happy_ghast", false, None), 2.0);
-            assert_eq!(drowned("minecraft:happy_ghast", true, None), 0.0);
-            assert_eq!(drowned("minecraft:sulfur_cube", false, None), 2.0);
+            // The tag itself, from the shipped data: the golems differ.
+            assert!(types.types["minecraft:copper_golem"].flags.breathes_water);
+            assert!(!types.types["minecraft:iron_golem"].flags.breathes_water);
+            assert_eq!(drowned("minecraft:guardian", false, None), (0.0, 300));
+            assert_eq!(drowned("minecraft:copper_golem", false, None), (0.0, 300));
+            // Not in the tag, and still no drowning damage: its decreaseAirSupply
+            // is the identity, so its air stays at 300 and it never refills.
+            assert_eq!(drowned("minecraft:iron_golem", false, None), (0.0, 300));
+            assert_eq!(drowned("minecraft:happy_ghast", false, None), (2.0, 0));
+            assert_eq!(drowned("minecraft:happy_ghast", true, None), (0.0, 300));
+            assert_eq!(drowned("minecraft:sulfur_cube", false, None), (2.0, 0));
             assert_eq!(
                 drowned("minecraft:sulfur_cube", false, Some("minecraft:stone")),
-                0.0
+                (0.0, 300)
             );
         });
         let _ = ran;
