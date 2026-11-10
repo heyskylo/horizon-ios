@@ -31,8 +31,10 @@ mod native;
 pub mod polytone;
 mod polytone_gpu;
 mod polytone_model;
+mod simple;
 mod spawn;
 pub use native::{ParticleController, ParticleUpdate};
+use simple::{PARALLEL_MIN, parallel_threads, sprite_from_age_in, tick_simple};
 
 /// `ParticleOptions` with the parameters of the option classes used here.
 #[derive(Clone, Debug)]
@@ -1325,6 +1327,9 @@ pub struct ParticleEngine {
     /// A native mod's sprite sets, by namespaced particle name.
     mod_sets: HashMap<String, (u32, Option<ModBehaviour>)>,
     set_sprites: Vec<Vec<u32>>,
+    /// How many live particles it takes to tick them on several threads (`tick_all`), and how many threads.
+    parallel_min: usize,
+    parallel_threads: usize,
     /// Resource packs' Polytone custom particle types (#11486).
     polytone: Option<std::sync::Arc<polytone::Registry>>,
     /// Vanilla particle types a pack replaces with a custom one of the same id
@@ -1527,6 +1532,8 @@ impl ParticleEngine {
             sets: HashMap::new(),
             mod_sets: HashMap::new(),
             set_sprites: Vec::new(),
+            parallel_min: PARALLEL_MIN,
+            parallel_threads: parallel_threads(),
             polytone: None,
             polytone_overrides: HashMap::new(),
             polytone_gpu: Vec::new(),
@@ -2121,23 +2128,7 @@ impl ParticleEngine {
     }
     /// `SingleQuadParticle.setSpriteFromAge`.
     fn sprite_from_age(&self, p: &mut Particle) {
-        if p.removed {
-            return;
-        }
-        if let Some(set) = p.set {
-            // A sprite set's index can outlive the reload that rebuilt them.
-            let Some(sprites) = self.set_sprites.get(set as usize) else {
-                return;
-            };
-            let lifetime = p.lifetime.max(1);
-            let index = if p.frame_ticks > 0 {
-                (p.age.max(0) as i64 / i64::from(p.frame_ticks)) % sprites.len() as i64
-            } else {
-                (p.age.max(0) as i64 * (sprites.len() as i64 - 1) / i64::from(lifetime))
-                    .clamp(0, sprites.len() as i64 - 1)
-            };
-            p.sprite = Sprite::Index(sprites[index as usize]);
-        }
+        sprite_from_age_in(&self.set_sprites, p);
     }
     #[allow(clippy::too_many_lines)]
     /// `ParticleProvider.createParticle`: provider draws use the engine's
@@ -3847,9 +3838,7 @@ impl ParticleEngine {
         self.emitters = emitters;
         let mut particles = std::mem::take(&mut self.particles);
         self.spawned_in_tick = Some(Vec::new());
-        for p in &mut particles {
-            self.tick_particle(p, level);
-        }
+        self.tick_all(&mut particles, level);
         particles.retain(|p| !p.removed);
         self.particles = particles;
         for (options, pos, velocity) in self.spawned_in_tick.take().unwrap_or_default() {
@@ -3954,7 +3943,15 @@ impl ParticleEngine {
     #[allow(clippy::too_many_lines)]
     fn tick_particle(&mut self, p: &mut Particle, level: &ParticleLevel) {
         match p.behaviour {
-            Behaviour::Base => p.base_tick(level),
+            Behaviour::Base
+            | Behaviour::Mod { .. }
+            | Behaviour::Animated
+            | Behaviour::Snowflake
+            | Behaviour::Crit
+            | Behaviour::Spark { .. } => {
+                let simple = tick_simple(&self.set_sprites, p, level);
+                self.finish_simple(p, simple);
+            }
             Behaviour::Controlled { .. } => {
                 if let Some(mut controller) = p.controller.take() {
                     let update = controller.tick(p, level);
@@ -3973,23 +3970,6 @@ impl ParticleEngine {
                     p.remove();
                 }
             }
-            Behaviour::Mod { size, alpha } => {
-                p.base_tick(level);
-                p.size = mod_curve(size, p.age, p.lifetime);
-                p.rgba[3] = mod_curve(alpha, p.age, p.lifetime);
-                self.sprite_from_age(p);
-            }
-            Behaviour::Animated => {
-                p.base_tick(level);
-                self.sprite_from_age(p);
-            }
-            Behaviour::Snowflake => {
-                p.base_tick(level);
-                self.sprite_from_age(p);
-                p.velocity[0] *= f64::from(0.95f32);
-                p.velocity[1] *= f64::from(0.9f32);
-                p.velocity[2] *= f64::from(0.95f32);
-            }
             Behaviour::Lava => {
                 p.base_tick(level);
                 if !p.removed && p.random.next_float() > p.age as f32 / p.lifetime as f32 {
@@ -3999,11 +3979,6 @@ impl ParticleEngine {
                         p.velocity,
                     );
                 }
-            }
-            Behaviour::Crit => {
-                p.base_tick(level);
-                p.rgba[1] *= 0.96;
-                p.rgba[2] *= 0.9;
             }
             Behaviour::Drip {
                 fluid,
@@ -4473,27 +4448,6 @@ impl ParticleEngine {
                             p.rgba[i] += (f[i] - p.rgba[i]) * 0.2;
                         }
                     }
-                }
-            }
-            Behaviour::Spark {
-                fade,
-                trail,
-                twinkle,
-            } => {
-                p.base_tick(level);
-                self.sprite_from_age(p);
-                if p.age > p.lifetime / 2 {
-                    p.rgba[3] = 1.0 - (p.age as f32 - (p.lifetime / 2) as f32) / p.lifetime as f32;
-                    if let Some(f) = fade {
-                        for i in 0..3 {
-                            p.rgba[i] += (f[i] - p.rgba[i]) * 0.2;
-                        }
-                    }
-                }
-                if trail && p.age < p.lifetime / 2 && (p.age + p.lifetime) % 2 == 0 {
-                    let mut child = self.spark(p.position, [0.0; 3], p.rgba, fade, false, twinkle);
-                    child.age = child.lifetime / 2;
-                    self.pending.push(child);
                 }
             }
             Behaviour::Spell { original_alpha } => {

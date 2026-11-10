@@ -524,8 +524,18 @@ fn packed_corner(lo: vec3<u32>, hi: vec3<u32>, corner: u32) -> ArenaCorner {
     let packed_light = ((light & 63u) << 2u) | (((light >> 6u) & 63u) << 10u);
     let g = (lo.y >> (8u * corner)) & 255u;
     let t = lo.x;
+    // Corners 1 to 3's own alpha (`packed::ALPHA_STEP` times the code; 0: word 0's).
+    var code = 0u;
+    if corner == 1u {
+        code = (hi.x >> 28u) & 7u;
+    } else if corner == 2u {
+        code = (hi.y >> 24u) & 7u;
+    } else if corner == 3u {
+        code = (hi.y >> 27u) & 7u;
+    }
+    let alpha = select((code * 51u) << 24u, t & 0xff000000u, code == 0u);
     let color = (g * ((t >> 16u) & 255u) / 255u) | ((g * ((t >> 8u) & 255u) / 255u) << 8u)
-        | ((g * (t & 255u) / 255u) << 16u) | (t & 0xff000000u);
+        | ((g * (t & 255u) / 255u) << 16u) | alpha;
     return ArenaCorner(bitcast<vec3<u32>>(vec3<f32>(pos)),
         vec3((u << 10u) | (v << 26u), (hi.x & 0xffffu) | (packed_light << 16u), color));
 }

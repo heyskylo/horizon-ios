@@ -557,17 +557,19 @@ impl Game<'_> {
                     batch.text_styled(atlas, &text, x, y, u32::MAX, true);
                     // AbstractStringWidget: only the styled glyph under the
                     // pointer requests a hand, not the whole message widget.
-                    if (!clipped || in_area(cursor.1))
-                        && let Some(style) = horizon_client::dialog_screen::line_style_at(
+                    let under = |wanted: fn(&horizon_client::text::Style) -> bool| {
+                        horizon_client::dialog_screen::line_style_at(
                             &atlas.font,
                             &text,
                             x,
                             y,
                             cursor,
+                            wanted,
                         )
-                    {
-                        widgets::widget_cursor(style.click.is_some(), true);
-                        if let Some(hover) = style.hover {
+                    };
+                    if !clipped || in_area(cursor.1) {
+                        widgets::widget_cursor(under(|s| s.click.is_some()).is_some(), true);
+                        if let Some(hover) = under(|s| s.hover.is_some()).and_then(|s| s.hover) {
                             tooltip = Some(*hover);
                         }
                     }
@@ -898,6 +900,7 @@ impl Game<'_> {
                         x,
                         y,
                         cursor,
+                        |style| style.click.is_some(),
                     )
                     .and_then(|style| style.click);
                 }
