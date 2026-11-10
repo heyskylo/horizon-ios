@@ -1463,7 +1463,7 @@ mod tests {
             game.world.random = horizon_core::random::LegacyRandom::new(7);
             let expected = exploded_positions_stepwise(&mut game, center, radius, resists);
             game.world.random = horizon_core::random::LegacyRandom::new(7);
-            let got = game.exploded_positions(center, radius, resists);
+            let got = game.exploded_positions(center, radius, resists, false);
             assert!(expected.len() > 20, "{radius}: {}", expected.len());
             assert_eq!(got, expected, "radius {radius}, {resists:?}");
         }
