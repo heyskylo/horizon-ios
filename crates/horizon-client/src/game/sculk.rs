@@ -1101,6 +1101,23 @@ impl Game<'_> {
                     let source = PositionSource::Block([key.0, key.1, key.2]);
                     self.vibration_particle(source, info.pos, center(key), travel);
                 }
+                if let Some((info, travel)) = tick.resumed {
+                    let source = PositionSource::Block([key.0, key.1, key.2]);
+                    let dest = center(key);
+                    let initial = info.distance.floor() as i32;
+                    // `tryReloadVibrationParticle` works in doubles.
+                    let alpha = if initial > 0 {
+                        1.0 - f64::from(travel) / f64::from(initial)
+                    } else {
+                        0.0
+                    };
+                    let current_pos = [
+                        info.pos[0] + (dest[0] - info.pos[0]) * alpha,
+                        info.pos[1] + (dest[1] - info.pos[1]) * alpha,
+                        info.pos[2] + (dest[2] - info.pos[2]) * alpha,
+                    ];
+                    self.vibration_particle(source, current_pos, dest, travel);
+                }
                 if let Some(info) = tick.received {
                     self.sculk_receive(key, info)?;
                 }

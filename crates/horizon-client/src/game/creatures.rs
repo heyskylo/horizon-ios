@@ -4551,6 +4551,7 @@ impl Game<'_> {
         // The impacts the mods may cancel (`native_projectile_impact`), on a server.
         let hear = self.native_hears_impacts();
         let mut impacts: Vec<Impact> = Vec::new();
+        let mut vehicle_winds = self.vehicle_winds();
         {
             let targets = self.projectile_targets();
             let breezes: Vec<u32> = self
@@ -4658,6 +4659,7 @@ impl Game<'_> {
                 };
                 // The projectile as it was, to fly on if a mod cancels its impact.
                 let before = (hear && !p.stuck).then(|| p.clone());
+                let wind_before = vehicle_winds.before(p);
                 let mob_shot = !matches!(p.owner, Some(Who::Player));
                 // A player's arrows, snowballs and eggs meet every player; a
                 // guest's flies from that guest (Projectile.getOwner), not
@@ -4792,6 +4794,7 @@ impl Game<'_> {
                     keep_flags[i] = false;
                     continue;
                 }
+                vehicle_winds.met(wind_before, hit);
                 if hit != Hit::None {
                     if let Some(before) = before {
                         impacts.push(Impact {
@@ -4864,6 +4867,9 @@ impl Game<'_> {
         }
         self.creatures.projectiles.append(&mut projectiles);
         for (p, hit) in hits {
+            let Some((p, hit)) = self.broken_vehicle_retick(p, hit, &mut vehicle_winds) else {
+                continue;
+            };
             // A player's arrow on another player lands as the victim's hurt.
             if let Some(victim) = self.projectile_pvp_victim(&p, hit) {
                 self.projectile_hits_player(&p, hit, victim)?;
@@ -4977,17 +4983,6 @@ impl Game<'_> {
             &mut self.world.random,
             8.0,
         )
-    }
-    /// A projectile's hurt of `amount` on the boat or minecart `id`
-    /// (`VehicleEntity.hurtServer`): even 0 shakes it (`Snowball`, `ThrownEgg`,
-    /// `ThrownEnderpearl` `.onHitEntity`), 5 from a small fireball destroys it.
-    fn hurt_vehicle(&mut self, p: &Projectile, id: u32, amount: f32) {
-        let creative = p.owner == Some(Who::Player) && self.creative;
-        if let Some(i) = self.boats.iter().position(|b| b.id == id) {
-            self.hurt_boat(i, amount, creative);
-        } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
-            self.hurt_cart(i, amount, creative, false);
-        }
     }
     /// `BellBlock.onProjectileHit`: a projectile that strikes the bell proper
     /// rings it, and a player's shot counts as the player's ring.
@@ -5173,19 +5168,16 @@ impl Game<'_> {
             ArrowEvent::ShootEvent | ArrowEvent::Drop => {}
         }
     }
-    /// `Level.isRainingAt` for arrows.
+    /// The boats, minecarts and primed TNT a projectile can strike
+    /// (`VehicleEntity.isPickable`, `PrimedTnt.isPickable`).
+    pub(super) fn pickable_object_targets(&self) -> Vec<(Who, Aabb)> {
+        let boats = self.boats.iter().map(|b| (Who::Mob(b.id), b.bounds()));
+        let carts = self.carts.iter().map(|c| (Who::Mob(c.id), c.bounds()));
+        let tnts = self.tnts.iter().map(|t| (Who::Mob(t.id), t.bounds()));
+        boats.chain(carts).chain(tnts).collect()
+    }
     /// What a projectile can hit: the mobs, the player, the dragon's parts and
     /// the End crystals (under reserved ids, game/dragon.rs).
-    /// The boats and minecarts a projectile can strike.
-    pub(super) fn vehicle_targets(&self) -> Vec<(Who, Aabb)> {
-        let mut targets: Vec<(Who, Aabb)> = self
-            .boats
-            .iter()
-            .map(|b| (Who::Mob(b.id), b.bounds()))
-            .collect();
-        targets.extend(self.carts.iter().map(|c| (Who::Mob(c.id), c.bounds())));
-        targets
-    }
     pub(super) fn projectile_targets(&self) -> Vec<(Who, Aabb)> {
         let mut targets: Vec<(Who, Aabb)> = self
             .mobs
@@ -5203,9 +5195,9 @@ impl Game<'_> {
                 .into_iter()
                 .map(|(id, b)| (Who::Mob(id), b)),
         );
-        // Boats and minecarts are pickable for every projectile
-        // (`VehicleEntity.isPickable`), so every kind shares this one list.
-        targets.extend(self.vehicle_targets());
+        // Boats, minecarts and primed TNT are pickable for every projectile,
+        // so every kind shares this one list.
+        targets.extend(self.pickable_object_targets());
         targets
     }
     pub(super) fn arrow_rain(&self) -> impl Fn(BlockPos) -> bool + '_ {

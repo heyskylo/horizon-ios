@@ -262,6 +262,14 @@ pub(super) trait Entity: EntityRules {
     fn is_vehicle(&self) -> bool {
         false
     }
+    /// `Entity.getDimensionChangingDelay`, overridden by vehicles and projectiles.
+    fn dimension_changing_delay(&self) -> i32 {
+        horizon_client::nether_portal::ENTITY_DELAY
+    }
+    /// Whether movement applies portal block effects before Entity's base tick.
+    fn portal_after_move(&self) -> bool {
+        false
+    }
     /// Where it stood at the start of its tick, for the kinds that store it
     /// (None: `portals.before` has it).
     fn portal_from(&self) -> Option<Vec3> {
@@ -1322,6 +1330,9 @@ impl Entity for ExperienceOrb {
 }
 
 impl Entity for Boat {
+    fn dimension_changing_delay(&self) -> i32 {
+        10
+    }
     fn set_on_ground(&mut self, on_ground: bool) {
         self.on_ground = on_ground;
     }
@@ -1397,6 +1408,9 @@ impl Entity for Boat {
 }
 
 impl Entity for Minecart {
+    fn dimension_changing_delay(&self) -> i32 {
+        10
+    }
     fn set_on_ground(&mut self, on_ground: bool) {
         self.on_ground = on_ground;
     }
@@ -1723,6 +1737,16 @@ impl Entity for FallingBlock {
 }
 
 impl Entity for Projectile {
+    fn portal_after_move(&self) -> bool {
+        !matches!(
+            self.kind,
+            horizon_client::projectiles::ProjectileKind::LlamaSpit
+                | horizon_client::projectiles::ProjectileKind::ShulkerBullet { .. }
+        )
+    }
+    fn dimension_changing_delay(&self) -> i32 {
+        2
+    }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }
@@ -1843,6 +1867,9 @@ impl Entity for Projectile {
 }
 
 impl Entity for Rocket {
+    fn dimension_changing_delay(&self) -> i32 {
+        2
+    }
     fn rotation(&self) -> [f32; 2] {
         self.rotation
     }
@@ -1910,6 +1937,12 @@ impl Entity for Rocket {
 }
 
 impl Entity for ThrownTrident {
+    fn portal_after_move(&self) -> bool {
+        true
+    }
+    fn dimension_changing_delay(&self) -> i32 {
+        2
+    }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }

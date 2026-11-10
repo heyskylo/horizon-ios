@@ -322,8 +322,8 @@ hook (#14081), `seat()` (#14096).
   only calls it.
 - With nothing registered, the engine does no work: a load of an empty slice where it would dispatch. It makes
   no allocation, no draw call and no file. A vanilla build (horizon-client, horizon-plain) is unchanged.
-- Visible text is a translation key the registrant ships in its lang files, never English in code. Values a
-  player typed (a name, a path) are the exception.
+- Visible text is a translation key the registrant ships in its lang files ([Lang files](#lang-files-horizon_platformlang)),
+  never English in code. Values a player typed (a name, a path) are the exception.
 - Splitscreen players are one process, one thread, each `Game` in turn (`game/split.rs`), so a crate's statics
   are shared by them. Every call (stores, pages, layers, hooks) happens on one player's turn, and
   `horizon_platform::hooks::seat()` (0 for P1) says whose: a crate keeps per-player state indexed by it.
@@ -499,6 +499,30 @@ fn container_draw(&self, c: &dyn Container, canvas: &mut dyn hud::Canvas);    //
   Without one there is no cost, and vanilla's handling is unchanged.
 - `order` is the only text: Sorting ranks by it. The rest is ids and numbers, so the API names no engine type
   (`ItemStack` stays in the engine).
+
+### Lang files (`horizon_platform::lang`)
+
+A crate keeps the text for its keys in its own folder, `crates/<name>/assets/lang/<code>.json`, with the same
+shape as the engine's `assets/horizon/lang` files (flat `"key": "text"` lines, `en_us.json` the reference).
+It registers them as `(code, JSON)` pairs, usually `include_str!`s:
+
+```rust
+static LANG: &horizon_platform::lang::Files = &[
+    ("en_us", include_str!("../assets/lang/en_us.json")),
+    ("fr_fr", include_str!("../assets/lang/fr_fr.json")),
+];
+horizon_platform::lang::register(LANG)?;
+```
+
+- The game loads them into its `horizon` namespace right after its own bundled file for the same language, so a
+  resource pack still overrides them, and a language a crate lacks falls back to its English.
+- A key belongs to one folder. On a key the engine's file also has, the engine's text wins (and the
+  `lang.rs` test fails).
+- Regional variants read their language's file as the engine's do (`fr_ca` reads `fr_fr`, `de_ch` reads `de_de`
+  without `ß`).
+- `tools/lang_coverage.py` reports each crate's folder beside the engine's. A person's review of a crate's entry
+  is kept in `tools/lang_review/<name>/<code>.json` ([translations.md](translations.md)).
+- With nothing registered, a language loads exactly as before.
 
 ## Extras that may leave the game
 
