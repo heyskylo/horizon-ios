@@ -1382,6 +1382,8 @@ impl Game<'_> {
         // The old behavior derives yaw once per tick; the experiment has
         // already recorded each step's yaw and pitch.
         if !self.minecart_improvements() {
+            // OldMinecartBehavior.tick: setXRot(0.0F) before the yaw update.
+            c.pitch = 0.0;
             let (xd, zd) = (c.previous.x - c.position.x, c.previous.z - c.position.z);
             if xd * xd + zd * zd > 0.001 {
                 c.yaw = horizon_core::geometry::trig::atan2_degrees_double(zd, xd);
@@ -1395,6 +1397,7 @@ impl Game<'_> {
                 c.flipped = !c.flipped;
             }
             c.yaw %= 360.0;
+            c.pitch %= 360.0;
         }
         if !self.minecart_improvements() {
             self.cart_block_effects(c);
