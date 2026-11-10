@@ -341,10 +341,34 @@ impl<'a> Samples<'a> {
         f64::from(self.profile.block_s)
     }
 
-    /// Blocks that start inside the window count, as in the span tables.
+    /// The first and last block a window overlaps; a window inside one block picks that block.
+    fn block_span(&self, window: Window) -> (u32, u32) {
+        let width = self.block_s().max(1e-9);
+        let first = (window.from / width).floor().max(0.0);
+        let last = if window.to > window.from {
+            (window.to / width).ceil() - 1.0
+        } else {
+            first
+        };
+        (first as u32, last.max(first) as u32)
+    }
+
     fn in_window(&self, window: Window, block: u32) -> bool {
-        let t0 = f64::from(block) * self.block_s();
-        t0 >= window.from && t0 < window.to
+        let (first, last) = self.block_span(window);
+        (first..=last).contains(&block)
+    }
+
+    /// `window` widened to the blocks it overlaps: the span the weights actually cover.
+    pub fn snapped(&self, window: Window) -> Window {
+        if window == Window::ALL {
+            return window;
+        }
+        let (first, last) = self.block_span(window);
+        let width = self.block_s();
+        Window {
+            from: f64::from(first) * width,
+            to: f64::from(last + 1) * width,
+        }
     }
 
     /// The weights rows that pass `pick`.

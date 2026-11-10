@@ -77,6 +77,8 @@ vocab! {
         Net = "net",
         Meta = "meta",
         Memory = "memory",
+        MemoryLabels = "memory_labels" | "memory-labels",
+        Counters = "counters",
         Marks = "marks",
         Warnings = "warnings",
         Hot = "hot",
@@ -108,6 +110,8 @@ impl Op {
             | Op::GpuFrames
             | Op::Meta
             | Op::Memory
+            | Op::MemoryLabels
+            | Op::Counters
             | Op::Marks
             | Op::Warnings
             | Op::Hot
@@ -205,6 +209,8 @@ vocab! {
         Warnings = "warnings",
         Memory = "memory",
         MemoryDiff = "memory_diff",
+        MemoryLabels = "memory_labels",
+        Counters = "counters",
         Bench = "bench",
     }
 }
@@ -267,6 +273,16 @@ vocab! {
         Normal = "normal",
     }
 }
+
+vocab! {
+    /// How a counter accumulates.
+    CounterKindName {
+        Unspecified = "unspecified",
+        Sum = "sum",
+        Gauge = "gauge",
+    }
+}
+mirror!(CounterKindName <- CounterKind { Unspecified, Sum, Gauge });
 
 vocab! {
     MemoryUnit {

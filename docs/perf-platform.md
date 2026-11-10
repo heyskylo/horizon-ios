@@ -397,7 +397,7 @@ Notes on fields:
   `weights.state` carry them; a root node has `thread_root = 1 + thread index`. An inlined call is a chain of nodes, and
   `weights.node` is the innermost. `slow_over_ms` is the duration from which a tick counts as slow; read it there, because
   `Start.options.ticks_over_ms` is left unset. Nodes are unique per (parent, function): addresses of one function under one
-  caller share a node. Time blocks are `block_s` long (5 s, or window / 32 when longer than 160 s); the last block takes whatever follows it.
+  caller share a node. Time blocks are `block_s` long (1 s, at most 1800 of them: 30 minutes); the last block takes whatever follows it. A time range in a query selects every block it overlaps and the reply's `selection.from`/`to` say the blocks it used.
 - Q2 as built (sample queries read `samples`; `meta`'s `Sections.samples` counts it):
   - Functions are merged by normalized name (`horizon_perf::names`), so every monomorphization and address of one function is one row; ids are `f:` over that name, `p:` over the thread and the normalized frames.
   - Weights are `count × kind.period`; "per tick" divides by the thread's units in the selection (`block_units` over the window's blocks; slow units are scaled by the window's share, with a warning).
@@ -409,7 +409,7 @@ Notes on fields:
   bottom-up views cheap.
 - `addr` is the module-relative address, kept so that a later split-debug-file design can symbolize offline (the
   H 4b note). With `symbols = NONE`, names are `crate+0xOFF`.
-- `block` is the time block. It multiplies keys by at most 32, and aggregation stays bounded by `MAX_KEYS = 1<<18`
+- `block` is the time block. It multiplies keys by at most the blocks the session spans (one a second, up to 1800), and aggregation stays bounded by `MAX_KEYS = 1<<18`
   (`agg.rs:8-10`). When the table is full, further samples are dropped and counted in `dropped_samples`.
 - `SpanBlock` replaces `perf-*.json`'s per-tick spans for statistics (§6.6). `SpanSummary.worst` keeps 16 ticks with
   full trees; today there are 10 ticks with 8 spans each (`report.rs:25`, `:159-171`).
@@ -466,6 +466,7 @@ Notes on fields:
     of `span_blocks`, `spans` and a slow tick's `top`, so span sums stay consistent with the tick's wall time.
   - `HorizonOptions.max_view_distance` is 0 when the far ring was not created, even if `server.toml` sets a distance.
   - `Overhead.mob_timing_ms_per_tick` and `mob_timing_share` price the mob tick sampling next to `spans_*`.
+  - `memory` snapshots are `horizon-ctl memory` flattened (`game/memory.rs`, described in `docs/memory.md`), at the start, every 10 s and at the stop. A dedicated server names its columns `columns` (single player keeps `client_columns` and `server_columns`) and adds `entities`, `players`, `chunk_send`, `light_queue`, `generation_queue` and `allocator`. Every side has `named_mb` and `unattributed_mb`: `unattributed_mb = process.resident_mb - named_mb`, where `named_mb` adds the byte totals of the columns (a section the window and its server thread both hold once), `server_generation`, `entities`, `players`, `chunk_send`, the two queues, `renderer.cpu` (client) and the far tiles' `kept_mb`. All are estimates from capacities, so a negative `unattributed_mb` means overlap.
 - `horizon-perf query` rounds numbers to 3 decimals. `spans --slow` averages over the slow ticks; `ticks` and `tick`
   prefer a unit's whole tree from `spans.worst` over the 8 largest spans of `slow` and `slow_history`.
 
@@ -779,10 +780,12 @@ horizon-perf mcp                                                       §8
 | `frames` | `NAME…` (id, exact short name or `/regex/`) | inclusive and self per name; one column per capture | `s1_breakdown.py`, `s1_table.py`, `s3_table.py` |
 | `spans` | `--names a,b`, `--slow` | per span: ms/tick, cpu, waited, seen; one column per capture | `slowticks.py`, `spikes.py`, `s1a_spans.py` |
 | `ticks` | `--worst N`, `--over MS` | worst ticks/frames with span trees, from `spans.worst`, `slow_history` and `slow` | worst-ticks lines |
-| `tick` | `k:ID` | one tick's span tree, and its samples if the tick was slow | |
+| `tick` | `k:ID` | one tick's span tree, and `hot`: the top 30 functions of the samples in the 1 s blocks overlapping the tick (slow samples only when the tick is slow), with `samples_from`/`samples_to` for the window used; a second's worth, not the tick's own samples | |
 | `series` | `FIELD…` (`h:` fields, `span:NAME`, `x:` counters), `--every S` | time series, resampled; `--from` before 0 reaches into `history`; the web UI and MCP can add `stats` (min, mean over the window, median, p95, max, last) to each series | `s3_windows.py`, `s3_counters.py` |
 | `world`, `net`, `gpu`, `gpu_frames`, `meta`, `bench`, `marks`, `warnings` | section filters | the section, filtered and ranked | `s3a_table.py`, `s1b_table.py` |
 | `memory` | `--diff [LABEL_A LABEL_B]`, `--min-mb X` | a snapshot, or spec D's diff of two (`grew_mb`, `shrank_mb`, `counts`, `only_in_a/b`) | spec D's `memory-diff` |
+| `memory_labels` (`memory-labels`) | | every snapshot as `{label, t, side, rows}` in time order | |
+| `counters` | | every counter as `{id, name, unit, kind, labels, side, samples}` | |
 
 Filters, common to the sample-based ops:
 

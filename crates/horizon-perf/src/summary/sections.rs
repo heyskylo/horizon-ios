@@ -365,7 +365,11 @@ fn memory(view: &View, side: Side) -> Vec<Line> {
     let mut rows: Vec<&(String, f64)> = last
         .values
         .iter()
-        .filter(|(p, v)| is_megabytes(p) && is_leaf(p) && !p.starts_with("process.") && *v > 0.0)
+        .filter(|(p, v)| {
+            let whole =
+                p.starts_with("process.") || p.starts_with("allocator.") || *p == "named_mb";
+            is_megabytes(p) && is_leaf(p) && !whole && *v > 0.0
+        })
         .collect();
     rows.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     let parts: Vec<String> = rows

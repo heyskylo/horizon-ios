@@ -2,11 +2,14 @@ use std::collections::BTreeMap;
 
 use horizon_perf_format::v1::{Warning, WarningCode};
 
-use super::rows::{CountChange, MarkRow, MbChange, MemoryDiffRow, MemoryRow, Row, WarningRow};
+use super::rows::{
+    CountChange, CounterRow, MarkRow, MbChange, MemoryDiffRow, MemoryLabelRow, MemoryRow, Row,
+    WarningRow,
+};
 use super::{Ctx, QueryError, Reply, num};
 use crate::ids::{Id, Kind};
 use crate::view::{Snapshot, is_megabytes};
-use crate::wire::{Amount, MemoryUnit, SideName, Unit, count, round1};
+use crate::wire::{Amount, CounterKindName, MemoryUnit, SideName, Unit, count, round1};
 
 const MIB: f64 = 1024.0 * 1024.0;
 const DIFF_COUNTS: usize = 50;
@@ -95,6 +98,72 @@ pub(super) fn warnings(ctx: &Ctx) -> Result<Reply, QueryError> {
     Ok(Reply::new(Unit::Warnings, rows))
 }
 
+/// Every memory snapshot of the selected sides in time order, so a label can be asked for.
+pub(super) fn memory_labels(ctx: &Ctx) -> Result<Reply, QueryError> {
+    let mut rows: Vec<MemoryLabelRow> = Vec::new();
+    for side in ctx.sides(0)? {
+        rows.extend(
+            ctx.views[0]
+                .snapshots(side)
+                .into_iter()
+                .map(|s| MemoryLabelRow {
+                    label: s.label,
+                    t: num(s.t),
+                    side: SideName::from(side),
+                    rows: s.values.len(),
+                }),
+        );
+    }
+    rows.sort_by(|a, b| a.t.total_cmp(&b.t));
+    let cut = rows.len().saturating_sub(ctx.q.filters.limit);
+    rows.truncate(ctx.q.filters.limit);
+    let mut reply = Reply::new(
+        Unit::MemoryLabels,
+        rows.into_iter().map(Row::MemoryLabel).collect(),
+    );
+    if cut > 0 {
+        reply
+            .warnings
+            .push(format!("{cut} more snapshots: raise --limit"));
+    }
+    Ok(reply)
+}
+
+/// Every counter the capture defines, with how many samples carry it.
+pub(super) fn counters(ctx: &Ctx) -> Result<Reply, QueryError> {
+    let view = &ctx.views[0];
+    let mut rows = Vec::new();
+    for side in ctx.sides(0)? {
+        let mut seen: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+        for sample in view.capture.counters.iter().filter(|s| s.side() == side) {
+            for id in &sample.ids {
+                *seen.entry(*id).or_default() += 1;
+            }
+        }
+        for c in view.counters(side) {
+            rows.push(CounterRow {
+                id: crate::ids::counter(&c.name, &c.labels),
+                samples: seen.get(&c.id).copied().unwrap_or(0),
+                name: c.name,
+                unit: c.unit,
+                kind: CounterKindName::from(c.kind),
+                labels: c.labels.into_iter().collect(),
+                side: SideName::from(side),
+            });
+        }
+    }
+    rows.sort_by(|a, b| a.id.cmp(&b.id).then(a.side.cmp(&b.side)));
+    let cut = rows.len().saturating_sub(ctx.q.filters.limit);
+    rows.truncate(ctx.q.filters.limit);
+    let mut reply = Reply::new(Unit::Counters, rows.into_iter().map(Row::Counter).collect());
+    if cut > 0 {
+        reply
+            .warnings
+            .push(format!("{cut} more counters: raise --limit"));
+    }
+    Ok(reply)
+}
+
 /// A snapshot's biggest rows, or with `--diff` what grew and shrank between two.
 pub(super) fn memory(ctx: &Ctx) -> Result<Reply, QueryError> {
     let side = ctx.side(0)?;
@@ -121,7 +190,7 @@ pub(super) fn memory(ctx: &Ctx) -> Result<Reply, QueryError> {
     let mut rows: Vec<&(String, f64)> = snap
         .values
         .iter()
-        .filter(|(p, v)| !is_megabytes(p) || *v >= min_mb.unwrap_or(0.0))
+        .filter(|(p, v)| !is_megabytes(p) || v.abs() >= min_mb.unwrap_or(0.0))
         .collect();
     rows.sort_by(|a, b| {
         is_megabytes(&b.0)

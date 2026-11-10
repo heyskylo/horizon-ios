@@ -459,7 +459,7 @@ fn a_request_for_self_share_gives_each_tree_row_its_own_time_as_a_percent() {
 }
 
 #[test]
-fn a_time_window_counts_the_blocks_that_start_inside_it() {
+fn a_time_window_counts_the_blocks_it_overlaps() {
     let dir = TempDir::new("window");
     let file = standard(&dir);
     // Block 1 (t0 = 5, 25 ticks) holds 35 of tick_level's 90 samples.
@@ -472,6 +472,28 @@ fn a_time_window_counts_the_blocks_that_start_inside_it() {
     let early_level = hot_row(&hot_rows(&early), LEVEL_ID).total;
     assert_eq!(early_level, 22.0);
     assert_eq!((late_level * 25.0 + early_level * 25.0) / 50.0, 18.0);
+}
+
+#[test]
+fn a_window_inside_a_block_selects_it_and_the_reply_names_the_blocks_it_used() {
+    let dir = TempDir::new("window-snap");
+    let file = standard(&dir);
+    // 6 s to 8 s lies inside block 1 (5 s to 10 s), which holds 25 ticks.
+    let inside = query(&["hot", "--by", "total", "--from", "6", "--to", "8", &file]);
+    let sel = inside.selection.as_ref().unwrap();
+    assert_eq!(
+        (sel.from, sel.to, sel.ticks),
+        (Some(5.0), Some(10.0), Some(25))
+    );
+    assert_eq!(hot_row(&hot_rows(&inside), LEVEL_ID).total, 14.0);
+    // 4 s to 6 s straddles both blocks, so it takes both.
+    let straddle = query(&["hot", "--by", "total", "--from", "4", "--to", "6", &file]);
+    let sel = straddle.selection.as_ref().unwrap();
+    assert_eq!(
+        (sel.from, sel.to, sel.ticks),
+        (Some(0.0), Some(10.0), Some(50))
+    );
+    assert_eq!(hot_row(&hot_rows(&straddle), LEVEL_ID).total, 18.0);
 }
 
 #[test]

@@ -301,6 +301,14 @@ fn fixtures() -> Fixtures {
         ),
         ("watched", save(&dir, "watched.hzperf", &watched_fields())),
         (
+            "ticked",
+            save(
+                &dir,
+                "ticked.hzperf",
+                &common::samples::waypoints_with_ticks(),
+            ),
+        ),
+        (
             "samples",
             save(&dir, "samples.hzperf", &waypoints(1, 50).fields()),
         ),
@@ -423,6 +431,13 @@ const CASES: &[(&str, &[&str])] = &[
         &["query", "ticks", "--side", "client", "{client}"],
     ),
     ("tick", &["query", "tick", "k:101", "{hand}"]),
+    (
+        "hot_window",
+        &["query", "hot", "--from", "6", "--to", "8", "{samples}"],
+    ),
+    ("tick_samples", &["query", "tick", "k:7", "{ticked}"]),
+    ("memory_labels", &["query", "memory_labels", "{hand}"]),
+    ("counters", &["query", "counters", "{hand}"]),
     ("tick_incomplete", &["query", "tick", "100", "{hand}"]),
     ("tick_missing", &["query", "tick", "k:55", "{hand}"]),
     ("tick_bad_id", &["query", "tick", "x", "{hand}"]),

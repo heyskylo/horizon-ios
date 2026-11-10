@@ -295,6 +295,8 @@ pub fn run(q: &Query, files: &[Loaded]) -> Result<Envelope<Row>, QueryError> {
         Op::GpuFrames => gpu::gpu_frames(&ctx)?,
         Op::Meta => meta::meta(&ctx)?,
         Op::Memory => notes::memory(&ctx)?,
+        Op::MemoryLabels => notes::memory_labels(&ctx)?,
+        Op::Counters => notes::counters(&ctx)?,
         Op::Marks => notes::marks(&ctx)?,
         Op::Warnings => notes::warnings(&ctx)?,
         Op::Hot => profile::hot(&ctx)?,
