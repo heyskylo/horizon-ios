@@ -35,6 +35,9 @@ impl Game<'_> {
             && settings.guide_detail != GuideDetail::Off
             && self.pad.in_use
             && !self.pad.keyboard_took_over
+            // Hidden once the radial menu shows, not on the opener's press: a quick tap draws
+            // nothing, so the guide doesn't blink.
+            && !self.pad_radial_shown()
             && !self.pad_in_menu()
             && !self.screen_over_playing()
             && self.sleeping.is_none()
@@ -118,7 +121,7 @@ impl Game<'_> {
             || self.pad.keyboard_took_over
             || self.prompt_open()
             || self.title.is_some()
-            || self.pad.menu.osk.is_some()
+            || self.pad_keyboard_captures()
         {
             return;
         }

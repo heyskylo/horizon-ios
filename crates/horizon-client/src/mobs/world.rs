@@ -30,6 +30,63 @@ pub struct TargetInfo {
     /// `isPassenger`.
     pub passenger: bool,
 }
+thread_local! {
+    static NEAR_BUF_POOL: std::cell::RefCell<Vec<Vec<u32>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+pub struct NearIter<'a> {
+    others: &'a [Seen],
+    indices: Option<Vec<u32>>,
+    pos: usize,
+    fallback: Option<std::slice::Iter<'a, Seen>>,
+}
+
+impl<'a> Iterator for NearIter<'a> {
+    type Item = &'a Seen;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(indices) = &self.indices
+            && self.pos < indices.len()
+        {
+            let idx = indices[self.pos];
+            self.pos += 1;
+            return Some(&self.others[idx as usize]);
+        }
+        if let Some(all) = &mut self.fallback {
+            return all.next();
+        }
+        None
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        if let Some(indices) = &self.indices {
+            let rem = indices.len().saturating_sub(self.pos);
+            (rem, Some(rem))
+        } else if let Some(all) = &self.fallback {
+            all.size_hint()
+        } else {
+            (0, Some(0))
+        }
+    }
+}
+
+impl Drop for NearIter<'_> {
+    fn drop(&mut self) {
+        if let Some(mut buf) = self.indices.take() {
+            buf.clear();
+            NEAR_BUF_POOL.with(|pool| {
+                if let Ok(mut pool) = pool.try_borrow_mut()
+                    && pool.len() < 8
+                {
+                    pool.push(buf);
+                }
+            });
+        }
+    }
+}
+
 /// Chunk and section cache for raycast block traversals.
 /// Caches the current section to avoid section index checks and hashmap lookups
 /// for consecutive voxels in the same 16x16x16 section.
@@ -512,15 +569,39 @@ impl MobWorld<'_> {
     }
     /// The other mobs whose boxes may meet `area` (callers test the boxes),
     /// in snapshot order: through the grid when there is one, else all.
-    pub fn others_near(&self, area: Aabb) -> impl Iterator<Item = &Seen> {
-        let mut near = Vec::new();
+    pub fn others_near(&self, area: Aabb) -> NearIter<'_> {
+        let mut buf = NEAR_BUF_POOL.with(|pool| {
+            pool.try_borrow_mut()
+                .ok()
+                .and_then(|mut p| p.pop())
+                .unwrap_or_default()
+        });
         let indexed = self
             .others_grid
-            .is_some_and(|grid| grid.candidates(area, &mut near));
-        let all = (!indexed).then(|| self.others.iter());
-        near.into_iter()
-            .map(|i| &self.others[i as usize])
-            .chain(all.into_iter().flatten())
+            .is_some_and(|grid| grid.candidates(area, &mut buf));
+        if indexed {
+            NearIter {
+                others: self.others,
+                indices: Some(buf),
+                pos: 0,
+                fallback: None,
+            }
+        } else {
+            buf.clear();
+            NEAR_BUF_POOL.with(|pool| {
+                if let Ok(mut pool) = pool.try_borrow_mut()
+                    && pool.len() < 8
+                {
+                    pool.push(buf);
+                }
+            });
+            NearIter {
+                others: self.others,
+                indices: None,
+                pos: 0,
+                fallback: Some(self.others.iter()),
+            }
+        }
     }
     pub fn seen(&self, id: u32) -> Option<&Seen> {
         match self.others_index {

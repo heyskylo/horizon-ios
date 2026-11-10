@@ -3,7 +3,7 @@
 //! with two sides that `shadowcomp` programs flip as composite programs flip colortex (6.1.6).
 //! Square, `shadowMapResolution` pixels.
 
-use horizon_render_pipeline::SHADOW_COLORS;
+use horizon_shaders::SHADOW_COLORS;
 
 type Ops<T> = wgpu::Operations<T>;
 type Color = wgpu::Color;
@@ -97,11 +97,7 @@ pub(super) fn stand_in(device: &wgpu::Device) -> wgpu::TextureView {
 }
 
 impl ShadowTargets {
-    pub fn reset_history(
-        &mut self,
-        device: &wgpu::Device,
-        shadow: &horizon_render_pipeline::Shadow,
-    ) {
+    pub fn reset_history(&mut self, device: &wgpu::Device, shadow: &horizon_shaders::Shadow) {
         let mut colors = 0;
         let mut doubled = 0;
         let formats = std::array::from_fn(|n| match &self.color[n] {
@@ -129,7 +125,7 @@ impl ShadowTargets {
     /// resolution is kept within the device's limit.
     pub fn new(
         device: &wgpu::Device,
-        shadow: &horizon_render_pipeline::Shadow,
+        shadow: &horizon_shaders::Shadow,
         formats: [wgpu::TextureFormat; SHADOW_COLORS],
         colors: u16,
         doubled: u16,

@@ -583,6 +583,9 @@ pub const BOSS_BAR_STEP: i32 = 10 + 9;
 pub const BOSS_BAR_HEIGHT: i32 = 5;
 /// A boss bar's sprite width, in GUI px; it is centred on the view.
 pub const BOSS_BAR_WIDTH: i32 = 182;
+/// Half the hotbar's width, in GUI px (`Hud`'s `screenWidth / 2 - 91`): the status rows above it
+/// span the same.
+pub const HOTBAR_HALF_WIDTH: i32 = 91;
 
 /// How many of `n` boss bars `BossHealthOverlay.extractRenderState` draws on a view `h` GUI px
 /// tall: it stops once the next bar's top reaches a third of the height (integer division,
