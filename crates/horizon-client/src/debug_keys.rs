@@ -32,8 +32,6 @@ pub enum DebugAction {
     RecordSession,
     /// F3+E: write the bundle now.
     ExportRepro,
-    /// F3+O: start a performance capture, or stop it and save it.
-    ProfileCapture,
 }
 
 /// The mappings `handleDebugKeys` tests, in its order.
@@ -76,10 +74,9 @@ pub const ACTIONS: [(&str, DebugAction); 20] = [
 ];
 
 /// Horizon's own debug keys: fixed, so they never enter the options table that vanilla parity compares.
-const HORIZON_ACTIONS: [(&str, DebugAction); 3] = [
+const HORIZON_ACTIONS: [(&str, DebugAction); 2] = [
     ("key.keyboard.r", DebugAction::RecordSession),
     ("key.keyboard.e", DebugAction::ExportRepro),
-    ("key.keyboard.o", DebugAction::ProfileCapture),
 ];
 
 /// GLFW's key actions.

@@ -274,7 +274,7 @@ message StringEntry { Side side = 1; uint32 id = 2; string text = 3; }
 message Start {
   Side side = 1;
   Kind kind = 2;                           // DEDICATED, INTEGRATED (single-player server thread), CLIENT
-  Trigger trigger = 3;                     // CONSOLE, CTL, KEY (F3+O), ENV, BENCHMARK, REMOTE
+  Trigger trigger = 3;                     // CONSOLE, CTL, KEY (F3+O, old captures), ENV, BENCHMARK, REMOTE, COMMAND
   int64 started_unix_ms = 4;
   double uptime_s = 5;
   Build build = 6;                         // version, commit, profile, target, features, symbols (DWARF/SYMTAB/NONE)
@@ -496,7 +496,7 @@ Notes on fields:
 
 ### 3.8 Who writes what
 
-| Field | Dedicated `horizon-report` | Client `profile client` / F3+O | Single player, both sides | Remote server via `profile server` | `--benchmark --profile` |
+| Field | Dedicated `horizon-report` | Client `profile client` / `/profiler` | Single player, both sides | Remote server via `profile server` | `--benchmark --profile` |
 |---|---|---|---|---|---|
 | start, history, slow, health, counters, marks, warnings, stop | server | client | both | server (on the server and in the client's file) | client |
 | span_blocks, spans | server | client | both | server | client |
@@ -528,13 +528,13 @@ horizon-ctl profile mark NAME
   thread; when connected to a server, it is that server, through §4.2.
 - **`stop`** replies with the written path and the web UI's address. **`status`** gives the running sides, elapsed
   time and bytes written.
-- **F3+O** runs `profile start` / `profile stop` with no side. **`HORIZON_PROFILE=DIR`** captures the whole run and
+- **`/profiler start|stop [client|server]`** in chat runs `profile start` / `profile stop`. **`HORIZON_PROFILE=DIR`** captures the whole run and
   writes it into DIR at exit.
 - **As built (C2):** in single player a bare `profile` writes both sides into the window's file. The server thread
   (`game/integrated/capture.rs`) is handed the file's writer, a clone of its sender, and the capture's start as an
   instant, so both sides' `t` count from the same zero; it writes `Start` (kind `INTEGRATED`), its ticks, spans,
   mob costs and `tick` thread samples, and its own `Stop`, and the window finishes the file once both are in. A bare
-  `profile start` before a world opens, `HORIZON_PROFILE` and F3+O are joined by the server when it comes up (once per
+  `profile start` before a world opens, `HORIZON_PROFILE` and `/profiler` are joined by the server when it comes up (once per
   capture). `profile server start` makes a file of the server thread alone (on a server joined over the network, see R1a).
   `stop` ends the capture with every side it holds (a `--side` it does not hold is an error), `status` lists
   the sides that run, and `mark` goes to every running side or the one `--side` names. Replies list `sides`, server first; on `start` they are the sides asked for, and `status` and `stop` confirm which wrote. A `mark` reply's `t` is the window's game clock for every side, while the file stores it from the capture's start. With `--threads all`
@@ -1080,7 +1080,7 @@ bd412b6d62.
 | Q2 | Sample queries `hot`, `tree`, `callers`, `callees`, `split`, `group`, `frames` with filters and several captures; hot functions in the summary; name normalization | Q1, S2 (synthetic until then) | 480 | A synthetic tree with known weights gives `callers` equal to the known caller set and `callees` equal to the known children. `split --by state` sums to the node total. Normalization is table-driven: real mangled names from a Horizon build (`<horizon_world::level::Sim<…>>::set_block_limit` etc.) map to the expected short names. `frames` with 3 captures gives 3 columns equal to the per-capture runs. |
 | D1 | `stats`: two-sample HL + exact Mann–Whitney CI, Theil–Sen drift; `diff`; `summary --baseline`; benchmark reports' `ab` read and printed | Q1 | 450 | Mann–Whitney vectors computed outside the code (by hand for n = m = 6; a table of published critical values for larger n). A capture diffed with itself gives `within_noise` everywhere. A synthetic B with +2 ms/tick on one function in every block gives `slower`, with 2 inside the CI, and `~` for the other functions. A drifting synthetic A raises the drift warning. A benchmark report pair with `ab` prints `ab`'s verdict unchanged. |
 | M1 | `horizon-perf mcp` with the five tools | Q1 (more ops appear as Q2 and D1 land) | 300 | `tools/list` lists the five tools with their schemas. A `perf_query` call on a fixture returns byte-identical JSON to `horizon-perf query`. `perf_follow` with the returned cursor never repeats or skips a sample of a growing file. A non-`.hzperf` path is refused. |
-| C1 | Client captures: `horizon-ctl profile client start\|stop\|status\|mark`, F3+O, `HORIZON_PROFILE`, client `Start` and `health` from `FrameStats`, `<game home>/reports/`, retention, the translated "saved" message | F2, S2 for samples | 450 | An offscreen game (`horizon-ctl launch --offscreen`) with a scratch `HORIZON_HOME` writes its capture there, and it reads back with the frame count the run made. `mark NAME` appears at its time. `stop` replies with the path. The `horizon.perf.*` keys exist in `en_us.json`. |
+| C1 | Client captures: `horizon-ctl profile client start\|stop\|status\|mark`, `/profiler`, `HORIZON_PROFILE`, client `Start` and `health` from `FrameStats`, `<game home>/reports/`, retention, the translated "saved" message | F2, S2 for samples | 450 | An offscreen game (`horizon-ctl launch --offscreen`) with a scratch `HORIZON_HOME` writes its capture there, and it reads back with the frame count the run made. `mark NAME` appears at its time. `stop` replies with the path. The `horizon.perf.*` keys exist in `en_us.json`. |
 | C2 | Both sides in single player: the integrated server thread writes `side = SERVER` into the same writer; `profile` with no side means both; `profile server` in single player | C1, S1b | 300 | A single-player run captured with no side holds both sides' `Start` and `Stop`. `summary` shows both, server first. `--side client` selects only render-thread samples. |
 | R1a | Remote, part 1: `horizon:perf` channel, the Horizon check, operator level 4 check, the one-at-a-time rule, the server log lines, the server's copy in `reports/` | C2 | 400 | Over `lan_e2e.py` (host on its server thread, a real guest): a guest at level 4 starts a server capture and the host's `reports/` gets it; a guest at level 3 gets `Denied`, and no file is written; the host log names the guest at start and stop. A non-Horizon server fixture (no `horizon:block_registry`) gives "this server isn't running Horizon". |
 | R1b | Remote, part 2: rate-limited chunk transfer, the merge into the client's file, `SERVER_PART_INCOMPLETE` | R1a | 350 | The merged client file's server side is byte-identical, once inflated, to the server's copy without its `format` field. The transfer stays under 256 KiB/s averaged over 1 s. A disconnect mid-transfer leaves a client file that reads, with the warning. |

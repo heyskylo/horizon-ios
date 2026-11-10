@@ -237,6 +237,7 @@ impl Game<'_> {
                         self.warn_server(code);
                     }
                     self.profile.server_joined = false;
+                    self.profiler_client_only(&refusal_text(why));
                 }
                 if self.profile.incoming.is_some() || self.profile.server_sink.is_some() {
                     self.profile.server_reply = waiting;

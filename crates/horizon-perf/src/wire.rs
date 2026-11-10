@@ -366,9 +366,10 @@ vocab! {
         Env = "env",
         Benchmark = "benchmark",
         Remote = "remote",
+        Command = "command",
     }
 }
-mirror!(TriggerName <- Trigger { Unspecified, Console, Ctl, Key, Env, Benchmark, Remote });
+mirror!(TriggerName <- Trigger { Unspecified, Console, Ctl, Key, Env, Benchmark, Remote, Command });
 
 vocab! {
     SymbolsName {

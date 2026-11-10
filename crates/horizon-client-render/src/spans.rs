@@ -119,6 +119,22 @@ impl Drop for Guard {
         });
     }
 }
+/// How many spans this thread holds.
+fn recorded() -> usize {
+    SPANS.with(|s| s.borrow().len())
+}
+/// Moves the spans recorded since `mark` one level in: they ran inside the lap now ending.
+fn nest_since(mark: usize, depth: u8) {
+    SPANS.with(|s| {
+        let mut s = s.borrow_mut();
+        let start = mark.min(s.len());
+        for span in &mut s[start..] {
+            if span.depth >= depth {
+                span.depth = span.depth.saturating_add(1);
+            }
+        }
+    });
+}
 /// Keeps a finished span for the thread's next [`take_raw`].
 fn push(span: Span) {
     SPANS.with(|s| {
@@ -161,17 +177,17 @@ pub fn take_notes() -> Vec<(f32, String)> {
 }
 /// Consecutive steps of one function timed as spans: each [`Laps::lap`] records the time since
 /// the previous one (or since [`laps`]) under its name. Nothing is read while spans are off.
-pub struct Laps(Option<(Instant, Option<Duration>)>);
+pub struct Laps(Option<(Instant, Option<Duration>, usize)>);
 /// Start timing the steps of a function (see [`Laps`]).
 #[inline]
 pub fn laps() -> Laps {
-    Laps(recording_here().then(|| (Instant::now(), cpu_if_enabled())))
+    Laps(recording_here().then(|| (Instant::now(), cpu_if_enabled(), recorded())))
 }
 impl Laps {
     /// Record the step that just ended under `name`, and start the next.
     #[inline]
     pub fn lap(&mut self, name: &'static str) {
-        let Some((started, cpu)) = &mut self.0 else {
+        let Some((started, cpu, mark)) = &mut self.0 else {
             return;
         };
         let now = Instant::now();
@@ -183,13 +199,14 @@ impl Laps {
             .map_or(ms, |(end, start)| (end - start).as_secs_f32() * 1000.0);
         let depth = DEPTH.with(Cell::get);
         timeline::span(name, *started, elapsed, depth);
+        nest_since(*mark, depth);
         push(Span {
             name,
             ms,
             cpu_ms,
             depth,
         });
-        (*started, *cpu) = (now, now_cpu);
+        (*started, *cpu, *mark) = (now, now_cpu, recorded());
     }
 }
 /// The CPU time this thread has used, where the platform tells it: a tick
@@ -871,6 +888,22 @@ mod tests {
         let names: Vec<_> = spans.iter().map(|s| s.name).collect();
         assert_eq!(names, ["first", "second"]);
         assert!(spans[0].ms >= 2.0);
+    }
+
+    /// A span that ran during a lap belongs inside that lap, and not inside the next one.
+    #[test]
+    fn a_span_during_a_lap_nests_under_that_lap() {
+        let _switch = spans_switch();
+        let _ = super::take_raw();
+        super::enable(true);
+        let mut laps = super::laps();
+        super::time("inner", || {});
+        laps.lap("first");
+        laps.lap("second");
+        super::enable(false);
+        let spans = super::take_raw();
+        let depths: Vec<_> = spans.iter().map(|s| (s.name, s.depth)).collect();
+        assert_eq!(depths, [("inner", 1), ("first", 0), ("second", 0)]);
     }
 
     /// The thread's CPU clock moves with work done on it, not with time

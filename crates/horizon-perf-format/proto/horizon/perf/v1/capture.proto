@@ -85,12 +85,14 @@ enum Trigger {
   TRIGGER_UNSPECIFIED = 0;
   TRIGGER_CONSOLE = 1;
   TRIGGER_CTL = 2;
-  // F3+O.
+  // F3+O, in captures from before /profiler.
   TRIGGER_KEY = 3;
   TRIGGER_ENV = 4;
   TRIGGER_BENCHMARK = 5;
   // Requested by a client over horizon:perf.
   TRIGGER_REMOTE = 6;
+  // /profiler in chat.
+  TRIGGER_COMMAND = 7;
 }
 
 message Start {

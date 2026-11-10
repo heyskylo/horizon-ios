@@ -11,6 +11,7 @@ use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use horizon_bench::compare::Ab;
 use horizon_bench::{App, Frames, Kind, Report};
 use serde_json::Value;
 
@@ -61,6 +62,8 @@ const TRAVEL_PITCH: f64 = 30.0;
 const TRAVEL_SECONDS: f64 = 32.0;
 const HOLD_BLOCKS: u32 = 4;
 const BLOCK_SECONDS: f64 = 4.0;
+const WARMUP_SECONDS: f64 = 2.0;
+const PAIRS: u32 = 8;
 /// Frame-rate settings the benchmark can set for a run; `a` is the default.
 pub struct Switch {
     pub name: &'static str,
@@ -106,6 +109,8 @@ pub enum Scenario {
     Scenes(Vec<Scene>),
     /// A 512-block flight, then held at its end.
     Travel,
+    /// The flight with the switch's B applied, then its two values interleaved B A A B.
+    Ab(&'static Switch),
 }
 
 impl Scenario {
@@ -113,12 +118,23 @@ impl Scenario {
         match name {
             "standard" => Ok(Scenario::Scenes(SCENES.to_vec())),
             "travel" => Ok(Scenario::Travel),
+            name if name.starts_with("ab:") => SWITCHES
+                .iter()
+                .find(|s| s.name == &name[3..])
+                .map(Scenario::Ab)
+                .ok_or_else(|| {
+                    format!(
+                        "unknown switch {}: {}",
+                        &name[3..],
+                        SWITCHES.map(|s| s.name).join(", ")
+                    )
+                }),
             name => SCENES
                 .iter()
                 .find(|s| s.0 == name)
                 .map(|s| Scenario::Scenes(vec![*s]))
                 .ok_or_else(|| {
-                    format!("unknown benchmark {name}: standard, village, forest, ocean, mountain or travel")
+                    format!("unknown benchmark {name}: standard, village, forest, ocean, mountain, travel or ab:SWITCH ({})", SWITCHES.map(|s| s.name).join(", "))
                 }),
         }
     }
@@ -270,47 +286,12 @@ fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
         horizon_telemetry::system::storage(&setup.game_dir).map(str::to_owned);
     report.hardware.display = serde_json::from_value(title["display"].clone()).ok();
 
-    if let Some((name, value)) = &setup.set {
-        apply_set(control, name, value)?;
-    }
-    replace_world(&setup.game_dir)?;
-    control.call(&format!("open {WORLD} {SEED} creative"))?;
-    // The world opens on a worker: its folder may not exist yet when `open` replies.
-    std::fs::create_dir_all(setup.game_dir.join("saves").join(WORLD)).map_err(|e| e.to_string())?;
-    std::fs::write(
-        setup.game_dir.join("saves").join(WORLD).join(MARKER),
-        "Created by horizon-client --benchmark; replaced by the next run.\n",
-    )
-    .map_err(|e| e.to_string())?;
-    let loaded = wait_loaded(control, |_| true)?;
-    report.metric("startup.world_ms", &[ms(loaded - setup.started)]);
-
-    if setup.profile {
-        control.call(START_CAPTURE)?;
-    }
     let mut steady = Vec::new();
-    match scenario {
-        Scenario::Scenes(scenes) => {
-            for (name, start, end, pitch) in scenes {
-                control.call("time 6000")?;
-                load_scene(control, name, start, end, pitch, &mut report)?;
-                if !time_passes(control, name, &mut report)? {
-                    thread::sleep(SETTLE);
-                }
-                let frames = fly(
-                    control,
-                    name,
-                    start,
-                    end,
-                    FLIGHT_SECONDS,
-                    pitch,
-                    &mut steady,
-                )?;
-                fps_metrics(&mut report, name, std::slice::from_ref(&frames));
-                report.frames.push(frames);
-            }
-        }
-        Scenario::Travel => travel(control, &mut report, &mut steady)?,
+    match &scenario {
+        Scenario::Ab(switch) => keeping_switch(control, switch, || {
+            measure(control, &setup, &scenario, &mut report, &mut steady)
+        })?,
+        _ => measure(control, &setup, &scenario, &mut report, &mut steady)?,
     }
 
     let status = control.status();
@@ -328,9 +309,12 @@ fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
     c.vsync = Some(setup.vsync);
     c.fps_cap = setup.fps_cap;
     c.offscreen = Some(setup.offscreen);
-    let travelling = setup.scenario == "travel";
-    c.repeats = Some(if travelling { HOLD_BLOCKS } else { 1 });
-    c.warmup_s = (!travelling).then(|| SETTLE.as_secs_f64());
+    let (repeats, warmup) = match scenario {
+        Scenario::Travel => (HOLD_BLOCKS, None),
+        Scenario::Ab(_) => (2 * PAIRS, Some(WARMUP_SECONDS)),
+        Scenario::Scenes(_) => (1, Some(SETTLE.as_secs_f64())),
+    };
+    (c.repeats, c.warmup_s) = (Some(repeats), warmup);
     if let Some(bytes) = renderer["gpu_allocated_bytes"].as_f64() {
         report.metric("memory.gpu_mb", &[bytes / f64::from(1 << 20)]);
     }
@@ -372,6 +356,89 @@ const START_CAPTURE: &str = "profile client start";
 /// Ends the capture with the written report embedded in it.
 fn stop_capture(report: &Path) -> String {
     format!("profile client stop --bench {}", report.display())
+}
+
+/// Opens the benchmark world and flies the scenario in it.
+fn measure(
+    control: &Control,
+    setup: &Setup,
+    scenario: &Scenario,
+    report: &mut Report,
+    steady: &mut Vec<(Instant, Instant)>,
+) -> Result<(), String> {
+    match (scenario, &setup.set) {
+        (Scenario::Ab(switch), _) => apply_set(control, switch.name, switch.b)?,
+        (_, Some((name, value))) => apply_set(control, name, value)?,
+        _ => {}
+    }
+    replace_world(&setup.game_dir)?;
+    control.call(&format!("open {WORLD} {SEED} creative"))?;
+    // The world opens on a worker: its folder may not exist yet when `open` replies.
+    std::fs::create_dir_all(setup.game_dir.join("saves").join(WORLD)).map_err(|e| e.to_string())?;
+    std::fs::write(
+        setup.game_dir.join("saves").join(WORLD).join(MARKER),
+        "Created by horizon-client --benchmark; replaced by the next run.\n",
+    )
+    .map_err(|e| e.to_string())?;
+    let loaded = wait_loaded(control, |_| true)?;
+    report.metric("startup.world_ms", &[ms(loaded - setup.started)]);
+
+    if setup.profile {
+        control.call(START_CAPTURE)?;
+    }
+
+    match scenario {
+        Scenario::Scenes(scenes) => {
+            for &(name, start, end, pitch) in scenes {
+                control.call("time 6000")?;
+                load_scene(control, name, start, end, pitch, report)?;
+                if !time_passes(control, name, report)? {
+                    thread::sleep(SETTLE);
+                }
+                let frames = fly(control, name, start, end, FLIGHT_SECONDS, pitch, steady)?;
+                fps_metrics(report, name, std::slice::from_ref(&frames));
+                report.frames.push(frames);
+            }
+        }
+        Scenario::Travel => travel(control, report, steady)?,
+        Scenario::Ab(switch) => {
+            trip(control, report, steady)?;
+            let plan = Plan {
+                pairs: PAIRS,
+                warmup: Duration::from_secs_f64(WARMUP_SECONDS),
+            };
+            ab_blocks(control, switch, &plan, report, steady)?;
+        }
+    }
+    Ok(())
+}
+
+/// Reads a switch before the run and puts it back after, whatever the run did and however it ended.
+fn keeping_switch<T>(
+    control: &Control,
+    switch: &Switch,
+    run: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let initial = control.call(switch.word)?[switch.key].clone();
+    let result = run();
+    let restored = restore(control, switch, &initial);
+    match result {
+        Ok(value) => restored.map(|()| value),
+        Err(e) => Err(e),
+    }
+}
+
+/// Sends the arm whose reply has the value the switch had.
+fn restore(control: &Control, switch: &Switch, initial: &Value) -> Result<(), String> {
+    if control.call(switch.word)?[switch.key] == *initial {
+        return Ok(());
+    }
+    for value in [switch.a, switch.b] {
+        if control.call(&format!("{} {value}", switch.word))?[switch.key] == *initial {
+            return Ok(());
+        }
+    }
+    Err(format!("{} could not be put back", switch.name))
 }
 
 /// Sets a switch with its control word; a refusal (GPU culling not offered) is the game's reason.
@@ -492,8 +559,8 @@ fn timing_metrics(report: &mut Report, phase: &str, blocks: &[Frames]) {
     report.metric(&format!("gpu.{phase}.p50_ms"), &gpu);
 }
 
-/// The state that matters: fly 512 blocks over terrain that loads and unloads, then hold at the end.
-fn travel(
+/// The flight, then the view at its end loaded.
+fn trip(
     control: &Control,
     report: &mut Report,
     steady: &mut Vec<(Instant, Instant)>,
@@ -526,6 +593,16 @@ fn travel(
     control.call(&format!("fly {x} {y} {z} {x} {y} {z} 0.1 {TRAVEL_PITCH}"))?;
     control.call(&format!("look {:.3} {TRAVEL_PITCH}", yaw(from, to)))?;
     wait_loaded(control, near(to))?;
+    Ok(())
+}
+
+/// The state that matters: fly 512 blocks over terrain that loads and unloads, then hold at the end.
+fn travel(
+    control: &Control,
+    report: &mut Report,
+    steady: &mut Vec<(Instant, Instant)>,
+) -> Result<(), String> {
+    trip(control, report, steady)?;
     let mut blocks = Vec::new();
     for repeat in 0..HOLD_BLOCKS {
         let held = control.call(&format!("bench {BLOCK_SECONDS} raw"))?;
@@ -534,6 +611,68 @@ fn travel(
     fps_metrics(report, "hold", &blocks);
     timing_metrics(report, "hold", &blocks);
     report.frames.extend(blocks);
+    Ok(())
+}
+
+struct Plan {
+    pairs: u32,
+    warmup: Duration,
+}
+
+/// The two values of a switch in B A A B order, a block each, then each arm's passes timed once.
+fn ab_blocks(
+    control: &Control,
+    switch: &Switch,
+    plan: &Plan,
+    report: &mut Report,
+    steady: &mut Vec<(Instant, Instant)>,
+) -> Result<(), String> {
+    let began = Instant::now();
+    let mut blocks = Vec::new();
+    for pair in 0..plan.pairs {
+        control.call("time 6000")?;
+        for (n, b) in [(0, pair % 2 == 0), (1, pair % 2 == 1)] {
+            let (phase, value) = if b {
+                ("ab.b", switch.b)
+            } else {
+                ("ab.a", switch.a)
+            };
+            control.call(&format!("{} {value}", switch.word))?;
+            thread::sleep(plan.warmup);
+            let held = control.call(&format!("bench {BLOCK_SECONDS} raw"))?;
+            blocks.push(frames_of(&held, phase, 2 * pair + n)?);
+        }
+    }
+    steady.push((began, Instant::now()));
+    for phase in ["ab.a", "ab.b"] {
+        let arm: Vec<Frames> = blocks
+            .iter()
+            .filter(|f| f.phase == phase)
+            .cloned()
+            .collect();
+        fps_metrics(report, phase, &arm);
+        timing_metrics(report, phase, &arm);
+    }
+    let ab = Ab::from_frames(
+        switch.name,
+        switch.a,
+        switch.b,
+        BLOCK_SECONDS,
+        plan.warmup.as_secs_f64(),
+        &blocks,
+    )?;
+    if ab.first_block_outside_range {
+        eprintln!(
+            "Horizon: benchmark warning: the first B block, measured before any switch, is outside the later B blocks: switching {} may reset what is measured",
+            switch.name
+        );
+    }
+    report.frames.extend(blocks);
+    report.ab = Some(ab);
+    for (scene, value) in [("ab_a", switch.a), ("ab_b", switch.b)] {
+        control.call(&format!("{} {value}", switch.word))?;
+        time_passes(control, scene, report)?;
+    }
     Ok(())
 }
 
@@ -719,6 +858,17 @@ mod tests {
         assert_eq!(scenes("standard").len(), 4);
         assert_eq!(scenes("ocean")[0].0, "ocean");
         assert!(matches!(Scenario::parse("travel"), Ok(Scenario::Travel)));
+        assert!(matches!(
+            Scenario::parse("ab:gpu-culling"),
+            Ok(Scenario::Ab(s)) if s.name == "gpu-culling"
+        ));
+        let Err(e) = Scenario::parse("ab:nope") else {
+            panic!("nope is no switch")
+        };
+        assert!(
+            e.contains("gpu-culling") && e.contains("section-draws"),
+            "{e}"
+        );
         let Err(e) = Scenario::parse("nether") else {
             panic!("nether is no scenario")
         };
@@ -990,6 +1140,184 @@ mod tests {
             server.join().unwrap(),
             ["section-draws indirect", "gpu-culling on"]
         );
+    }
+
+    /// A fake game with GPU culling: `on` is its state; `fail_at` makes that `bench` (counted from 1) fail.
+    fn culling_server(
+        rx: mpsc::Receiver<Request>,
+        mut on: bool,
+        offered: bool,
+        fail_at: Option<usize>,
+    ) -> thread::JoinHandle<(Vec<String>, bool)> {
+        thread::spawn(move || {
+            let (mut lines, mut benches) = (Vec::new(), 0);
+            while let Ok(request) = rx.recv() {
+                let reply = match request.line.as_str() {
+                    "gpu-culling on" if !offered => {
+                        serde_json::json!({ "error": "not offered here" })
+                    }
+                    "gpu-culling on" | "gpu-culling off" => {
+                        on = request.line.ends_with("on");
+                        serde_json::json!({ "gpu_culling": on })
+                    }
+                    "gpu-culling" => serde_json::json!({ "gpu_culling": on }),
+                    "bench 4 raw" => {
+                        benches += 1;
+                        let gpu = if on { 5.0 } else { 3.0 };
+                        if Some(benches) == fail_at {
+                            serde_json::json!({ "error": "the window closed" })
+                        } else {
+                            serde_json::json!({
+                                "frame_ms": vec![gpu + 1.0; 200],
+                                "cpu_ms": vec![1.0; 200],
+                                "gpu_ms": vec![gpu; 200],
+                            })
+                        }
+                    }
+                    "bench 2" => serde_json::json!({
+                        "gpu_passes": {"World": if on { 1.5 } else { 0.5 }},
+                    }),
+                    _ => serde_json::json!({ "ok": true }),
+                };
+                let _ = request.reply.send(reply.to_string());
+                lines.push(request.line);
+            }
+            (lines, on)
+        })
+    }
+
+    const GPU_CULLING: &Switch = &SWITCHES[0];
+
+    fn quick(pairs: u32) -> Plan {
+        Plan {
+            pairs,
+            warmup: Duration::ZERO,
+        }
+    }
+
+    fn vulkan_report() -> Report {
+        let gpu = horizon_bench::Gpu {
+            backend: "vulkan".into(),
+            ..Default::default()
+        };
+        let hardware = horizon_bench::Hardware {
+            gpu: Some(gpu),
+            ..Default::default()
+        };
+        Report::with_hardware(Kind::Game, App::default(), hardware)
+    }
+
+    #[test]
+    fn the_blocks_run_b_a_a_b_and_each_arm_is_timed_by_pass() {
+        let (tx, rx) = mpsc::channel::<Request>();
+        let server = culling_server(rx, false, true, None);
+        let mut report = vulkan_report();
+        let control = Control(tx);
+        keeping_switch(&control, GPU_CULLING, || {
+            ab_blocks(
+                &control,
+                GPU_CULLING,
+                &quick(6),
+                &mut report,
+                &mut Vec::new(),
+            )
+        })
+        .expect("the blocks run");
+        drop(control);
+        let (lines, on) = server.join().unwrap();
+        let arms: String = lines
+            .iter()
+            .take_while(|l| *l != "gpu-passes on")
+            .filter_map(|l| match l.as_str() {
+                "gpu-culling on" => Some('B'),
+                "gpu-culling off" => Some('A'),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(arms, "BAABBAABBAABA");
+        assert_eq!(lines.iter().filter(|l| *l == "time 6000").count(), 6);
+        assert!(!on, "the initial value is back");
+        assert_eq!(lines.last().unwrap(), "gpu-culling off");
+
+        let positions: Vec<_> = report
+            .frames
+            .iter()
+            .map(|f| (f.phase.as_str(), f.repeat))
+            .collect();
+        assert_eq!(
+            positions[..4],
+            [("ab.b", 0), ("ab.a", 1), ("ab.a", 2), ("ab.b", 3)]
+        );
+        let ab = report.ab.as_ref().expect("an A/B run has its result");
+        let gpu = &ab.result["gpu_p50_ms"];
+        assert_eq!((gpu.pairs, gpu.a, gpu.b, gpu.diff), (6, 3.0, 5.0, 2.0));
+        assert_eq!(gpu.verdict, horizon_bench::compare::Verdict::Slower);
+        assert!(!ab.first_block_outside_range);
+        let metric = |name: &str| report.metrics.get(name).map(|s| (s.n, s.mean));
+        assert_eq!(metric("gpu.ab.a.p50_ms"), Some((6, 3.0)));
+        assert_eq!(metric("gpu.ab.b.p50_ms"), Some((6, 5.0)));
+        assert_eq!(metric("gpu_pass.ab_a.world_ms"), Some((1, 0.5)));
+        assert_eq!(metric("gpu_pass.ab_b.world_ms"), Some((1, 1.5)));
+    }
+
+    #[test]
+    fn a_setting_that_was_on_is_on_again_after_the_run() {
+        let (tx, rx) = mpsc::channel::<Request>();
+        let server = culling_server(rx, true, true, None);
+        let control = Control(tx);
+        keeping_switch(&control, GPU_CULLING, || {
+            ab_blocks(
+                &control,
+                GPU_CULLING,
+                &quick(2),
+                &mut vulkan_report(),
+                &mut Vec::new(),
+            )
+        })
+        .expect("the blocks run");
+        drop(control);
+        assert!(server.join().unwrap().1);
+    }
+
+    #[test]
+    fn the_setting_is_put_back_when_the_run_fails_midway() {
+        let (tx, rx) = mpsc::channel::<Request>();
+        // The 3rd block is A: the setting is off when it fails.
+        let server = culling_server(rx, true, true, Some(3));
+        let control = Control(tx);
+        let mut report = vulkan_report();
+        let error = keeping_switch(&control, GPU_CULLING, || {
+            ab_blocks(
+                &control,
+                GPU_CULLING,
+                &quick(6),
+                &mut report,
+                &mut Vec::new(),
+            )
+        })
+        .unwrap_err();
+        assert!(error.contains("the window closed"), "{error}");
+        assert!(report.frames.is_empty() && report.ab.is_none());
+        drop(control);
+        let (lines, on) = server.join().unwrap();
+        assert!(on, "on was the player's setting");
+        assert_eq!(lines.last().unwrap(), "gpu-culling on");
+    }
+
+    #[test]
+    fn a_refused_switch_ends_the_run_with_the_games_reason_and_changes_nothing() {
+        let (tx, rx) = mpsc::channel::<Request>();
+        let server = culling_server(rx, false, false, None);
+        let control = Control(tx);
+        let error = keeping_switch(&control, GPU_CULLING, || {
+            apply_set(&control, "gpu-culling", "on")
+        })
+        .unwrap_err();
+        assert!(error.contains("not offered here"), "{error}");
+        drop(control);
+        let (lines, on) = server.join().unwrap();
+        assert_eq!(lines, ["gpu-culling", "gpu-culling on", "gpu-culling"]);
+        assert!(!on);
     }
 
     #[test]

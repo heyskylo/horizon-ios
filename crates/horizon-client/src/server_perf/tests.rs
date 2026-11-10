@@ -1160,3 +1160,32 @@ fn the_horizon_options_read_back_as_given() {
         })
     );
 }
+
+#[test]
+fn memory_snapshots_keep_their_labels_paths_values_and_capture_time() {
+    let scratch = Scratch::new("memory-snapshot");
+    let mut perf = ServerPerf::new(0.0, 250.0);
+    let rows = vec![
+        ("process.resident_mb".to_owned(), 12.5),
+        ("gpu.resident_mb".to_owned(), 2.0),
+    ];
+    assert!(!perf.memory_snapshot(0.0, "idle", &rows));
+    perf.start_capture(10.0, &scratch.0, options(5.0)).unwrap();
+    assert!(perf.memory_snapshot(10.25, "start", &rows));
+    let saved = stop(&mut perf, 11.0, R::Normal).unwrap().unwrap();
+    let capture = read(&saved.path);
+    assert_eq!(capture.memory.len(), 1);
+    let snapshot = &capture.memory[0];
+    assert_eq!(snapshot.t, 0.25);
+    assert_eq!(text(&capture, snapshot.label), "start");
+    assert_eq!(
+        snapshot
+            .path
+            .iter()
+            .map(|&id| text(&capture, id))
+            .collect::<Vec<_>>(),
+        ["process.resident_mb", "gpu.resident_mb"]
+    );
+    assert_eq!(snapshot.value_mb, [12.5, 2.0]);
+    assert!(!perf.memory_snapshot(11.5, "after", &rows));
+}

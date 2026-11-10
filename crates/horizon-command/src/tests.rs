@@ -1264,3 +1264,35 @@ fn h149_oblique_local_offsets_are_grouped_before_the_origin() {
         "exact oblique local-coordinate bit mismatches: {failures:#?}"
     );
 }
+
+#[test]
+fn profiler_commands_parse_and_complete_for_a_player_without_operator_permission() {
+    let reg = Registries {
+        permission: 0,
+        ..reg()
+    };
+    let tree = vanilla::game_dispatcher().with_profiler();
+    for line in [
+        "profiler start",
+        "profiler start client",
+        "profiler stop server",
+        "profiler status",
+        "profiler mark slow frame",
+    ] {
+        assert_eq!(
+            tree.parse(line, &reg).executable().unwrap().1,
+            MOD_COMMAND,
+            "{line}"
+        );
+    }
+    let input = "profiler start ";
+    let parse = tree.parse(input, &reg);
+    let sides: Vec<_> = tree
+        .client_suggestions(&parse, input.len(), &reg)
+        .1
+        .into_iter()
+        .map(|s| s.text)
+        .collect();
+    assert_eq!(sides, ["client", "server"]);
+    assert!(vanilla::game_dispatcher().find("profiler").is_none());
+}

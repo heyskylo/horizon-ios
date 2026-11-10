@@ -1,9 +1,10 @@
-//! Captures (docs/perf-platform.md §4.1): `horizon-ctl profile`, F3+O and `HORIZON_PROFILE`. The window writes its own side; in single player the server thread writes its side into the same file.
+//! Captures (docs/perf-platform.md §4.1): `horizon-ctl profile`, `/profiler` and `HORIZON_PROFILE`. The window writes its own side; in single player the server thread writes its side into the same file.
 use super::Game;
 use super::integrated::{
     NO_ANSWER,
     capture::{Live, ServerSide, Target},
 };
+use super::memory::{MEMORY_EVERY_S, flatten_report};
 use super::perf_remote::Served;
 use crate::Result;
 use horizon_client::client_perf::{
@@ -16,13 +17,16 @@ use horizon_client::client_perf::{
 use horizon_client::perf_net::Link;
 use horizon_client::server_perf::{self, TickDetail, WorldCounts};
 use horizon_client::spans::{self, Span};
-use horizon_client::text::{ClickEvent, Style, Text};
+use horizon_client::text::{ClickEvent, RED, Style, Text};
 use horizon_perf_format::{
     files,
     v1::{BenchResult, StopReason, Trigger},
 };
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, mpsc::Sender};
+use std::sync::{
+    Arc,
+    mpsc::{Receiver, Sender, TryRecvError},
+};
 use std::time::Instant;
 
 /// The folder `HORIZON_PROFILE` names; captures go there instead of the game home's `reports/`.
@@ -98,7 +102,10 @@ pub(super) struct Profile {
     server_only: Option<ServerOnly>,
     pub(super) perf: ClientPerf,
     started_by: Trigger,
-    stopped_by_key: bool,
+    /// When the running capture takes its next memory snapshot, and how many it has taken.
+    memory_due: Option<(f64, u32)>,
+    /// Where the answer to a `/profiler` request that finishes later arrives.
+    chat_answer: Option<Receiver<String>>,
     /// `profile stop` waits for the file to be whole.
     reply: Option<Sender<String>>,
     spans_were_on: bool,
@@ -131,7 +138,8 @@ impl Profile {
             server_only: None,
             perf: ClientPerf::new(slow_ms),
             started_by: Trigger::Unspecified,
-            stopped_by_key: false,
+            memory_due: None,
+            chat_answer: None,
             reply: None,
             spans_were_on: false,
             trace_file: None,
@@ -282,6 +290,49 @@ pub(super) fn reply_text<T: serde::Serialize>(reply: &T) -> String {
     serde_json::to_string(reply).unwrap_or_default()
 }
 
+/// The fields of a deferred `profile` reply that chat shows.
+#[derive(serde::Deserialize)]
+struct ChatAnswer {
+    error: Option<String>,
+    path: Option<String>,
+    open_at: Option<String>,
+}
+
+/// The words after `/profiler` when `command`, without its slash, is that command.
+pub(super) fn profiler_args(command: &str) -> Option<&str> {
+    command
+        .strip_prefix("profiler")
+        .filter(|rest| rest.is_empty() || rest.starts_with(' '))
+}
+
+/// A command in a chat line that runs when clicked.
+fn command_link(command: &str) -> Text {
+    Text::styled(
+        command,
+        Style {
+            underlined: Some(true),
+            click: Some(ClickEvent::RunCommand(command.to_owned())),
+            ..Style::default()
+        },
+    )
+}
+
+/// `/profiler ACTION [client|server] ...` as the words `request::parse` reads.
+fn profiler_words(args: &str) -> Vec<&str> {
+    let mut words = args.split_whitespace();
+    let action = words.next();
+    let rest: Vec<&str> = words.collect();
+    let sided = matches!(action, Some("start" | "stop"));
+    let (side, rest) = match rest.split_first() {
+        Some((&side @ ("client" | "server"), tail)) if sided => (Some(side), tail),
+        _ => (None, &rest[..]),
+    };
+    side.into_iter()
+        .chain(action)
+        .chain(rest.iter().copied())
+        .collect()
+}
+
 impl Game<'_> {
     /// `profile [client|server] start|stop|status|mark`; None while a `stop` waits for its file.
     pub(super) fn profile_command(
@@ -289,13 +340,22 @@ impl Game<'_> {
         words: &[&str],
         reply: &Sender<String>,
     ) -> Result<Option<serde_json::Value>> {
+        self.run_profile(words, reply, Trigger::Ctl)
+    }
+
+    fn run_profile(
+        &mut self,
+        words: &[&str],
+        reply: &Sender<String>,
+        trigger: Trigger,
+    ) -> Result<Option<serde_json::Value>> {
         let parsed = request::parse(words)?;
         match parsed.request {
             Request::Start(options) => {
                 if parsed.side == Some(ProfileSide::Server) && self.integrated.is_none() {
                     return self.start_remote_only(&options, reply);
                 }
-                let started = self.start_profile(parsed.side, &options, Trigger::Ctl)?;
+                let started = self.start_profile(parsed.side, &options, trigger)?;
                 json_of(&started)
             }
             Request::Stop { bench } => {
@@ -499,6 +559,9 @@ impl Game<'_> {
     }
 
     fn stop_profile_with(&mut self, reason: StopReason, bench: Vec<BenchResult>) -> Result<()> {
+        if self.profile.perf.capturing() {
+            self.take_memory_snapshot("stop");
+        }
         let t = self.profile.perf.now();
         let gpu = self.gpu_readout();
         let server = self.profile.server_live();
@@ -519,22 +582,182 @@ impl Game<'_> {
         gpu_readout(self.profile.gpu, self.renderer.as_ref())
     }
 
-    /// F3+O: starts a capture, or stops the running one and says where it went.
-    pub(super) fn profile_key(&mut self) {
-        let outcome = if self.profile.perf.capturing() {
-            self.profile.stopped_by_key = true;
-            self.stop_profile(StopReason::Normal).map(|()| None)
-        } else {
-            self.start_profile(None, &StartOptions::default(), Trigger::Key)
-                .map(|_| Some(Text::translate("horizon.perf.started", &[])))
+    /// `/profiler start|stop|status|mark`: the requests of `horizon-ctl profile`, answered in chat.
+    pub(super) fn profiler_chat(&mut self, args: &str) {
+        let words = profiler_words(args);
+        let Ok(parsed) = request::parse(&words) else {
+            let usage = if words == ["mark"] {
+                "horizon.perf.mark_usage"
+            } else {
+                "horizon.perf.usage"
+            };
+            self.profiler_refused(Text::translate(usage, &[]));
+            return;
         };
-        match outcome {
-            Ok(Some(message)) => self.system_message(message),
-            Ok(None) => {}
-            Err(e) => self.system_message(Text::translate(
-                "horizon.perf.error",
-                &[Text::literal(e.to_string())],
+        let running = self.profile.status().capturing;
+        let refused = match parsed.request {
+            Request::Start(_) if running => Some(Text::translate(
+                "horizon.perf.already",
+                &[command_link("/profiler stop")],
             )),
+            Request::Stop { .. } if !running => Some(Text::translate(
+                "horizon.perf.nothing",
+                &[command_link("/profiler start")],
+            )),
+            Request::Mark(_) if !running => Some(Text::translate("horizon.perf.mark_idle", &[])),
+            _ => None,
+        };
+        if let Some(refused) = refused {
+            self.profiler_refused(refused);
+            return;
+        }
+        let (reply, answer) = std::sync::mpsc::channel();
+        match self.run_profile(&words, &reply, Trigger::Command) {
+            Ok(None) => {
+                if matches!(parsed.request, Request::Stop { .. }) {
+                    self.system_message(Text::translate("horizon.perf.saving", &[]));
+                }
+                self.profile.chat_answer = Some(answer);
+            }
+            Ok(Some(_)) => match parsed.request {
+                Request::Start(_) => self.profiler_started(parsed.side),
+                Request::Status => self.profiler_status(),
+                Request::Mark(name) => self.system_message(Text::translate(
+                    "horizon.perf.marked",
+                    &[Text::literal(name)],
+                )),
+                Request::Stop { .. } => {}
+            },
+            Err(e) => self.profiler_error(&e.to_string()),
+        }
+    }
+
+    fn profiler_refused(&mut self, line: Text) {
+        self.system_message(line.with_style(&Style::color(RED)));
+    }
+
+    fn profiler_started(&mut self, side: Option<ProfileSide>) {
+        let key = match side {
+            None => "horizon.perf.started",
+            Some(ProfileSide::Client) => "horizon.perf.started.client",
+            Some(ProfileSide::Server) => "horizon.perf.started.server",
+        };
+        self.system_message(Text::translate(key, &[command_link("/profiler stop")]));
+    }
+
+    fn profiler_status(&mut self) {
+        let status = self.profile.status();
+        let client = status.sides.contains(&ProfileSide::Client);
+        let server = status.sides.contains(&ProfileSide::Server);
+        let line = match status.elapsed_s.filter(|_| status.capturing) {
+            Some(elapsed) => Text::translate(
+                match (client, server) {
+                    (true, false) => "horizon.perf.running.client",
+                    (false, true) => "horizon.perf.running.server",
+                    _ => "horizon.perf.running.both",
+                },
+                &[Text::literal(format!("{elapsed:.0}"))],
+            ),
+            None => Text::translate("horizon.perf.idle", &[command_link("/profiler start")]),
+        };
+        self.system_message(line);
+    }
+
+    fn profiler_error(&mut self, error: &str) {
+        self.profiler_refused(Text::translate(
+            "horizon.perf.error",
+            &[Text::literal(error)],
+        ));
+    }
+
+    /// A capture from chat that asked for both sides, told the server refused to join it.
+    pub(super) fn profiler_client_only(&mut self, why: &str) {
+        if self.profile.started_by == Trigger::Command {
+            self.system_message(Text::translate(
+                "horizon.perf.client_only",
+                &[Text::literal(why)],
+            ));
+        }
+    }
+
+    fn profiler_saved(&mut self, path: &str) {
+        let full = horizon_client::logging::game_home().join(path);
+        let folder = full
+            .parent()
+            .unwrap_or(&full)
+            .to_string_lossy()
+            .into_owned();
+        let file = Text::styled(
+            path,
+            Style {
+                underlined: Some(true),
+                click: Some(ClickEvent::OpenFile(folder)),
+                ..Style::default()
+            },
+        );
+        self.system_message(Text::translate("horizon.perf.saved", &[file]));
+        let link = Text::styled(
+            files::PERF_UI_URL,
+            Style {
+                underlined: Some(true),
+                click: Some(ClickEvent::OpenUrl(files::PERF_UI_URL.to_owned())),
+                ..Style::default()
+            },
+        );
+        self.system_message(Text::translate("horizon.perf.open_in_browser", &[link]));
+    }
+
+    fn take_memory_snapshot(&mut self, label: &str) {
+        let rows = flatten_report(&self.memory_report());
+        let t = self.profile.perf.now();
+        self.profile.perf.memory_snapshot(t, label, &rows);
+    }
+
+    /// A capture's memory snapshots: one as it starts, then every `MEMORY_EVERY_S`.
+    fn poll_memory_snapshot(&mut self) {
+        if !self.profile.perf.capturing() {
+            self.profile.memory_due = None;
+            return;
+        }
+        let now = self.profile.perf.now();
+        match self.profile.memory_due {
+            None => {
+                self.take_memory_snapshot("start");
+                self.profile.memory_due = Some((now + MEMORY_EVERY_S, 0));
+            }
+            Some((due, taken)) if now >= due => {
+                let taken = taken + 1;
+                self.take_memory_snapshot(&format!(
+                    "{}s",
+                    u64::from(taken) * MEMORY_EVERY_S as u64
+                ));
+                self.profile.memory_due = Some((due + MEMORY_EVERY_S, taken));
+            }
+            Some(_) => {}
+        }
+    }
+
+    fn poll_chat_answer(&mut self) {
+        let Some(answer) = &self.profile.chat_answer else {
+            return;
+        };
+        let text = match answer.try_recv() {
+            Ok(text) => text,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => {
+                self.profile.chat_answer = None;
+                return;
+            }
+        };
+        self.profile.chat_answer = None;
+        match serde_json::from_str::<ChatAnswer>(&text) {
+            Ok(ChatAnswer { error: Some(e), .. }) => self.profiler_error(&e),
+            Ok(ChatAnswer {
+                open_at: Some(_),
+                path: Some(path),
+                ..
+            }) => self.profiler_saved(&path),
+            _ => self.profiler_started(Some(ProfileSide::Server)),
         }
     }
 
@@ -546,10 +769,10 @@ impl Game<'_> {
         gpu_ms: Option<f32>,
         frame_spans: &[Span],
     ) {
-        let slow = wall_ms > self.options.spikes.unwrap_or(client_perf::SLOW_FRAME_MS);
-        let detail = slow.then(|| TickDetail {
+        // Spans exist only during a capture, which keeps the worst frames whatever the slow threshold is.
+        let detail = (!frame_spans.is_empty()).then(|| TickDetail {
             cpu_ms: Some(cpu_ms),
-            spans: spans::merge(frame_spans),
+            spans: frame_spans.to_vec(),
         });
         let t = self.profile.perf.now();
         let (wanted, renderer) = (self.profile.gpu, self.renderer.as_ref());
@@ -611,6 +834,8 @@ impl Game<'_> {
     /// Once per loop turn: the captures whose files are whole, told to whoever waits for them.
     pub(super) fn poll_profile(&mut self) {
         self.poll_server_link();
+        self.poll_chat_answer();
+        self.poll_memory_snapshot();
         for saved in self.profile.perf.take_saved(false) {
             self.profile_saved(saved);
         }
@@ -636,8 +861,7 @@ impl Game<'_> {
         spans::record_here(self.profile.spans_were_on);
         self.profile.trace_file = None;
         let reply = self.profile.reply.take();
-        let by_key = std::mem::take(&mut self.profile.stopped_by_key)
-            || (self.profile.started_by == Trigger::Key && reply.is_none());
+        let in_chat = self.profile.started_by == Trigger::Command && reply.is_none();
         match saved {
             Ok(saved) => {
                 for path in &saved.deleted {
@@ -659,20 +883,8 @@ impl Game<'_> {
                         removed: saved.deleted.iter().map(|p| shown(p)).collect(),
                     }));
                 }
-                if by_key {
-                    self.system_message(Text::translate(
-                        "horizon.perf.saved",
-                        &[Text::literal(shown(&saved.path))],
-                    ));
-                    let link = Text::styled(
-                        files::PERF_UI_URL,
-                        Style {
-                            underlined: Some(true),
-                            click: Some(ClickEvent::OpenUrl(files::PERF_UI_URL.to_owned())),
-                            ..Style::default()
-                        },
-                    );
-                    self.system_message(Text::translate("horizon.perf.open_in_browser", &[link]));
+                if in_chat {
+                    self.profiler_saved(&shown(&saved.path));
                 }
             }
             Err(e) => {
@@ -682,11 +894,8 @@ impl Game<'_> {
                         error: e.to_string(),
                     }));
                 }
-                if by_key {
-                    self.system_message(Text::translate(
-                        "horizon.perf.error",
-                        &[Text::literal(e.to_string())],
-                    ));
+                if in_chat {
+                    self.profiler_error(&e.to_string());
                 }
             }
         }
@@ -696,6 +905,19 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profiler_words_put_the_side_where_the_request_parser_reads_it() {
+        assert_eq!(profiler_words(" start"), ["start"]);
+        assert_eq!(profiler_words(" start client"), ["client", "start"]);
+        assert_eq!(profiler_words(" stop server"), ["server", "stop"]);
+        assert_eq!(
+            profiler_words(" start server --seconds 30"),
+            ["server", "start", "--seconds", "30"]
+        );
+        assert_eq!(profiler_words(" mark client"), ["mark", "client"]);
+        assert!(profiler_words("").is_empty());
+    }
 
     fn start<'a>(
         file: &'a str,

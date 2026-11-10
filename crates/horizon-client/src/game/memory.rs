@@ -69,6 +69,46 @@ fn shared<'a>(
     (count, bytes)
 }
 
+/// How often a running capture records what holds the memory.
+pub(super) const MEMORY_EVERY_S: f64 = 10.0;
+
+/// `horizon-ctl memory`'s report as a capture's rows: `a.b` paths, `key[name]` for `[name, value]` lists.
+pub(super) fn flatten_report(report: &Value) -> Vec<(String, f64)> {
+    let mut rows = Vec::new();
+    flatten(String::new(), report, &mut rows);
+    rows
+}
+
+fn flatten(path: String, value: &Value, rows: &mut Vec<(String, f64)>) {
+    match value {
+        Value::Number(n) => rows.extend(n.as_f64().map(|n| (path, n))),
+        Value::Object(fields) => {
+            for (key, inner) in fields {
+                let next = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                flatten(next, inner, rows);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                let Some([Value::String(name), count, rest @ ..]) =
+                    item.as_array().map(Vec::as_slice)
+                else {
+                    continue;
+                };
+                rows.extend(count.as_f64().map(|n| (format!("{path}[{name}]"), n)));
+                if let Some(mb) = rest.first().and_then(Value::as_f64) {
+                    rows.push((format!("{path}_mb[{name}]"), mb));
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 impl Game<'_> {
     fn all_worlds(&self) -> impl Iterator<Item = &World> {
         std::iter::once(&self.world).chain(self.levels.parked_worlds())
@@ -175,5 +215,37 @@ impl Game<'_> {
                     .collect::<Vec<_>>()
             }),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::flatten_report;
+    use serde_json::json;
+
+    #[test]
+    fn a_report_flattens_to_paths_and_named_list_entries() {
+        let report = json!({
+            "process": { "resident_mb": 12.5, "note": "skipped" },
+            "render_distance": 16,
+            "missing": null,
+            "by_label_mb": [["chunks", 3.0], ["bare"]],
+            "caches": [["blocks", 7, 1.5]],
+        });
+        let mut rows = flatten_report(&report);
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        let expected = [
+            ("by_label_mb[chunks]", 3.0),
+            ("caches[blocks]", 7.0),
+            ("caches_mb[blocks]", 1.5),
+            ("process.resident_mb", 12.5),
+            ("render_distance", 16.0),
+        ];
+        assert_eq!(
+            rows.iter()
+                .map(|(p, v)| (p.as_str(), *v))
+                .collect::<Vec<_>>(),
+            expected
+        );
     }
 }

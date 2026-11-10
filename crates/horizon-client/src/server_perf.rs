@@ -4,7 +4,7 @@ use crate::spans::Span;
 use horizon_client_render::perf_gpu;
 use horizon_perf_format::files;
 use horizon_perf_format::v1::{
-    BenchResult, GpuMode, Kind, Mark, Options, Overhead, Side, Start, Stop, StopReason,
+    BenchResult, GpuMode, Kind, Mark, MemorySnapshot, Options, Overhead, Side, Start, Stop, StopReason,
     ThreadSelection, Trigger, Unit, Warning, WarningCode,
 };
 use horizon_perf_format::{
@@ -412,6 +412,10 @@ impl ServerPerf {
             timeline,
         };
         let mut start = options.start;
+        if let Some((used, total)) = system::disk_mb() {
+            start.world_fs_used_mb = used;
+            start.world_fs_total_mb = total;
+        }
         start.side = self.role.side as i32;
         start.kind = self.role.kind as i32;
         start.trigger = options.trigger as i32;
@@ -518,6 +522,27 @@ impl ServerPerf {
             side: session.side as i32,
             t: t - session.origin,
             name: name.to_owned(),
+        }));
+        true
+    }
+
+    /// Records a memory snapshot, rows as flattened paths and values, in the running capture; false when none runs.
+    pub fn memory_snapshot(&mut self, t: f64, label: &str, rows: &[(String, f64)]) -> bool {
+        let Some(session) = &mut self.session else {
+            return false;
+        };
+        let label = session.strings.intern(label);
+        let path = rows
+            .iter()
+            .map(|(name, _)| session.strings.intern(name))
+            .collect();
+        session.entries();
+        session.tx.send(Field::Memory(MemorySnapshot {
+            side: session.side as i32,
+            t: t - session.origin,
+            label,
+            path,
+            value_mb: rows.iter().map(|(_, value)| *value).collect(),
         }));
         true
     }

@@ -818,6 +818,8 @@ struct ServerState {
     op_level: i32,
     /// `horizon-report`: the ticks being recorded.
     report: Option<report::Recording>,
+    /// When the running capture takes its next memory snapshot, and how many it has taken.
+    memory_due: Option<(f64, u32)>,
     /// The always-on health history and slow ring, and the `.hzperf` a report writes from them.
     perf: horizon_client::server_perf::ServerPerf,
     /// The perf clock's zero: the tick loop's start.
@@ -1313,6 +1315,7 @@ impl Game<'_> {
             game_mode: props.game_mode,
             force_game_mode: props.force_game_mode,
             report: None,
+            memory_due: None,
             perf: horizon_client::server_perf::ServerPerf::new(
                 0.0,
                 self.options.spikes.unwrap_or(SLOW_TICK_MS),
@@ -1474,6 +1477,7 @@ impl Game<'_> {
                 || self.perf_world_counts(),
                 || self.wire_bytes(),
             );
+            self.poll_server_memory_snapshot(&mut state);
             // The far ring's brake, once a second on the average tick.
             if braked.elapsed() >= Duration::from_secs(1)
                 && let Some(host) = self.lan.as_mut()

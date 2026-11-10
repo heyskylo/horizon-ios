@@ -1,4 +1,5 @@
 //! `horizon-report [SECONDS]` and `horizon-trace [SECONDS]` on the dedicated server's console, and `HORIZON_TRACE`: record a window of ticks into `reports/profile-<time>Z.hzperf`.
+use super::super::memory::{MEMORY_EVERY_S, flatten_report};
 use super::super::{
     Dim, Game,
     perf_remote::{Asked, Done},
@@ -411,12 +412,41 @@ impl Game<'_> {
         })
     }
 
+    fn take_server_memory_snapshot(&self, state: &mut super::ServerState, label: &str) {
+        let rows = flatten_report(&self.memory_report());
+        let t = state.perf_epoch.elapsed().as_secs_f64();
+        state.perf.memory_snapshot(t, label, &rows);
+    }
+
+    /// A capture's memory snapshots: one as it starts, then every `MEMORY_EVERY_S`.
+    pub(super) fn poll_server_memory_snapshot(&self, state: &mut super::ServerState) {
+        if !state.perf.capturing() {
+            state.memory_due = None;
+            return;
+        }
+        let now = state.perf_epoch.elapsed().as_secs_f64();
+        match state.memory_due {
+            None => {
+                self.take_server_memory_snapshot(state, "start");
+                state.memory_due = Some((now + MEMORY_EVERY_S, 0));
+            }
+            Some((due, taken)) if now >= due => {
+                let taken = taken + 1;
+                let label = format!("{}s", u64::from(taken) * MEMORY_EVERY_S as u64);
+                self.take_server_memory_snapshot(state, &label);
+                state.memory_due = Some((due + MEMORY_EVERY_S, taken));
+            }
+            Some(_) => {}
+        }
+    }
+
     /// Ends the capture and the recording beside it, if they run; `log_saved` reports the file when it is done.
     pub(super) fn finish_perf_capture(&self, state: &mut super::ServerState, reason: StopReason) {
         let recording = state.report.take();
         if !state.perf.capturing() {
             return;
         }
+        self.take_server_memory_snapshot(state, "stop");
         let end = recording.map_or_else(CaptureEnd::default, |r| self.capture_end(&r));
         let t = state.perf_epoch.elapsed().as_secs_f64();
         state.perf.begin_stop(t, reason, end);

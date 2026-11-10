@@ -856,6 +856,28 @@ impl Dispatcher {
         }
         d
     }
+    /// This tree plus `/profiler`, which the client answers itself, so chat completes its real options.
+    pub fn with_profiler(&self) -> Dispatcher {
+        let mut d = self.clone();
+        if d.find("profiler").is_some() {
+            return d;
+        }
+        let command = d.literal(0, "profiler");
+        for action in ["start", "stop"] {
+            let action = d.literal(command, action);
+            d.executes(action, MOD_COMMAND);
+            for side in ["client", "server"] {
+                let side = d.literal(action, side);
+                d.executes(side, MOD_COMMAND);
+            }
+        }
+        let status = d.literal(command, "status");
+        d.executes(status, MOD_COMMAND);
+        let mark = d.literal(command, "mark");
+        let name = d.argument(mark, "name", ArgType::Greedy);
+        d.executes(name, MOD_COMMAND);
+        d
+    }
     /// A root literal by name.
     pub fn find(&self, name: &str) -> Option<usize> {
         self.nodes[0]

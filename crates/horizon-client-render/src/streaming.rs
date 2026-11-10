@@ -1677,6 +1677,7 @@ impl Streaming {
         &mut self,
         world: &mut World,
     ) -> (Vec<((i32, i32, i32), SectionMesh)>, Vec<Arc<Chunk>>) {
+        let mut hz_laps = crate::spans::laps();
         let mut uploads = Vec::new();
         if self.paused {
             return (uploads, Vec::new());
@@ -1701,6 +1702,7 @@ impl Streaming {
         self.scan_age = if sweep { 0 } else { self.scan_age + 1 };
         self.requeue();
         self.relight_edits(world);
+        hz_laps.lap("st_relight_edits");
         let deferred = std::mem::take(&mut self.deferred);
         let received = self.shared.done.take();
         // Meshes made stale meanwhile, freed with the uploaded ones (`free`).
@@ -1750,6 +1752,7 @@ impl Streaming {
                 }
             }
         }
+        hz_laps.lap("st_results");
         self.free(stale);
         let mut removed = Vec::new();
         if sweep {
@@ -1820,6 +1823,7 @@ impl Streaming {
             }
             self.save_checked_out(written);
         }
+        hz_laps.lap("st_sweep");
         let (protos, finishing) = (&self.protos, &self.finishing);
         self.decorated.retain(|k| {
             protos.contains_key(k) || finishing.contains(k) || world.chunks.contains_key(k)
@@ -1851,6 +1855,7 @@ impl Streaming {
                 self.submit(Some((x, z)), 0, Job::Finish(proto));
             }
         }
+        hz_laps.lap("st_finalize");
         // Decorate chunks whose 3x3 proto neighbourhood is available, in
         // vanilla's order: decoration is order dependent where write regions
         // overlap (see `DecorationOrder`).
@@ -1975,7 +1980,9 @@ impl Streaming {
                 self.submit(Some((x, z)), 1, Job::Decorate(x, z, region, finals));
             }
         }
+        hz_laps.lap("st_decorate");
         self.schedule_generation(world, workers);
+        hz_laps.lap("st_generate");
         // Lighting once all neighbours exist, nearest first and only as
         // much of it as the workers can chew. Vanilla's light engine also
         // hands a bounded queue to its workers and reschedules what did
@@ -2011,6 +2018,7 @@ impl Streaming {
                 Job::Light(x, z, region, self.sequence, self.sky_light),
             );
         }
+        hz_laps.lap("st_light");
         // A server draws nothing: its sections are never meshed.
         if !self.mesh {
             world.dirty_sections.clear();
@@ -2050,6 +2058,7 @@ impl Streaming {
                 !back
             });
         }
+        hz_laps.lap("st_waiting");
         // Column by column: the checks below hold for all of a column's
         // sections, and columns waiting for light cost one look per frame.
         columns.extend(world.dirty_sections.columns());
@@ -2082,6 +2091,7 @@ impl Streaming {
             }
             candidates.push((self.distance(x, z), x, z, sections));
         }
+        hz_laps.lap("st_candidates");
         // Nearest first, and only as many sections as the workers can chew.
         // Every ready column used to be submitted at once, so at a wide
         // render distance the queue — and `meshing`, and each job's 3x3

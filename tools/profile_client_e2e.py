@@ -36,10 +36,8 @@ def whole(bins, file, work, env):
     return result.returncode == 0
 
 
-def f3_o(ctl):
-    ctl('key', 'f3', 'down')
-    ctl('key', 'o', 'tap')
-    ctl('key', 'f3', 'up')
+def profiler(ctl, action):
+    ctl('chat', f'/profiler {action}')
 
 
 def commands(bins, work, env):
@@ -130,16 +128,16 @@ def check_ctl(bins, resources):
             print(f'PASS: profile {side} stop ended the joined capture')
 
         kept = set((work / 'reports').glob(PATTERN))
-        f3_o(ctl)
+        profiler(ctl, 'start')
         assert ctl('profile', 'status')['capturing'] is True
         time.sleep(RUN_S)
-        f3_o(ctl)
+        profiler(ctl, 'stop')
         deadline = time.time() + 120
         while not (new := set((work / 'reports').glob(PATTERN)) - kept) or not whole(bins, next(iter(new)), work, env):
-            assert time.time() < deadline, 'F3+O saved no whole capture'
+            assert time.time() < deadline, '/profiler saved no whole capture'
             time.sleep(0.5)
         assert ctl('profile', 'status')['capturing'] is False
-        print(f'PASS: F3+O saved {next(iter(new)).name}')
+        print(f'PASS: /profiler saved {next(iter(new)).name}')
         return True
     except (ac.Failed, AssertionError) as e:
         print(f'FAIL: {e!r}')

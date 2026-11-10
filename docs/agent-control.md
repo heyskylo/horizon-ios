@@ -154,7 +154,7 @@ passes on without checking it).
 | Waits and events | (all) | yes | yes | `wait`, `wait-for`, `events` |
 | Effects, experience, enchantments, potions, fill | (cheats) | yes | yes | `effect`, `effects`, `xp`, `enchant`, `potion`, `fill` |
 | Benchmarks and frame stats | (all) | yes | yes | `bench`, `stats`, `fly` |
-| Performance captures | F3+O | yes | yes | `profile [client\|server] start\|stop\|status\|mark`, `trace`; the file is read with `horizon-perf` or `horizon-perf mcp` ([perf-platform.md](perf-platform.md)), and its slow ring (the last 256 slow frames or ticks) rides in it; none of them is logged |
+| Performance captures | `/profiler` | yes | yes | `profile [client\|server] start\|stop\|status\|mark`, `trace`; the file is read with `horizon-perf` or `horizon-perf mcp` ([perf-platform.md](perf-platform.md)), and its slow ring (the last 256 slow frames or ticks) rides in it; none of them is logged |
 
 ## No AI
 
@@ -371,7 +371,7 @@ A recording is one folder, a bundle is that folder plus the logs in one zip:
   stops it and writes the bundle (the chat shows the path); **F3+E** writes the bundle of the
   newest recording. The keys are off until **Recording shortcuts** is turned on (AI Agent page);
   the page also has the two buttons and a live recording/replay line.
-- **F3+O** starts a performance capture (`profile start`) and stops and saves it; it is on with no setting.
+- **`/profiler start`** and **`/profiler stop`** in chat start a performance capture and stop and save it (`client` or `server` for one side); `/profiler status` says whether one is running.
   See [graphics.md](graphics.md) for what the capture holds.
 - `record-replay NAME [--stop] [--in-place] [--keep-world] [--timeout S]` is the best effort
   replay: it copies the recording's world into `saves/`, opens it, restores the recorded player

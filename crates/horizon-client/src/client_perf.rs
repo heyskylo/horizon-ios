@@ -228,6 +228,11 @@ impl ClientPerf {
         self.perf.mark(t, name)
     }
 
+    /// Records a memory snapshot in the running capture; false when none runs.
+    pub fn memory_snapshot(&mut self, t: f64, label: &str, rows: &[(String, f64)]) -> bool {
+        self.perf.memory_snapshot(t, label, rows)
+    }
+
     /// Records `code` in the running capture; false when none runs.
     pub fn warn(&mut self, t: f64, code: WarningCode) -> bool {
         self.perf.warn(t, code)
