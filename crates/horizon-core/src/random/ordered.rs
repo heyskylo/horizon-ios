@@ -3,11 +3,11 @@
 //! the whole list had run on one thread.
 //!
 //! Each thread (a lane) runs a subset of the list's items, in ascending item order, and says which
-//! item it is on ([`LegacyRandom::begin_item`]). The first draw an item makes waits until every other
+//! item it is on ([`LegacyRandom::begin_item`]). The first draw or reseed waits until every other
 //! lane has passed that item, then takes the stream's state; the item's end gives it back
 //! ([`LegacyRandom::end_item`]). So the items before it have made all their draws and the items after
 //! it none. The lane on the smallest item never waits, so the lanes can't deadlock, as long as every
-//! lane has its own thread. An item that never draws never waits.
+//! lane has its own thread. An item that never draws or reseeds never waits.
 use super::LegacyRandom;
 use std::sync::{
     Arc, Mutex, PoisonError,
@@ -165,6 +165,148 @@ impl Drop for LaneDone {
 mod tests {
     use super::*;
     use crate::random::RandomSource;
+
+    /// The timeout lives outside the scoped joins: a broken gate must fail, not hang the test suite.
+    fn bounded<T: Send + 'static>(run: impl FnOnce() -> T + Send + 'static) -> T {
+        let (sent, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
+            let _ = sent.send(result);
+        });
+        match finished
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("ordered lanes must finish within the timeout")
+        {
+            Ok(value) => value,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+
+    #[test]
+    fn reseeding_lanes_preserve_the_serial_stream() {
+        let mut initial = LegacyRandom::new(42);
+        initial.next_gaussian(); // A reseed before the first draw must also clear this cache.
+        // Independent serial expectation: replace an ungated generator, without calling set_seed.
+        let mut serial = LegacyRandom::new(11);
+        let mut expected = vec![vec![serial.next_gaussian().to_bits()]];
+        let before_reseed = serial.next_gaussian().to_bits();
+        serial = LegacyRandom::new(-7);
+        expected.push(vec![before_reseed, serial.next_gaussian().to_bits()]);
+        serial = LegacyRandom::new(i64::MIN);
+        expected.push(vec![]); // Reseed-only item must publish the state and clear the cache.
+        expected.push(vec![serial.next_gaussian().to_bits()]);
+        expected.push(vec![
+            serial.next_gaussian().to_bits(),
+            serial.next_int() as u64,
+        ]);
+        let before_reseed = serial.next_int() as u64;
+        serial = LegacyRandom::new(0);
+        expected.push(vec![
+            before_reseed,
+            serial.next_long() as u64,
+            serial.next_gaussian().to_bits(),
+        ]);
+
+        let (got, mut final_random) = bounded(move || {
+            let shared = OrderedDraws::new(&initial, 3);
+            let mut got: Vec<_> = std::thread::scope(|s| {
+                let handles: Vec<_> = (0..3)
+                    .map(|lane| {
+                        let shared = Arc::clone(&shared);
+                        s.spawn(move || {
+                            let mut random = shared.lane(lane);
+                            let mut out = Vec::new();
+                            // Intentionally no LaneDone: finish_lane itself must survive reseeding.
+                            for item in (lane..6).step_by(3) {
+                                random.begin_item(item);
+                                let values = match item {
+                                    0 => {
+                                        random.set_seed(11);
+                                        vec![random.next_gaussian().to_bits()]
+                                    }
+                                    1 => {
+                                        let before = random.next_gaussian().to_bits();
+                                        random.set_seed(-7);
+                                        vec![before, random.next_gaussian().to_bits()]
+                                    }
+                                    2 => {
+                                        random.set_seed(i64::MIN);
+                                        vec![]
+                                    }
+                                    3 => vec![random.next_gaussian().to_bits()],
+                                    4 => vec![
+                                        random.next_gaussian().to_bits(),
+                                        random.next_int() as u64,
+                                    ],
+                                    5 => {
+                                        let before = random.next_int() as u64;
+                                        random.set_seed(0);
+                                        vec![
+                                            before,
+                                            random.next_long() as u64,
+                                            random.next_gaussian().to_bits(),
+                                        ]
+                                    }
+                                    _ => unreachable!(),
+                                };
+                                random.end_item();
+                                out.push((item, values));
+                            }
+                            random.finish_lane();
+                            out
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .flat_map(|h| h.join().unwrap())
+                    .collect()
+            });
+            got.sort_by_key(|(item, _)| *item);
+            (
+                got.into_iter().map(|(_, v)| v).collect::<Vec<_>>(),
+                shared.finish(),
+            )
+        });
+        assert_eq!(got, expected);
+        assert_eq!(final_random.state(), serial.state());
+        // finish() must keep the cached gaussian as well as the LCG state.
+        assert_eq!(
+            final_random.next_gaussian().to_bits(),
+            serial.next_gaussian().to_bits()
+        );
+        assert_eq!(final_random.next_long(), serial.next_long());
+    }
+
+    #[test]
+    fn a_reseeded_lane_keeps_its_panic_guard_and_published_stream() {
+        bounded(|| {
+            let shared = OrderedDraws::new(&LegacyRandom::new(42), 2);
+            std::thread::scope(|s| {
+                let panicking = Arc::clone(&shared);
+                let handle = s.spawn(move || {
+                    let mut random = panicking.lane(0);
+                    random.begin_item(0);
+                    random.set_seed(7);
+                    let _done = random.lane_done().expect("reseed must keep the lane guard");
+                    random.next_gaussian();
+                    random.end_item();
+                    panic!("after publishing the reseeded item");
+                });
+                let mut random = shared.lane(1);
+                random.begin_item(1);
+                let mut serial = LegacyRandom::new(7);
+                serial.next_gaussian();
+                assert_eq!(
+                    random.next_gaussian().to_bits(),
+                    serial.next_gaussian().to_bits()
+                );
+                random.finish_lane();
+                assert!(handle.join().is_err(), "the panic must reach the caller");
+                assert_eq!(shared.finish().next_long(), serial.next_long());
+            });
+        });
+    }
 
     /// Items 0..40 over three lanes, each drawing on some items: the same values as one thread.
     #[test]
