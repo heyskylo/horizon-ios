@@ -1029,14 +1029,15 @@ pub fn mob_to_nbt(
             map.insert("Tame".into(), Tag::Byte(i8::from(m.extra.tame)));
             map.insert("Temper".into(), Tag::Int(m.extra.equine_temper));
             map.insert("Bred".into(), Tag::Byte(i8::from(m.extra.bred)));
-            // AbstractHorse.addAdditionalSaveData; Horizon does not model the
-            // eating haystack yet.
+            // AbstractHorse.addAdditionalSaveData; the eating haystack is not modelled yet.
             map.entry("EatingHaystack".into()).or_insert(Tag::Byte(0));
             if let Some(owner) = m.extra.owner {
                 map.insert("Owner".into(), Tag::IntArray(owner.to_vec()));
             }
             if id == "minecraft:horse" {
-                let v = i32::from(m.extra.variant) | i32::from(m.extra.variant2) << 8;
+                let loaded = map.get(&"Variant".into()).and_then(int_value);
+                let look = (m.extra.variant, m.extra.variant2);
+                let v = crate::mobs::equine::saved_variant(loaded, look.0, look.1);
                 map.insert("Variant".into(), Tag::Int(v));
             }
             let llama = crate::mobs::llama::is_llama(m.species());
@@ -2267,8 +2268,7 @@ pub fn mob_from_nbt_with_random(
         m.extra.bred = flag(tag, "Bred");
         m.extra.owner = crate::save::uuid_from_tag(tag.get("Owner"));
         let v = number(tag.get("Variant")).unwrap_or(0) as i32;
-        m.extra.variant = ((v & 0xFF) % 7) as u8;
-        m.extra.variant2 = (((v >> 8) & 0xFF) % 5) as u8;
+        (m.extra.variant, m.extra.variant2) = crate::mobs::equine::horse_look(v);
         if crate::mobs::llama::is_llama(m.species()) {
             crate::mobs::llama::from_nbt(&mut m, tag);
         }
@@ -4644,6 +4644,23 @@ mod tests {
         assert_eq!(look(9), (2, 0));
         assert_eq!(look(6 << 8), (0, 1));
         assert_eq!(look(255 | 255 << 8), (3, 0));
+        // `Horse.addAdditionalSaveData` writes the loaded int back as it was;
+        // a horse whose look changed since saves the two ids.
+        let saved = |loaded: i32, change: Option<u8>| {
+            let raw = Tag::compound([
+                ("id", string("minecraft:horse")),
+                ("Pos", doubles(&[4.5, 220.0, 4.5])),
+                ("Variant", Tag::Int(loaded)),
+            ]);
+            let mut m = mob_from_nbt(&raw, &types, 1, None).unwrap();
+            if let Some(coat) = change {
+                m.extra.variant = coat;
+            }
+            number(mob_to_nbt(&m, [0; 4], Some(&raw), None, |_| None).get("Variant"))
+        };
+        assert_eq!(saved(9, None), Some(9));
+        assert_eq!(saved(6 << 8 | 0x7_0000, None), Some(6 << 8 | 0x7_0000));
+        assert_eq!(saved(9, Some(5)), Some(5));
     }
 
     /// A mount keeps its body armour and a helmet (say
