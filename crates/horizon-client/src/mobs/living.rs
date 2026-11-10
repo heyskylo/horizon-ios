@@ -336,6 +336,25 @@ impl MobWorld<'_> {
         }
         (water, lava)
     }
+    /// `Entity.updateFluidInteraction`'s pushes for an entity fluids push
+    /// (`isPushedByFluid`) with the box `bounds`: its `velocity` after the
+    /// water's and the lava's currents (`EntityFluidInteraction.applyCurrentTo`).
+    pub fn pushed_by_currents(&self, bounds: Aabb, mut velocity: Vec3) -> Vec3 {
+        let (water, lava) = self.fluid_currents(bounds, None);
+        let lava_scale = if self.dimension_type.fast_lava {
+            0.007
+        } else {
+            0.0023333333333333335
+        };
+        let mut pushed = Pushed(&mut velocity);
+        if water.height > 0.0 {
+            let _ = water.apply_to(&mut pushed, 0.014);
+        }
+        if lava.height > 0.0 {
+            let _ = lava.apply_to(&mut pushed, lava_scale);
+        }
+        velocity
+    }
     /// `BlockState.getCollisionShape(level, pos)` (the empty collision
     /// context) as boxes in the world.
     pub fn block_collision_boxes(&self, x: i32, y: i32, z: i32) -> Vec<Aabb> {
@@ -1024,19 +1043,7 @@ impl Mob {
         self.fluids = w.fluids(self.bounds(), self.eye_y());
         // EntityFluidInteraction.applyCurrentTo: the flow pushes the mob.
         if (self.fluids.in_water || self.fluids.in_lava) && self.pushed_by_fluid() {
-            let (water, lava) = w.fluid_currents(self.bounds(), None);
-            let lava_scale = if w.dimension_type.fast_lava {
-                0.007
-            } else {
-                0.0023333333333333335
-            };
-            let mut pushed = Pushed(&mut self.velocity);
-            if water.height > 0.0 {
-                let _ = water.apply_to(&mut pushed, 0.014);
-            }
-            if lava.height > 0.0 {
-                let _ = lava.apply_to(&mut pushed, lava_scale);
-            }
+            self.velocity = w.pushed_by_currents(self.bounds(), self.velocity);
         }
         // A mod fluid pushes by its `motionScale` when it `canPushEntity`, and
         // scales the fall distance by its `fallDistanceModifier`.
