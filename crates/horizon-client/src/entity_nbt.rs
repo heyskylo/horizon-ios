@@ -4620,6 +4620,30 @@ mod tests {
         }
     }
 
+    /// `Axolotl.Variant.BY_ID` is `OutOfBoundsStrategy.ZERO`: an id outside
+    /// 0..=4 is lucy (0). `Parrot.Variant.BY_ID` is `CLAMP`: it is the nearest
+    /// end.
+    #[test]
+    fn an_unknown_axolotl_variant_is_lucy_and_a_parrots_is_clamped() {
+        let variant = |species, id: &str, saved: i32| {
+            let mut kind = crate::mobs::sensor_scan_tests::kind();
+            let ty = Arc::make_mut(&mut kind);
+            ty.id = id.into();
+            ty.species = species;
+            let types = [(id.into(), kind)].into();
+            let raw = Tag::compound([
+                ("id", string(id)),
+                ("Pos", doubles(&[4.5, 220.0, 4.5])),
+                ("Variant", Tag::Int(saved)),
+            ]);
+            mob_from_nbt(&raw, &types, 1, None).unwrap().extra.variant
+        };
+        let axolotl = |saved| variant(crate::mobs::Species::Axolotl, "minecraft:axolotl", saved);
+        let parrot = |saved| variant(crate::mobs::Species::Parrot, "minecraft:parrot", saved);
+        assert_eq!([0, 3, 4, 5, 7, -1].map(axolotl), [0, 3, 4, 0, 0, 0]);
+        assert_eq!([0, 3, 4, 5, 7, -1].map(parrot), [0, 3, 4, 4, 4, 0]);
+    }
+
     /// A mount keeps its body armour and a helmet (say
     /// `/item replace entity <horse> armor.head with minecraft:iron_helmet`)
     /// in their own slots through a save: vanilla holds both (`equipment.body`
@@ -6082,8 +6106,7 @@ fn write_axolotl_memories(m: &Mob, map: &mut Compound) {
 /// medium salmon or index 0; a missing bucket flag is false.
 fn read_variant(m: &mut Mob, tag: &Tag) {
     use crate::mobs::Species as S;
-    // AbstractFish/Axolotl.readAdditionalSaveData: false when absent.
-    // Tadpole.setFromBucket ignores the input.
+    // AbstractFish/Axolotl: false when absent. Tadpole.setFromBucket ignores the input.
     if matches!(
         m.species(),
         S::Cod | S::Salmon | S::Pufferfish | S::TropicalFish | S::Axolotl
@@ -6092,7 +6115,8 @@ fn read_variant(m: &mut Mob, tag: &Tag) {
     }
     let int = |key| number(tag.get(key)).unwrap_or(0) as i32;
     match m.species() {
-        S::Axolotl | S::Parrot => m.extra.variant = int("Variant").clamp(0, 4) as u8,
+        S::Parrot => m.extra.variant = int("Variant").clamp(0, 4) as u8, // CLAMP
+        S::Axolotl => m.extra.variant = ((int("Variant") as u32).min(5) % 5) as u8, // ZERO: lucy
         // Rabbit.Variant.LEGACY_CODEC: an unknown id is brown.
         S::Rabbit => {
             m.extra.variant = match int("RabbitType") {
