@@ -482,13 +482,16 @@ impl Heights {
 impl Clone for Heights {
     fn clone(&self) -> Self {
         let copy = Self::default();
+        // A reader can refresh a height and then clear its stale bit while we clone. Copy the
+        // bits first: a stale snapshot will rescan; a clean one acquires the refreshed height.
+        // Copying heights first could keep an old height with a newly cleared bit.
+        for (to, from) in copy.stale.iter().zip(&self.stale) {
+            to.store(from.load(Ordering::Acquire), Ordering::Relaxed);
+        }
         if let Some(heights) = self.heights.get() {
             let _ = copy.heights.set(Box::new(std::array::from_fn(|i| {
                 AtomicI16::new(heights[i].load(Ordering::Relaxed))
             })));
-        }
-        for (to, from) in copy.stale.iter().zip(&self.stale) {
-            to.store(from.load(Ordering::Relaxed), Ordering::Relaxed);
         }
         copy
     }
@@ -1138,6 +1141,32 @@ mod tests {
         chunk.set(x, top, z, 0);
         assert_eq!(surface(&chunk, column), top);
         assert!(seen.borrow().iter().all(|&v| v == 0 || v == state(column)));
+    }
+    /// Chunk snapshots can be cloned while helper threads refresh a stale height. No snapshot
+    /// may retain the old height with its stale bit cleared, for either map.
+    #[test]
+    fn cloning_during_a_height_refresh_keeps_the_new_height() {
+        for _ in 0..4096 {
+            let mut chunk = Chunk::empty(0, 0);
+            chunk.set(0, MIN_Y + 4, 0, 1);
+            assert_eq!(chunk.world_surface(0, 0, |v| v == 0), MIN_Y + 5);
+            assert_eq!(chunk.motion_blocking(0, 0, |v| v != 0), MIN_Y + 5);
+            chunk.set(0, MIN_Y + 5, 0, 1);
+            let ready = std::sync::Barrier::new(2);
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    ready.wait();
+                    assert_eq!(chunk.world_surface(0, 0, |v| v == 0), MIN_Y + 6);
+                    assert_eq!(chunk.motion_blocking(0, 0, |v| v != 0), MIN_Y + 6);
+                });
+                ready.wait();
+                for _ in 0..4 {
+                    let snapshot = chunk.clone();
+                    assert_eq!(snapshot.world_surface(0, 0, |v| v == 0), MIN_Y + 6);
+                    assert_eq!(snapshot.motion_blocking(0, 0, |v| v != 0), MIN_Y + 6);
+                }
+            });
+        }
     }
     /// MOTION_BLOCKING ignores states that don't count (air, grass) and
     /// follows writes as the surface map does, both maps kept at once.
