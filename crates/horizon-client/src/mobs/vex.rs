@@ -173,7 +173,7 @@ impl Goal for CopyOwnerTarget {
                 .find(|s| s.id == owner)
                 .and_then(|s| s.target)
         });
-        seen.is_some_and(|t| t != Who::Mob(m.id))
+        seen.is_some_and(|t| t != Who::Mob(m.id) && copyable(cx.w, t))
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.target_info(cx.w).is_some_and(|t| t.alive)
@@ -185,6 +185,14 @@ impl Goal for CopyOwnerTarget {
                 .find(|s| s.id == owner)
                 .and_then(|s| s.target)
         });
+    }
+}
+/// `TargetingConditions.test` for the owner's target: `canBeSeenByAnyone`
+/// leaves out the dead and spectators.
+fn copyable(w: &crate::mobs::MobWorld, t: Who) -> bool {
+    match t {
+        Who::Player => w.player.as_ref().is_some_and(|p| p.alive && !p.spectator),
+        Who::Mob(id) => w.seen(id).is_some_and(|s| s.alive),
     }
 }
 /// `VexMoveControl`: accelerate straight at the wanted point.
