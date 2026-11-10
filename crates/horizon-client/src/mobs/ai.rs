@@ -774,6 +774,7 @@ pub fn tick(
     count_fall_fly_ticks(m);
     effects_from_blocks(m, w, level_random, events);
     extinguish_if_wet(m, w, was_on_fire, events);
+    m.reset_unlit_fire();
     if m.species() == Species::SulfurCube && m.alive() {
         // SulfurCube.doPush applies the body's contact damage even with NoAI.
         // Player contact keeps its existing player_push route.
@@ -1238,8 +1239,7 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
     if fire > 0.0 {
         m.ticks_frozen = 0;
     }
-    // Entity.baseTick counts burning damage and the fire timer before
-    // Entity.applyEffectsFromBlocks extinguishes a wet mob later in the tick.
+    // Entity.baseTick counts burn damage and the timer before a wet mob is put out.
     if m.fire_ticks > 0 {
         if m.kind.flags.fire_immune {
             m.fire_ticks = 0;

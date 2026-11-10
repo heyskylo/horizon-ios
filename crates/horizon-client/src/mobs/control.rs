@@ -518,3 +518,13 @@ mod goat_head_tests {
         );
     }
 }
+
+impl Mob {
+    /// The end of `Entity.applyEffectsFromBlocks`: an entity that is not burning
+    /// and was not just ignited gets `setRemainingFireTicks(-getFireImmuneTicks())`.
+    /// `getFireImmuneTicks` is 0 outside `Player`, so a negative `Fire` ends at 0;
+    /// a fresh ignition is positive and an extinguish already leaves 0.
+    pub(super) fn reset_unlit_fire(&mut self) {
+        self.fire_ticks = self.fire_ticks.max(0);
+    }
+}
