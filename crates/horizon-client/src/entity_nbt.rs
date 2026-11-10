@@ -8001,6 +8001,57 @@ mod fireball_nbt_tests {
     }
 
     #[test]
+    fn a_painting_keeps_its_saved_pitch_and_takes_its_yaw_from_the_facing() {
+        // Entity.load sets both angles; Painting.readAdditionalSaveData's
+        // setDirection only rewrites the yaw. `/summon painting ...
+        // {Rotation:[45.0f,10.0f]}` reads back `Rotation: [0.0f, 10.0f]`.
+        let painting_at = |rotation: Option<Tag>| {
+            let mut tag = Tag::compound([
+                ("id", Tag::String("minecraft:painting".into())),
+                ("Pos", doubles(&[28.5, 80.0, 6.5])),
+                ("variant", Tag::String("minecraft:kebab".into())),
+                ("facing", Tag::Byte(3)),
+            ]);
+            if let (Tag::Compound(map), Some(rotation)) = (&mut tag, rotation) {
+                map.insert("Rotation".into(), rotation);
+            }
+            tag
+        };
+        let saved = |raw: &Tag| {
+            let (pos, facing, variant) = painting_from_nbt(raw).unwrap();
+            let painting = crate::entities::Painting {
+                id: 1,
+                pos,
+                facing,
+                variant: variant.unwrap().into(),
+                width: 1,
+                height: 1,
+                check_interval: 0,
+            };
+            rotation(&painting_to_nbt(&painting, [1; 4], Some(raw)))
+        };
+        assert_eq!(
+            saved(&painting_at(Some(floats(&[45.0, 10.0])))),
+            [270.0, 10.0]
+        );
+        // setXRot: `xRot % 360` clamped to +-90.
+        assert_eq!(
+            saved(&painting_at(Some(floats(&[0.0, -400.0])))),
+            [270.0, -40.0]
+        );
+        assert_eq!(
+            saved(&painting_at(Some(floats(&[0.0, 135.0])))),
+            [270.0, 90.0]
+        );
+        // A non-finite pitch is ignored, as is no Rotation at all.
+        assert_eq!(
+            saved(&painting_at(Some(floats(&[0.0, f32::NAN])))),
+            [270.0, 0.0]
+        );
+        assert_eq!(saved(&painting_at(None)), [270.0, 0.0]);
+    }
+
+    #[test]
     fn a_summoned_painting_or_frame_has_no_block_pos_and_sits_at_its_position() {
         // BlockAttachedEntity.setPos: the block holding the summon position.
         let painting = Tag::compound([

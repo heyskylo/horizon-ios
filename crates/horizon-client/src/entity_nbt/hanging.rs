@@ -1,6 +1,18 @@
 //! Block-attached hanging entities: paintings and item frames.
 use super::*;
 
+/// The pitch `Entity.load` leaves on a hanging entity: `setXRot` ignores a
+/// non-finite value and otherwise clamps `xRot % 360` to +-90. `Painting` and
+/// `HangingEntity.setDirection` only write the yaw, so the loaded pitch is
+/// kept and `Entity.saveWithoutId` writes it back.
+fn loaded_pitch(raw: Option<&Tag>) -> f32 {
+    let pitch = raw.map_or(0.0, |tag| rotation(tag)[1]);
+    if pitch.is_finite() {
+        (pitch % 360.0).clamp(-90.0, 90.0)
+    } else {
+        0.0
+    }
+}
 /// Painting.addAdditionalSaveData: `facing`, `variant` and `block_pos`.
 pub fn painting_to_nbt(p: &Painting, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
     let (lo, hi) = p.bounds();
@@ -13,7 +25,7 @@ pub fn painting_to_nbt(p: &Painting, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
             (lo[2] + hi[2]) / 2.0,
         ),
         motion: Vec3::ZERO,
-        rotation: [f32::from(p.facing) * 90.0, 0.0],
+        rotation: [f32::from(p.facing) * 90.0, loaded_pitch(raw)],
         on_ground: false,
         fall_distance: 0.0,
     };
