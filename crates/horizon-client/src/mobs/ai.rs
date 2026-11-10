@@ -5910,6 +5910,69 @@ mod nautilus_noai_air_tests {
 }
 
 #[cfg(test)]
+mod freeze_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// `LivingEntity.aiStep`'s freezing, through `freeze_tick`: powder snow
+    /// builds a mob's frozen ticks towards the 140 that freeze it, and at 140 a
+    /// tick that falls on the 40-tick damage interval hurts it by 1. A skeleton
+    /// answers `canFreeze` false, so it takes neither — the stray, bogged,
+    /// parched and wither skeleton with it — while a zombie beside it freezes.
+    #[test]
+    fn a_skeleton_never_freezes() {
+        crate::mobs::world::with_built_test_world(
+            &[],
+            |world, registry| {
+                let stone = registry.default_state("minecraft:stone").unwrap();
+                let snow = registry.default_state("minecraft:powder_snow").unwrap();
+                for cx in -1..1 {
+                    for cz in -1..1 {
+                        world
+                            .chunks
+                            .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
+                    }
+                }
+                for x in -4..4 {
+                    for z in -4..4 {
+                        world.set(x, 63, z, stone).unwrap();
+                    }
+                }
+                // The mob stands in this block.
+                world.set(0, 64, 0, snow).unwrap();
+            },
+            |w, types| {
+                let frozen = |id: &str, ticks_frozen: i32| {
+                    let kind = Arc::new(types.types[id].clone());
+                    let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+                    m.ticks_frozen = ticks_frozen;
+                    // The freeze damage falls on a tick that is a multiple of 40.
+                    m.age = 40;
+                    let start = m.health;
+                    let mut events = Vec::new();
+                    freeze_tick(&mut m, w, &mut events);
+                    (m.ticks_frozen, start - m.health)
+                };
+                // Powder snow builds no frozen ticks on a skeleton, and one
+                // already frozen melts two ticks a tick instead of taking the
+                // damage a fully frozen mob takes at 140.
+                for skeleton in [
+                    "minecraft:skeleton",
+                    "minecraft:stray",
+                    "minecraft:bogged",
+                    "minecraft:parched",
+                    "minecraft:wither_skeleton",
+                ] {
+                    assert_eq!(frozen(skeleton, 0), (0, 0.0), "{skeleton}");
+                    assert_eq!(frozen(skeleton, 140), (138, 0.0), "{skeleton} frozen");
+                }
+                // A zombie in the same block freezes, and at 140 takes the 1.
+                assert_eq!(frozen("minecraft:zombie", 139), (140, 1.0));
+            },
+        );
+    }
+}
+#[cfg(test)]
 mod happy_ghast_ambient_tests {
     use super::*;
     use std::sync::Arc;
