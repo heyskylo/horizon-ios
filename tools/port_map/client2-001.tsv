@@ -59,8 +59,8 @@ GameRenderer.update	port	crates/horizon-client-render/src/camera.rs::AvatarBob::
 GameRenderer.extract	skip:other		render-state copy for the vanilla render thread; Horizon renders from game state
 GameRenderer.preparePostEffects	port	crates/horizon-client-render/src/post_chain.rs::PostEffects::apply	vanilla post chains are made on first use from the request the game builds
 GameRenderer.applyPostEffects	port	crates/horizon-client-render/src/post_chain.rs::PostEffects::apply	the same chain runs after the world pass
-GameRenderer.tryTakeScreenshotIfNeeded	port	crates/horizon-client/src/game.rs::Game::tick_world_icon	a local world without an icon requests a 64x64 ScreenshotRequest for saves/<folder>/icon.png once the streamer, uploads and backlog are idle and more than 10 sections are drawn
-GameRenderer.takeAutoScreenshot	inline	crates/horizon-client/src/game.rs::tick_world_icon	the same retry, once a second until the file exists; the path comes from game/integrated.rs:485
+GameRenderer.tryTakeScreenshotIfNeeded	port	crates/horizon-client/src/game/saving.rs::Game::tick_world_icon	a local world without an icon requests a 64x64 ScreenshotRequest for saves/<folder>/icon.png once the streamer, uploads and backlog are idle and more than 10 sections are drawn
+GameRenderer.takeAutoScreenshot	inline	crates/horizon-client/src/game/saving.rs::Game::tick_world_icon	the same retry, once a second until the file exists; the path comes from game/integrated.rs:485
 GameRenderer.integrate3DHudDepth	inline	crates/horizon-client-render/src/post_chain.rs::PostEffects::apply	runs with a post chain applied, which is vanilla's consistentDepthRequired condition
 GameRenderer.extractWindow	skip:other		render-state copy of the window size; Horizon reads the window directly
 GameRenderer.extractOptions	skip:other		render-state copy of options; Horizon reads settings directly
@@ -100,7 +100,7 @@ LevelRenderer.invalidateCompiledGeometry	port	crates/horizon-client-render/src/g
 LevelRenderer.scheduleTranslucentSectionResort	port	crates/horizon-client-render/src/gfx/translucency.rs::SortState::update	resort scheduled when the camera point of view changes
 LevelRenderer.scheduleResort	port	crates/horizon-client-render/src/gfx/translucency.rs::SortState::update	per-section resort gated by point-of-view change and translucent geometry
 LevelRenderer.resetLevelRenderData	port	crates/horizon-client-render/src/gfx.rs::Renderer::clear_sections	section data released when a level is left
-LevelRenderer.hasRenderedAllSections	inline	crates/horizon-client/src/game.rs::tick_world_icon	renderer.drawn_sections > 10: the icon waits on the same count vanilla's hasRenderedAllSections asks for
+LevelRenderer.hasRenderedAllSections	inline	crates/horizon-client/src/game/saving.rs::Game::tick_world_icon	renderer.drawn_sections > 10: the icon waits on the same count vanilla's hasRenderedAllSections asks for
 LevelRenderer.isSectionCompiledAndVisible	port	crates/horizon-client-render/src/gfx/resident.rs::Resident::contains	gap: minor: no section fade-in, so the 0.3 visibility threshold is not checked
 LevelRenderer.finalizeGizmoCollection	port	crates/horizon-client/src/game/debug_keys.rs::Game::debug_gizmos	debug gizmos collected for the frame
 LevelTargetBundle.replace	skip:other		render-target bundle for post chains; Horizon has no frame graph

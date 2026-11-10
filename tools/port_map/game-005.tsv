@@ -46,7 +46,7 @@ Entity.dropAllLeashConnections	port	crates/horizon-client/src/game/leads.rs::Gam
 Entity.canCollideWith	inline	crates/horizon-client/src/game/ghasts.rs::Game::player_entity_collisions	gap: player: the entities a player cannot walk through are boats and happy ghasts only; a live shulker (canBeCollidedWith) is not solid, so the player walks through it
 Entity.getDefaultPassengerAttachmentPoint	inline	crates/horizon-client/src/mobs/riders.rs::passenger_attachment	one point per vehicle, so the passenger index is always 0; default is the top of the box
 Entity.ejectPassengers	port	crates/horizon-client/src/game/boat_passengers.rs::Game::eject_boat_mobs	gap: minor: boats place riders at the dismount spot; when a mob vehicle dies sync_riders only lets go and the rider stays where it was seated
-Entity.removeVehicle	inline	crates/horizon-client/src/game/commands/world_cmds.rs::Game::dismount_mob	gap: minor: no entity_dismount game event, so sculk sensors and wardens never hear a dismount
+Entity.removeVehicle	port	crates/horizon-client/src/game/sculk.rs::Game::mount_events	`startRiding`/`removeVehicle`: `entity_mount` at the new vehicle and `entity_dismount` at the old one, derived from the vehicle the rider had last tick, for players and mobs
 Entity.moveOrInterpolateTo	port	crates/horizon-world/src/stepped_interpolation.rs::SteppedInterpolation::interpolate_to	living entities from a server; boats and other objects use a three tick Lerp
 Entity.getHandHoldingItemAngle	port	crates/horizon-client/src/game/fireworks.rs::Game::rocket_hand_angle	ticked in #3514; `Entity.getHandHoldingItemAngle` is cited at crates/horizon-client/src/game/fireworks.rs:241
 Entity.teleportToPortalDestination	inline	crates/horizon-client/src/game/nether_portal.rs::Game::send_through_portal	may_enter checks isAllowedToEnterPortal; the entity is saved and waits for its dimension
@@ -109,7 +109,7 @@ EntityDimensions.withEyeHeight	skip:data		eye heights come from entity-types.jso
 EntityDimensions.withAttachments	inline	crates/horizon-client/src/mobs/riders.rs::passenger_attachment	attachments are a per species table, not part of a dimensions value
 EntityEquipment.isEmpty	port	crates/horizon-world/src/player_inventory.rs::PlayerInventory::is_empty	
 EntityEquipment.tick	port	crates/horizon-world/src/inventory_tick.rs::tick_equipment	gap: minor: the player's worn items only; items on mobs never tick
-EntityEquipment.dropAll	port	crates/horizon-client/src/game.rs::Game::drop_inventory	the main inventory, armour and off hand are thrown in random directions on death (Inventory.dropAll)
+EntityEquipment.dropAll	port	crates/horizon-client/src/game/item_entities.rs::Game::drop_inventory	the main inventory, armour and off hand are thrown in random directions on death (Inventory.dropAll)
 EntityFluidInteraction.getOrCreateTrackerFor	inline	crates/horizon-world/src/entity_fluid.rs::EntityFluidInteraction::update	a tracker is found or pushed while scanning the box
 EntityFluidInteraction.getCurrentAccumulatorFor	inline	crates/horizon-world/src/entity_fluid.rs::EntityFluidInteraction::new	one accumulator is made per fluid tag up front
 EntityFluidInteraction.CurrentAccumulator.accumulate	port	crates/horizon-world/src/entity_fluid.rs::CurrentAccumulator::accumulate	
@@ -121,8 +121,8 @@ EntityReference.store	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt
 EntityReference.readWithOldOwnerConversion	inline	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	gap: minor: Owner is read as an int array UUID; an owner saved as a player name (worlds from before 1.7.6) is not converted
 EntityReference.equals	skip:java		UUIDs are compared directly
 world/entity/EntitySelector.withinDistance	port	crates/horizon-client/src/game/dragon.rs::Game::fight_has_players	the 192 block range around (0, 128, 0) for the dragon fight's valid players
-EntityType.appendCustomEntityStackConfig	port	crates/horizon-client/src/game/creatures.rs::Game::apply_spawn_egg_entity_data	a spawn egg stack with a minecraft:entity_data component merges it over the spawned mob's own compound, from a spawn egg or a dispenser, with EntityType.updateCustomEntityTag's id and op guards
-EntityType.updateCustomEntityTag	port	crates/horizon-client/src/game/creatures.rs::Game::apply_spawn_egg_entity_data	the egg's minecraft:entity_data is merged over the mob's own compound and loaded back (TypedEntityData.loadInto), for a player's egg and a dispenser's
+EntityType.appendCustomEntityStackConfig	port	crates/horizon-client/src/game/creatures/spawn_eggs.rs::Game::apply_spawn_egg_entity_data	a spawn egg stack with a minecraft:entity_data component merges it over the spawned mob's own compound, from a spawn egg or a dispenser, with EntityType.updateCustomEntityTag's id and op guards
+EntityType.updateCustomEntityTag	port	crates/horizon-client/src/game/creatures/spawn_eggs.rs::Game::apply_spawn_egg_entity_data	the egg's minecraft:entity_data is merged over the mob's own compound and loaded back (TypedEntityData.loadInto), for a player's egg and a dispenser's
 EntityType.getDescription	inline	crates/horizon-client/src/game/commands.rs::Game::target_name	entity.<namespace>.<name> translated
 EntityType.toShortString	skip:debug		only a game test message uses it
 EntityType.loadPassengersRecursive	port	crates/horizon-client/src/game/persist.rs::Game::load_mob	riders under Passengers are loaded after the vehicle; gap: minor: only mobs Horizon simulates, the rest stay in the tag

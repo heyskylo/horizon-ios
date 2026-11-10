@@ -51,6 +51,7 @@ pub fn main() -> horizon_client::Result<()> {
                 .ok_or("missing cauldron")?,
         )?;
         let mut item = ItemEntity {
+            random: horizon_core::random::LegacyRandom::new(0),
             rotation: [0.0; 2],
             join: Default::default(),
             health: 5,

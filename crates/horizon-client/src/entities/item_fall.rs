@@ -31,6 +31,8 @@ impl ItemEntity {
             needs_sync: false,
             stuck: Vec3::ZERO,
             was_touching_water: false,
+            // The caller gives it the own random that drew its UUID and bobOffs.
+            random: horizon_core::random::LegacyRandom::new(0),
         }
     }
     /// `Entity.move`'s fall bookkeeping after the item's move: `reset_clip`

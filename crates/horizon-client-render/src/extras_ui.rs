@@ -1,5 +1,6 @@
 //! The Horizon Extras page, on the settings shell (`settings_shell`): which rows it has and what
-//! pressing them does. Each one's value and what it does stay in `extras::Item`.
+//! pressing them does. Each one's value and what it does stay in `extras::Item`; the sections crates
+//! add (`horizon_hooks::pages::Place::Extras`) keep theirs.
 use crate::{
     extras::{self, Item},
     lang,
@@ -7,6 +8,7 @@ use crate::{
     settings::Settings,
     settings_shell::{self as shell, Binding, Group, Output, Row, Screen, Sheet, Value},
 };
+use horizon_hooks::pages::{self as added, Act, Label};
 
 const TITLE: &str = "horizon.pages.extras";
 const ABOUT: &str = "horizon.pages.extras.tooltip";
@@ -31,6 +33,125 @@ pub(crate) enum ExtraRow {
     /// It isn't installed: where to get it. A note, not a button: Options > Mods already has the
     /// one way into the Mods page (`every_setting_and_page_is_reached_from_one_place`).
     ZoomInstall,
+    /// Row `.1` of the section registered page `.0` adds (`Place::Extras`).
+    Added(usize, usize),
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's own pages, instead of the game's registered ones: each test runs on its thread.
+    static TEST_PAGES: std::cell::Cell<Option<&'static [&'static dyn added::Page]>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The pages crates registered, all places.
+fn pages() -> &'static [&'static dyn added::Page] {
+    #[cfg(test)]
+    if let Some(pages) = TEST_PAGES.get() {
+        return pages;
+    }
+    added::engine::all()
+}
+
+/// The sections of this page, by their index among the registered pages.
+fn sections() -> impl Iterator<Item = (usize, &'static dyn added::Page)> {
+    let pages = pages().iter().copied().enumerate();
+    pages.filter(|(_, page)| page.place() == added::Place::Extras)
+}
+
+fn label_text(label: Label) -> String {
+    match label {
+        Label::Key(key) => lang::get(key),
+        Label::Value(text) => text,
+    }
+}
+
+/// The page's group named `name`, made at the end if it has none.
+fn group_named<'a>(
+    groups: &'a mut Vec<Group<ExtraRow>>,
+    name: &'static str,
+) -> &'a mut Group<ExtraRow> {
+    let at = groups.iter().position(|group| group.name == name);
+    let at = at.unwrap_or_else(|| {
+        groups.push(Group {
+            name,
+            rows: Vec::new(),
+        });
+        groups.len() - 1
+    });
+    &mut groups[at]
+}
+
+/// The sections' rows, in the groups their titles and headings name.
+fn add_sections(groups: &mut Vec<Group<ExtraRow>>) {
+    for (page, section) in sections() {
+        let mut rows = Vec::new();
+        section.rows(&mut rows);
+        let mut name = section.title();
+        for (r, row) in rows.into_iter().enumerate() {
+            let id = ExtraRow::Added(page, r);
+            let row = match row {
+                added::Row::Heading(key) => {
+                    name = key;
+                    continue;
+                }
+                added::Row::Note(text) => Row::new(id, text, Value::Note).live(false),
+                added::Row::Toggle { label, on } => {
+                    Row::new(id, lang::get(label), Value::Switch(on))
+                }
+                added::Row::Cycle { label, value } => {
+                    Row::new(id, lang::get(label), Value::Choice(label_text(value)))
+                }
+                added::Row::Slider { label, value, text } => {
+                    let position = value.clamp(0.0, 1.0);
+                    let text = label_text(text);
+                    let value = Value::Slider {
+                        position,
+                        steps: None,
+                        text,
+                    };
+                    Row::new(id, lang::get(label), value)
+                }
+                added::Row::Button {
+                    label,
+                    active: true,
+                    ..
+                } => Row::new(id, lang::get(label), Value::Press),
+                added::Row::Key { label, key } => {
+                    let key = crate::keybinds::display_name(&key).plain();
+                    Row::new(id, lang::get(label), Value::Read(key))
+                }
+                // A row kind newer than this engine.
+                _ => continue,
+            };
+            let row = match section.tooltip(r) {
+                Some(about) => row.about(label_text(about)),
+                None => row,
+            };
+            group_named(groups, name).rows.push(row);
+        }
+    }
+}
+
+/// Row `r` of registered page `page` was acted on: the options screen saves when it closes.
+fn act(page: usize, r: usize, act: Act) -> Vec<Output> {
+    let Some(section) = pages().get(page) else {
+        return Vec::new();
+    };
+    section.act(r, act);
+    vec![Output::Event(Event::Changed)]
+}
+
+/// Whether row `r` of registered page `page` steps (a switch or a cycle).
+fn steps(page: usize, r: usize) -> bool {
+    let mut rows = Vec::new();
+    if let Some(section) = pages().get(page) {
+        section.rows(&mut rows);
+    }
+    matches!(
+        rows.get(r),
+        Some(added::Row::Toggle { .. } | added::Row::Cycle { .. })
+    )
 }
 
 fn item_row(item: Item, s: &Settings) -> Row<ExtraRow> {
@@ -85,9 +206,14 @@ impl Screen for ExtrasScreen {
     fn note_lines(&self) -> usize {
         NOTE_LINES
     }
-    /// The rows read the extras, the mods and whether cosmetics are offered.
+    /// The rows read the extras, the mods, whether cosmetics are offered and the sections' rows.
     fn stamp(&self, s: &Settings) -> u64 {
-        shell::stamp_of(&(&s.extras, &s.mods, horizon_cosmetics::enabled()))
+        let mut added = Vec::new();
+        for (_, section) in sections() {
+            section.rows(&mut added);
+        }
+        let cosmetics = horizon_cosmetics::enabled();
+        shell::stamp_of(&(&s.extras, &s.mods, cosmetics, added))
     }
     fn sheets(&self, s: &Settings) -> Vec<Sheet<(), ExtraRow>> {
         let mut groups = vec![Group {
@@ -107,6 +233,7 @@ impl Screen for ExtrasScreen {
                 }
             }
         }
+        add_sections(&mut groups);
         vec![Sheet::new((), lang::get(TITLE), lang::get(ABOUT), groups)]
     }
     fn press(&mut self, s: &mut Settings, row: ExtraRow, back: bool) -> Vec<Output> {
@@ -125,16 +252,29 @@ impl Screen for ExtrasScreen {
                 Output::Event(Event::NativeSettings(i)),
             ],
             ExtraRow::ZoomInstall => Vec::new(),
+            ExtraRow::Added(page, r) => {
+                act(page, r, if back { Act::PressBack } else { Act::Press })
+            }
+        }
+    }
+    fn slide(&mut self, _s: &mut Settings, row: ExtraRow, position: f32) {
+        if let ExtraRow::Added(page, r) = row {
+            act(page, r, Act::Slide(position));
         }
     }
     /// With the wheel extra on, the wheel over an item changes it, without a click; the mod's rows
     /// let the list scroll.
     fn wheel_step(&mut self, s: &mut Settings, row: ExtraRow, back: bool) -> Option<Vec<Output>> {
-        let ExtraRow::Item(item) = row else {
-            return None;
-        };
-        item.cycle(&mut s.extras, back);
-        Some(vec![Output::Event(Event::Changed)])
+        match row {
+            ExtraRow::Item(item) => {
+                item.cycle(&mut s.extras, back);
+                Some(vec![Output::Event(Event::Changed)])
+            }
+            ExtraRow::Added(page, r) if steps(page, r) => {
+                Some(act(page, r, if back { Act::PressBack } else { Act::Press }))
+            }
+            _ => None,
+        }
     }
 }
 
@@ -291,5 +431,147 @@ mod tests {
         );
         shell.key(&mut s, K::ArrowDown, None, false, size);
         assert_eq!(shell.focused_row(), Some(first));
+    }
+
+    /// A section with a switch in the page's Multiplayer group, then a heading of its own with a
+    /// number that steps either way, a note and a volume.
+    struct Section {
+        on: std::sync::Mutex<bool>,
+        step: std::sync::Mutex<i32>,
+        volume: std::sync::Mutex<f32>,
+    }
+    impl added::Page for Section {
+        fn id(&self) -> &'static str {
+            "test.section"
+        }
+        fn title(&self) -> &'static str {
+            "horizon.extras.header.multiplayer"
+        }
+        fn place(&self) -> added::Place {
+            added::Place::Extras
+        }
+        fn rows(&self, rows: &mut Vec<added::Row>) {
+            rows.push(added::Row::Toggle {
+                label: "test.section.switch",
+                on: *self.on.lock().unwrap(),
+            });
+            rows.push(added::Row::Heading("test.section.heading"));
+            rows.push(added::Row::Cycle {
+                label: "test.section.step",
+                value: Label::Value(self.step.lock().unwrap().to_string()),
+            });
+            rows.push(added::Row::Note("a note".into()));
+            rows.push(added::Row::Slider {
+                label: "test.section.volume",
+                value: *self.volume.lock().unwrap(),
+                text: Label::Value(String::new()),
+            });
+        }
+        fn act(&self, row: usize, act: Act) {
+            match (row, act) {
+                (0, Act::Press | Act::PressBack) => {
+                    let mut on = self.on.lock().unwrap();
+                    *on = !*on;
+                }
+                (2, Act::Press) => *self.step.lock().unwrap() += 1,
+                (2, Act::PressBack) => *self.step.lock().unwrap() -= 1,
+                (4, Act::Slide(v)) => *self.volume.lock().unwrap() = v,
+                _ => {}
+            }
+        }
+    }
+
+    /// A page for Horizon Settings: never on Extras.
+    struct Elsewhere;
+    impl added::Page for Elsewhere {
+        fn id(&self) -> &'static str {
+            "test.elsewhere"
+        }
+        fn title(&self) -> &'static str {
+            "test.elsewhere"
+        }
+        fn place(&self) -> added::Place {
+            added::Place::HorizonSettings
+        }
+        fn rows(&self, rows: &mut Vec<added::Row>) {
+            rows.push(added::Row::button("test.elsewhere.button"));
+        }
+        fn act(&self, _: usize, _: Act) {}
+    }
+
+    fn with_section() -> &'static Section {
+        let section: &'static Section = Box::leak(Box::new(Section {
+            on: false.into(),
+            step: 0.into(),
+            volume: 0.5.into(),
+        }));
+        let pages: &'static [&'static dyn added::Page] = Box::leak(Box::new([
+            &Elsewhere as &dyn added::Page,
+            section as &dyn added::Page,
+        ]));
+        TEST_PAGES.set(Some(pages));
+        section
+    }
+
+    /// The section's first row joins the page's own Multiplayer group, after its rows; its heading
+    /// starts a group after the page's; a page for elsewhere adds nothing.
+    #[test]
+    fn a_section_joins_the_group_its_title_names_and_heads_its_own() {
+        with_section();
+        let s = Settings::default();
+        let sheets = ExtrasScreen.sheets(&s);
+        let groups = &sheets[0].groups;
+        let ids = |name: &str| -> Vec<ExtraRow> {
+            let group = groups.iter().find(|g| g.name == name).unwrap();
+            group.rows.iter().map(|r| r.id).collect()
+        };
+        let multiplayer = ids("horizon.extras.header.multiplayer");
+        assert_eq!(multiplayer.last(), Some(&ExtraRow::Added(1, 0)));
+        assert_eq!(groups.last().unwrap().name, "test.section.heading");
+        let own = [
+            ExtraRow::Added(1, 2),
+            ExtraRow::Added(1, 3),
+            ExtraRow::Added(1, 4),
+        ];
+        assert_eq!(ids("test.section.heading"), own);
+        let all = rows_of(&s);
+        assert!(!all.iter().any(|r| matches!(r.id, ExtraRow::Added(0, _))));
+    }
+
+    /// A click flips the switch, a Shift click steps the number back, the wheel steps it, and the
+    /// note takes no click; the rows show what the section holds after each.
+    #[test]
+    fn a_sections_rows_act_on_it() {
+        let section = with_section();
+        let mut s = Settings::default();
+        let mut shell = Shell::<ExtrasScreen>::default();
+        let switch = ExtraRow::Added(1, 0);
+        let at = shell.point_at(&s, SIZE, switch);
+        assert!(
+            !shell
+                .click(&mut s, at, SIZE, false, false, false)
+                .is_empty()
+        );
+        assert!(*section.on.lock().unwrap());
+        let value = |s: &Settings, id| rows_of(s).into_iter().find(|r| r.id == id).unwrap().value;
+        assert_eq!(value(&s, switch), Value::Switch(true));
+        let step = ExtraRow::Added(1, 2);
+        let mut screen = ExtrasScreen;
+        screen.press(&mut s, step, true);
+        assert_eq!(value(&s, step), Value::Choice("-1".into()));
+        assert!(screen.wheel_step(&mut s, step, false).is_some());
+        assert_eq!(*section.step.lock().unwrap(), 0);
+        assert_eq!(
+            screen.wheel_step(&mut s, ExtraRow::Added(1, 3), false),
+            None
+        );
+        let note = shell.point_at(&s, SIZE, ExtraRow::Added(1, 3));
+        assert!(
+            shell
+                .click(&mut s, note, SIZE, false, false, false)
+                .is_empty()
+        );
+        screen.slide(&mut s, ExtraRow::Added(1, 4), 0.25);
+        assert_eq!(*section.volume.lock().unwrap(), 0.25);
     }
 }

@@ -253,6 +253,17 @@ impl Activity {
 /// Horizon's pad-only actions (no vanilla key mapping).
 pub const HOTBAR_PREVIOUS: &str = "pad.hotbarPrevious";
 pub const HOTBAR_NEXT: &str = "pad.hotbarNext";
+/// Held, opens the radial menu (`radial.rs`).
+pub const RADIAL: &str = "pad.radial";
+
+mod radial_file;
+pub use radial_file::{RadialMode, RadialStick, opener_refused};
+
+/// The `bindLayout` the settings file is written in. 1: the defaults of the binds list as they
+/// are; 2: the radial menu's opener resolved against the player's own buttons.
+const BIND_LAYOUT: u32 = 2;
+/// The layout from which the file, not the default, says where the opener is.
+const OPENER_LAYOUT: u32 = 2;
 
 /// Bindable actions and their default buttons: vanilla key mappings (the
 /// game acts as their default key) and Horizon's pad-only actions. Start is
@@ -271,6 +282,7 @@ pub const ACTIONS: &[(&str, Option<Button>)] = &[
     ("key.togglePerspective", Some(Button::Select)),
     ("key.pickItem", Some(Button::DPadLeft)),
     ("key.chat", Some(Button::DPadUp)),
+    (RADIAL, Some(Button::DPadRight)),
     ("key.advancements", None),
     ("key.playerlist", None),
     ("key.command", None),
@@ -303,11 +315,14 @@ pub enum Route {
     HotbarStep {
         next: bool,
     },
+    Radial,
     /// Held, or flipped when the pad's toggle sneak is on.
     Sneak,
     Screenshot,
     SmoothCamera,
     Fullscreen,
+    /// F3's debug screen, shown or hidden as F3 alone does.
+    DebugOverlay,
     /// Does nothing by itself: what reads it asks whether the button is held
     /// (`Minecraft.handleKeybinds`' toolbar keys, held with a hotbar key).
     Held,
@@ -320,10 +335,12 @@ pub fn route(action: &str) -> Option<Route> {
     match action {
         HOTBAR_PREVIOUS => Some(Route::HotbarStep { next: false }),
         HOTBAR_NEXT => Some(Route::HotbarStep { next: true }),
+        RADIAL => Some(Route::Radial),
         "key.sneak" => Some(Route::Sneak),
         "key.screenshot" => Some(Route::Screenshot),
         "key.smoothCamera" => Some(Route::SmoothCamera),
         "key.fullscreen" => Some(Route::Fullscreen),
+        "key.debug.overlay" => Some(Route::DebugOverlay),
         "key.saveToolbarActivator" | "key.loadToolbarActivator" => Some(Route::Held),
         _ => {
             let default = crate::keybinds::KeyBinds::default_of(action);
@@ -334,12 +351,16 @@ pub fn route(action: &str) -> Option<Route> {
     }
 }
 
+/// The radial menu's opener, as the binds list and the gameplay guide name it.
+pub const RADIAL_CAPTION: &str = "horizon.pad.action.radial";
+
 /// An action's name in the binds list: vanilla's translation key, or
 /// Horizon's own English for the pad-only actions.
 pub fn action_caption(action: &str) -> &str {
     match action {
         HOTBAR_PREVIOUS => "Hotbar: Previous Slot",
         HOTBAR_NEXT => "Hotbar: Next Slot",
+        RADIAL => RADIAL_CAPTION,
         other => other,
     }
 }
@@ -654,6 +675,21 @@ pub struct PadSettings {
     pub repeat_interval: f32,
     /// Action name -> button, `None` for unbound; missing means the default.
     bindings: BTreeMap<&'static str, Option<Button>>,
+    /// The radial menu's pages.
+    pub radial: crate::radial::Pages,
+    /// Whether the radial menu's opener is held or pressed once.
+    pub radial_mode: RadialMode,
+    /// The stick that selects in it.
+    pub radial_stick: RadialStick,
+    /// Lines this game doesn't read (a newer Horizon's settings, an action it doesn't have, a
+    /// button it doesn't know), kept as they were so a save here loses nothing.
+    extra: Vec<(String, String)>,
+    /// The newest `bindLayout` the file has been written in: this game's, or a newer Horizon's,
+    /// kept so that one doesn't resolve its file again as older than it is.
+    bind_layout: u32,
+    /// The opener last used with each stick (`RadialStick::ALL` order), so stepping the Selects
+    /// With row and back gives each stick's own opener again.
+    openers: radial_file::StickOpeners,
 }
 impl Default for PadSettings {
     fn default() -> Self {
@@ -680,6 +716,12 @@ impl Default for PadSettings {
             repeat_delay: 0.35,
             repeat_interval: 0.09,
             bindings: BTreeMap::new(),
+            radial: Default::default(),
+            radial_mode: RadialMode::Hold,
+            radial_stick: RadialStick::Right,
+            extra: Vec::new(),
+            bind_layout: BIND_LAYOUT,
+            openers: radial_file::StickOpeners::default(),
         }
     }
 }
@@ -706,6 +748,7 @@ impl PadSettings {
     }
     pub fn parse(text: &str) -> Self {
         let mut s = Self::default();
+        let mut saved_opener = None;
         for line in text.lines() {
             let Some((key, value)) = line.split_once(':') else {
                 continue;
@@ -754,22 +797,85 @@ impl PadSettings {
                 "scrollSpeed" => s.scroll_speed = bounded(s.scroll_speed, 1.0, 36.0),
                 "repeatDelay" => s.repeat_delay = bounded(s.repeat_delay, 0.1, 1.0),
                 "repeatInterval" => s.repeat_interval = bounded(s.repeat_interval, 0.03, 0.3),
+                "radialMode" => s.radial_mode = RadialMode::parse(value),
+                "radialStick" => s.radial_stick = RadialStick::parse(value),
+                // Read after the loop, from the whole text.
+                "bindLayout" => {}
+                // The radial menu's pages (`radial::Pages::parse`).
+                other if other.starts_with("radial_") || other == crate::radial::LAYOUT_KEY => {}
                 other => {
-                    if let Some(action) = other.strip_prefix("bind_") {
-                        let button = if value == "none" {
-                            Some(None)
-                        } else {
-                            Button::parse(value).map(Some)
-                        };
-                        if let Some(button) = button {
-                            s.bind(action, button);
-                        }
+                    let known = other
+                        .strip_prefix("bind_")
+                        .filter(|action| ACTIONS.iter().any(|a| a.0 == *action));
+                    let button = if value == "none" {
+                        Some(None)
+                    } else {
+                        Button::parse(value).map(Some)
+                    };
+                    match (known, button) {
+                        // The opener once the selecting stick is known.
+                        (Some(RADIAL), Some(button)) => saved_opener = Some(button),
+                        (Some(action), Some(button)) => s.bind(action, button),
+                        _ => s.extra.push((other.to_owned(), value.to_owned())),
                     }
                 }
             }
         }
-        // A file from before these defaults: its player's buttons stay where they were.
-        if !text.is_empty() && !text.lines().any(|line| line.starts_with("bindLayout:")) {
+        // An opener on a button it can't be with this stick reads as never saved.
+        let refused_opener = match saved_opener {
+            Some(Some(b)) if opener_refused(s.radial_stick, b) => true,
+            Some(button) => {
+                s.bind(RADIAL, button);
+                false
+            }
+            None => false,
+        };
+        if let Some(pages) = crate::radial::Pages::parse(
+            text.lines()
+                .filter_map(|line| line.split_once(':'))
+                .map(|(key, value)| (key.trim(), value.trim())),
+        ) {
+            s.radial = pages;
+        }
+        let lines = || text.lines().map(str::trim);
+        let saved = |action: &str| {
+            let prefix = format!("bind_{action}:");
+            lines().any(|line| line.starts_with(&prefix))
+        };
+        // The layout the file was written in; none in a file from before these defaults.
+        let layout = lines()
+            .find_map(|line| line.strip_prefix("bindLayout:"))
+            .map(|value| value.trim().parse::<u32>().unwrap_or(0));
+        s.bind_layout = layout.map_or(BIND_LAYOUT, |layout| layout.max(BIND_LAYOUT));
+        // Once, for a file from before the radial menu's opener, or one with the opener on a
+        // button it can no longer be: a button the player bound by hand stays theirs, and the
+        // opener's default doesn't take it. From then on the file says where the opener is, and
+        // a conflict made since stays shown in the binds list.
+        let before_opener = layout.is_none_or(|layout| layout < OPENER_LAYOUT);
+        if !text.is_empty() && (refused_opener || (before_opener && !saved(RADIAL))) {
+            let default_opener = ACTIONS
+                .iter()
+                .find(|(action, _)| *action == RADIAL)
+                .and_then(|(_, button)| *button);
+            let taken = s.bindings.iter().any(|(action, button)| {
+                *action != RADIAL && button.is_some() && *button == default_opener
+            });
+            if taken {
+                s.bindings.insert(RADIAL, None);
+            }
+        }
+        // The default too can be under the selecting thumb (D-pad Right, the left stick
+        // selecting): no button opens the menu until the player picks one.
+        if s.binding(RADIAL)
+            .is_some_and(|b| opener_refused(s.radial_stick, b))
+        {
+            s.bindings.insert(RADIAL, None);
+        }
+        // A file from before these defaults: its player's buttons stay where they were, and
+        // nothing they saved shares a button with the radial menu's opener. They can bind one
+        // in the binds list.
+        if !text.is_empty() && layout.is_none() {
+            s.bindings.entry(RADIAL).or_insert(None);
             for (action, button) in [
                 ("key.drop", Button::East),
                 ("key.togglePerspective", Button::DPadUp),
@@ -778,10 +884,7 @@ impl PadSettings {
                 ("key.advancements", Button::DPadDown),
             ] {
                 // A button saved by hand stays, even one that's now this action's default.
-                if !text
-                    .lines()
-                    .any(|line| line.starts_with(&format!("bind_{action}:")))
-                {
+                if !saved(action) {
                     s.bindings.entry(action).or_insert(Some(button));
                 }
             }
@@ -822,7 +925,25 @@ impl PadSettings {
             "playInBackground:{}\n",
             bool_text(self.play_in_background)
         ));
-        text.push_str("bindLayout:1\n");
+        text.push_str(&format!(
+            "radialMode:{}\nradialStick:{}\n",
+            self.radial_mode.name(),
+            self.radial_stick.name()
+        ));
+        text.push_str(&format!("bindLayout:{}\n", self.bind_layout));
+        for (key, value) in &self.extra {
+            // A button this game didn't know, for an action the player has bound here since.
+            let rebound = key
+                .strip_prefix("bind_")
+                .is_some_and(|action| self.bindings.contains_key(action));
+            if !rebound {
+                text.push_str(&format!("{key}:{value}\n"));
+            }
+        }
+        // The default pages aren't written: they can improve for a player who never changed them.
+        if self.radial != crate::radial::Pages::default() {
+            text.push_str(&self.radial.serialize());
+        }
         text
     }
     pub fn default_of(action: &str) -> Option<Button> {
@@ -835,11 +956,15 @@ impl PadSettings {
             None => Self::default_of(action),
         }
     }
-    /// Bind an action (`None` unbinds); unknown actions are ignored.
+    /// Put `action` on `button`, or unbind it. An unknown action, or a button it can't take
+    /// (`can_bind`), changes nothing.
     pub fn bind(&mut self, action: &str, button: Option<Button>) {
         let Some((name, default)) = ACTIONS.iter().find(|a| a.0 == action) else {
             return;
         };
+        if button.is_some_and(|b| !self.can_bind(action, b)) {
+            return;
+        }
         if button == *default {
             self.bindings.remove(name);
         } else {
@@ -1440,6 +1565,24 @@ pub enum Rumble {
         radius: f32,
     },
     Totem,
+    /// The radial menu's stick reached a slot that would run: a tick.
+    RadialSlot,
+    /// The radial menu's page turned: a shorter tick.
+    RadialPage,
+    /// The page turn went round an end: a second tick after the first.
+    RadialWrap,
+    /// A release ran nothing after something had been selected: a soft buzz.
+    RadialNothing,
+}
+impl From<crate::input_source::Feedback> for Rumble {
+    fn from(event: crate::input_source::Feedback) -> Self {
+        use crate::input_source::Feedback;
+        match event {
+            Feedback::BlockBroken => Rumble::BlockBroken,
+            Feedback::Explosion { distance, radius } => Rumble::Explosion { distance, radius },
+            Feedback::Totem => Rumble::Totem,
+        }
+    }
 }
 /// A vibration: the heavy (low-frequency) and light motors, 0..1, and how
 /// long it lasts.
@@ -1449,6 +1592,7 @@ pub struct Pulse {
     pub weak: f32,
     pub millis: u32,
 }
+use crate::radial::{RADIAL_NOTHING, RADIAL_PAGE_TICK, RADIAL_TICK};
 impl Rumble {
     pub fn name(self) -> &'static str {
         match self {
@@ -1456,6 +1600,10 @@ impl Rumble {
             Rumble::BlockBroken => "block",
             Rumble::Explosion { .. } => "explosion",
             Rumble::Totem => "totem",
+            Rumble::RadialSlot => "radial",
+            Rumble::RadialPage => "radial_page",
+            Rumble::RadialWrap => "radial_wrap",
+            Rumble::RadialNothing => "radial_nothing",
         }
     }
     /// The pulse, or `None` when it is too faint to feel.
@@ -1482,6 +1630,9 @@ impl Rumble {
                     millis: 350,
                 })
             }
+            Rumble::RadialSlot => Some(RADIAL_TICK),
+            Rumble::RadialPage | Rumble::RadialWrap => Some(RADIAL_PAGE_TICK),
+            Rumble::RadialNothing => Some(RADIAL_NOTHING),
             Rumble::Totem => Some(Pulse {
                 strong: 0.7,
                 weak: 0.7,
@@ -1503,6 +1654,10 @@ impl Rumble {
         };
         match self {
             Rumble::BlockBroken => vec![Pulse { millis: 35, ..p }],
+            Rumble::RadialSlot
+            | Rumble::RadialPage
+            | Rumble::RadialWrap
+            | Rumble::RadialNothing => vec![p],
             Rumble::Hurt(_) => {
                 let tail = p.millis.saturating_sub(50) / 2;
                 vec![step(1.0, 50), step(0.55, tail), step(0.25, tail)]
@@ -1523,9 +1678,8 @@ impl Rumble {
     }
 }
 
-/// What a trigger feels like on a DualSense, from what its action is doing (docs/controllers.md
-/// "Adaptive triggers" for the choices). Only the pad's official modes: Nielk1's notes warn the
-/// others may leave the firmware.
+/// What a trigger feels like, from what its action is doing (docs/controllers.md "Adaptive
+/// triggers"); the controller code turns it into a DualSense trigger effect.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TriggerFeel {
     Free,
@@ -1543,66 +1697,6 @@ pub enum TriggerFeel {
     Locked,
     /// Mining a block of this hardness: a buzz, stronger and slower on harder blocks.
     Texture(f32),
-}
-#[cfg(feature = "controllers")]
-impl TriggerFeel {
-    /// The effect, for a trigger that presses its action at `threshold` (0..1) of its travel.
-    pub fn effect(self, threshold: f32) -> horizon_dualsense::TriggerEffect {
-        use horizon_dualsense::trigger;
-        // The zone (of ten along the travel) where the action presses: a catch gives way there,
-        // so the click and the shot coincide.
-        let press = ((threshold.clamp(0.0, 1.0) * 10.0) as u8).clamp(3, 8);
-        match self {
-            TriggerFeel::Free => horizon_dualsense::TRIGGER_OFF,
-            // From the third zone, so the press itself stays light; at most 6 of 8, as the
-            // draw is held.
-            TriggerFeel::Draw(charge) => {
-                trigger::feedback(2, 1 + (5.0 * charge.clamp(0.0, 1.0)).round() as u8)
-            }
-            TriggerFeel::Click => trigger::weapon((press - 2).max(2), press, 8),
-            TriggerFeel::Boost => trigger::weapon((press - 2).max(2), press, 5),
-            TriggerFeel::Brace => trigger::feedback(2, 3),
-            TriggerFeel::Locked => trigger::feedback(1, 8),
-            TriggerFeel::Texture(hardness) if hardness > 0.0 => {
-                // Dirt 2, stone 3, deepslate 4, obsidian 5 of 8.
-                let amplitude = (1.0 + 1.6 * hardness.sqrt()).round().clamp(1.0, 5.0);
-                // Sand and dirt a fine 40 Hz grit; stone 30; wood, deepslate and ores 20;
-                // obsidian a 10 Hz chisel.
-                let hertz = match hardness {
-                    h if h < 1.0 => 40,
-                    h if h < 2.0 => 30,
-                    h if h < 5.0 => 20,
-                    _ => 10,
-                };
-                trigger::vibration(1, amplitude as u8, hertz)
-            }
-            TriggerFeel::Texture(_) => horizon_dualsense::TRIGGER_OFF,
-        }
-    }
-}
-#[cfg(feature = "controllers")]
-impl PadSettings {
-    /// The left and right triggers' effects: each feels the action bound to it, `key.use` or
-    /// `key.attack`.
-    pub fn trigger_effects(
-        &self,
-        using: TriggerFeel,
-        attacking: TriggerFeel,
-    ) -> [horizon_dualsense::TriggerEffect; 2] {
-        [Button::LeftTrigger, Button::RightTrigger].map(|trigger| {
-            let actions = self.actions_of(trigger);
-            let feel = if !self.adaptive_triggers {
-                TriggerFeel::Free
-            } else if actions.contains(&"key.use") {
-                using
-            } else if actions.contains(&"key.attack") {
-                attacking
-            } else {
-                TriggerFeel::Free
-            };
-            feel.effect(self.trigger_threshold)
-        })
-    }
 }
 /// What a DualSense's lightbar shows (`lightbar:`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1924,7 +2018,55 @@ bind_key.hotbar.2:north
         let odd = PadSettings::parse(
             "lookSensitivity:NaN\nbind_key.nope:south\nbind_key.jump:x9\nbindLayout:1\n",
         );
-        assert_eq!(odd, PadSettings::default());
+        assert_eq!(
+            odd.look_sensitivity,
+            PadSettings::default().look_sensitivity
+        );
+        assert_eq!(odd.binding("key.jump"), Some(Button::South));
+        assert_eq!(odd.actions_of(Button::South), ["key.jump"]);
+    }
+
+    #[test]
+    fn lines_this_game_doesnt_read_survive_a_save() {
+        // A newer Horizon's setting, an action this game doesn't have, a button it doesn't know.
+        let text =
+            "bindLayout:2\nhapticStrength:0.4\nbind_horizon:dash:south\nbind_key.jump:paddle1\n";
+        let s = PadSettings::parse(text);
+        assert_eq!(
+            s.binding("key.jump"),
+            Some(Button::South),
+            "the default meanwhile"
+        );
+        let saved = s.serialize();
+        for line in [
+            "hapticStrength:0.4\n",
+            "bind_horizon:dash:south\n",
+            "bind_key.jump:paddle1\n",
+        ] {
+            assert!(saved.contains(line), "{line} lost from\n{saved}");
+        }
+        assert_eq!(PadSettings::parse(&saved), s);
+        // Bound here since, the action's own line is the one written.
+        let mut s = s;
+        s.bind("key.jump", Some(Button::West));
+        let saved = s.serialize();
+        assert!(!saved.contains("paddle1"), "{saved}");
+        assert_eq!(
+            PadSettings::parse(&saved).binding("key.jump"),
+            Some(Button::West)
+        );
+    }
+
+    #[test]
+    fn a_newer_bind_layout_is_kept() {
+        let newer = BIND_LAYOUT + 1;
+        let s = PadSettings::parse(&format!("bindLayout:{newer}\nvibration:false\n"));
+        assert!(s.serialize().contains(&format!("bindLayout:{newer}\n")));
+        let s = PadSettings::parse("bindLayout:1\nvibration:false\n");
+        assert!(
+            s.serialize()
+                .contains(&format!("bindLayout:{BIND_LAYOUT}\n"))
+        );
     }
 
     #[test]
@@ -2436,52 +2578,6 @@ bind_key.hotbar.2:north
         assert_eq!(w.observe(None), None);
         assert_eq!(w.observe(Some(2.0)), None);
         assert_eq!(w.observe(Some(1.0)), Some(1.0));
-    }
-
-    #[cfg(feature = "controllers")]
-    #[test]
-    fn triggers_feel_their_action() {
-        use horizon_dualsense::{TRIGGER_OFF, trigger};
-        let mut s = PadSettings::default();
-        // Use is LT, attack RT by default.
-        let [left, right] = s.trigger_effects(TriggerFeel::Draw(1.0), TriggerFeel::Texture(1.5));
-        assert_eq!(left, trigger::feedback(2, 6));
-        assert_eq!(right, trigger::vibration(1, 3, 30));
-        assert_eq!(
-            s.trigger_effects(TriggerFeel::Draw(0.0), TriggerFeel::Free),
-            [trigger::feedback(2, 1), TRIGGER_OFF]
-        );
-        // The catch gives way in the zone where the default threshold (0.4) presses: weapon
-        // 0x25, zones 2 and 4, strength 8 (stored 7) or 5 (stored 4).
-        let catch = |strength| [0x25, 0x14, 0x00, strength, 0, 0, 0, 0, 0, 0, 0];
-        assert_eq!(TriggerFeel::Click.effect(0.4), catch(7));
-        assert_eq!(TriggerFeel::Boost.effect(0.4), catch(4));
-        // A deeper threshold moves it: zones 5 and 7.
-        assert_eq!(TriggerFeel::Click.effect(0.7)[1..3], [0xa0, 0x00]);
-        assert_eq!(TriggerFeel::Click.effect(0.1), trigger::weapon(2, 3, 8));
-        assert_eq!(TriggerFeel::Brace.effect(0.4), trigger::feedback(2, 3));
-        assert_eq!(TriggerFeel::Locked.effect(0.4), trigger::feedback(1, 8));
-        // Harder blocks buzz harder and slower; instant-break blocks don't.
-        assert_eq!(
-            TriggerFeel::Texture(0.5).effect(0.4),
-            trigger::vibration(1, 2, 40)
-        );
-        assert_eq!(
-            TriggerFeel::Texture(3.0).effect(0.4),
-            trigger::vibration(1, 4, 20)
-        );
-        assert_eq!(
-            TriggerFeel::Texture(50.0).effect(0.4),
-            trigger::vibration(1, 5, 10)
-        );
-        assert_eq!(TriggerFeel::Texture(0.0).effect(0.4), TRIGGER_OFF);
-        assert_eq!(TriggerFeel::Texture(-1.0).effect(0.4), TRIGGER_OFF);
-        s.adaptive_triggers = false;
-        assert_eq!(
-            s.trigger_effects(TriggerFeel::Click, TriggerFeel::Boost),
-            [TRIGGER_OFF; 2]
-        );
-        assert!(!PadSettings::parse(&s.serialize()).adaptive_triggers);
     }
 
     #[test]

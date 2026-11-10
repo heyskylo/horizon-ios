@@ -53,9 +53,9 @@ below); where HDR's settings live (a later note).
 
 ## The colour rule (shader API 0.2)
 
-- **Every colour a 0.2 stage reads or returns is linear light**: BT.709 (sRGB) primaries, scene-referred, **1.0 is
-  vanilla's white at paper white**, more is brighter, up to half float's range. Horizon replaces negative values and
-  NaN with 0 before the display.
+- **Every colour a 0.2 stage reads or returns is linear light**: BT.709 (sRGB) primaries by default,
+  scene-referred, **1.0 is vanilla's white at paper white**, more is brighter, up to half float's range. Horizon
+  replaces negative values and NaN with 0 before the display.
 - **Decoding is vanilla's 2.2 power**, as `hdr.wgsl` decodes today, not the piecewise sRGB curve. Because a power is
   multiplicative, vanilla's lit colour `albedo * tint * lightmap` is the same in linear: decoding the product is the
   product of the decoded terms.
@@ -170,7 +170,8 @@ separate pull request, with screenshots.
 
 Under a 0.2 pack Horizon lifts nothing: the pack gets vanilla's picture in linear light whatever the display, reads
 `emission` in its material stage, and writes what shines. (Telling post stages which pixels are light sources is a
-likely 0.2 addition, not designed here.)
+likely 0.2 addition, not designed here. Wide colour is one that is: a pack asks for BT.2020 primaries with
+`[frame] primaries`, which the check takes and the game doesn't serve yet, #14584.)
 
 ## The HUD and menus
 
@@ -252,6 +253,7 @@ They read the frame as it is stored and, outside the 0.1 path, have no marks to 
 above. Native upscaling
 ([#1403](https://github.com/horizon-rust/horizon/issues/1403)) should take the float frame. TAA over values above 1
 may need a tone-weighted resolve so bright pixels don't sparkle. Frame generation stays off with HDR output, as today.
+The rules such a pass keeps now are in [hdr-passes.md](../hdr-passes.md).
 
 ## Tests
 

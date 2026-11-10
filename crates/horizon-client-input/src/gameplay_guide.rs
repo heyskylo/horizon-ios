@@ -141,8 +141,13 @@ impl Guide {
     pub fn at_detail(self, detail: GuideDetail) -> Self {
         match detail {
             GuideDetail::Full => self,
+            // Nothing else in play names the radial menu.
             GuideDetail::Basic => Guide {
-                left: Vec::new(),
+                left: self
+                    .left
+                    .into_iter()
+                    .filter(|row| row.caption == crate::gamepad::RADIAL_CAPTION)
+                    .collect(),
                 right: self.right,
             },
             GuideDetail::Off => Guide {
@@ -178,6 +183,8 @@ pub fn resolve(facts: &Facts, settings: &PadSettings) -> Guide {
                 "key.swapOffhand",
                 (player && any_item).then_some("horizon.controller.guide.swap"),
             ),
+            // Nothing else in play says the menu is there; it opens for a spectator too.
+            row(crate::gamepad::RADIAL, Some(crate::gamepad::RADIAL_CAPTION)),
         ]
         .into_iter()
         .flatten()
@@ -566,6 +573,7 @@ mod tests {
                 (Button::North, "key.inventory"),
                 (Button::DPadDown, "horizon.controller.guide.drop"),
                 (Button::West, "horizon.controller.guide.swap"),
+                (Button::DPadRight, crate::gamepad::RADIAL_CAPTION),
             ]
         );
     }
@@ -736,12 +744,12 @@ mod tests {
                 gliding: true,
                 ..Facts::default()
             }),
-            ["key.inventory"]
+            ["key.inventory", crate::gamepad::RADIAL_CAPTION]
         );
     }
 
     #[test]
-    fn a_spectator_only_flies_opens_spectates_and_has_its_menu() {
+    fn a_spectator_only_flies_opens_spectates_and_has_its_menus() {
         let facts = Facts {
             spectator: true,
             flying: true,
@@ -765,7 +773,8 @@ mod tests {
             captions(&guide.left),
             [
                 "horizon.controller.guide.fly_up",
-                "horizon.controller.guide.fly_down"
+                "horizon.controller.guide.fly_down",
+                crate::gamepad::RADIAL_CAPTION
             ]
         );
     }

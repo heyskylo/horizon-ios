@@ -247,6 +247,11 @@ pub(super) trait Entity: EntityRules {
     fn portal_size(&self) -> Option<(f32, f32)> {
         None
     }
+    /// Whether [`Self::portal_size`] is Some, without working the size out (a
+    /// mob's depends on its age, scale and pose).
+    fn sweeps_portals(&self) -> bool {
+        self.portal_size().is_some()
+    }
     /// `Entity.canUsePortal(false)` for a kind in `portal_size`. A kind that
     /// cannot stays tracked, so its cooldown and process run out.
     fn can_use_portal(&self, _game: &Game<'_>) -> bool {
@@ -255,6 +260,14 @@ pub(super) trait Entity: EntityRules {
     /// A boat or minecart: the kinds whose portal pass opens the tick, before
     /// they move (`AbstractMinecart.tick` handles its portal first).
     fn is_vehicle(&self) -> bool {
+        false
+    }
+    /// `Entity.getDimensionChangingDelay`, overridden by vehicles and projectiles.
+    fn dimension_changing_delay(&self) -> i32 {
+        horizon_client::nether_portal::ENTITY_DELAY
+    }
+    /// Whether movement applies portal block effects before Entity's base tick.
+    fn portal_after_move(&self) -> bool {
         false
     }
     /// Where it stood at the start of its tick, for the kinds that store it
@@ -272,6 +285,11 @@ pub(super) trait Entity: EntityRules {
         let position = self.position_mut();
         *position = position.add_vector(movement);
     }
+    /// Bounds for `AbstractArrow.shouldFall` after a non-SELF piston move.
+    fn piston_release_bounds(&self) -> Option<Aabb> {
+        None
+    }
+    fn release_after_piston(&mut self, _no_block_collision: bool) {}
     /// `setOnGroundWithMovement` at the end of a piston's or shulker lid's
     /// `Entity.move`, for the kinds that keep the flag: on a server it runs
     /// for every push, sideways ones and those the collision turned away included.
@@ -1100,6 +1118,9 @@ impl Entity for Mob {
     fn portal_size(&self) -> Option<(f32, f32)> {
         Some((self.width(), self.height()))
     }
+    fn sweeps_portals(&self) -> bool {
+        true
+    }
     fn can_use_portal(&self, game: &Game<'_>) -> bool {
         game.mob_can_use_portal(self)
     }
@@ -1309,6 +1330,9 @@ impl Entity for ExperienceOrb {
 }
 
 impl Entity for Boat {
+    fn dimension_changing_delay(&self) -> i32 {
+        10
+    }
     fn set_on_ground(&mut self, on_ground: bool) {
         self.on_ground = on_ground;
     }
@@ -1384,6 +1408,9 @@ impl Entity for Boat {
 }
 
 impl Entity for Minecart {
+    fn dimension_changing_delay(&self) -> i32 {
+        10
+    }
     fn set_on_ground(&mut self, on_ground: bool) {
         self.on_ground = on_ground;
     }
@@ -1710,6 +1737,16 @@ impl Entity for FallingBlock {
 }
 
 impl Entity for Projectile {
+    fn portal_after_move(&self) -> bool {
+        !matches!(
+            self.kind,
+            horizon_client::projectiles::ProjectileKind::LlamaSpit
+                | horizon_client::projectiles::ProjectileKind::ShulkerBullet { .. }
+        )
+    }
+    fn dimension_changing_delay(&self) -> i32 {
+        2
+    }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }
@@ -1816,16 +1853,23 @@ impl Entity for Projectile {
         Projectile::bounds(self)
     }
     fn move_by_piston(&mut self, movement: Vec3) {
-        self.position = self.position.add_vector(movement);
-        self.needs_sync = true;
+        Projectile::move_by_piston(self, movement);
+    }
+    fn piston_release_bounds(&self) -> Option<Aabb> {
+        Projectile::piston_release_bounds(self)
+    }
+    fn release_after_piston(&mut self, no_block_collision: bool) {
+        Projectile::release_after_piston(self, no_block_collision);
     }
     fn piston_slime_bounce(&mut self, movement: Direction) {
-        self.velocity = piston_push::bounce_velocity(movement, self.velocity);
-        self.needs_sync = true;
+        Projectile::piston_slime_bounce(self, movement);
     }
 }
 
 impl Entity for Rocket {
+    fn dimension_changing_delay(&self) -> i32 {
+        2
+    }
     fn rotation(&self) -> [f32; 2] {
         self.rotation
     }
@@ -1893,6 +1937,12 @@ impl Entity for Rocket {
 }
 
 impl Entity for ThrownTrident {
+    fn portal_after_move(&self) -> bool {
+        true
+    }
+    fn dimension_changing_delay(&self) -> i32 {
+        2
+    }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }
@@ -1963,6 +2013,18 @@ impl Entity for ThrownTrident {
             Vec3::new(p.x - 0.25, p.y, p.z - 0.25),
             Vec3::new(p.x + 0.25, p.y + 0.5, p.z + 0.25),
         )
+    }
+    fn move_by_piston(&mut self, movement: Vec3) {
+        ThrownTrident::move_by_piston(self, movement);
+    }
+    fn piston_release_bounds(&self) -> Option<Aabb> {
+        ThrownTrident::piston_release_bounds(self)
+    }
+    fn release_after_piston(&mut self, no_block_collision: bool) {
+        ThrownTrident::release_after_piston(self, no_block_collision);
+    }
+    fn piston_slime_bounce(&mut self, movement: Direction) {
+        ThrownTrident::piston_slime_bounce(self, movement);
     }
     /// `GameLevel::tick_blocks` sweeps tridents itself.
     fn sweeps_blocks_inside(&self) -> bool {

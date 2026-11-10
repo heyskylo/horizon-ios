@@ -510,9 +510,6 @@ pub fn base_value(m: &Mob, a: Attr) -> f64 {
 /// [`base_value`] with the type's default given (`default_value`), for a
 /// caller that already looked it up for the mob's type.
 pub fn base_value_with(m: &Mob, a: Attr, default: impl FnOnce() -> Option<f64>) -> f64 {
-    if a == Attr::MovementSpeed && m.species() == Species::Ravager {
-        return m.attrs.speed;
-    }
     m.extra
         .attributes
         .as_ref()
@@ -532,8 +529,7 @@ pub fn base_value_with(m: &Mob, a: Attr, default: impl FnOnce() -> Option<f64>) 
 /// growing up) is saved apart; these are the rest:
 /// - `movement_speed`: Zombie and Piglin.setBaby (the load calls it even for an
 ///   adult), `Enderman.setTarget` (the load ends in `readPersistentAngerSaveData`,
-///   which calls it), a Ravager whose load leaves it immobile, and the first tick of
-///   any mob (`LivingEntity.removeFrost`).
+///   which calls it), and the first tick of any mob (`LivingEntity.removeFrost`).
 /// - `max_health`: `Wolf.applyTamingSideEffects`, through `setTame(false, true)`
 ///   when the load finds no owner (a wolf that is tamed in game makes it too).
 /// - `attack_damage`: `Rabbit.setVariant`, and a baby Goat or Hoglin, whose load's
@@ -541,11 +537,7 @@ pub fn base_value_with(m: &Mob, a: Attr, default: impl FnOnce() -> Option<f64>) 
 pub fn made_at_load(m: &Mob) -> Vec<Attr> {
     let s = m.species();
     let mut made = Vec::new();
-    if super::doors::is_zombie(s)
-        || matches!(s, Species::Piglin | Species::Enderman)
-        || (s == Species::Ravager && super::ravager::immobile(m))
-        || m.age > 0
-    {
+    if super::doors::is_zombie(s) || matches!(s, Species::Piglin | Species::Enderman) || m.age > 0 {
         made.push(Attr::MovementSpeed);
     }
     if s == Species::Wolf {
@@ -2176,8 +2168,9 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
             }
             S::Zombie | S::ZombifiedPiglin => self.zombie(m, g, reason),
             S::ZombieVillager => {
+                // `ZombieVillager.finalizeSpawn` chooses the villager type and
+                // nothing else: the profession came from the constructor.
                 self.villager_type(m);
-                m.extra.variant2 = super::zombie_villager::constructor_profession(m);
                 self.zombie(m, g, reason)
             }
             S::Husk => self.husk(m, g, reason),
@@ -2427,7 +2420,7 @@ pub fn variant_sound(m: &Mob, kind: &str) -> Option<&'static str> {
 pub fn variant_name(s: Species, index: u8) -> &'static str {
     let i = index as usize;
     match s {
-        Species::Cat => super::tame::CAT_VARIANTS.get(i).copied().unwrap_or("tabby"),
+        Species::Cat => super::tame::CAT_VARIANTS.get(i).copied().unwrap_or("black"),
         Species::Wolf => super::tame::WOLF_VARIANTS.get(i).map_or("pale", |v| v.0),
         Species::ZombieNautilus => super::nautilus::VARIANTS
             .get(i)
@@ -2541,6 +2534,7 @@ mod tests {
         assert_eq!(variant_index(Species::Llama, "minecraft:temperate"), 0);
         assert_eq!(variant_name(Species::Horse, 7), "white");
         assert_eq!(variant_name(Species::TraderLlama, 4), "creamy");
+        assert_eq!(variant_name(Species::Cat, 20), "black");
         // Only `VariantUtils.writeVariant` species save the name; a horse and
         // a llama save a packed `Variant` int, a fox and a mooshroom `Type`.
         for species in [Species::Wolf, Species::Cat, Species::Chicken, Species::Pig] {
