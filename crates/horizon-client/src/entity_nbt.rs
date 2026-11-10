@@ -6,7 +6,7 @@
 //! survive a Horizon save.
 use crate::{
     arrows::Pickup,
-    entities::{ArmorStand, Cushion, ExperienceOrb, ItemEntity, ItemFrame, Painting},
+    entities::{Cushion, ExperienceOrb, ItemEntity, ItemFrame, Painting},
     mobs::{Mob, MobType, Who},
     nbt_path::int_value,
     projectiles::{Projectile, ProjectileKind},
@@ -3786,154 +3786,11 @@ pub fn cushion_from_nbt(tag: &Tag, id: u32) -> Option<Cushion> {
     })
 }
 
+mod armor_stands;
 #[cfg(test)]
 #[path = "cushion_tests.rs"]
 mod cushion_tests;
-/// ArmorStand.addAdditionalSaveData with LivingEntity's `equipment`.
-pub fn armor_stand_to_nbt(a: &ArmorStand, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
-    let base = Base {
-        id: "minecraft:armor_stand",
-        uuid,
-        position: a.position,
-        motion: a.velocity,
-        rotation: [a.yaw, a.pitch],
-        on_ground: a.on_ground,
-        fall_distance: a.enchantment_fall_distance,
-    };
-    let mut tag = base.non_mob_tag(raw);
-    let equipment: Vec<(&str, Tag)> = ArmorStand::SLOTS
-        .iter()
-        .zip(&a.equipment)
-        .filter_map(|(slot, stack)| Some((*slot, item_to_nbt(stack.as_ref()?))))
-        .collect();
-    // `equipment` is saved only when something is worn, `Marker` only when set.
-    if equipment.is_empty() {
-        if let Tag::Compound(map) = &mut tag {
-            map.remove(&"equipment".into());
-        }
-    } else {
-        put(&mut tag, "equipment", Tag::compound(equipment));
-    }
-    put(&mut tag, "DisabledSlots", Tag::Int(a.disabled_slots));
-    for (key, value) in [
-        ("Small", a.small),
-        ("ShowArms", a.show_arms),
-        ("NoBasePlate", a.no_base_plate),
-        ("Invisible", a.invisible),
-    ] {
-        put(&mut tag, key, Tag::Byte(i8::from(value)));
-    }
-    if a.marker {
-        put(&mut tag, "Marker", Tag::Byte(1));
-    } else if let Tag::Compound(map) = &mut tag {
-        map.remove(&"Marker".into());
-    }
-    // Entity.saveWithoutId writes NoGravity only when set.
-    if a.no_gravity {
-        put(&mut tag, "NoGravity", Tag::Byte(1));
-    } else if let Tag::Compound(map) = &mut tag {
-        map.remove(&"NoGravity".into());
-    }
-    if a.name_visible {
-        put(&mut tag, "CustomNameVisible", Tag::Byte(1));
-    } else if let Tag::Compound(map) = &mut tag {
-        map.remove(&"CustomNameVisible".into());
-    }
-    // A name from the save keeps its own shape unless it changed.
-    if let Some(name) = &a.custom_name
-        && !tag.get("CustomName").is_some_and(|t| name_text(t) == *name)
-    {
-        put(
-            &mut tag,
-            "CustomName",
-            crate::scoreboard::json_to_tag(&name.component()),
-        );
-    }
-    put(&mut tag, "Health", Tag::Float(a.health.to_bits()));
-    put(&mut tag, "Fire", Tag::Short(a.fire_ticks as i16));
-    // ArmorStand.addAdditionalSaveData: the `Pose` parts that are not default.
-    let pose: Vec<(&str, Tag)> = ArmorStand::POSE_KEYS
-        .into_iter()
-        .zip(a.pose)
-        .zip(ArmorStand::DEFAULT_POSE)
-        .filter(|((_, rotation), default)| rotation != default)
-        .map(|((key, rotation), _)| (key, floats(&rotation)))
-        .collect();
-    put(&mut tag, "Pose", Tag::compound(pose));
-    // LivingEntity.addAdditionalSaveData and ArmorStand's own fields.
-    if let Tag::Compound(map) = &mut tag {
-        for (key, value) in [
-            ("HurtTime", Tag::Short(0)),
-            ("DeathTime", Tag::Short(0)),
-            ("AbsorptionAmount", Tag::Float(0)),
-            ("FallFlying", Tag::Byte(0)),
-            ("current_impulse_context_reset_grace_time", Tag::Int(0)),
-            // AttributeMap.pack: the movement_speed instance the stand's first
-            // tick makes (removeFrost), at the registry default.
-            (
-                "attributes",
-                Tag::List(if a.speed_instance {
-                    vec![Tag::compound([
-                        ("id", string(SPEED_ATTRIBUTE)),
-                        ("base", Tag::Double(0.7f64.to_bits())),
-                    ])]
-                } else {
-                    Vec::new()
-                }),
-            ),
-            (
-                "Brain",
-                Tag::compound([("memories", Tag::Compound(Compound::new()))]),
-            ),
-            ("DisabledSlots", Tag::Int(0)),
-            ("Pose", Tag::Compound(Compound::new())),
-        ] {
-            map.entry(key.into()).or_insert(value);
-        }
-    }
-    tag
-}
-/// The attribute every living entity's first tick makes (`removeFrost`).
-const SPEED_ATTRIBUTE: &str = "minecraft:movement_speed";
-pub fn armor_stand_from_nbt(tag: &Tag, id: u32) -> Option<ArmorStand> {
-    let mut a = ArmorStand::new(id, position(tag)?, rotation(tag)[0]);
-    a.enchantment_fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
-    // AttributeMap.load makes an instance for each saved attribute.
-    a.speed_instance = matches!(tag.get("attributes"), Some(Tag::List(list))
-        if list.iter().any(|attr| text(attr.get("id")).as_deref() == Some(SPEED_ATTRIBUTE)));
-    a.velocity = loaded_motion(tag);
-    a.health = float(tag.get("Health")).unwrap_or(20.0) as f32;
-    a.fire_ticks = number(tag.get("Fire")).unwrap_or(0) as i32;
-    a.custom_name = tag.get("CustomName").map(name_text);
-    a.name_visible = flag(tag, "CustomNameVisible");
-    if let Some(eq) = tag.get("equipment") {
-        for (i, slot) in ArmorStand::SLOTS.iter().enumerate() {
-            a.equipment[i] = eq.get(slot).and_then(item_from_nbt);
-        }
-    }
-    a.small = flag(tag, "Small");
-    a.show_arms = flag(tag, "ShowArms");
-    a.disabled_slots = number(tag.get("DisabledSlots")).unwrap_or(0) as i32;
-    a.no_base_plate = flag(tag, "NoBasePlate");
-    a.invisible = flag(tag, "Invisible");
-    a.marker = flag(tag, "Marker");
-    a.no_gravity = flag(tag, "NoGravity");
-    a.on_ground = flag(tag, "OnGround");
-    // ArmorStand.readAdditionalSaveData: each part of `Pose` that is a list of
-    // three numbers, the others staying at their defaults.
-    if let Some(pose) = tag.get("Pose") {
-        for (rotation, key) in a.pose.iter_mut().zip(ArmorStand::POSE_KEYS) {
-            if let Some(Tag::List(values)) = pose.get(key)
-                && values.len() == 3
-            {
-                for (r, v) in rotation.iter_mut().zip(values) {
-                    *r = float(Some(v)).unwrap_or(0.0) as f32;
-                }
-            }
-        }
-    }
-    Some(a)
-}
+pub use armor_stands::*;
 /// `AbstractBoat.addAdditionalSaveData` / `ContainerEntity.addChestVehicleSaveData`:
 /// only chest boats own container fields; a pending table replaces `Items`.
 /// Ordinary slots use `ContainerHelper.saveAllItems` through the existing item encoder.
