@@ -2,13 +2,13 @@
 //! in-flight neighbour-update queue and the random-tick position generator.
 use super::{states::BlockId, update::NeighborUpdater};
 use crate::fluid::FluidKind;
+use horizon_core::fast_hash::FxHashMap;
 use horizon_core::{
     position::{BlockPos, ChunkPos},
     ticks::{
         ChunkTicks, LevelTicks, ScheduleResult, ScheduledTick, TickError, TickPriority, TickTypeId,
     },
 };
-use horizon_core::fast_hash::FxHashMap;
 
 /// Owned by the caller next to its chunk storage. Chunks must be registered
 /// with [`Ticks::add_chunk`] before ticks can be scheduled in them, mirroring
@@ -253,7 +253,11 @@ mod tests {
 
     fn assert_index_matches_scan(ticks: &Ticks) {
         for i in 0..1000 {
-            assert_eq!(ticks.moving_piston_slot(at(i)), scan(ticks, at(i)), "pos {i}");
+            assert_eq!(
+                ticks.moving_piston_slot(at(i)),
+                scan(ticks, at(i)),
+                "pos {i}"
+            );
         }
     }
 
@@ -272,7 +276,12 @@ mod tests {
         assert_index_matches_scan(&ticks);
         assert!(ticks.take_moving_piston(at(999)).is_none());
         // Tickers stay in ascending id order, the order the tick loop walks.
-        assert!(ticks.moving_pistons.windows(2).all(|w| w[0].1.id < w[1].1.id));
+        assert!(
+            ticks
+                .moving_pistons
+                .windows(2)
+                .all(|w| w[0].1.id < w[1].1.id)
+        );
 
         // Edits from outside the index (a direct push, a reversed Vec) must
         // still resolve to the scan's answer.
