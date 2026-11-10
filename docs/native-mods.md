@@ -2213,6 +2213,10 @@ shared knockback path; direct velocity pushes (explosions, Punch arrows, hoglin 
 `LivingEntity.knockback` and do not fire it. The fragment assigns the new API number when
 stamped; the existing hook stays version 1.
 
+### Server settings (draft)
+
+`native_online_mode()` is the dedicated server's `online-mode`: true when its players sign in with their accounts. `native_server_port()` is the port it listens on, `server-port` of server.properties or the `--port` it started with. `native_proxy_forwarding()` is `"velocity"` when the server takes its players from a Velocity proxy (`forwarding.secret` beside server.properties, offline mode only) and `"none"` otherwise; the secret itself is never returned. All three are read from the server's live network config, so they match what it does. They are None off a dedicated server (a single player's or LAN world's) and before it listens. The `enforce-secure-profile` and `hardcore` settings are not exposed here.
+
 ### Reading server blocks (draft)
 
 A native server tick hook can call `native_server_block` with its context, a dimension id and a block position. It returns the block name and state properties from a loaded chunk. It does not load a chunk or open a dimension. Reads outside that hook, from a stale context, from unavailable dimensions or outside the world bounds return an error.
