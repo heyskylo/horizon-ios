@@ -116,3 +116,12 @@ impl Game<'_> {
         left.then_some(stack)
     }
 }
+
+/// The item of the stack in `selected` (`Player.tick`'s main-hand item), borrowed: a guest's
+/// tick compares it with the last one and clones it only when it changed.
+pub(super) fn held_attack_item(
+    inventory: &[Option<ItemStack>],
+    selected: usize,
+) -> Option<&Arc<str>> {
+    inventory.get(selected)?.as_ref().map(|s| &s.item)
+}

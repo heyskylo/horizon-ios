@@ -4377,16 +4377,11 @@ impl Game<'_> {
             // Player.tick: a different main-hand item resets the attack
             // strength, and detectEquipmentUpdates gives the guest its modifiers.
             let g = &host.hub.guests[gi];
-            let held = g
-                .inventory
-                .get(g.selected)
-                .cloned()
-                .flatten()
-                .map(|s| s.item);
+            let held = super::held_items::held_attack_item(&g.inventory, g.selected);
             let play = host.play.entry(conn).or_default();
-            if play.attack_item != held {
+            if play.attack_item.as_ref() != held {
                 play.attack_ticks = 0;
-                play.attack_item = held;
+                play.attack_item = held.cloned();
             }
             self.guest_delayed_destroy(host, conn);
             self.guest_server_tick(host, conn);
