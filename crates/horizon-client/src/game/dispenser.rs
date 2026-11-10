@@ -429,14 +429,15 @@ impl Game<'_> {
 
     // ---- DefaultDispenseItemBehavior ----
 
-    /// `DispenserBlock.getDispensePosition(source, scale, offset)`.
+    /// `DispenserBlock.getDispensePosition(source, scale, offset)`; vanilla adds
+    /// `scale * step + offset` first, then adds that sum to the block centre.
     fn dispense_position(pos: Pos, facing: Direction, scale: f64, offset: [f64; 3]) -> Vec3 {
         let s = step(facing);
         let c = Self::center(pos);
         Vec3::new(
-            c[0] + scale * f64::from(s[0]) + offset[0],
-            c[1] + scale * f64::from(s[1]) + offset[1],
-            c[2] + scale * f64::from(s[2]) + offset[2],
+            c[0] + (scale * f64::from(s[0]) + offset[0]),
+            c[1] + (scale * f64::from(s[1]) + offset[1]),
+            c[2] + (scale * f64::from(s[2]) + offset[2]),
         )
     }
     /// `DefaultDispenseItemBehavior.spawnItem` at `getDispensePosition`.
