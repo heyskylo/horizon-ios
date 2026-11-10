@@ -1237,7 +1237,7 @@ impl CatRelaxOnOwner {
                 f64::from(g[2]) + 3.0,
             ),
         );
-        w.others.iter().any(|o| {
+        w.others_near(area).any(|o| {
             o.species == Species::Cat && o.id != m.id && o.lying && o.bounds.intersects(area)
         })
     }

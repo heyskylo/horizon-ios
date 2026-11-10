@@ -6,7 +6,10 @@ use super::{
     Mob, MobEvent, MobWorld, Species, Who,
     goals::{Cx, Goal, LOOK, MOVE, goal_clone},
 };
-use horizon_core::{geometry::Vec3, random::RandomSource};
+use horizon_core::{
+    geometry::{Aabb, Vec3},
+    random::RandomSource,
+};
 use horizon_world::nbt::Tag;
 
 /// The ominous banner is a white banner with the raid patterns; raiders wear
@@ -272,10 +275,19 @@ impl LongDistancePatrol {
         }
     }
 }
+/// A box that holds every mob whose position is within `(rx, ry, rz)` of
+/// `at`, one block wider so its bounds (at most 1.95 wide) meet it too.
+fn reach_box(at: Vec3, rx: f64, ry: f64, rz: f64) -> Aabb {
+    Aabb::new(
+        Vec3::new(at.x - rx - 1.0, at.y - ry - 1.0, at.z - rz - 1.0),
+        Vec3::new(at.x + rx + 1.0, at.y + ry + 1.0, at.z + rz + 1.0),
+    )
+}
 /// Patrol companions within 16 blocks that are not in a raid.
 fn companions(m: &Mob, w: &MobWorld) -> Vec<u32> {
-    w.others
-        .iter()
+    let (rx, ry) = (16.0 + f64::from(m.width()), 16.0 + f64::from(m.height()));
+    let area = reach_box(m.position, rx, ry, rx);
+    w.others_near(area)
         .filter(|s| {
             s.id != m.id
                 && s.alive
@@ -623,8 +635,9 @@ impl HoldGroundAttack {
 }
 /// Raiders within 8 blocks, nearest first (`shoutTargeting`).
 fn shout_range(m: &Mob, w: &MobWorld) -> Vec<u32> {
-    w.others
-        .iter()
+    let (rx, ry) = (8.0 + f64::from(m.width()), 8.0 + f64::from(m.height()));
+    let area = reach_box(m.position, rx, ry, rx);
+    w.others_near(area)
         .filter(|s| {
             s.id != m.id
                 && s.alive
