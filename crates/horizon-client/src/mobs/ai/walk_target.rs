@@ -96,3 +96,79 @@ pub fn walk_target_value(m: &Mob, w: &MobWorld, p: [i32; 3]) -> f32 {
     0.0
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    /// `PathfinderMob.getWalkTargetValue` and its overrides, at three positions
+    /// that differ only in the block below. A cow scores grass 10 and mycelium by
+    /// the light; a mushroom cow, whose own override replaces Animal's, mycelium
+    /// 10 and grass by the light; a monster the negated light; and an enderman, a
+    /// pillager and a warden the same 0 everywhere.
+    #[test]
+    fn a_stroll_scores_its_ground_the_way_the_jar_does() {
+        let ran = crate::mobs::world::with_built_test_world(
+            &[],
+            |world, registry| {
+                let stone = registry.default_state("minecraft:stone").unwrap();
+                let grass = registry.default_state("minecraft:grass_block").unwrap();
+                let mycelium = registry.default_state("minecraft:mycelium").unwrap();
+                for cx in -1..1 {
+                    for cz in -1..1 {
+                        world
+                            .chunks
+                            .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
+                    }
+                }
+                for x in -4..4 {
+                    for z in -4..4 {
+                        world.set(x, 63, z, stone).unwrap();
+                    }
+                }
+                world.set(-2, 63, 0, grass).unwrap();
+                world.set(0, 63, 0, stone).unwrap();
+                world.set(2, 63, 0, mycelium).unwrap();
+            },
+            |w, types| {
+                let value = |id: &str, x: i32| {
+                    let kind = Arc::new(types.types[id].clone());
+                    let m = Mob::new(1, kind, Vec3::ZERO, 0.0);
+                    walk_target_value(&m, w, [x, 64, 0])
+                };
+                // The light term of the middle position, which the report quotes.
+                let light = w.brightness(0, 64, 0) - 0.5;
+                // A cow: grass 10, mycelium and stone by the light.
+                assert_eq!(value("minecraft:cow", -2), 10.0, "cow on grass");
+                assert_eq!(value("minecraft:cow", 0), light, "cow on stone");
+                assert_eq!(value("minecraft:cow", 2), light, "cow on mycelium");
+                // A mushroom cow: mycelium 10, grass by the light, not 10.
+                assert_eq!(
+                    value("minecraft:mooshroom", 2),
+                    10.0,
+                    "mooshroom on mycelium"
+                );
+                assert_eq!(
+                    value("minecraft:mooshroom", -2),
+                    light,
+                    "mooshroom on grass"
+                );
+                // A monster: the negated light, on grass like anywhere else.
+                assert_eq!(value("minecraft:zombie", -2), -light, "zombie");
+                // The three that score every position the same.
+                for flat in [
+                    "minecraft:enderman",
+                    "minecraft:pillager",
+                    "minecraft:warden",
+                ] {
+                    assert_eq!(value(flat, -2), 0.0, "{flat} on grass");
+                    assert_eq!(value(flat, 0), 0.0, "{flat} on stone");
+                    assert_eq!(value(flat, 2), 0.0, "{flat} on mycelium");
+                }
+            },
+        );
+        // Without the extracted vanilla data the world cannot be built.
+        let _ = ran;
+    }
+}
