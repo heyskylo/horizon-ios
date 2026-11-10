@@ -459,7 +459,7 @@ impl Game<'_> {
             r.triangle(0.2, spread),
             r.triangle(f64::from(s[2]) * pow, spread),
         ];
-        self.spawn_item(stack, at, v, 0);
+        self.spawn_item_thrown(stack, at, v);
     }
     /// `DefaultDispenseItemBehavior.execute`: drop one item.
     fn default_execute(
