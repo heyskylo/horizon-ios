@@ -995,6 +995,8 @@ const RELAX: usize = 2;
 /// `Cat.registerGoals` (with `reassessTameGoals`' player avoidance).
 pub fn register_cat(m: &mut Mob) {
     m.extra.color = RED;
+    // Cat.defineSynchedData: DATA_VARIANT_ID starts at DEFAULT_VARIANT (CatVariants.BLACK, id 1).
+    m.extra.variant = 1;
     let food = m.kind.food.clone();
     let g = &mut m.ai.goals;
     g.add(1, Float);
@@ -1811,6 +1813,21 @@ mod tests {
         let mut events = Vec::new();
         shake_tick(&mut shaking_wolf(), false, false, &mut events);
         assert!(!action(&events), "a client's copy posts nothing");
+    }
+
+    /// Cat.defineSynchedData: DATA_VARIANT_ID defaults to CatVariants.BLACK.
+    #[test]
+    fn a_newly_registered_cat_defaults_to_black_variant() {
+        let mut kind = kind();
+        let k = Arc::make_mut(&mut kind);
+        k.id = "minecraft:cat".into();
+        k.species = Species::Cat;
+        let m = Mob::new(1, kind, Vec3::ZERO, 0.0);
+        assert_eq!(m.extra.variant, 1);
+        assert_eq!(
+            super::super::finalize::variant_name(Species::Cat, m.extra.variant),
+            "black"
+        );
     }
 
     /// `TamableAnimal.unableToMoveToOwner` (#12939): a pet on a lead, with lead
