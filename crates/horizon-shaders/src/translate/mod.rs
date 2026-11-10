@@ -37,6 +37,7 @@ mod image_parameters;
 mod integer_bounds;
 mod interface_blocks;
 mod ordering;
+mod reachability;
 mod rewrite;
 mod scan;
 mod varyings;
@@ -304,19 +305,10 @@ fn translate(
     } else {
         GBUFFERS_MATRICES.to_owned()
     };
-    // Struct types without a name get one (`anonymous_structs`), interface blocks travel
-    // as plain varyings (`interface_blocks`), and buffer vectors that atomic functions use by
-    // component become arrays (`atomic_vectors`).
-    let flat = |pp: &Preprocessed| {
-        let named = anonymous_structs::name(&pp.code);
-        let code = named.as_deref().unwrap_or(&pp.code);
-        let flat = interface_blocks::flatten(code)
-            .or(named)
-            .map(|code| Preprocessed { code, ..pp.clone() });
-        let split = atomic_vectors::rewrite(flat.as_ref().unwrap_or(pp));
-        split.or(flat)
-    };
-    let (vertex_flat, fragment_flat) = (flat(vertex), flat(fragment));
+    let (vertex_flat, fragment_flat) = (
+        reachability::prepare(vertex),
+        reachability::prepare(fragment),
+    );
     let vertex = vertex_flat.as_ref().unwrap_or(vertex);
     let fragment = fragment_flat.as_ref().unwrap_or(fragment);
     // A `bool` member of a storage buffer travels as a `uint` (`buffer_bools`).

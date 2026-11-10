@@ -774,7 +774,7 @@ impl Host for Ctx<'_, '_> {
                 // `r.noise(x, y)`: one simplex noise (named noises aren't read yet).
                 let mut coords = args.iter().filter(|v| !matches!(v, V::Str(_))).map(V::num);
                 let (x, y) = (coords.next().unwrap_or(0.0), coords.next().unwrap_or(0.0));
-                num(f64::from(crate::environment::polytone_noise().get2(x, y)))
+                num(crate::environment::polytone_noise().get(x, y))
             }
             (id, _) if id >= BLOCKS => {
                 let at = *self

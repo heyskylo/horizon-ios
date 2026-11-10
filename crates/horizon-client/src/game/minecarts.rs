@@ -530,11 +530,9 @@ impl Game<'_> {
     /// collision, which sets a TNT minecart off.
     fn cart_entity_collisions(&self, c: &Minecart) -> Vec<Aabb> {
         let near = c.bounds().inflate(Vec3::new(2.0, 2.0, 2.0));
-        // Every cart asks about every entity of the level each tick, and the box
-        // turns nearly all of them away: it is tested first, before a mob's
-        // pushable state, and only the boxes kept are collected.
+        // Every moving cart asks each tick, and the box turns nearly every entity of
+        // the level away: it is tested first, and only the mobs near it are read.
         let close = |b: &Aabb| b.intersects(near);
-        let reach = self.vehicle_mob_reach();
         let mut boxes: Vec<Aabb> = self
             .carts
             .iter()
@@ -547,22 +545,13 @@ impl Game<'_> {
                     .map(super::boats::Boat::bounds)
                     .filter(close),
             )
-            .chain(
-                self.mobs
-                    .iter()
-                    .filter(|m| reach.is_none_or(|r| r.may_meet(m, near)))
-                    .map(|m| (m, m.bounds()))
-                    .filter(|(m, b)| {
-                        close(b)
-                            && !m.removed
-                            && m.extra.mount != Some(c.id)
-                            && (m.pushable()
-                                || m.species() == horizon_client::mobs::Species::Shulker
-                                    && m.alive())
-                    })
-                    .map(|(_, b)| b),
-            )
             .collect();
+        self.mobs_meeting(near, |_, m, b| {
+            let counts = m.pushable() || m.species() == Species::Shulker && m.alive();
+            if !m.removed && m.extra.mount != Some(c.id) && counts {
+                boxes.push(b);
+            }
+        });
         if self.riding != Some(c.id)
             && let Some(p) = self.player.as_ref()
             && !self.spectator()
@@ -701,12 +690,7 @@ impl Game<'_> {
     /// sits in it. `getSlowdownFactor` (0.997) and the 0.75 speed scale key on
     /// this, not on who rides.
     fn cart_is_vehicle(&self, id: u32) -> bool {
-        self.riding == Some(id)
-            || self.ridden_by_guest(id)
-            || self
-                .mobs
-                .iter()
-                .any(|m| !m.removed && m.extra.mount == Some(id))
+        self.riding == Some(id) || self.ridden_by_guest(id) || self.mob_rides(id)
     }
     /// `OldMinecartBehavior.moveAlongTrack`.
     fn move_along_track(
@@ -1633,27 +1617,30 @@ impl Game<'_> {
         }
         self.push_carts_from_mobs(&cells);
     }
-    /// `AbstractMinecart.push(mob)` from each mob walking into a cart
-    /// (`LivingEntity.pushEntities` -> `doPush`): the cart gets the push and
-    /// the mob a quarter of it back (`Entity.push`, which needs the mob to be
-    /// pushable and to carry no one). Bats push nothing (`Bat.pushEntities`).
-    fn push_carts_from_mobs(&mut self, cells: &horizon_client::mobs::seen_grid::SeenGrid) {
-        let teams = self.mob_teams();
+    /// `AbstractMinecart.push(mob)` from each mob walking into a cart (`LivingEntity.pushEntities`
+    /// -> `doPush`): the cart gets the push and the mob a quarter of it back (`Entity.push`, which
+    /// needs the mob to be pushable and to carry no one). Bats push nothing (`Bat.pushEntities`),
+    /// nor does a mob whose box reaches no cart: its box is worked out only if it may.
+    fn push_carts_from_mobs(&mut self, cells: &SeenGrid) {
+        let (teams, mut near) = (self.mob_teams(), Vec::new());
+        // The mobs a cart is near, or every mob, each then asked which carts it is near.
+        let slots = self.mobs_near_carts();
+        let reach = slots.is_none().then(|| self.vehicle_mob_reach()).flatten();
+        let slots = slots.unwrap_or_else(|| (0..self.mobs.len() as u32).collect());
         // (mob index, feet, box)
-        let pushers: Vec<(usize, Vec3, Aabb)> = self
-            .mobs
-            .iter()
-            .enumerate()
+        let pushers: Vec<(usize, Vec3, Aabb)> = slots
+            .into_iter()
+            .map(|j| (j as usize, &self.mobs[j as usize]))
             .filter(|(_, m)| {
                 !m.removed
                     && m.alive()
                     && m.species() != Species::Bat
+                    && reach.is_none_or(|r| self.mob_may_meet_cart(r, m, cells, &mut near))
                     && pushable_by(teams.of(Who::Mob(m.id)), None, true)
             })
             .map(|(j, m)| (j, m.position, m.bounds()))
             .collect();
         drop(teams);
-        let mut near = Vec::new();
         for (j, feet, bb) in pushers {
             if !cells.candidates(bb, &mut near) {
                 near.extend(0..self.carts.len() as u32);
@@ -2133,6 +2120,51 @@ impl Game<'_> {
             p.velocity = Vec3::ZERO;
         }
     }
+    /// `EntityType.createDefaultStackConfig` on a vehicle an item made: the
+    /// item's custom name and custom data (`applyComponentsFromItemStack`:
+    /// `Entity.applyImplicitComponent`'s two, saved as `CustomName` and
+    /// `data`), then its
+    /// `minecraft:entity_data` loaded over the vehicle (`updateCustomEntityTag`)
+    /// when it names this type. An op-only type (command block and spawner
+    /// minecarts) takes it from an op player only, never from a dispenser
+    /// (`by_player` false).
+    pub(super) fn apply_vehicle_stack_config(
+        &mut self,
+        target: super::commands::Target,
+        kind: &str,
+        stack: &ItemStack,
+        by_player: bool,
+    ) {
+        use horizon_world::nbt::Tag;
+        let name = stack.data().and_then(|d| d.custom_name.clone());
+        let custom = stack
+            .data()
+            .and_then(|d| d.other("minecraft:custom_data"))
+            .cloned();
+        let op = by_player && self.acting_player_is_op();
+        let data =
+            horizon_client::block_entity_item::spawn_egg_entity_data(stack, kind, op).cloned();
+        if name.is_none() && custom.is_none() && data.is_none() {
+            return;
+        }
+        let Some(mut own) = self.entity_nbt(target) else {
+            return;
+        };
+        if let Tag::Compound(map) = &mut own {
+            if let Some(name) = name {
+                map.insert("CustomName".into(), name);
+            }
+            if let Some(custom) = custom {
+                map.insert("data".into(), custom);
+            }
+        }
+        let tag = match &data {
+            Some(data) => horizon_client::data_cmd::merged(&own, data),
+            None => own,
+        };
+        // The vehicle's own compound, its name and data merged in: it loads back.
+        let _ = self.apply_entity_nbt(target, tag);
+    }
     /// `MinecartItem.useOn`: a cart on the clicked rail.
     pub(super) fn place_minecart(&mut self, hit: &Hit, stack: &ItemStack) -> bool {
         let Some(kind) = CartKind::from_id(&stack.item) else {
@@ -2153,6 +2185,8 @@ impl Game<'_> {
             .modified
             .insert((hit.pos[0] >> 4, hit.pos[2] >> 4));
         self.carts.push(cart);
+        let id = self.next_entity;
+        self.apply_vehicle_stack_config(super::commands::Target::Cart(id), kind.id(), stack, true);
         if self.serving.is_some() || self.options.dedicated.is_some() {
             let cart = self.carts.last().unwrap();
             self.native_vehicle_create(
