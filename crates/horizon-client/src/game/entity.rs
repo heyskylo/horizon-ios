@@ -2267,6 +2267,7 @@ mod set_rotation_tests {
             count: 1,
             ticks: 0,
             health: 5,
+            air: 300,
             rotation: [0.0, 0.0],
             following: None,
         };

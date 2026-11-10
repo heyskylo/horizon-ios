@@ -1371,6 +1371,8 @@ pub struct ExperienceOrb {
     pub ticks: u32,
     /// `ExperienceOrb.health`: damage wears it down from 5 (`hurtServer`).
     pub health: i32,
+    /// `Entity.airSupply`: loaded and saved as is; an orb never breathes.
+    pub air: i32,
     /// `Entity.noGravity`: `ExperienceOrb.tick`'s `applyGravity` does nothing.
     pub no_gravity: bool,
     /// `ExperienceOrb.followingPlayer`: the followed player's entity id, kept
@@ -3446,6 +3448,7 @@ mod world_border_tests {
                 count: 1,
                 ticks: 0,
                 health: 5,
+                air: 300,
                 following: None,
             };
             orb.tick(
@@ -4856,6 +4859,7 @@ mod orb_underwater_tests {
                     count: 1,
                     ticks: 0,
                     health: 5,
+                    air: 300,
                     following: None,
                 };
                 orb.set_underwater_movement();
@@ -4890,6 +4894,7 @@ mod render_light_tests {
             count: 1,
             ticks: 0,
             health: 5,
+            air: 300,
             following: None,
         }
     }
@@ -5091,6 +5096,7 @@ mod orb_lava_tests {
             count: 1,
             ticks: 0,
             health,
+            air: 300,
             following: None,
         }
     }
