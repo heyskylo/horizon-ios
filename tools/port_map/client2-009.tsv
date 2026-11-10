@@ -4,7 +4,7 @@ ActiveTextCollector.acceptScrollingWithDefaultCenter	port	crates/horizon-client-
 ActiveTextCollector.defaultScrollingHelper	port	crates/horizon-client-render/src/screen_draw.rs::scrolling_text	the offset is ui.rs::scroll_offset (screen_draw.rs::scroll_offset for the screen_draw widgets); ui.rs::centered_text, for titles and text lines, still clips because vanilla does not scroll them
 ActiveTextCollector.findElementUnderCursor	port	crates/horizon-client-render/src/chat.rs::Chat::style_at	gap: minor: hit test covers chat lines only; book links use game/books.rs book_link_at
 ActiveTextCollector.isPointInRectangle	port	crates/horizon-client-render/src/ui.rs::hovered	half-open rectangle test with the same bounds
-ActiveTextCollector.ClickableStyleFinder.accept	port	crates/horizon-client-render/src/chat.rs::Chat::style_at	gap: minor: only chat lines are searched for click and hover styles
+ActiveTextCollector.ClickableStyleFinder.accept	port	crates/horizon-client-render/src/chat.rs::Chat::style_at	gap: minor: only chat lines and dialog body lines (dialog_screen.rs::line_style_at, glyph bounds like BakedSheetGlyph.GlyphInstance) are searched for click and hover styles
 ActiveTextCollector.ClickableStyleFinder.acceptScrolling	missing		minor: scrolling text is not hit-tested for click and hover styles (Chat::style_at searches chat lines only)
 ActiveTextCollector.Parameters.withScale	skip:java		record copy-with helper; Horizon has no pose matrix per text
 ActiveTextCollector.Parameters.withOpacity	skip:java		record copy-with helper; opacity is the colour's alpha byte in Horizon
@@ -100,6 +100,7 @@ AbstractScrollArea.scrollBarY	port	crates/horizon-client-render/src/ui.rs::scrol
 AbstractScrollArea.extractScrollbar	port	crates/horizon-client-render/src/ui.rs::scrollbar	gap: minor: no disabled-scroller sprite and no cursor request
 AbstractScrollArea.defaultSettings	skip:java		settings record builder; the sizes are constants in ui.rs
 AbstractSelectionList.swap	port	crates/horizon-client/src/multiplayer.rs::Screen::click	gap: minor: mouse move up or down works; keyboard Shift+arrow reorder is not ported
+AbstractSelectionList.scrollBarX	port	crates/horizon-client/src/social_screen.rs::scrollbar_x	the rows' right edge + 6 + 2; the social list's draw passes it to ui::scrollbar
 AbstractSelectionList.clearEntriesExcept	skip:other		only the stats screen calls it; Horizon's stats screen draws its rows directly
 AbstractSelectionList.replaceEntries	port	crates/horizon-client-render/src/pack_screen.rs::PackScreen::update_list	
 AbstractSelectionList.getNextY	port	crates/horizon-client-render/src/pack_screen.rs::List::next_y	
@@ -142,7 +143,7 @@ AbstractTextAreaWidget.extractBackground	skip:ui		frame drawn by the book screen
 AbstractTextAreaWidget.extractBorder	skip:ui		frame sprite; no behaviour
 AbstractTextAreaWidget.withinContentAreaTopBottom	skip:ui		visibility cull while drawing lines
 AbstractWidget.extractRenderState	port	crates/horizon-client-render/src/ui.rs::hovered	gap: minor: the scissor test is not part of the hover check
-AbstractWidget.extractTooltipForNextRenderPass	port	crates/horizon-client-render/src/ui.rs::tooltip	gap: minor: unsure: widget hover delay not checked
+AbstractWidget.extractTooltipForNextRenderPass	port	crates/horizon-client-render/src/ui.rs::tooltip	widgets with a delay wait it out: the social rows' buttons use social_screen::TooltipDelay (PlayerEntry.TOOLTIP_DELAY, 500 ms); others have vanilla's zero delay
 AbstractWidget.extractScrollingStringOverContents	port	crates/horizon-client-render/src/ui.rs::scrolling_text	ui::button and ui::slider (margin 2) draw it for the HudBatch widgets; screen_draw.rs::scrolling_string_over_contents for the screen_draw ones
 AbstractWidget.mouseClicked	port	crates/horizon-client/src/title.rs::Title::click	gap: minor: click dispatch is per screen; the press sound is audio.rs Audio::play_button_click
 AbstractWidget.mouseReleased	port	crates/horizon-client-render/src/ui.rs::Scroll::release	gap: minor: only the scroll release; widget onRelease is per screen

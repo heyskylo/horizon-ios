@@ -285,3 +285,109 @@ fn a_teleporting_shulker_leaves_its_rider_behind() {
     }
     assert!(teleported > 0, "no shulker teleported");
 }
+
+/// `Shulker.teleportSomewhere`: the teleport posts `GameEvent.TELEPORT` at
+/// the block it left, between its sound and level event 2016, so a sculk
+/// sensor where it stood hears the shulker arrive.
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_teleporting_shulker_posts_teleport_where_it_stood() {
+    let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+    let mut game = floored_game(&root);
+    game.build_registries();
+    game.set_allow_commands(true);
+    // A sensor just above the shulker hears the vibration where it stands.
+    game.sculk_prepare();
+    assert!(game.run_command("setblock 8 5 8 sculk_sensor"));
+    game.sculk_sync_index();
+    let at = Vec3::new(8.5, 4.0, 8.5);
+    let old = [at.x, at.y, at.z];
+    // `LevelAccessor.gameEvent(Holder, BlockPos, ..)` centers the block.
+    let old_center = [at.x, at.y + 0.5, at.z];
+    let mut teleported = false;
+    for seed in 0..40 {
+        let id = 900 + seed as u32;
+        let mut mob = shulker(&game, id, at, seed);
+        // What `after_hurt` leaves for a low-health teleport.
+        mob.extra.flag = true;
+        let uuid = game.level.player_uuid;
+        let others: Vec<_> = game
+            .mobs
+            .iter()
+            .map(|m| super::creatures::seen(m, uuid))
+            .collect();
+        let mut level_random = game.world.random.clone();
+        let mut events = Vec::new();
+        {
+            let world = game.mob_world_base(&others);
+            horizon_client::mobs::shulker::run_pending_teleports(
+                &mut mob,
+                &world,
+                &mut level_random,
+                &mut events,
+            );
+        }
+        if mob.position.distance(at) <= 0.5 {
+            continue;
+        }
+        teleported = true;
+        let sound = events.iter().position(|e| {
+            matches!(e, MobEvent::Sound(name, p, ..) if *name == "entity.shulker.teleport" && *p == old)
+        });
+        let teleport = events.iter().position(|e| {
+            matches!(
+                e,
+                MobEvent::GameEvent { event, at: p, source, .. }
+                    if *event == "minecraft:teleport" && *p == old_center && *source == id
+            )
+        });
+        let level = events.iter().position(
+            |e| matches!(e, MobEvent::LevelEvent { id: 2016, pos, .. } if *pos == [8, 4, 8]),
+        );
+        assert!(
+            sound.is_some(),
+            "seed {seed}: no teleport sound: {events:?}"
+        );
+        assert!(
+            teleport.is_some(),
+            "seed {seed}: no minecraft:teleport game event: {events:?}"
+        );
+        assert!(
+            level.is_some(),
+            "seed {seed}: no level event 2016: {events:?}"
+        );
+        assert!(
+            sound < teleport && teleport < level,
+            "seed {seed}: the game event is not between the sound and level event: {events:?}"
+        );
+        game.mobs.push(mob);
+        super::sculk::TEST_POSTED_EVENTS.with(|events| *events.borrow_mut() = Some(Vec::new()));
+        game.handle_mob_events(events).unwrap();
+        let posted: Vec<_> = super::sculk::TEST_POSTED_EVENTS.with(|events| {
+            events
+                .borrow_mut()
+                .take()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(event, _, _)| *event == "minecraft:teleport")
+                .map(|(_, pos, source)| (pos, source))
+                .collect()
+        });
+        assert_eq!(
+            posted,
+            [(old_center, Some(horizon_client::mobs::Who::Mob(id)))],
+            "seed {seed}: the teleport event is posted from the shulker at its old position"
+        );
+        // The sensor above the old block holds that vibration.
+        game.chat_capture = Some(Vec::new());
+        assert!(game.run_command("data get block 8 5 8 listener.selector.event"));
+        let said = game.chat_capture.take().unwrap_or_default();
+        let said: String = said.iter().map(horizon_client::text::Text::plain).collect();
+        assert!(
+            said.contains("minecraft:teleport") && said.contains("[8.5d, 4.5d, 8.5d]"),
+            "seed {seed}: the sensor did not hear the teleport: {said}"
+        );
+        break;
+    }
+    assert!(teleported, "no shulker teleported");
+}

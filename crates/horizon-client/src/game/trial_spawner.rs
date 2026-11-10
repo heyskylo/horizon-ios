@@ -258,7 +258,7 @@ impl Game<'_> {
         // Vec3.atBottomCenterOf(pos).relative(UP, 1.2), lowered by spawnItem.
         let above = [center[0], center[1] + 0.7 - 0.125, center[2]];
         for (stack, v) in ejected {
-            self.spawn_item(stack, above, v, 0);
+            self.spawn_item_thrown(stack, above, v);
         }
         if next != current || ominous != spawner.is_ominous {
             self.set_trial_spawner_state(key, next, spawner.is_ominous)?;

@@ -233,7 +233,7 @@ fn is_animal(id: &str) -> bool {
 use crate::mobs::persistent_anger;
 /// The single player's UUID (`offline_uuid("Player")`): the entity the
 /// neutral mobs are angry at.
-fn player_uuid() -> [i32; 4] {
+pub(crate) fn player_uuid() -> [i32; 4] {
     let u = horizon_protocol::crypto::offline_uuid("Player");
     [
         (u >> 96) as u32 as i32,
@@ -1005,7 +1005,7 @@ pub fn mob_to_nbt(
                 );
             }
             if id == "minecraft:piglin" {
-                write_guarded_piglin_anger(m, map);
+                crate::mobs::piglin::write_guarded_anger(m, map);
                 // InventoryCarrier.writeInventoryToTag.
                 map.insert(
                     "Inventory".into(),
@@ -1297,7 +1297,7 @@ pub fn mob_to_nbt(
             crate::mobs::nautilus::to_nbt(m, map);
         }
         "minecraft:sulfur_cube" => crate::mobs::sulfur_cube::to_nbt(m, map),
-        "minecraft:bee" => crate::mobs::bee::to_nbt(m, map),
+        "minecraft:bee" => crate::mobs::bee::to_nbt(m, map, &mut uuid_of),
         "minecraft:sniffer" => crate::mobs::sniffer::to_nbt(m, map),
         "minecraft:wither" => {
             map.insert("Invul".into(), Tag::Int(m.extra.counter));
@@ -2232,6 +2232,9 @@ pub fn mob_from_nbt_with_random(
     ) {
         m.extra.flag2 = flag(tag, "IsImmuneToZombification");
         m.extra.counter2 = number(tag.get("TimeInOverworld")).unwrap_or(0) as i32;
+        if m.species() == crate::mobs::Species::Piglin {
+            crate::mobs::piglin::read_guarded_anger(&mut m, tag);
+        }
         if m.species() == crate::mobs::Species::Hoglin {
             m.extra.cannot_be_hunted = flag(tag, "CannotBeHunted");
         }
@@ -2666,9 +2669,9 @@ pub fn mob_from_nbt_with_random(
         m.extra.counter = number(tag.get("still_timeout")).unwrap_or(0) as i32;
     }
     if m.species() == crate::mobs::Species::Shulker {
-        m.extra.variant3 = number(tag.get("AttachFace")).unwrap_or(0).clamp(0, 5) as u8;
-        m.extra.counter = number(tag.get("Peek")).unwrap_or(0).clamp(0, 100) as i32;
-        m.extra.color = number(tag.get("Color")).map_or(16, |c| c.clamp(0, 16) as u8);
+        m.extra.variant3 = (number(tag.get("AttachFace")).unwrap_or(0) % 6).unsigned_abs() as u8;
+        m.extra.counter = number(tag.get("Peek")).map_or(0, |v| v as i8 as i32);
+        m.extra.color = number(tag.get("Color")).map_or(16, |v| v as i8 as u8);
         m.anim.v[0] = m.extra.counter as f32 * 0.01;
         m.anim.vo[0] = m.anim.v[0];
         // Shulker.setPos: square on its block.
@@ -5966,42 +5969,6 @@ mod tests {
         assert_eq!(back.len(), 1);
         assert_eq!(back[0].value, 7);
         assert_eq!(back[0].count, 3);
-    }
-}
-
-/// `Brain.Packed`: the guarded-block live ANGRY_AT entry. The existing
-/// anger counter supplies its remaining long TTL, not an absolute timestamp.
-fn write_guarded_piglin_anger(m: &Mob, map: &mut Compound) {
-    let Some(actor) = m.extra.piglin.guarded_angry_at else {
-        return;
-    };
-    let brain = map
-        .entry("Brain".into())
-        .or_insert_with(|| Tag::Compound(Compound::new()));
-    if !matches!(brain, Tag::Compound(_)) {
-        *brain = Tag::Compound(Compound::new());
-    }
-    let Tag::Compound(brain) = brain else { return };
-    let memories = brain
-        .entry("memories".into())
-        .or_insert_with(|| Tag::Compound(Compound::new()));
-    if !matches!(memories, Tag::Compound(_)) {
-        *memories = Tag::Compound(Compound::new());
-    }
-    let Tag::Compound(memories) = memories else {
-        return;
-    };
-    if let Some(uuid) = actor.filter(|_| m.extra.anger > 0) {
-        // ExpirableValue.codec: the UUID value and optional remaining Long TTL.
-        memories.insert(
-            "minecraft:angry_at".into(),
-            Tag::compound([
-                ("value", Tag::IntArray(uuid.to_vec())),
-                ("ttl", Tag::Long(i64::from(m.extra.anger))),
-            ]),
-        );
-    } else {
-        memories.remove(&"minecraft:angry_at".into());
     }
 }
 
@@ -9372,6 +9339,59 @@ mod piglin_live_anger_memory_tests {
                     }
                 }
             }
+        }
+    }
+
+    /// `Piglin.readAdditionalSaveData` reads the brain's `ANGRY_AT` memory
+    /// back: the actor's UUID and the ticks left (`ExpirableValue`'s TTL).
+    /// Horizon wrote the memory but never read it, so a piglin that a player
+    /// had angered came back calm after its chunk reloaded.
+    #[test]
+    fn a_saved_guarded_anger_loads_its_uuid_and_ticks() {
+        // A whole saved piglin: its id, a position and the brain's memory.
+        let saved = |memory: Tag| {
+            Tag::compound([
+                ("id", Tag::String("minecraft:piglin".into())),
+                (
+                    "Pos",
+                    Tag::List(vec![
+                        Tag::Double(0.0f64.to_bits()),
+                        Tag::Double(64.0f64.to_bits()),
+                        Tag::Double(0.0f64.to_bits()),
+                    ]),
+                ),
+                (
+                    "Brain",
+                    Tag::compound([("memories", Tag::compound([("minecraft:angry_at", memory)]))]),
+                ),
+            ])
+        };
+        let template = mob();
+        let types = [(template.kind.id.clone(), template.kind.clone())].into();
+        let uuid = Tag::IntArray(vec![90, 91, 92, 93]);
+        let ticking = saved(Tag::compound([
+            ("value", uuid.clone()),
+            ("ttl", Tag::Long(99)),
+        ]));
+        let loaded = mob_from_nbt(&ticking, &types, 2, None).unwrap();
+        assert_eq!(loaded.extra.anger, 99);
+        assert_eq!(
+            loaded.extra.piglin.guarded_angry_at,
+            Some(Some([90, 91, 92, 93]))
+        );
+        // `ExpirableValue` leaves the TTL out when it never expires, and a
+        // long past the counter's range holds as long as it can: the counter
+        // keeps the longest it can while the goal ticks it down.
+        for memory in [
+            Tag::compound([("value", uuid.clone())]),
+            Tag::compound([("value", uuid.clone()), ("ttl", Tag::Long(1 << 40))]),
+        ] {
+            let loaded = mob_from_nbt(&saved(memory), &types, 3, None).unwrap();
+            assert_eq!(loaded.extra.anger, i32::MAX);
+            assert_eq!(
+                loaded.extra.piglin.guarded_angry_at,
+                Some(Some([90, 91, 92, 93]))
+            );
         }
     }
 

@@ -60,6 +60,7 @@ mod entity_outline;
 mod fluid;
 #[cfg(test)]
 mod inter_stage_tests;
+mod section_fade;
 mod terrain_model;
 #[cfg(test)]
 pub(crate) mod test_gpu;
@@ -73,6 +74,10 @@ pub use entity_batch::{
     TRANSLUCENT_GLINT_ITEM_OVERLAY, TRANSLUCENT_ITEM_OVERLAY, TRANSLUCENT_PARTICLE_OVERLAY,
     WATER_MASK_OVERLAY, WORLD_TEXT_OVERLAY, WORLD_TEXT_POLYGON_OFFSET_OVERLAY, is_native_terrain,
     mark_oit,
+};
+use section_fade::{
+    CHUNK_VISIBILITY_THRESHOLD, FadeInputs, chunk_visibility, fade_millis, section_instance,
+    section_visibility,
 };
 pub use view::{View, ViewSet};
 
@@ -201,6 +206,7 @@ pub use hdr::{Calibration as HdrCalibration, Output as HdrOutput};
 mod hold;
 pub use hold::WorldHold;
 pub use output::{DisplayReading, EffectiveOutput, FrameConfiguration, FrameRequest};
+pub use screenshot_save::Saved as SavedScreenshot;
 pub mod block_light;
 mod custom_sky;
 mod displace;
@@ -236,9 +242,11 @@ pub mod panorama;
 mod readback;
 mod resident;
 mod reuse;
+mod screenshot_save;
 mod stars;
 mod surface_setup;
 use surface_setup::{AdapterChoice, AdapterFailure, open_adapter, pick_adapter, set_up_surface};
+mod off_page;
 pub mod submit;
 mod sunrise_fan;
 mod timing;
@@ -250,6 +258,7 @@ mod wgsl_prefix;
 mod world_post;
 pub mod world_primitives;
 mod world_warp;
+use off_page::move_off_page;
 
 /// A section's instance: its camera-relative origin and, in `w`, the step of
 /// its fixed-point UVs (`terrain.wgsl`'s `terrain_uv`).
@@ -361,62 +370,6 @@ fn pack_terrain_camera(camera: DVec3) -> DVec3 {
     let whole = camera.floor();
     whole + ((camera - whole) * 65536.0).round() / 65536.0
 }
-/// A section's instance: its camera-relative origin and its UV step, negated
-/// past its fade code while it fades in over far terrain (`lod::instance`).
-fn section_instance(origin: [f32; 3], fade: u32, visibility: f32) -> [f32; 4] {
-    let step = 1.0 / crate::mesher::UV_STEPS;
-    [
-        origin[0],
-        origin[1],
-        origin[2],
-        if fade == 0 {
-            // The step is a power of two, so its mantissa is free: it holds the vanilla
-            // chunk fade-in's `1 - visibility` in 23 bits (terrain.wgsl's `instance_step` and
-            // `instance_visibility` read it back). A whole section is the bare step.
-            let faded = ((1.0 - visibility) * 8_388_608.0)
-                .round()
-                .clamp(0.0, 8_388_607.0) as u32;
-            f32::from_bits(step.to_bits() | faded)
-        } else {
-            -(fade as f32 + step)
-        },
-    ]
-}
-/// `SectionRenderDispatcher.RenderSection.getVisibility`: how far through its fade-in a section
-/// uploaded `elapsed_ms` ago is.
-fn chunk_visibility(elapsed_ms: u64, fade_ms: u64) -> f32 {
-    if elapsed_ms >= fade_ms {
-        1.0
-    } else {
-        elapsed_ms as f32 / fade_ms as f32
-    }
-}
-/// `Util.toMillis`: `Mth.floor(seconds * 1000.0)`.
-fn fade_millis(seconds: f32) -> u64 {
-    (f64::from(seconds) * 1000.0).floor().max(0.0) as u64
-}
-/// `chunk_visibility` at `now` of a section first uploaded at `uploaded`
-/// (`Renderer::section_uploaded`; none: one that fades in over far terrain, or
-/// whose column left), with the chunk fade-in `fade_ms`.
-fn section_visibility(uploaded: Option<&Instant>, fade_ms: u64, now: Instant) -> f32 {
-    uploaded.map_or(1.0, |&t| {
-        let elapsed = now.saturating_duration_since(t).as_millis() as u64;
-        chunk_visibility(elapsed, fade_ms)
-    })
-}
-/// What a section's fade depends on besides the section itself
-/// (`SectionGpu::drawn_faded`): the time, the chunk fade-in time, the sections'
-/// first uploads (`Renderer::section_uploaded`) and those held while far
-/// terrain comes in (`Renderer::lod_retiring`).
-#[derive(Clone, Copy)]
-struct FadeInputs<'a> {
-    now: Instant,
-    fade_ms: u64,
-    uploaded: &'a FxHashMap<SectionKey, Instant>,
-    retiring: &'a crate::fast_hash::FxHashSet<SectionKey>,
-}
-/// `LevelRenderer.CHUNK_VISIBILITY_THRESHOLD`: a section's block entities wait for it.
-const CHUNK_VISIBILITY_THRESHOLD: f32 = 0.3;
 /// A new value for `Renderer::block_entity_revision`.
 fn next_block_entity_revision() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -725,62 +678,6 @@ impl Part {
             Self::Indices => s.sorted_indices = Some(to),
         }
     }
-}
-/// `Renderer::compact_arena`'s and `shrink_translucent`'s moves: what the meshes
-/// hold on `page` of `arena` (`part`) goes to its other pages in video memory,
-/// until the next range would pass `budget` bytes (it keeps what is left; the
-/// first range moves whatever its size, so none keeps the page closed), the
-/// copies into `encoder`, the ranges' flat draw ids (`flat`) and, in the
-/// section arena, GPU culling's records (`records`) along. False when the other
-/// pages have no room left.
-fn move_off_page<'a>(
-    arena: &mut arena::Arena,
-    encoder: &mut wgpu::CommandEncoder,
-    mut flat: Option<(&mut flat::Flat, &wgpu::Device, &mut upload::Uploads)>,
-    mut records: Option<&mut gpu_culling::Records>,
-    meshes: impl Iterator<Item = &'a mut SectionGpu>,
-    page: u32,
-    part: Part,
-    budget: &mut u64,
-) -> bool {
-    debug_assert!(
-        records.is_none() || matches!(part, Part::Section { .. }),
-        "records follow the section arena's ranges"
-    );
-    let mut moved = false;
-    for s in meshes {
-        // Nothing of a mesh here: split, one without solid quads (its (0, 0) is no
-        // range of page 0); in the other arenas, one without translucent quads.
-        let Some((_, start, vertices)) = part.of(s).filter(|r| r.0 == page) else {
-            continue;
-        };
-        let bytes = vertices * arena.stride();
-        if moved && bytes > *budget {
-            break;
-        }
-        let Some(to) = arena.alloc_moved(vertices) else {
-            return false;
-        };
-        arena.copy(encoder, (page, start), to, vertices);
-        arena.release(page, start, vertices);
-        if let (Some((flat, device, uploads)), Some(id)) = (&mut flat, s.flat_id) {
-            let key = match part {
-                Part::Translucent => to.0 + flat::TRANSLUCENT_KEYS,
-                _ => to.0,
-            };
-            flat.place(device, encoder, uploads, id, key, to.1, vertices);
-        }
-        part.set(s, to);
-        // Its solid quads start the range in either layout.
-        if let (Part::Section { .. }, Some(records), Some(id)) =
-            (part, records.as_deref_mut(), s.gpu_id)
-        {
-            records.relocate(id, to.0, u64::from(s.solid_base()));
-        }
-        *budget = budget.saturating_sub(bytes);
-        moved = true;
-    }
-    true
 }
 /// Starts moving a page of a large arena far larger than its ranges in use
 /// (`Arena::oversized`) into a new page of the size they get (`Arena::open_page`),
@@ -1138,6 +1035,9 @@ pub struct ScreenshotRequest {
     /// F2's: drawn at the game's resolution (Resolution Scale above 100%) times
     /// `Renderer::screenshot_quality`, not the window's.
     pub scaled: bool,
+    /// Written on a thread of its own (F2's, the world icon's): its outcome comes back a
+    /// frame or a few later in `Renderer::saved_screenshots`, not `screenshot_result`.
+    pub background: bool,
 }
 /// A solid terrain pipeline without HDR output's lighting (terrain.wgsl's `HDR_LIGHTING`),
 /// for the frames HDR is off, and with it where the display offers HDR output: the
@@ -1225,6 +1125,8 @@ pub struct Renderer {
     /// Sections upload their solid quads in the compact layout (`mesher::packed`): the solid
     /// passes read the arena themselves (`flat`) and no shader pack reads it as vertices.
     packed_quads: bool,
+    /// The compact layout is allowed (`HORIZON_PACKED_QUADS`, `set_packed_layout`).
+    packed_on: bool,
     /// The visibility buffer for flat frames' solid terrain (`visbuffer`,
     /// `HORIZON_VISBUFFER=1`).
     visbuf: Option<visbuffer::Visbuffer>,
@@ -1632,6 +1534,9 @@ pub struct Renderer {
     pub screenshot_result: Option<std::result::Result<[u32; 2], String>>,
     /// The HDR copy the last screenshot wrote beside it, if it wrote one.
     pub screenshot_hdr: Option<std::path::PathBuf>,
+    /// `background` screenshots written since the caller last took them.
+    pub saved_screenshots: Vec<SavedScreenshot>,
+    screenshot_saves: screenshot_save::Saves,
     /// Screenshot Quality (Horizon setting): a `scaled` screenshot's frame is this many
     /// times the game's resolution (1, 2, 4 or 8).
     pub screenshot_quality: u32,
@@ -4999,8 +4904,8 @@ impl Renderer {
             }
             None => (solid, solid_opaque, solid_cutout, solid_mirror),
         };
-        // The solid quads in the compact layout, while no shader pack reads the arena
-        // (`follow_packed_layout`).
+        // The solid quads in the compact layout where every pass reads it; the first world
+        // frames settle it for the picked pack (`follow_packed_layout`).
         let packed_quads = flat.is_some() && !shader_pack && packed_wanted();
         packed::pack_quads(packed_quads);
         // A native mod's world warp builds its pipelines with these layouts once it is given one.
@@ -5131,6 +5036,7 @@ impl Renderer {
             ));
         }
         let world_primitives = world_primitives::WorldPrimitives::new(&device, frame_format);
+        let screenshot_saves = screenshot_save::Saves::new(&device);
         Ok(Self {
             display: None,
             reading: display,
@@ -5167,6 +5073,7 @@ impl Renderer {
             world_warps,
             flat_on: flat.is_some(),
             packed_quads,
+            packed_on: packed_wanted(),
             cull_on: cull.is_some(),
             sides_on: true,
             gpu_culling: None,
@@ -5402,6 +5309,8 @@ impl Renderer {
             screenshot: None,
             screenshot_result: None,
             screenshot_hdr: None,
+            saved_screenshots: Vec::new(),
+            screenshot_saves,
             screenshot_quality: 1,
             screenshot_halvings: 0,
             gamma: 0.5,
@@ -6801,13 +6710,17 @@ impl Renderer {
             flat.set_translucent_page_vertices(arena.page_vertices());
         }
     }
-    /// Uploads solid quads in the compact layout (`packed_quads`) while no shader pack runs:
-    /// a pack's terrain and shadow programs, and Horizon's own packs' stages, read the
-    /// arena's vertices as `TerrainVertex`es. Leaving it drops every section and far tile
-    /// for the game to mesh again, as `follow_translucent_layout` does.
+    /// Uploads solid quads in the compact layout (`packed_quads`) unless a pack reads the
+    /// arena's vertices as `TerrainVertex`es: Horizon's own packs' stages, and a `shaders/`
+    /// pack's terrain and shadow programs outside flat draws (flat ones unpack the records,
+    /// `pack_atlas::PULL_FLAT`). Leaving it drops every section and far tile for the game to
+    /// mesh again, as `follow_translucent_layout` does.
     fn follow_packed_layout(&mut self) {
         let pack = self.pack_post.as_ref().and_then(|p| p.1.as_ref()).is_some();
-        let want = self.flat.is_some() && !pack && self.native.is_none() && packed_wanted();
+        let want = self.flat.is_some()
+            && (!pack || self.pack_terrain_flat)
+            && self.native.is_none()
+            && self.packed_on;
         if want == self.packed_quads {
             return;
         }
@@ -6818,6 +6731,10 @@ impl Renderer {
             let waiting = self.hold.take_all();
             self.place_held(waiting);
         }
+        log::info!(
+            "Horizon: compact solid terrain {}",
+            if want { "on" } else { "off" }
+        );
         self.packed_quads = want;
         packed::pack_quads(want);
         let laid_out = self.sections.values().any(|s| s.packed)
@@ -6826,6 +6743,17 @@ impl Renderer {
             self.sections_dropped = true;
             self.clear_sections(self.layout);
         }
+    }
+    /// Allows the compact layout of solid quads or not, for A/B checks: every section and far
+    /// tile is meshed again in the layout that follows. Replies whether sections now use it.
+    pub fn set_packed_layout(&mut self, on: bool) -> bool {
+        if on != self.packed_on {
+            self.packed_on = on;
+            self.follow_packed_layout();
+            self.sections_dropped = true;
+            self.clear_sections(self.layout);
+        }
+        self.packed_quads
     }
     /// Whether every section and far tile was dropped since the last call, to be
     /// laid out again (`follow_translucent_layout`): the game meshes them again,
@@ -7095,8 +7023,10 @@ impl Renderer {
         }
     }
     /// This renderer's output as applied, with what its destination offers and reports.
-    pub fn output(&self) -> &output::EffectiveOutput {
-        &self.output
+    pub fn output(&self) -> output::EffectiveOutput {
+        let native = self.native.as_ref().map(|n| n.frame.api);
+        self.output
+            .with_pack(self.shader_pack_kind() == Some("iris"), native)
     }
     /// What this renderer's display last reported: a renderer made again for the window
     /// starts from it (`Renderer::new`'s `display`).
@@ -7267,7 +7197,8 @@ impl Renderer {
                     .as_ref()
                     .map_or([1, 1], |t| [t.width(), t.height()]),
                 terrain: self.pack_atlas.as_ref().map(|_| pack_post::Geometry {
-                    buffers: if flat { &buffers[..1] } else { &buffers },
+                    // Flat terrain programs pull their vertices (`pack_atlas::PULL_FLAT`).
+                    buffers: if flat { &[] } else { &buffers },
                     table: self.flat.as_ref().filter(|_| flat).map(|f| &f.draw_layout),
                     depth_write: true,
                     atlas: None,
@@ -7437,7 +7368,8 @@ impl Renderer {
                 lightmap,
                 gui_size,
                 terrain: terrain.then(|| pack_post::Geometry {
-                    buffers: if flat { &buffers[..1] } else { &buffers },
+                    // Flat terrain programs pull their vertices (`pack_atlas::PULL_FLAT`).
+                    buffers: if flat { &[] } else { &buffers },
                     table: table.as_ref(),
                     depth_write: true,
                     atlas: None,
@@ -7602,7 +7534,8 @@ impl Renderer {
                 );
                 horizon_shaders::GeometryInputs {
                     inputs,
-                    pull: pack_atlas::PULL.to_owned(),
+                    // Flat terrain inputs pull their own vertex (`PULL_FLAT`, `gl_VertexIndex` → `hz_vertex_index`).
+                    pull: String::new(),
                     index: "hz_indices[@]".to_owned(),
                 }
             });
@@ -8029,6 +7962,8 @@ impl Renderer {
         if self.device_lost() {
             return Err("the graphics device was lost".into());
         }
+        let saved = self.screenshot_saves.finished();
+        self.saved_screenshots.extend(saved);
         if let Some(request) = self.capture.take() {
             let result = self.write_capture(&request, frame);
             self.capture_result = Some(result.map_err(|e| e.to_string()));
@@ -8373,9 +8308,7 @@ impl Renderer {
         let taa = !frame.title
             && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
             && self.native.as_ref().is_none_or(|n| n.post.is_none());
-        let hdr_lighting = self.native.is_none()
-            && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
-            && std::env::var_os("HORIZON_HDR_LIGHTING").is_none_or(|v| v != "0");
+        let hdr_lighting = self.shader_pack_kind().is_none();
         if let Some(hdr) = &mut self.hdr {
             hdr.lighting = hdr_lighting && hdr.look;
         }
@@ -10116,7 +10049,11 @@ impl Renderer {
         let pack_reads_world = pack_post || native_post;
         laps.lap("r_uploads");
         // Phase 2 of occlusion culling draws over the depth, and a shader pack or TAA reads it.
+        // Post effects (a resource pack's chains, `use_depth_buffer`) read the world's depth
+        // after the world pass, as `GameRenderer.render` hands them the main target's.
+        let post_reads_depth = !frame.title && !frame.post_effects.effects.is_empty();
         let keep_depth = pack_reads_world
+            || post_reads_depth
             || (taa && self.world_post.taa)
             || oit_on
             || native_render::render_needs().world_depth
@@ -12094,24 +12031,18 @@ impl Renderer {
                 self.screenshot = Some(request);
             } else {
                 self.screenshot_halvings = 0;
-                self.screenshot_hdr = None;
-                if let Some(hdr_buffer) = hdr_readback {
-                    let hdr_path = hdr_screenshot_path(&request.path);
-                    match self.write_hdr_screenshot(&hdr_path, &hdr_buffer) {
-                        Ok(()) => {
-                            log::info!("Saved HDR screenshot to {}", hdr_path.display());
-                            self.screenshot_hdr = Some(hdr_path);
-                        }
-                        Err(e) => log::warn!(
-                            "Horizon renderer: HDR screenshot {}: {e}",
-                            hdr_path.display()
-                        ),
-                    }
+                let size = [self.config.width, self.config.height];
+                let hdr = hdr_readback
+                    .filter(|_| self.hdr.is_some())
+                    .map(|b| (hdr_screenshot_path(&request.path), b));
+                let shot = screenshot_save::Shot::new(&request, size, self.config.format, hdr);
+                if request.background {
+                    self.screenshot_saves.start(shot, buffer);
+                } else {
+                    let saved = screenshot_save::save_now(&self.device, shot, &buffer);
+                    self.screenshot_hdr = saved.hdr;
+                    self.screenshot_result = Some(saved.result);
                 }
-                self.screenshot_result = Some(
-                    self.write_screenshot(&request, &buffer)
-                        .map_err(|e| e.to_string()),
-                );
             }
         }
         // The frame's own waits for the submit thread (its queue writes and passes).
@@ -12714,95 +12645,21 @@ impl Renderer {
             let texture = copy.as_ref().unwrap_or(texture);
             Some((request, copy_frame(&self.device, encoder, texture, size)))
         } else {
-            self.screenshot_result = Some(Err(format!(
+            let error = format!(
                 "screenshots need a 32-bit surface format, not {:?}",
                 self.config.format
-            )));
+            );
+            if request.background {
+                self.saved_screenshots.push(screenshot_save::Saved {
+                    path: request.path,
+                    result: Err(error),
+                    hdr: None,
+                });
+            } else {
+                self.screenshot_result = Some(Err(error));
+            }
             None
         }
-    }
-    /// The pixels `copy_frame` read back into `buffer`, 4 bytes each, row after row.
-    fn read_frame(&self, buffer: &wgpu::Buffer) -> Result<Vec<[u8; 4]>> {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        buffer.map_async(wgpu::MapMode::Read, .., move |r| {
-            let _ = sender.send(r);
-        });
-        self.device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|e| e.to_string())?;
-        receiver
-            .recv()
-            .map_err(|e| e.to_string())?
-            .map_err(|e| e.to_string())?;
-        let (width, height, row) = (
-            self.config.width as usize,
-            self.config.height as usize,
-            padded_row(self.config.width) as usize,
-        );
-        let mut pixels = Vec::with_capacity(width * height);
-        {
-            let data = buffer.get_mapped_range(..).map_err(|e| e.to_string())?;
-            for y in 0..height {
-                pixels.extend_from_slice(data[y * row..y * row + width * 4].as_chunks::<4>().0);
-            }
-        }
-        buffer.unmap();
-        Ok(pixels)
-    }
-    fn write_screenshot(
-        &self,
-        request: &ScreenshotRequest,
-        buffer: &wgpu::Buffer,
-    ) -> Result<[u32; 2]> {
-        let bgra = matches!(
-            self.config.format.remove_srgb_suffix(),
-            wgpu::TextureFormat::Bgra8Unorm
-        );
-        let mut pixels = Vec::with_capacity((self.config.width * self.config.height * 4) as usize);
-        for px in self.read_frame(buffer)? {
-            let (r, b) = if bgra { (px[2], px[0]) } else { (px[0], px[2]) };
-            pixels.extend_from_slice(&[r, px[1], b, 255]);
-        }
-        // NativeImage.resizeSubRectTo on takeAutoScreenshot's grab: the icon
-        // is the frame's centre square averaged down to its size.
-        let (width, height, pixels) = match request.size {
-            Some(size) => (
-                size[0],
-                size[1],
-                square_downscale(&pixels, self.config.width, self.config.height, size),
-            ),
-            None => (self.config.width, self.config.height, pixels),
-        };
-        let mut encoder = png::Encoder::new(
-            std::io::BufWriter::new(std::fs::File::create(&request.path)?),
-            width,
-            height,
-        );
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        encoder.write_header()?.write_image_data(&pixels)?;
-        Ok([width, height])
-    }
-    /// The HDR10 copy (`Hdr::capture`) as a 16-bit PNG tagged BT.2020 with PQ (cICP, PNG's
-    /// third edition), with the content light levels its pixels hold (cLLI), and
-    /// an ICC profile for the programs that don't read cICP (`hdr_icc`).
-    fn write_hdr_screenshot(&self, path: &std::path::Path, buffer: &wgpu::Buffer) -> Result<()> {
-        if self.hdr.is_none() {
-            return Ok(());
-        }
-        let pixels = hdr10_to_rgb16(&self.read_frame(buffer)?);
-        let mut info = png::Info::with_size(self.config.width, self.config.height);
-        info.color_type = png::ColorType::Rgb;
-        info.bit_depth = png::BitDepth::Sixteen;
-        info.icc_profile = Some(hdr_icc::profile().into());
-        let encoder =
-            png::Encoder::with_info(std::io::BufWriter::new(std::fs::File::create(path)?), info)?;
-        let mut writer = encoder.write_header()?;
-        // BT.2020 primaries, PQ, RGB, full range.
-        writer.write_chunk(png::chunk::cICP, &[9, 16, 0, 1])?;
-        writer.write_chunk(png::chunk::cLLI, &hdr_icc::content_light_levels(&pixels))?;
-        writer.write_image_data(&pixels)?;
-        Ok(())
     }
 }
 /// `screenshots/2026-10-28_12.00.00.png` -> `screenshots/2026-10-28_12.00.00-hdr.png`.
@@ -13714,6 +13571,7 @@ mod tests {
             Some(Reported {
                 paper_white: 240,
                 peak: 998,
+                peak_guessed: true,
             })
         );
         assert_eq!(
@@ -13721,6 +13579,7 @@ mod tests {
             Some(Reported {
                 paper_white: 480,
                 peak: 480,
+                peak_guessed: true,
             })
         );
         // White above the calibrated peak (a Samsung QD-OLED's 380, the slider at 456).
@@ -13729,6 +13588,7 @@ mod tests {
             Some(Reported {
                 paper_white: 456,
                 peak: 456,
+                peak_guessed: true,
             })
         );
         assert_eq!(os_reported(&info(Some(1000.0), None)), None);
@@ -15419,11 +15279,9 @@ fn log_os_reported(reported: Option<crate::graphics::Reported>) {
         None => "Horizon renderer: the system doesn't report the display's luminance".into(),
     });
 }
-/// What the OS reports in absolute nits (Windows: DXGI's `MaxLuminance` and the SDR
-/// white level the brightness slider sets), which is HDR output's scale there: SDR
-/// white is Paper White, the display's peak is Peak Brightness. Both are kept within
-/// the settings' ranges. The OS's figures often come from the display's EDID and may
-/// run optimistic; the player's own value always wins.
+/// What the OS reports in absolute nits, HDR output's scale (Windows: DXGI's SDR white level,
+/// the brightness slider's, as Paper White, and its `MaxLuminance`, the display's or a calibration
+/// profile's, as Peak Brightness), kept within the settings' ranges. The player's values win.
 fn os_reported(info: &wgpu::DisplayHdrInfo) -> Option<crate::graphics::Reported> {
     let luminance = info.luminance?;
     let usable = |n: f32| n.is_finite() && n > 0.0;
@@ -15435,6 +15293,7 @@ fn os_reported(info: &wgpu::DisplayHdrInfo) -> Option<crate::graphics::Reported>
         // Windows' SDR brightness slider can set white above the reported peak (480 against
         // a calibrated 380): the highlights then stay at white instead of dropping below it.
         peak: (peak.round() as u32).clamp(200, 10_000).max(paper_white),
+        peak_guessed: true,
     })
 }
 
@@ -15470,6 +15329,7 @@ fn reported(l: horizon_hdr::wayland::Luminances) -> crate::graphics::Reported {
     crate::graphics::Reported {
         paper_white: 203,
         peak: peak.clamp(200, 10_000),
+        peak_guessed: false,
     }
 }
 
@@ -15718,11 +15578,11 @@ mod shadow_caster_tests {
     #[test]
     fn the_shadow_pass_draws_terrain_outside_the_pack_s_planes() {
         let kept = |near: Option<f32>, far: Option<f32>, y: f64, min: [f32; 3], depth: bool| {
-            let shadow = horizon_render_pipeline::Shadow {
+            let shadow = horizon_shaders::Shadow {
                 distance: 128.0,
                 near,
                 far,
-                ..horizon_render_pipeline::Shadow::default()
+                ..horizon_shaders::Shadow::default()
             };
             let camera = DVec3::new(13.5, y + 1.62, -13.5);
             let view = pack_post::ShadowView {

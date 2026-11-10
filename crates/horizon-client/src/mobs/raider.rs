@@ -6,7 +6,10 @@ use super::{
     Mob, MobEvent, MobWorld, Species, Who,
     goals::{Cx, Goal, LOOK, MOVE, goal_clone},
 };
-use horizon_core::{geometry::Vec3, random::RandomSource};
+use horizon_core::{
+    geometry::{Aabb, Vec3},
+    random::RandomSource,
+};
 use horizon_world::nbt::Tag;
 
 /// The ominous banner is a white banner with the raid patterns; raiders wear
@@ -272,10 +275,19 @@ impl LongDistancePatrol {
         }
     }
 }
+/// A box that holds every mob whose position is within `(rx, ry, rz)` of
+/// `at`, one block wider so its bounds (at most 1.95 wide) meet it too.
+fn reach_box(at: Vec3, rx: f64, ry: f64, rz: f64) -> Aabb {
+    Aabb::new(
+        Vec3::new(at.x - rx - 1.0, at.y - ry - 1.0, at.z - rz - 1.0),
+        Vec3::new(at.x + rx + 1.0, at.y + ry + 1.0, at.z + rz + 1.0),
+    )
+}
 /// Patrol companions within 16 blocks that are not in a raid.
 fn companions(m: &Mob, w: &MobWorld) -> Vec<u32> {
-    w.others
-        .iter()
+    let (rx, ry) = (16.0 + f64::from(m.width()), 16.0 + f64::from(m.height()));
+    let area = reach_box(m.position, rx, ry, rx);
+    w.others_near(area)
         .filter(|s| {
             s.id != m.id
                 && s.alive
@@ -623,8 +635,9 @@ impl HoldGroundAttack {
 }
 /// Raiders within 8 blocks, nearest first (`shoutTargeting`).
 fn shout_range(m: &Mob, w: &MobWorld) -> Vec<u32> {
-    w.others
-        .iter()
+    let (rx, ry) = (8.0 + f64::from(m.width()), 8.0 + f64::from(m.height()));
+    let area = reach_box(m.position, rx, ry, rx);
+    w.others_near(area)
         .filter(|s| {
             s.id != m.id
                 && s.alive
@@ -748,6 +761,45 @@ pub fn read_nbt(m: &mut Mob, tag: &Tag) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn companions_and_shout_range_match_the_full_scan() {
+        use crate::mobs::{
+            Seen, seen_grid::SeenGrid, sensor_scan_tests::kind, world::with_test_world,
+        };
+        use std::sync::Arc;
+        let mut pillager = (*kind()).clone();
+        pillager.id = "minecraft:pillager".into();
+        pillager.species = Species::Pillager;
+        let (pillager, cow) = (Arc::new(pillager), kind());
+        // Raiders and cows on a 3-block lattice, some within 8 and 16 blocks, some beyond.
+        let mobs: Vec<Mob> = (0..300u32)
+            .map(|i| {
+                let at = Vec3::new(f64::from(i % 20) * 3.0, 64.0, f64::from(i / 20) * 3.0);
+                let mob_kind = if i % 3 == 0 {
+                    cow.clone()
+                } else {
+                    pillager.clone()
+                };
+                Mob::new(i + 1, mob_kind, at, 0.0)
+            })
+            .collect();
+        let seen: Vec<Seen> = mobs.iter().map(|m| m.seen(None)).collect();
+        let grid = SeenGrid::new(seen.iter().map(|s| s.bounds));
+        with_test_world(&seen, |w, _| {
+            let indexed = MobWorld {
+                others_grid: Some(&grid),
+                ..w.clone()
+            };
+            let mut found = 0;
+            for m in mobs.iter().filter(|m| is_raider(m.species())) {
+                let scan = companions(m, w);
+                assert_eq!(companions(m, &indexed), scan);
+                assert_eq!(shout_range(m, &indexed), shout_range(m, w));
+                found += scan.len();
+            }
+            assert!(found > 0);
+        });
+    }
     #[test]
     fn raiders_and_leaders() {
         assert!(is_raider(Species::Ravager) && is_raider(Species::Witch));

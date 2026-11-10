@@ -48,7 +48,6 @@
     "crates/horizon-client-render/src/pack_browser.rs api.modrinth.com",
     "crates/horizon-client/src/mod_registry.rs horizon-rust.github.io",
     "crates/horizon-client/src/mod_registry.rs playhorizon.dev",
-    "crates/horizon-client/src/multiplayer.rs afri-network.co.za",
     "crates/horizon-client/src/no_resources.rs playhorizon.dev",
     "crates/horizon-mod-registry/src/github.rs api.github.com",
     "crates/horizon-mod-registry/src/github.rs github.com",
