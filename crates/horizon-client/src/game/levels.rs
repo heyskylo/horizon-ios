@@ -804,6 +804,13 @@ impl Game<'_> {
         None
     }
 
+    /// The level whose id is exactly `id` (`MinecraftServer.getLevel` of a `ResourceKey`).
+    pub(super) fn known_level(&self, id: &str) -> Option<Dim> {
+        [Dim::Overworld, Dim::Nether, Dim::End]
+            .into_iter()
+            .find(|d| d.id() == id)
+    }
+
     /// The levels this server tick runs, in `MinecraftServer.levels` order
     /// (the Overworld, the Nether, the End): every level with a player in
     /// it, forced chunks or a `/pregen` task, or the Overworld while idle.

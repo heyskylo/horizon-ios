@@ -19,6 +19,7 @@ use horizon_core::{
     random::RandomSource,
 };
 use horizon_world::{
+    dimension_type::DimensionFacts,
     level::portal_travel::{
         BorderBounds, FoundRectangle, closest_portal, collision_free_position, exit_position,
         largest_rectangle_around, relative_position,
@@ -330,12 +331,10 @@ impl Game<'_> {
             }
             None => (true, Vec3::new(0.5, 0.0, 0.0)),
         };
-        // DimensionType.getTeleportationScale: 8 out of the Nether, 1/8 into it.
-        let scale = if self.dim == Dim::Nether {
-            8.0
-        } else {
-            1.0 / 8.0
-        };
+        let scale = DimensionFacts::teleportation_scale(
+            self.dimension_type(),
+            self.dimension_type_of(target),
+        );
         Plan {
             dim: target,
             // getPortalDestination clamps to the border of the level it leads to.
