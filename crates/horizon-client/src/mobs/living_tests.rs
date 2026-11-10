@@ -1175,3 +1175,36 @@ fn a_steered_mount_moves_through_the_air_at_a_tenth_of_its_speed() {
     m.extra.saddled = true;
     assert_eq!(m.flying_speed(), 0.3_f32 * 0.1);
 }
+
+/// `Drowned.isPushedByFluid`: a drowned answers `!isSwimming()`, so the current
+/// of a stream pushes a drowned walking its bottom and leaves one swimming after
+/// its target alone, where every land mob feels it.
+#[test]
+fn a_swimming_drowned_is_not_pushed_by_the_current() {
+    use crate::mobs::Species;
+    let mob = |species| {
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.species = species;
+        Mob::new(1, std::sync::Arc::new(kind), Vec3::ZERO, 0.0)
+    };
+    // Drowned.updateSwimming keeps `isSwimming` on `extra.flag`.
+    let mut swimming = mob(Species::Drowned);
+    swimming.extra.flag = true;
+    assert!(
+        !swimming.pushed_by_fluid(),
+        "a swimming drowned holds still"
+    );
+    swimming.extra.flag = false;
+    assert!(swimming.pushed_by_fluid(), "one on the bottom is pushed");
+    // The water mobs answer false either way.
+    for quiet in [
+        Species::Cod,
+        Species::Squid,
+        Species::Turtle,
+        Species::Nautilus,
+    ] {
+        assert!(!mob(quiet).pushed_by_fluid(), "{quiet:?}");
+    }
+    // A land mob is pushed.
+    assert!(mob(Species::Zombie).pushed_by_fluid());
+}
