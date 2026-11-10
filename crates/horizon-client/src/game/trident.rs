@@ -1461,6 +1461,15 @@ mod tests {
         ]);
         let loaded = horizon_client::entity_nbt::trident_from_nbt(&tag).unwrap();
         assert_eq!((loaded.life, loaded.shake), (-1, 255));
+        // `Entity.load` reads `Fire` with `getShortOr` as well: 40000 is -25536.
+        let burning = Tag::compound([
+            ("Pos", Tag::List(vec![Tag::Double(0); 3])),
+            ("Fire", Tag::Int(40000)),
+        ]);
+        let fire = horizon_client::entity_nbt::trident_from_nbt(&burning)
+            .unwrap()
+            .fire_ticks;
+        assert_eq!(fire, -25536);
         let back = ThrownTrident::from_nbt(loaded, &tag, &registry);
         let saved = back.to_nbt([1; 4], &registry, None);
         assert_eq!(saved.get("life"), Some(&Tag::Short(-1)));

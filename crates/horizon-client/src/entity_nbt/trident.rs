@@ -119,7 +119,7 @@ pub fn trident_from_nbt(tag: &Tag) -> Option<TridentNbt> {
         owner: owner_uuid(tag),
         no_gravity: flag(tag, "NoGravity"),
         on_ground: flag(tag, "OnGround"),
-        fire_ticks: number(tag.get("Fire")).unwrap_or(0) as i32,
+        fire_ticks: number(tag.get("Fire")).unwrap_or(0) as i16 as i32,
         sound_event: text(tag.get("SoundEvent"))
             .and_then(|s| horizon_client_core::identifier::normalize_id(&s))
             .unwrap_or_else(|| TRIDENT_HIT_GROUND.to_owned()),
