@@ -3470,6 +3470,7 @@ pub fn spit_or_bullet_from_nbt(
     p.has_been_shot = flag(tag, "HasBeenShot");
     p.owner_uuid = owner;
     p.no_gravity = flag(tag, "NoGravity");
+    load_projectile_entity_fields(&mut p, tag);
     p.on_ground = flag(tag, "OnGround");
     Some(p)
 }
@@ -3496,10 +3497,11 @@ pub fn spit_or_bullet_to_nbt(
         motion: p.velocity,
         rotation: [p.yaw, p.pitch],
         on_ground: p.on_ground,
-        fall_distance: 0.0,
+        fall_distance: p.fall_distance,
     };
     let mut tag = base.tag(raw);
     put_projectile(&mut tag, p, owner);
+    put_projectile_entity_fields(&mut tag, p);
     // `ShulkerBullet.addAdditionalSaveData`: the target it homes on (written
     // only while it has one), the step it is on (omitted while it has not
     // chosen one), the steps left and the per-axis target deltas.
