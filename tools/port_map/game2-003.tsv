@@ -156,3 +156,4 @@ Evoker.EvokerAttackSpellGoal.createSpellEntity	port	crates/horizon-client/src/mo
 SulfurCube.doPush	inline	crates/horizon-client/src/mobs/sulfur_cube.rs::mob_contacts	mob contact stage only; ordinary AI push impulse remains in ai::push_entities
 Slime.canBeABaby	port	crates/horizon-client/src/mobs/species.rs::can_be_a_baby	the false arm: an AbstractCubeMob that is ageable but never a baby
 MagmaCube.canBeABaby	port	crates/horizon-client/src/mobs/species.rs::can_be_a_baby	the false arm: same as the slime
+SulfurCube.SulfurCubeTemptGoal.canUse	port	crates/horizon-client/src/mobs/sulfur_cube.rs::SulfurTempt::can_use	range scaled by visibility, floor 2
