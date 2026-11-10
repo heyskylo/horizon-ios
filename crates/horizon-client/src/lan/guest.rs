@@ -650,6 +650,16 @@ impl Guest {
             Err(e) => log::debug!("Horizon: attachment sync not sent: {e}"),
         }
     }
+    /// [`Self::send`] of a `ChunksBiomes` whose body is `packet.encode()`, the same
+    /// bytes for each guest with those columns. `note_change` ignores that packet.
+    pub fn send_chunks_biomes_body(&self, body: Vec<u8>) {
+        if self.fake
+            && !super::conn::fake_wants_id(horizon_protocol::ids::play::clientbound::CHUNKS_BIOMES)
+        {
+            return;
+        }
+        self.sender.send(body);
+    }
     /// What `packet` changes about how the client moves, for the prediction's replay: kept until
     /// the tick's ping places it (`Hub::anticheat_ping`).
     fn note_change(&self, packet: &play::Clientbound) {
