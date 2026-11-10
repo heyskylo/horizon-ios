@@ -127,7 +127,9 @@ pub fn note_changes(
     let Some(record) = g.anticheat.record.as_deref_mut() else {
         return;
     };
-    let slack = slack(std::array::from_fn(|i| g.position[i] - g.previous_position[i]));
+    let slack = slack(std::array::from_fn(|i| {
+        g.position[i] - g.previous_position[i]
+    }));
     if !reaches(g.position, slack, bounds) {
         return;
     }
@@ -1571,7 +1573,10 @@ mod tests {
     fn reach_box_never_rejects_a_near_block() {
         let mut rng = Xorshift(0x9E37_79B9_7F4A_7C15);
         let mut near_sections = 0;
-        assert!(!reaches([0.5; 3], 0.0, bounds(&[])), "an empty section reaches nobody");
+        assert!(
+            !reaches([0.5; 3], 0.0, bounds(&[])),
+            "an empty section reaches nobody"
+        );
         for _ in 0..20_000 {
             let at: [f64; 3] = std::array::from_fn(|_| (rng.unit() - 0.5) * 200.0);
             let slack = rng.unit() * 16.0;
@@ -1584,7 +1589,10 @@ mod tests {
                     std::array::from_fn(|i| (at[i] + (rng.unit() - 0.5) * span).floor() as i32);
                 positions.push((b[0], b[1], b[2]));
             }
-            if positions.iter().any(|&(x, y, z)| near(at, [x, y, z], slack)) {
+            if positions
+                .iter()
+                .any(|&(x, y, z)| near(at, [x, y, z], slack))
+            {
                 near_sections += 1;
                 assert!(
                     reaches(at, slack, bounds(&positions)),
@@ -1592,7 +1600,10 @@ mod tests {
                 );
             }
         }
-        assert!(near_sections > 1_000, "only {near_sections} sections were near");
+        assert!(
+            near_sections > 1_000,
+            "only {near_sections} sections were near"
+        );
     }
 
     /// Every single block around a viewer, one at a time, on the edge of the reach included.
