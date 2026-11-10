@@ -170,6 +170,13 @@ impl Levels {
         self.parked.values().map(|level| &level.world)
     }
 
+    /// The streamers of the levels not in place.
+    pub(super) fn parked_streamings(
+        &self,
+    ) -> impl Iterator<Item = &horizon_client::streaming::Streaming> {
+        self.parked.values().map(|level| &level.streaming)
+    }
+
     /// The world of the level not in place, in `dim`, to change.
     pub(super) fn parked_world_mut(&mut self, dim: Dim) -> Option<&mut World> {
         self.parked.get_mut(&dim).map(|level| &mut level.world)

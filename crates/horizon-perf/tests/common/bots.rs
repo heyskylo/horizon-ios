@@ -260,7 +260,7 @@ pub fn capture() -> Vec<Field> {
             ));
         }
         rows.push(("heap_by_tag_mb[chunk columns]".into(), 2104.0 * scale));
-        rows.push(("client_columns.columns".into(), 61_000.0 * scale));
+        rows.push(("columns.columns".into(), 61_000.0 * scale));
         body.push(Field::Memory(MemorySnapshot {
             side: SERVER,
             t,

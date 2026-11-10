@@ -466,6 +466,7 @@ Notes on fields:
     of `span_blocks`, `spans` and a slow tick's `top`, so span sums stay consistent with the tick's wall time.
   - `HorizonOptions.max_view_distance` is 0 when the far ring was not created, even if `server.toml` sets a distance.
   - `Overhead.mob_timing_ms_per_tick` and `mob_timing_share` price the mob tick sampling next to `spans_*`.
+  - `memory` snapshots are `horizon-ctl memory` flattened (`game/memory.rs`, described in `docs/memory.md`), at the start, every 10 s and at the stop. A dedicated server names its columns `columns` (single player keeps `client_columns` and `server_columns`) and adds `entities`, `players`, `chunk_send`, `light_queue`, `generation_queue` and `allocator`. Every side has `named_mb` and `unattributed_mb`: `unattributed_mb = process.resident_mb - named_mb`, where `named_mb` adds the byte totals of the columns (a section the window and its server thread both hold once), `server_generation`, `entities`, `players`, `chunk_send`, the two queues, `renderer.cpu` (client) and the far tiles' `kept_mb`. All are estimates from capacities, so a negative `unattributed_mb` means overlap.
 - `horizon-perf query` rounds numbers to 3 decimals. `spans --slow` averages over the slow ticks; `ticks` and `tick`
   prefer a unit's whole tree from `spans.worst` over the 8 largest spans of `slow` and `slow_history`.
 
@@ -783,9 +784,9 @@ horizon-perf mcp                                                       §8
 | `series` | `FIELD…` (`h:` fields, `span:NAME`, `x:` counters), `--every S` | time series, resampled; `--from` before 0 reaches into `history`; the web UI and MCP can add `stats` (min, mean over the window, median, p95, max, last) to each series | `s3_windows.py`, `s3_counters.py` |
 | `world`, `net`, `gpu`, `gpu_frames`, `meta`, `bench`, `marks`, `warnings` | section filters | the section, filtered and ranked | `s3a_table.py`, `s1b_table.py` |
 | `memory` | `--diff [LABEL_A LABEL_B]`, `--min-mb X` | a snapshot, or spec D's diff of two (`grew_mb`, `shrank_mb`, `counts`, `only_in_a/b`) | spec D's `memory-diff` |
-
 | `memory_labels` (`memory-labels`) | | every snapshot as `{label, t, side, rows}` in time order | |
 | `counters` | | every counter as `{id, name, unit, kind, labels, side, samples}` | |
+
 Filters, common to the sample-based ops:
 
 | Filter | Meaning |

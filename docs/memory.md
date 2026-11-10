@@ -18,14 +18,21 @@ The reply is built in `crates/horizon-client/src/game/memory.rs`. Sizes are MiB 
 | `process.resident_mb` | The resident set: `/proc/self/statm` on Linux, the working set on Windows, `proc_pidinfo` on macOS |
 | `process.allocator_commit_mb`, `allocator_peak_commit_mb` | Bytes mimalloc has committed now and at its peak (`mi_process_info`) |
 | `render_distance` | The window's render distance in chunks |
-| `client_columns` | The window's loaded columns: `total_mb`, counts of `columns`, `sections`, `unique_sections` (each shared section once), `uniform_block_sections`, `light_arrays`, and the heap bytes by part (`blocks_mb`, `biomes_mb`, `light_mb`, `heightmaps_mb`, `section_records_mb`, `column_records_mb`) |
+| `allocator` | `commit_mb`, `peak_commit_mb`, and where mimalloc's statistics are available `live_heap_mb` (the pages mimalloc has in use, each counted whole) and `overhead_mb` (committed less that) |
+| `client_columns` | The window's loaded columns (absent on a dedicated server, which has no window and names its columns `columns`): `total_mb`, counts of `columns`, `sections`, `unique_sections` (each shared section once), `uniform_block_sections`, `light_arrays`, and the heap bytes by part (`blocks_mb`, `biomes_mb`, `light_mb`, `heightmaps_mb`, `section_records_mb`, `column_records_mb`) |
+| `columns` | A dedicated server's loaded columns, the same fields as `client_columns` |
 | `server_columns` | The same for the single-player server thread's own levels; `null` when the window has no server thread |
 | `shared_with_server` | Sections (and their MiB) that both the window and its server thread hold: what one copy of them costs |
 | `server_generation` | The server thread's generation: proto chunks waiting for their neighbours (`protos`, `protos_mb` and the parts), light views, `caches` as `[name, entries, mb]` rows (`mb` is `null` for a cache that cannot say), and `stages` as `[name, count]` rows |
-| `far_tiles` | Far terrain tiles: `active` and `cached` |
+| `entities` | The server's entities in every level: `count`, `total_mb` and `by_type` as `[id, count, mb]` rows for the 30 types holding the most bytes. A record's bytes are its struct and the buffers its fields own, from capacities |
+| `players` | The server's players: `count`, `total_mb` (queues, chunk lists, tracked sets), and for the 50 biggest by name `send_queue` as `[name, packets, mb]` rows (packets and bytes waiting for the network thread), `chunks_waiting`, `chunks_sent` and `tracked_entities` as `[name, count]` rows |
+| `chunk_send` | What the hub keeps to send chunks: `sections` (encoded sections), `heightmaps` and `frames` (compressed packets shared by every connection), each with `entries` and `size_mb`, and `total_mb` |
+| `light_queue`, `generation_queue` | Chunks being lit, and jobs queued or generating, with `len` and the `size_mb` of their bookkeeping tables (the data they point at is in `server_generation`) |
+| `far_tiles` | Far terrain tiles: `active` and `cached`, and the tiles `kept` for a return with their `kept_mb` |
 | `renderer.section_arenas_mb`, `section_vertices_mb` | The GPU buffers of the section vertex arenas, and the vertices that resident sections and far tiles hold in them |
 | `renderer.cpu` | The renderer's CPU-side bookkeeping: `resident_sections_mb`, `far_tiles_mb`, `block_entities_mb`, `light_sources_mb` |
 | `renderer.gpu` | The GPU allocator's `allocated_mb` and `reserved_mb`, and the 40 largest resources as `["label", mb]` rows in `by_label_mb`; `null` without Vulkan or DirectX 12 |
+| `named_mb`, `unattributed_mb` | `named_mb` adds up the columns (a section both the window and its server thread hold once), `server_generation`, `entities`, `players`, `chunk_send`, the two queues, `renderer.cpu` and the far tiles' `kept_mb`. `unattributed_mb` is `process.resident_mb` less that; it can be negative where a census overlaps another, and `null` where the resident set is not read |
 | `heap_by_tag_mb` | Only in an `alloc-census` build, otherwise `null`: see [the heap census](#who-allocated-it-the-heap-census) |
 
 Which number answers which question:

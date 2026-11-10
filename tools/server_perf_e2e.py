@@ -43,8 +43,8 @@ def perf(bins, *args):
     return done.stdout
 
 
-def rows(bins, op, capture):
-    reply = json.loads(perf(bins, 'query', op, capture))
+def rows(bins, op, capture, *filters):
+    reply = json.loads(perf(bins, 'query', op, capture, *filters))
     if not reply.get('ok'):
         raise Failed(f'query {op}: {reply.get("error")}')
     return reply['rows']
@@ -111,6 +111,10 @@ def check(bins, scratch, out):
     world = rows(bins, 'world', path)
     if sum(row['entities'] for row in world) < 1:
         raise Failed(f'the world rows count no entity: {world}')
+    snapshot = {row['path']: row['value'] for row in rows(bins, 'memory', path, '--limit', 5000)}
+    missing = [key for key in ('players.count', 'entities.count', 'unattributed_mb') if key not in snapshot]
+    if missing or snapshot['players.count'] != 2 or snapshot['entities.count'] < 1:
+        raise Failed(f'the stop snapshot lacks players, entities or unattributed_mb ({missing}): {sorted(snapshot)[:40]}')
     perf(bins, 'summary', path)
     print(f'read back: {len(spans)} spans, {total["players"]} players, {total["out_bytes"]} bytes out, '
           f'{sum(row["chunks"] for row in world)} chunks')

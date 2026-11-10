@@ -841,7 +841,7 @@ impl Game<'_> {
     }
 
     fn take_memory_snapshot(&mut self, label: &str) {
-        let rows = flatten_report(&self.memory_report());
+        let rows = flatten_report(&self.memory_value());
         let t = self.profile.perf.now();
         self.profile.perf.memory_snapshot(t, label, &rows);
     }
