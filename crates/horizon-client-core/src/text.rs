@@ -671,11 +671,22 @@ pub fn legacy_format(style: &Style, code: char, reset: &Style) -> Style {
     s
 }
 
+/// The most spans one translation expands to. Vanilla's `TranslatableContents.decompose` keeps
+/// references to its arguments, so its cost stays linear in the input; copying them here makes
+/// nested `%1$s` templates multiply (`k` references nested `D` deep: `k^D` copies), and a server's
+/// `fallback` template is any text it likes.
+const MAX_TRANSLATION_SPANS: usize = 1 << 15;
+/// The most text one translation expands to: one long argument referenced many times multiplies
+/// bytes, not spans.
+const MAX_TRANSLATION_BYTES: usize = 1 << 22;
+
 /// TranslatableContents.decomposeTemplate: `%s` takes the next argument,
 /// `%n$s` a numbered one and `%%` is a percent sign. Malformed templates are
-/// shown verbatim.
+/// shown verbatim, and so is one that would expand past [`MAX_TRANSLATION_SPANS`] or
+/// [`MAX_TRANSLATION_BYTES`].
 pub fn format_translation(template: &str, args: &[Text]) -> Text {
     let mut out = Text::default();
+    let mut bytes = 0usize;
     let mut literal = String::new();
     let mut next = 0usize;
     let chars: Vec<char> = template.chars().collect();
@@ -725,6 +736,14 @@ pub fn format_translation(template: &str, args: &[Text]) -> Text {
                 let Some(arg) = args.get(index) else {
                     return Text::literal(template);
                 };
+                bytes = bytes
+                    .saturating_add(literal.len())
+                    .saturating_add(arg.spans.iter().map(|s| s.text.len()).sum());
+                if out.spans.len().saturating_add(arg.spans.len()) >= MAX_TRANSLATION_SPANS
+                    || bytes > MAX_TRANSLATION_BYTES
+                {
+                    return Text::literal(template);
+                }
                 if !literal.is_empty() {
                     out.spans.push(Span {
                         text: std::mem::take(&mut literal),
