@@ -17,8 +17,12 @@
 //! copied after the test, which tells which ones it saw: each run of a page
 //! reserves room for all of its draws, the copy packs the seen ones at its
 //! start, and the run is drawn indirectly with the count the copy reached.
+use super::SolidPipeline;
 use super::arena::GRAIN;
-use super::{SolidPipeline, binding_cache::BindingKey};
+
+#[path = "binding_cache.rs"]
+mod binding_cache;
+use binding_cache::BindingKey;
 
 /// One section draw for `flatten.wgsl`: index count, first sorted index (or
 /// `QUADS` for a solid draw; phase 2: its entry in phase 2's draws), base

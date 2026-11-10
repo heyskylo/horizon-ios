@@ -53,7 +53,6 @@ fn static_entity_shader() -> String {
     entity_shader() + include_str!("static_entity.wgsl")
 }
 
-mod binding_cache;
 #[cfg(test)]
 mod crumbling_tests;
 mod entity_batch;
