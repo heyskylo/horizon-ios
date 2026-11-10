@@ -171,28 +171,7 @@ impl Game<'_> {
     /// `ChestBlock.isChestBlockedAt`: a redstone conductor above the chest or
     /// a cat sitting on it.
     fn chest_blocked_at(&self, key: (i32, i32, i32)) -> bool {
-        if self.conductor_above(key) {
-            return true;
-        }
-        // isCatSittingOnChest: a cat whose box meets the block above.
-        let area = horizon_core::geometry::Aabb::new(
-            horizon_core::geometry::Vec3::new(
-                f64::from(key.0),
-                f64::from(key.1 + 1),
-                f64::from(key.2),
-            ),
-            horizon_core::geometry::Vec3::new(
-                f64::from(key.0 + 1),
-                f64::from(key.1 + 2),
-                f64::from(key.2 + 1),
-            ),
-        );
-        self.mobs.iter().any(|m| {
-            m.species() == horizon_client::mobs::Species::Cat
-                && m.alive()
-                && horizon_client::mobs::tame::cat_sitting(m)
-                && m.bounds().intersects(area)
-        })
+        self.conductor_above(key) || super::machines::cat_sitting_above(&self.mobs, key)
     }
     /// `ChestBlock.getMenuProvider` (`combine(.., false)`) and
     /// `EnderChestBlock.useWithoutItem`: a blocked chest, or a double chest

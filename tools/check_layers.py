@@ -39,8 +39,13 @@ def load_config(path=CONFIG):
 
 
 def base_config(base):
-    """tools/layers.json as it is on `base`, or None when the base has none."""
-    shown = subprocess.run(["git", "show", f"{base}:{CONFIG_PATH}"], capture_output=True, text=True, cwd=ROOT)
+    """tools/layers.json where the branch left `base` (their merge base), or None when there is none. On `base` itself,
+    the exceptions main dropped since then would look like ones this branch added."""
+    merge_base = subprocess.run(["git", "merge-base", base, "HEAD"], capture_output=True, text=True, cwd=ROOT)
+    if merge_base.returncode != 0:
+        return None
+    shown = subprocess.run(["git", "show", f"{merge_base.stdout.strip()}:{CONFIG_PATH}"], capture_output=True,
+                           text=True, cwd=ROOT)
     return json.loads(shown.stdout) if shown.returncode == 0 else None
 
 

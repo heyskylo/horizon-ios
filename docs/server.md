@@ -852,6 +852,11 @@ reproducible by anyone, and show the same gameplay on both sides.
     sends, walk to the nearest living one and attack it every 5 ticks, vanilla's bare-hand cooldown; with `--pvp true` (the
     default) they attack each other too, which needs `pvp=true` on the server. The report counts `attacks`.
 
+  For controlled chunk-pacing tests, use `--behaviour explore --ack-mode 64`: the bot sends exactly
+  one acknowledgement per completed chunk batch, requesting 64 chunks per tick. The default
+  `--ack-mode vanilla` keeps vanilla estimation. Unlike `flood-acks`, this option adds no
+  unsolicited acknowledgements. The summary records `ack_mode`.
+
   A `build` behaviour (breaking and placing blocks) needs the bots to read terrain and comes later. Runs use
   1, 10, 25, 50 and 100 bots, joining 1 per second. Bots are needed because 100 real vanilla clients can't run
   on one machine.
