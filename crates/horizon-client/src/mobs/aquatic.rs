@@ -257,6 +257,45 @@ pub fn set_age_locked_data(m: &mut Mob) {
     m.extra.age = 0;
     m.extra.age_lock_particle_timer = 40;
 }
+/// The parts of the species' `aiStep` that `NoAI` doesn't skip (it skips only
+/// `serverAiStep`): a pufferfish's stings, a glow squid's dark timer and a
+/// tadpole's age.
+pub(super) fn no_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+    match m.species() {
+        Species::Pufferfish => sting_touching_mobs(m, w, events),
+        Species::GlowSquid => glow_squid_dark_tick(m),
+        Species::Tadpole => {
+            grow_up(m, events);
+            super::ai::make_age_locked_particle(m, events);
+        }
+        _ => {}
+    }
+}
+/// `Tadpole.aiStep`: growing up into a frog after 24000 ticks.
+fn grow_up(m: &mut Mob, events: &mut Vec<MobEvent>) {
+    if m.extra.age >= 0 && !m.extra.age_locked {
+        m.extra.age += 1;
+        if m.extra.age >= 24_000 && !m.removed {
+            m.removed = true;
+            // Tadpole.ageUp: playSound at its feet, volume 0.15 (not
+            // when silent: Entity.playSound).
+            if !m.silent {
+                let at = [m.position.x, m.position.y, m.position.z];
+                events.push(MobEvent::Sound("entity.tadpole.grow_up", at, 0.15, 1.0));
+            }
+            // `ConversionParams.single(this, false, false)`; the game
+            // finalizes the frog and keeps it persistent.
+            events.push(MobEvent::Convert {
+                from: Box::new(m.clone()),
+                kind: "minecraft:frog",
+                params: super::conversion::Params {
+                    keep_equipment: false,
+                    preserve_can_pick_up_loot: false,
+                },
+            });
+        }
+    }
+}
 /// Species aiStep additions.
 pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     use Species as S;
@@ -267,29 +306,7 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             glow_squid_ai_step(m, events);
         }
         S::Tadpole => {
-            // Tadpole.aiStep: growing up into a frog after 24000 ticks.
-            if m.extra.age >= 0 && !m.extra.age_locked {
-                m.extra.age += 1;
-                if m.extra.age >= 24_000 && !m.removed {
-                    m.removed = true;
-                    // Tadpole.ageUp: playSound at its feet, volume 0.15 (not
-                    // when silent: Entity.playSound).
-                    if !m.silent {
-                        let at = [m.position.x, m.position.y, m.position.z];
-                        events.push(MobEvent::Sound("entity.tadpole.grow_up", at, 0.15, 1.0));
-                    }
-                    // `ConversionParams.single(this, false, false)`; the game
-                    // finalizes the frog and keeps it persistent.
-                    events.push(MobEvent::Convert {
-                        from: Box::new(m.clone()),
-                        kind: "minecraft:frog",
-                        params: super::conversion::Params {
-                            keep_equipment: false,
-                            preserve_can_pick_up_loot: false,
-                        },
-                    });
-                }
-            }
+            grow_up(m, events);
             if !m.fluids.in_water && m.on_ground && m.vertical_collision_below {
                 let (a, b) = (m.random.next_float(), m.random.next_float());
                 m.velocity = Vec3::new(

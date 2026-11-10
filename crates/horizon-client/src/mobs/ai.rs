@@ -751,13 +751,7 @@ pub fn tick(
         if m.species() == Species::Ravager {
             super::ravager::ai_step(m, w, events);
         }
-        if m.species() == Species::Pufferfish {
-            // Pufferfish.aiStep's mob contacts run even when serverAiStep is skipped.
-            aquatic::sting_touching_mobs(m, w, events);
-        }
-        if m.species() == Species::GlowSquid {
-            aquatic::glow_squid_dark_tick(m);
-        }
+        aquatic::no_ai_step(m, w, events);
         // Shulker.tick after its living tick: a NoAI shell still keeps a
         // face and eases its lid, pushing what the lid opens into.
         if m.species() == Species::Shulker {

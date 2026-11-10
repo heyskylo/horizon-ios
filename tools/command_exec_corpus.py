@@ -1779,6 +1779,29 @@ def aquatic_from_bucket():
     return ops
 
 
+def noai_tadpole_age():
+    """`Tadpole.aiStep` counts the age up and grows the tadpole into a frog at
+    24000; `NoAI` skips only `serverAiStep`, so a NoAI tadpole ages too. An
+    age-locked one doesn't (#14615)."""
+    box = 'x=8,y=218,z=8,dx=10,dy=6,dz=4'
+    # (tag, x, saved Age, AgeLocked)
+    tadpoles = [('h14615_young', 10, 0, False), ('h14615_due', 13, 23998, False),
+                ('h14615_locked', 16, 0, True)]
+    ops = []
+    for tag, x, age, locked in tadpoles:
+        lock = ',AgeLocked:1b' if locked else ''
+        ops += setup(f'/summon minecraft:tadpole {x}.5 220 10.5 {{Tags:["{tag}"],NoAI:1b,'
+                     f'NoGravity:1b,Silent:1b,PersistenceRequired:1b,Age:{age}{lock}}}')
+    for ticks in (1, 2):
+        ops.append({'op': 'tick', 'n': ticks})
+        for tag, *_ in tadpoles:
+            target = f'@e[type=minecraft:tadpole,tag={tag},limit=1]'
+            ops += [cmd(f'/execute if entity {target}'), cmd(f'/data get entity {target} Age')]
+        ops.append(cmd(f'/execute if entity @e[type=minecraft:frog,{box}]'))
+    ops += setup(f'/kill @e[type=minecraft:tadpole,{box}]', f'/kill @e[type=minecraft:frog,{box}]')
+    return ops
+
+
 def dispensed_spawn_egg_persistence():
     """`SpawnEggItemBehavior.execute` spawns with `EntitySpawnReason.DISPENSER`
     and never calls `Mob.setPersistenceRequired`: the mob saves
@@ -7470,6 +7493,7 @@ def groups():
         ('axolotl integer memory TTL', axolotl_integer_memory_ttl()),
         ('parrot saved Age', parrot_saved_age()),
         ('animal NoAI love', animal_noai_love()),
+        ('NoAI tadpole age', noai_tadpole_age()),
         ('turtle summon home', turtle_summon_home()),
         ('command minecart loaded success', command_minecart_loaded_success()),
         ('ravager NoAI counters', ravager_noai_counters()),
