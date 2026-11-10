@@ -3117,6 +3117,7 @@ pub fn arrow_to_nbt(
     }
     for (key, value) in [
         ("Fire", Tag::Short(a.fire_ticks as i16)),
+        ("Air", Tag::Short(p.air_supply as i16)),
         ("life", Tag::Short(a.life as i16)),
         ("shake", Tag::Byte(a.shake as i8)),
         ("inGround", Tag::Byte(i8::from(a.in_ground))),
@@ -3195,6 +3196,7 @@ pub fn arrow_from_nbt(
     p.owner_uuid = owner;
     p.no_gravity = flag(tag, "NoGravity");
     p.on_ground = flag(tag, "OnGround");
+    projectile_fields::load_arrow_entity_fields(&mut p, tag);
     let a = p.arrow.as_mut()?;
     a.life = number(tag.get("life")).unwrap_or(0) as i16 as i32;
     a.shake = (number(tag.get("shake")).unwrap_or(0) as i8 as u8).into();
@@ -3214,8 +3216,6 @@ pub fn arrow_from_nbt(
             _ => false,
         })
         .cloned();
-    a.fire_ticks = number(tag.get("Fire")).unwrap_or(0) as i16 as i32;
-    a.fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
     a.spectral = spectral;
     // `SpectralArrow.readAdditionalSaveData`: absent Duration defaults to 200.
     if spectral {
