@@ -36,7 +36,11 @@ pub struct Ticks {
     pub piston_pushes: Vec<(BlockPos, super::pistons::MovingPiston, f32)>,
     pub(crate) next_block_entity_id: u64,
     /// `ServerLevel.blockEvents`, run by `Behaviours::run_block_events`.
-    pub block_events: Vec<super::pistons::BlockEventData>,
+    /// Changed only through [`Ticks::queue_block_event`], [`Ticks::pop_block_event`]
+    /// and [`Ticks::retain_block_events`], which keep `block_event_keys` in step.
+    pub block_events: std::collections::VecDeque<super::pistons::BlockEventData>,
+    /// The events in `block_events`, for the O(1) dedupe in `queue_block_event`.
+    block_event_keys: horizon_core::fast_hash::FxHashSet<super::pistons::BlockEventData>,
     /// `ServerLevel.isHandlingTick` (true while scheduled ticks run).
     pub(crate) handling_tick: bool,
     /// Worldgen shape updates collect the ticks they schedule here, for the
@@ -72,7 +76,8 @@ impl Ticks {
             moving_pistons: Vec::new(),
             piston_pushes: Vec::new(),
             next_block_entity_id: 0,
-            block_events: Vec::new(),
+            block_events: Default::default(),
+            block_event_keys: Default::default(),
             handling_tick: false,
             capture: None,
         }
@@ -93,6 +98,30 @@ impl Ticks {
         self.next_block_entity_id += 1;
         piston.id = self.next_block_entity_id;
         self.moving_pistons.push((pos, piston));
+    }
+    /// `ServerLevel.blockEvent`'s dedupe: queue `event` at the back unless the
+    /// same event is already queued. Returns whether it was queued.
+    pub fn queue_block_event(&mut self, event: super::pistons::BlockEventData) -> bool {
+        if self.block_event_keys.insert(event) {
+            self.block_events.push_back(event);
+            true
+        } else {
+            false
+        }
+    }
+    /// Take the front block event off the queue (`ServerLevel.runBlockEvents`).
+    pub fn pop_block_event(&mut self) -> Option<super::pistons::BlockEventData> {
+        let event = self.block_events.pop_front()?;
+        self.block_event_keys.remove(&event);
+        Some(event)
+    }
+    /// Keep only the queued block events `keep` accepts (a test area's clear).
+    pub fn retain_block_events(
+        &mut self,
+        keep: impl FnMut(&super::pistons::BlockEventData) -> bool,
+    ) {
+        self.block_events.retain(keep);
+        self.block_event_keys = self.block_events.iter().copied().collect();
     }
     /// Register a chunk without saved ticks.
     pub fn add_empty_chunk(&mut self, pos: ChunkPos) -> Result<(), TickError> {
