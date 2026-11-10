@@ -343,7 +343,7 @@ struct Kept {
     effects: Option<crate::effects::PlayerEffects>,
     game_mode: Option<(i32, bool, f32)>,
     position: Option<([f64; 3], [f64; 3], f32, f32, f32, bool, Option<[i32; 4]>)>,
-    spawn: Option<(Option<[f64; 3]>, Option<(String, [i32; 3], f32, bool)>)>,
+    spawn: Option<(Option<[f64; 3]>, Option<(String, [i32; 3], f32, f32, bool)>)>,
     recipes: Option<crate::recipe_book::Settings>,
     /// The body's values: its fall goes with the position, its air and fire with the
     /// health.

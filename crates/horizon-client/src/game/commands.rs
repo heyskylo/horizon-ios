@@ -3,6 +3,7 @@
 mod admin;
 pub(super) mod compute;
 mod data;
+mod display_names;
 pub(super) use data::place_summoned;
 mod effects;
 pub(super) mod execute;
@@ -782,13 +783,7 @@ impl Game<'_> {
                 let block = Text::translate(&format!("block.{block}"), &[]);
                 Text::translate("entity.minecraft.falling_block_type", &[block])
             }
-            Target::Mob(id) => self.mobs.iter().find(|m| m.id == id).map_or_else(
-                || Text::translate("entity.", &[]),
-                |m| match self.mob_team_of(m) {
-                    Some(team) => team.formatted_name(m.command_name()),
-                    None => m.command_name(),
-                },
-            ),
+            Target::Mob(id) => self.mob_command_name(id),
             other => {
                 // Entity.getDisplayName: the CustomName component, else the type.
                 let custom = super::native_entities::target_id(other)
@@ -2618,9 +2613,10 @@ impl Game<'_> {
         if self.res.mob_types().contains_key(&kind) {
             // SummonCommand.createEntity loads the mob from `{id:..}`: its yaw
             // is the compound's (none, so 0), with no level-random draw.
-            self.spawn_mob_spawned(&short, pos, super::creatures::SpawnYaw::Fixed(0.0))
+            let id = self
+                .spawn_mob_spawned(&short, pos, super::creatures::SpawnYaw::Fixed(0.0))
                 .ok_or_else(|| err("commands.summon.failed.uuid", &[]))?;
-            name = Text::translate(&entity_name_key(&kind), &[]);
+            name = self.target_name(Target::Mob(id));
         } else {
             match short.as_str() {
                 "item" => {
@@ -3831,12 +3827,9 @@ impl Game<'_> {
                     return;
                 }
                 g.spawn = None;
-                g.respawn_config = Some(super::respawn_anchor::RespawnConfig {
-                    dim: level,
-                    pos,
-                    yaw,
-                    forced: true,
-                });
+                g.respawn_config = Some(super::respawn_anchor::RespawnConfig::forced(
+                    level, pos, yaw, pitch,
+                ));
             });
         }
         let dim = Text::literal(self.dim.id());

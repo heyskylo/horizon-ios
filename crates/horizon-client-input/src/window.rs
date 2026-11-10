@@ -638,10 +638,30 @@ pub fn fullscreen_request(
     }
 }
 
-/// Horizon's icon for the window's title bar and the task bar (X11 and Windows; Wayland takes
-/// it from the `horizon.desktop` entry, macOS from the app bundle). `None` if it can't be read.
+/// The PNG the windows show as their icon, given once at startup by the layer that brands the
+/// game (the engine has none of its own).
+static ICON_PNG: std::sync::OnceLock<&'static [u8]> = std::sync::OnceLock::new();
+
+/// Give the windows their icon, a PNG: call it before the first window opens. A second call
+/// keeps the first icon.
+pub fn set_icon_png(png: &'static [u8]) {
+    let _ = ICON_PNG.set(png);
+}
+
+/// The icon given to [`set_icon_png`], if any.
+pub fn icon_png() -> Option<&'static [u8]> {
+    ICON_PNG.get().copied()
+}
+
+/// The icon for the window's title bar and the task bar (X11 and Windows; Wayland takes it from
+/// the `.desktop` entry, macOS from the app bundle). `None` with no icon given, or one that
+/// can't be read.
 pub fn icon() -> Option<winit::window::Icon> {
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(horizon_theme::ICON_PNG));
+    decode_icon(icon_png()?)
+}
+
+fn decode_icon(png: &[u8]) -> Option<winit::window::Icon> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(png));
     decoder.ignore_checksums(true);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().ok()?;
@@ -654,14 +674,15 @@ pub fn icon() -> Option<winit::window::Icon> {
     winit::window::Icon::from_rgba(bytes, info.width, info.height).ok()
 }
 
-/// Apply Horizon's icon to every window. Windows has a separate taskbar icon slot from the small
-/// window icon; requiring the decoded icon there prevents a generic taskbar icon from appearing.
-pub fn with_horizon_icon(
-    attributes: winit::window::WindowAttributes,
-) -> winit::window::WindowAttributes {
+/// Apply the icon given to [`set_icon_png`] to a window. Windows has a separate taskbar icon slot
+/// from the small window icon; requiring a given icon to decode there prevents a generic taskbar
+/// icon from appearing.
+pub fn with_icon(attributes: winit::window::WindowAttributes) -> winit::window::WindowAttributes {
+    #[cfg(not(target_os = "windows"))]
     let icon = icon();
     #[cfg(target_os = "windows")]
-    let icon = Some(icon.expect("Horizon's icon must be available on Windows"));
+    let icon =
+        icon_png().map(|png| decode_icon(png).expect("the window icon must decode on Windows"));
 
     let attributes = attributes.with_window_icon(icon.clone());
     #[cfg(target_os = "windows")]
@@ -739,7 +760,8 @@ mod tests {
     }
     #[test]
     fn the_window_icon_decodes() {
-        assert!(icon().is_some());
+        assert!(decode_icon(horizon_theme::ICON_PNG).is_some());
+        assert!(decode_icon(b"not a png").is_none());
     }
 
     #[test]

@@ -17,8 +17,8 @@ pub use horizon_client_render::{
     containers, controller_ui, crash, custom_sky, datapack, dynamic_light, effects, environment,
     extras, fast_hash, fluid_render, fog, font, gfx, graphics, graphics_style, graphics_ui,
     hdr_calibration, hud, hud_kit, hud_layout, hud_overlays, inventory_effects, java_text,
-    jigsaw_block, json_folder, level_loading, light, lod, logging, menu_blur, mesher, minimap,
-    mipmap, mod_browser, mod_list, model_library, models, multiline_edit, native_emissive,
+    jigsaw_block, json_folder, level_loading, light, lod, logging, menu_blur, menu_style, mesher,
+    minimap, mipmap, mod_browser, mod_list, model_library, models, multiline_edit, native_emissive,
     options_file, options_fixes, options_ui, overlay, pack_browser, pack_formats, pack_hooks,
     pack_palette, pack_screen, packs, pad_cursor, pad_glyph, par, particles, poi_sections,
     polytone_creative_tabs, polytone_post, post_chain, potent_sulfur, preedit, providers, pvp,
@@ -58,8 +58,6 @@ pub mod debug_overlay;
 pub mod debugworld;
 pub mod dialog;
 pub mod dialog_screen;
-#[cfg(feature = "discord")]
-pub mod discord_presence;
 pub mod end_crystal;
 pub mod end_gateway;
 pub mod entities;
@@ -102,8 +100,6 @@ pub mod native_data;
 pub mod net;
 pub mod nether_portal;
 pub mod no_resources;
-#[cfg(feature = "horizon-extras")]
-pub mod official_servers;
 pub mod offline_name;
 pub mod old_world;
 pub mod osk;
@@ -171,6 +167,7 @@ pub use horizon_client_input::gamepad;
 pub use horizon_client_input::gameplay_guide;
 pub use horizon_client_input::held;
 pub use horizon_client_input::input;
+pub use horizon_client_input::input_source;
 pub use horizon_client_input::interaction_input;
 pub use horizon_client_input::key_names;
 pub use horizon_client_input::keybinds;

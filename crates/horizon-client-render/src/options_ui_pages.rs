@@ -124,21 +124,15 @@ impl OptionsUi {
                 Some(open("horizon.pages.open.studio", Page::Studio)),
             ),
             // No AI hides the AI Agent page and everything AI.
-            Row::Buttons(
-                self.extra_button(s, crate::extras::Item::DiscordPresence),
-                Some(if s.extras.no_ai {
-                    self.extra_button(s, crate::extras::Item::NoAi)
-                } else {
-                    open("horizon.pages.open.agent", Page::Agent)
-                }),
-            ),
-        ]
-        .into_iter()
-        .chain(
-            (!s.extras.no_ai)
-                .then(|| Row::Buttons(self.extra_button(s, crate::extras::Item::NoAi), None)),
-        )
-        .collect();
+            if s.extras.no_ai {
+                Row::Buttons(self.extra_button(s, crate::extras::Item::NoAi), None)
+            } else {
+                Row::Buttons(
+                    open("horizon.pages.open.agent", Page::Agent),
+                    Some(self.extra_button(s, crate::extras::Item::NoAi)),
+                )
+            },
+        ];
         self.added_entries(&mut rows);
         rows
     }
@@ -162,10 +156,38 @@ impl OptionsUi {
         };
         let mut rows = Vec::new();
         registered.rows(&mut rows);
-        rows.into_iter()
-            .enumerate()
-            .map(|(r, row)| self.added_row(page, r, row))
-            .collect()
+        let mut out = Vec::new();
+        // The row a half-width button started, waiting for the next to sit beside it.
+        let mut half_open = false;
+        for (r, row) in rows.into_iter().enumerate() {
+            match row {
+                // Wrapped as the engine's own notes; space is for pages drawn as a screen.
+                added::Row::Text { text, .. } => {
+                    out.extend(wrap(&text, 64).into_iter().map(Row::Note))
+                }
+                added::Row::Space(_) => continue,
+                added::Row::Button {
+                    label,
+                    active,
+                    half: true,
+                    ..
+                } => {
+                    let mut half = button(0.0, 0.0, 150.0, tr(label), Act::PageRow(page, r));
+                    if !active {
+                        half = inactive(half);
+                    }
+                    match out.last_mut() {
+                        Some(Row::Buttons(_, second @ None)) if half_open => *second = Some(half),
+                        _ => out.push(Row::Buttons(half, None)),
+                    }
+                    half_open = !half_open;
+                    continue;
+                }
+                row => out.push(self.added_row(page, r, row)),
+            }
+            half_open = false;
+        }
+        out
     }
 
     fn added_row(&self, page: usize, r: usize, row: added::Row) -> Row {
@@ -177,7 +199,10 @@ impl OptionsUi {
             added::Row::Toggle { label, on } => wide(generic(label, on_off(on))),
             added::Row::Cycle { label, value } => wide(generic(label, label_text(value))),
             added::Row::Slider { .. } => Row::Big(Opt::Page(page, r)),
-            added::Row::Button { label } => wide(tr(label)),
+            added::Row::Button { label, active, .. } => {
+                let wide = button(0.0, 0.0, 310.0, tr(label), act);
+                Row::Buttons(if active { wide } else { inactive(wide) }, None)
+            }
             added::Row::Key { label, key } => {
                 let mut message = keybinds::display_name(&key);
                 if self.selected_key == Some(PAGE_KEY)
@@ -459,6 +484,86 @@ mod tests {
         assert_eq!(
             tooltip_text(&s, switch).map(|t| t.plain()),
             Some(tr("test.sample.switch.tooltip").plain())
+        );
+    }
+
+    /// Text, a grey note, space, two half buttons (the second inactive) and a footer button.
+    struct Shaped(Mutex<Vec<usize>>);
+
+    impl added::Page for Shaped {
+        fn id(&self) -> &'static str {
+            "test.shaped"
+        }
+        fn title(&self) -> &'static str {
+            "test.shaped.title"
+        }
+        fn place(&self) -> added::Place {
+            added::Place::HorizonSettings
+        }
+        fn rows(&self, rows: &mut Vec<added::Row>) {
+            rows.push(added::Row::text("ABCDE-FGHIJ").groups());
+            rows.push(added::Row::text("grey").quiet());
+            rows.push(added::Row::Space(6));
+            rows.push(added::Row::button("test.shaped.copy").half());
+            rows.push(added::Row::button("test.shaped.stop").half().active(false));
+            rows.push(added::Row::button("test.shaped.help").footer());
+        }
+        fn act(&self, row: usize, _: added::Act) {
+            self.0.lock().unwrap().push(row);
+        }
+    }
+
+    static SHAPED: Shaped = Shaped(Mutex::new(Vec::new()));
+    static SHAPED_PAGES: [&dyn added::Page; 1] = [&SHAPED];
+
+    #[test]
+    fn half_buttons_share_a_row_and_an_inactive_one_is_never_pressed() {
+        let mut s = Settings::default();
+        TEST_PAGES.set(Some(&SHAPED_PAGES));
+        let ui = OptionsUi::default();
+        let rows = ui.added_rows(0);
+        // The two texts as notes (space shows nothing here), the halves on one row, the
+        // footer button below them (the settings shell has no footer of its own).
+        assert!(matches!(&rows[0], Row::Note(t) if t == "ABCDE-FGHIJ"));
+        assert!(matches!(&rows[1], Row::Note(t) if t == "grey"));
+        let Row::Buttons(copy, Some(stop)) = &rows[2] else {
+            panic!("the halves sit side by side: {:?}", rows.len());
+        };
+        assert_eq!((copy.w, stop.w), (150.0, 150.0));
+        assert!(matches!(&rows[3], Row::Buttons(help, None) if help.w == 310.0));
+        assert_eq!(rows.len(), 4);
+        let mut ui = ui;
+        ui.show(Page::Added(0));
+        press(&mut ui, &mut s, Act::PageRow(0, 3), false);
+        press(&mut ui, &mut s, Act::PageRow(0, 5), false);
+        let (widgets, ..) = ui.layout(&s, 480.0, 240.0);
+        let stop = widgets
+            .iter()
+            .find(|w| {
+                matches!(
+                    &w.kind,
+                    WKind::Button {
+                        act: Act::PageRow(0, 4),
+                        ..
+                    }
+                )
+            })
+            .expect("Stop is drawn");
+        let atlas = super::super::tests::atlas();
+        ui.click(
+            &mut s,
+            &atlas,
+            stop.x + 1.0,
+            stop.y + 1.0,
+            (480.0, 240.0),
+            [480, 240],
+            false,
+            false,
+        );
+        assert_eq!(
+            *SHAPED.0.lock().unwrap(),
+            [3, 5],
+            "the inactive half heard nothing"
         );
     }
 }
