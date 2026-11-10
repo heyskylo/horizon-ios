@@ -1,5 +1,5 @@
 //! A side's .hzperf capture (docs/perf-platform.md §3, §4.1), the dedicated server's or the client's, and the always-on health history and slow ring behind it.
-use crate::gfx::pack_timing::GpuReadout;
+use crate::gfx::pack_timing::{GpuReadout, TimedFrames};
 use crate::spans::Span;
 use horizon_client_render::perf_gpu;
 use horizon_perf_format::files;
@@ -14,7 +14,7 @@ use horizon_perf_format::{
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::thread::{self, JoinHandle};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
 mod tests;
@@ -178,6 +178,9 @@ struct Session {
     spans: SpanRecorder,
     traffic: TrafficRecorder,
     gpu: GpuMode,
+    /// The GPU timers' frames and the window's CPU frame times, and when their last block was written.
+    gpu_log: perf_gpu::FrameLog,
+    gpu_block_t: f64,
     timeline: Option<TimelineRecorder>,
 }
 
@@ -321,6 +324,27 @@ impl ServerPerf {
         }
     }
 
+    /// The window's frame that ended at `t`: its CPU ms and the GPU frames timed since the last, written about once a second when the capture times the GPU.
+    pub fn gpu_frames(&mut self, t: f64, cpu_ms: f32, frames: &TimedFrames) {
+        let Some(session) = &mut self.session else {
+            return;
+        };
+        if matches!(session.gpu, GpuMode::Unspecified | GpuMode::Off) {
+            return;
+        }
+        let (now, origin) = (Instant::now(), session.origin);
+        session.gpu_log.cpu_frame(cpu_ms);
+        session.gpu_log.add(
+            frames,
+            |at| t - now.saturating_duration_since(at).as_secs_f64() - origin,
+            &mut session.strings,
+        );
+        if t - origin - session.gpu_block_t >= 1.0 {
+            session.gpu_block_t = t - origin;
+            session.gpu_block();
+        }
+    }
+
     /// Opens `dir/profile-<time>Z.hzperf` with `Start`, the health tiers and the slow ring; call it on the tick thread, which it samples.
     pub fn start_capture(
         &mut self,
@@ -409,6 +433,8 @@ impl ServerPerf {
             spans: SpanRecorder::new(self.role.span_thread, self.role.side, self.role.unit),
             traffic: TrafficRecorder::new(options.wire),
             gpu: options.gpu,
+            gpu_log: perf_gpu::FrameLog::default(),
+            gpu_block_t: 0.0,
             timeline,
         };
         let mut start = options.start;
@@ -666,8 +692,9 @@ impl Session {
         if matches!(self.gpu, GpuMode::Unspecified | GpuMode::Off) {
             return;
         }
+        self.gpu_block();
         let sections = readout.map_or_else(Vec::new, |r| {
-            perf_gpu::gpu_passes(r, self.side, &mut self.strings)
+            perf_gpu::gpu_passes(r, &self.gpu_log, self.side, &mut self.strings)
         });
         self.entries();
         if sections.is_empty() {
@@ -680,6 +707,13 @@ impl Session {
         }
         for gpu in sections {
             self.tx.send(Field::Gpu(gpu));
+        }
+    }
+
+    fn gpu_block(&mut self) {
+        if let Some(block) = self.gpu_log.take_block(self.side) {
+            self.entries();
+            self.tx.send(Field::GpuFrames(block));
         }
     }
 

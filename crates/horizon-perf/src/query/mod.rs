@@ -292,6 +292,7 @@ pub fn run(q: &Query, files: &[Loaded]) -> Result<Envelope<Row>, QueryError> {
         Op::World => world::world(&ctx)?,
         Op::Net => traffic::net(&ctx)?,
         Op::Gpu => gpu::gpu(&ctx)?,
+        Op::GpuFrames => gpu::gpu_frames(&ctx)?,
         Op::Meta => meta::meta(&ctx)?,
         Op::Memory => notes::memory(&ctx)?,
         Op::Marks => notes::marks(&ctx)?,

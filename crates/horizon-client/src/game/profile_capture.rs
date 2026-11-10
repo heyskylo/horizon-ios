@@ -892,6 +892,12 @@ impl Game<'_> {
             spans: frame_spans.to_vec(),
         });
         let t = self.profile.perf.now();
+        if self.profile.gpu != GpuSwitch::Off
+            && let Some(renderer) = self.renderer.as_mut()
+        {
+            let frames = renderer.take_timed_frames();
+            self.profile.perf.gpu_frames(t, cpu_ms, &frames);
+        }
         let (wanted, renderer) = (self.profile.gpu, self.renderer.as_ref());
         self.profile.perf.frame_with_gpu(
             t,

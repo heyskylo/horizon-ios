@@ -52,6 +52,8 @@ message Capture {
 
   // end: the side's last field.
   repeated Stop stop = 23;
+  // live: clients only, the GPU timers' timed frames, a block about every second.
+  repeated GpuFrames gpu_frames = 24;
 }
 
 enum Side {
@@ -707,6 +709,17 @@ message GpuDevice {
   // Whether pipeline statistics queries exist.
   bool counters = 5;
   GpuFragmentUnit fragment_unit = 6;
+  GpuPassSplit pass_split = 7;
+}
+
+// How far inside a render pass the timer sees.
+enum GpuPassSplit {
+  // Captures written before the field existed.
+  GPU_PASS_SPLIT_UNSPECIFIED = 0;
+  // Timestamps inside render passes split them into their draw groups, in every timed frame.
+  GPU_PASS_SPLIT_DRAW_GROUPS = 1;
+  // Only pass boundaries are timed: the device has no timestamps inside passes (Metal).
+  GPU_PASS_SPLIT_PASSES_ONLY = 2;
 }
 
 // A part of a pass, for example one dispatch: median ms per frame.
@@ -719,7 +732,7 @@ message GpuPart {
 message GpuPass {
   // String id of the pass's name.
   uint32 name = 1;
-  // Median ms per frame over the last timed frames; unset for a pass seen only through its parts.
+  // Median ms per frame over the capture's timed frames (the last 15 before gpu_frames existed); unset for a pass seen only through its parts.
   optional float ms = 2;
   repeated GpuPart parts = 3;
 }
@@ -757,4 +770,22 @@ message GpuPasses {
   repeated GpuPass passes = 3;
   repeated GpuCounter counters = 4;
   GpuSource source = 5;
+}
+
+// One frame a GPU timer timed: its passes' and parts' ms, a name's occurrences in the frame summed.
+message GpuFrame {
+  GpuSource source = 1;
+  // When the frame's commands began recording, on the capture clock.
+  double t = 2;
+  // From the frame's first timestamp to its last; unset when it had no whole pair.
+  optional float total_ms = 3;
+  repeated GpuPass passes = 4;
+}
+
+// The timed frames of one side since its previous block.
+message GpuFrames {
+  Side side = 1;
+  repeated GpuFrame frames = 2;
+  // The CPU's own ms of every frame the window drew since the previous block, timed or not.
+  repeated float cpu_frame_ms = 3;
 }

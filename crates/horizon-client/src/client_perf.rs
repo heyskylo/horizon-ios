@@ -1,5 +1,5 @@
 //! The client's .hzperf captures (docs/perf-platform.md §4.1): the window's frames feed the always-on health history, and a capture writes it with the samples of the render thread.
-use crate::gfx::pack_timing::GpuReadout;
+use crate::gfx::pack_timing::{GpuReadout, TimedFrames};
 use crate::server_perf::traffic::Wire;
 use crate::server_perf::{
     self, CaptureEnd, CaptureOptions, CaptureStatus, MAX_WINDOW_S, Role, SamplerOptions, Saved,
@@ -132,6 +132,11 @@ impl ClientPerf {
         {
             self.stop_with_gpu(t, reason, gpu());
         }
+    }
+
+    /// The GPU frames timed since the last frame, with this frame's CPU ms, for a capture that times the GPU.
+    pub fn gpu_frames(&mut self, t: f64, cpu_ms: f32, frames: &TimedFrames) {
+        self.perf.gpu_frames(t, cpu_ms, frames);
     }
 
     /// Opens a capture in `dir`; call it on the render thread, which it samples.

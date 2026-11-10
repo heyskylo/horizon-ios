@@ -117,7 +117,7 @@ fn a_field_from_a_later_schema_is_skipped_and_known_fields_keep_their_values() {
         unreachable!()
     };
     prost::encoding::message::encode(2, &s, &mut stream);
-    prost::encoding::bytes::encode(24, &vec![1u8, 2, 3], &mut stream);
+    prost::encoding::bytes::encode(99, &vec![1u8, 2, 3], &mut stream);
     let Field::Stop(end) = stop(SERVER, 5.0) else {
         unreachable!()
     };

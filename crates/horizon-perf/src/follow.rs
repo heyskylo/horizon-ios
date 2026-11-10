@@ -44,6 +44,7 @@ impl Entry {
             Entry::Field(Field::Samples(m)) => capture.samples.push(m),
             Entry::Field(Field::Net(m)) => capture.net.push(m),
             Entry::Field(Field::Gpu(m)) => capture.gpu.push(m),
+            Entry::Field(Field::GpuFrames(m)) => capture.gpu_frames.push(m),
             Entry::Field(Field::Bench(m)) => capture.bench.push(m),
             Entry::Field(Field::Stop(m)) => capture.stop.push(m),
         }
@@ -171,6 +172,8 @@ fn decode_entry(number: u32, bytes: &[u8]) -> Result<Entry, Error> {
         Field::Net(m)
     } else if let Some(m) = c.gpu.pop() {
         Field::Gpu(m)
+    } else if let Some(m) = c.gpu_frames.pop() {
+        Field::GpuFrames(m)
     } else if let Some(m) = c.bench.pop() {
         Field::Bench(m)
     } else if let Some(m) = c.stop.pop() {

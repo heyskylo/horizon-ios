@@ -224,8 +224,25 @@ fn tools_list_names_the_five_tools_with_schemas_that_match_their_arguments() {
     assert_eq!(
         q.properties["op"].choices,
         [
-            "spans", "ticks", "tick", "series", "world", "net", "meta", "memory", "marks",
-            "warnings", "hot", "tree", "callers", "callees", "split", "group", "frames", "gpu",
+            "spans",
+            "ticks",
+            "tick",
+            "series",
+            "world",
+            "net",
+            "meta",
+            "memory",
+            "marks",
+            "warnings",
+            "hot",
+            "tree",
+            "callers",
+            "callees",
+            "split",
+            "group",
+            "frames",
+            "gpu",
+            "gpu_frames",
             "bench"
         ]
     );

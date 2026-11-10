@@ -87,6 +87,7 @@ vocab! {
         Group = "group",
         Frames = "frames",
         Gpu = "gpu",
+        GpuFrames = "gpu_frames",
         Bench = "bench",
         Samples = "samples",
     }
@@ -104,6 +105,7 @@ impl Op {
             | Op::World
             | Op::Net
             | Op::Gpu
+            | Op::GpuFrames
             | Op::Meta
             | Op::Memory
             | Op::Marks
@@ -482,6 +484,24 @@ vocab! {
     }
 }
 mirror!(GpuSourceName <- GpuSource { Unspecified, Horizon, ShaderPack });
+
+vocab! {
+    GpuPassSplitName {
+        Unspecified = "unspecified",
+        DrawGroups = "draw_groups",
+        PassesOnly = "passes_only",
+    }
+}
+mirror!(GpuPassSplitName <- GpuPassSplit { Unspecified, DrawGroups, PassesOnly });
+
+vocab! {
+    /// What limits a capture's frames, by `query gpu`'s rule (`BOUND_RULE`).
+    BoundName {
+        Gpu = "gpu",
+        Cpu = "cpu",
+        Mixed = "mixed",
+    }
+}
 
 /// A number JSON writes as an integer when it is whole and small, else as a rounded decimal.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

@@ -7,9 +7,9 @@ use horizon_bench::{Frames, Summary};
 use serde::{Deserialize, Serialize};
 
 use crate::wire::{
-    Amount, GpuBackendName, GpuFragmentUnitName, GpuModeName, GpuPartsModeName, GpuSourceName,
-    KindName, MemoryUnit, ModKindName, SampleBy, SeriesUnit, SideName, StopReasonName, SymbolsName,
-    ThreadSelectionName, TriggerName, WarningCodeName,
+    Amount, BoundName, GpuBackendName, GpuFragmentUnitName, GpuModeName, GpuPartsModeName,
+    GpuPassSplitName, GpuSourceName, KindName, MemoryUnit, ModKindName, SampleBy, SeriesUnit,
+    SideName, StopReasonName, SymbolsName, ThreadSelectionName, TriggerName, WarningCodeName,
 };
 
 /// A row of whichever op answered; each op's rows are all of one kind, except `net`'s first.
@@ -27,7 +27,10 @@ pub enum Row {
     NetPlayer(NetPlayer),
     /// The device the passes were timed on: the first row of `gpu`.
     GpuDevice(GpuDeviceRow),
+    /// The GPU and CPU frame times and what bounds them: the second row of `gpu`.
+    GpuSummary(GpuSummaryRow),
     GpuPass(GpuPassRow),
+    GpuFrame(GpuFrameRow),
     Meta(MetaRow),
     Memory(MemoryRow),
     MemoryDiff(MemoryDiffRow),
@@ -162,18 +165,49 @@ pub struct GpuDeviceRow {
     pub parts_mode: GpuPartsModeName,
     pub counters: bool,
     pub fragment_unit: GpuFragmentUnitName,
+    pub pass_split: GpuPassSplitName,
 }
 
-/// A pass's median GPU time per frame, its parts and what it counted.
+/// Percentiles (nearest rank) of a time over the capture's timed frames; all unset without samples.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MsStats {
+    pub samples: u64,
+    pub p50: Option<f64>,
+    pub p95: Option<f64>,
+    pub p99: Option<f64>,
+    pub max: Option<f64>,
+}
+
+/// The Horizon timer's frame totals against the window's CPU frame times over the same capture.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GpuSummaryRow {
+    pub id: String,
+    /// First to last timestamp of each timed frame.
+    pub gpu_frame: MsStats,
+    /// The CPU's own ms of every frame drawn while the capture timed the GPU.
+    pub cpu_frame: MsStats,
+    pub bound: Option<BoundName>,
+    pub bound_rule: String,
+}
+
+/// A pass's GPU time per frame, its parts and what it counted.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GpuPassRow {
     pub id: String,
     pub name: String,
     pub source: GpuSourceName,
+    /// The capture's median (older captures: of its last 15 timed frames).
     pub ms: Option<f64>,
-    /// Of the source's passes' total time.
+    /// Of the GPU frame's p50 when the capture has frames, else of the source's passes' total time.
     pub share: Option<f64>,
+    pub samples: u64,
+    pub p50: Option<f64>,
+    pub p95: Option<f64>,
+    pub p99: Option<f64>,
+    pub max: Option<f64>,
     pub parts: Vec<GpuPartRow>,
     pub counters: Option<GpuCountersRow>,
 }
@@ -181,6 +215,42 @@ pub struct GpuPassRow {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GpuPartRow {
+    pub name: String,
+    pub ms: f64,
+    pub share: Option<f64>,
+    pub samples: u64,
+    pub p50: Option<f64>,
+    pub p95: Option<f64>,
+    pub p99: Option<f64>,
+    pub max: Option<f64>,
+}
+
+/// One timed frame of `gpu_frames`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GpuFrameRow {
+    pub id: String,
+    pub t: f64,
+    pub source: GpuSourceName,
+    pub total_ms: Option<f64>,
+    /// Whether the frame was one of the capture's slow frames.
+    pub slow: bool,
+    pub slow_wall_ms: Option<f64>,
+    pub passes: Vec<GpuFramePassRow>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GpuFramePassRow {
+    pub name: String,
+    /// Unset for a pass timed only through its parts.
+    pub ms: Option<f64>,
+    pub parts: Vec<GpuFramePartRow>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GpuFramePartRow {
     pub name: String,
     pub ms: f64,
 }

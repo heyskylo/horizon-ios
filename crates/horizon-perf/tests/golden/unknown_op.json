@@ -1,1 +1,1 @@
-{"error":"unknown query op nonsense; ops: spans, ticks, tick, series, world, net, meta, memory, marks, warnings, hot, tree, callers, callees, split, group, frames, gpu, bench","ok":false,"op":"nonsense"}
+{"error":"unknown query op nonsense; ops: spans, ticks, tick, series, world, net, meta, memory, marks, warnings, hot, tree, callers, callees, split, group, frames, gpu, gpu_frames, bench","ok":false,"op":"nonsense"}

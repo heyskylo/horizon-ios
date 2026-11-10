@@ -1,13 +1,169 @@
 //! The GPU pass timers' readings as the capture's `gpu` messages (docs/perf-platform.md §3.5); apart from `perf_capture`, which only Linux has.
 use horizon_perf_format::Interner;
 use horizon_perf_format::v1::{
-    GpuBackend, GpuCounter, GpuCounts, GpuDevice, GpuFragmentUnit, GpuPart, GpuPartCounts,
-    GpuPartsMode, GpuPass, GpuPasses, GpuSource, Side,
+    GpuBackend, GpuCounter, GpuCounts, GpuDevice, GpuFragmentUnit, GpuFrame, GpuFrames, GpuPart,
+    GpuPartCounts, GpuPartsMode, GpuPass, GpuPassSplit, GpuPasses, GpuSource, Side,
 };
+use std::time::Instant;
 
 use crate::gfx::pack_timing::{
-    Counters, FragmentUnit, GpuReadout, PartsMode, PassCounters, Readings,
+    Counters, FragmentUnit, GpuReadout, PartsMode, PassCounters, Readings, TimedFrame, TimedFrames,
 };
+
+/// Every time one timer's frames gave a pass or a part during a capture.
+#[derive(Default)]
+struct Times {
+    passes: Vec<(String, Vec<f32>)>,
+    parts: Vec<(String, Vec<(String, Vec<f32>)>)>,
+}
+
+fn times_of<'a>(list: &'a mut Vec<(String, Vec<f32>)>, name: &str) -> &'a mut Vec<f32> {
+    let i = match list.iter().position(|e| e.0 == name) {
+        Some(i) => i,
+        None => {
+            list.push((name.to_owned(), Vec::new()));
+            list.len() - 1
+        }
+    };
+    &mut list[i].1
+}
+
+impl Times {
+    fn add(&mut self, frame: &TimedFrame) {
+        for (pass, ms) in &frame.passes {
+            times_of(&mut self.passes, pass).push(*ms);
+        }
+        for (pass, parts) in &frame.parts {
+            let i = match self.parts.iter().position(|e| e.0 == *pass) {
+                Some(i) => i,
+                None => {
+                    self.parts.push((pass.clone(), Vec::new()));
+                    self.parts.len() - 1
+                }
+            };
+            for (part, ms) in parts {
+                times_of(&mut self.parts[i].1, part).push(*ms);
+            }
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.passes.is_empty() && self.parts.is_empty()
+    }
+
+    /// `readings` with its times the medians over the whole capture instead of its last frames.
+    fn medians_into(&self, readings: &Readings) -> Readings {
+        let median = |v: &[f32]| {
+            let mut v = v.to_vec();
+            v.sort_by(f32::total_cmp);
+            v[v.len() / 2]
+        };
+        Readings {
+            passes: self
+                .passes
+                .iter()
+                .map(|(name, v)| (name.clone(), median(v)))
+                .collect(),
+            parts: self
+                .parts
+                .iter()
+                .map(|(pass, parts)| {
+                    let parts = parts.iter().map(|(n, v)| (n.clone(), median(v))).collect();
+                    (pass.clone(), parts)
+                })
+                .collect(),
+            ..readings.clone()
+        }
+    }
+}
+
+/// A capture's timed frames on their way into `GpuFrames` blocks, every time kept for the whole capture's medians.
+#[derive(Default)]
+pub struct FrameLog {
+    pending: Vec<GpuFrame>,
+    cpu_frame_ms: Vec<f32>,
+    own: Times,
+    pack: Times,
+}
+
+impl FrameLog {
+    /// The CPU's own ms of one frame the window drew.
+    pub fn cpu_frame(&mut self, ms: f32) {
+        self.cpu_frame_ms.push(ms);
+    }
+
+    /// The frames timed since the last call; `t_of` puts a frame's start on the capture clock.
+    pub fn add(
+        &mut self,
+        frames: &TimedFrames,
+        t_of: impl Fn(Instant) -> f64,
+        strings: &mut Interner,
+    ) {
+        for (source, list, times) in [
+            (GpuSource::Horizon, &frames.own, &mut self.own),
+            (GpuSource::ShaderPack, &frames.pack, &mut self.pack),
+        ] {
+            for frame in list {
+                times.add(frame);
+                self.pending
+                    .push(frame_message(frame, source, t_of(frame.at), strings));
+            }
+        }
+    }
+
+    /// The frames and CPU frame times since the last block; none when there are neither.
+    pub fn take_block(&mut self, side: Side) -> Option<GpuFrames> {
+        if self.pending.is_empty() && self.cpu_frame_ms.is_empty() {
+            return None;
+        }
+        Some(GpuFrames {
+            side: side as i32,
+            frames: std::mem::take(&mut self.pending),
+            cpu_frame_ms: std::mem::take(&mut self.cpu_frame_ms),
+        })
+    }
+}
+
+fn frame_message(
+    frame: &TimedFrame,
+    source: GpuSource,
+    t: f64,
+    strings: &mut Interner,
+) -> GpuFrame {
+    let mut passes: Vec<GpuPass> = frame
+        .passes
+        .iter()
+        .map(|(name, ms)| GpuPass {
+            name: strings.intern(name),
+            ms: Some(*ms),
+            parts: Vec::new(),
+        })
+        .collect();
+    for (pass, parts) in &frame.parts {
+        let parts = parts
+            .iter()
+            .map(|(part, ms)| GpuPart {
+                name: strings.intern(part),
+                ms: *ms,
+            })
+            .collect();
+        let name = strings.intern(pass);
+        match passes.iter_mut().find(|p| p.name == name) {
+            Some(p) => p.parts = parts,
+            None => passes.push(GpuPass {
+                name,
+                ms: None,
+                parts,
+            }),
+        }
+    }
+    GpuFrame {
+        source: source as i32,
+        t,
+        total_ms: frame.total_ms,
+        passes,
+    }
+}
 
 fn backend(backend: wgpu::Backend) -> GpuBackend {
     match backend {
@@ -53,6 +209,10 @@ fn device(adapter: &wgpu::AdapterInfo, readings: &Readings) -> GpuDevice {
         parts_mode: match readings.support.parts {
             PartsMode::InsidePasses => GpuPartsMode::InsidePasses,
             PartsMode::SeparatePasses => GpuPartsMode::SeparatePasses,
+        } as i32,
+        pass_split: match readings.support.parts {
+            PartsMode::InsidePasses => GpuPassSplit::DrawGroups,
+            PartsMode::SeparatePasses => GpuPassSplit::PassesOnly,
         } as i32,
         counters: readings.support.counters,
         fragment_unit: match readings.support.fragment_unit {
@@ -113,15 +273,22 @@ fn section(
     }
 }
 
-/// One `GpuPasses` per timer that has timed something; the caller appends `strings`' new entries first.
-pub fn gpu_passes(readout: &GpuReadout, side: Side, strings: &mut Interner) -> Vec<GpuPasses> {
+/// One `GpuPasses` per timer that has timed something, its times the medians of `log` where it has them; the caller appends `strings`' new entries first.
+pub fn gpu_passes(
+    readout: &GpuReadout,
+    log: &FrameLog,
+    side: Side,
+    strings: &mut Interner,
+) -> Vec<GpuPasses> {
     [
-        (GpuSource::Horizon, &readout.own),
-        (GpuSource::ShaderPack, &readout.pack),
+        (GpuSource::Horizon, &readout.own, &log.own),
+        (GpuSource::ShaderPack, &readout.pack, &log.pack),
     ]
     .into_iter()
-    .filter_map(|(source, readings)| {
+    .filter_map(|(source, readings, times)| {
         let readings = readings.as_ref().filter(|r| !r.is_empty())?;
+        let whole = (!times.is_empty()).then(|| times.medians_into(readings));
+        let readings = whole.as_ref().unwrap_or(readings);
         Some(section(&readout.adapter, side, source, readings, strings))
     })
     .collect()
@@ -188,7 +355,7 @@ mod tests {
             pack: None,
         };
         let mut strings = Interner::default();
-        let got = gpu_passes(&readout, Side::Client, &mut strings);
+        let got = gpu_passes(&readout, &FrameLog::default(), Side::Client, &mut strings);
         assert_eq!(got.len(), 1);
         let g = &got[0];
         assert_eq!((g.side(), g.source()), (Side::Client, GpuSource::Horizon));
@@ -245,12 +412,73 @@ mod tests {
             own: Some(idle),
             pack: Some(pack),
         };
-        let got = gpu_passes(&readout, Side::Client, &mut Interner::default());
+        let got = gpu_passes(
+            &readout,
+            &FrameLog::default(),
+            Side::Client,
+            &mut Interner::default(),
+        );
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].source(), GpuSource::ShaderPack);
         assert_eq!(
             got[0].device.as_ref().unwrap().fragment_unit(),
             GpuFragmentUnit::Unspecified
+        );
+    }
+
+    #[test]
+    fn the_end_section_takes_the_whole_capture_median_and_each_block_its_frames() {
+        let start = Instant::now();
+        let frame = |i: u32, world: f32| TimedFrame {
+            at: start + std::time::Duration::from_millis(u64::from(i) * 10),
+            total_ms: Some(world + 1.0),
+            passes: vec![("World".into(), world), ("HUD".into(), 0.5)],
+            parts: vec![("World".into(), vec![("sky".into(), world / 4.0)])],
+        };
+        let mut log = FrameLog::default();
+        let mut strings = Interner::default();
+        let worlds = [1.0, 2.0, 3.0, 4.0, 100.0];
+        let frames = TimedFrames {
+            own: worlds
+                .iter()
+                .enumerate()
+                .map(|(i, &w)| frame(i as u32, w))
+                .collect(),
+            pack: Vec::new(),
+        };
+        log.add(
+            &frames,
+            |at| at.duration_since(start).as_secs_f64(),
+            &mut strings,
+        );
+        log.cpu_frame(6.0);
+        let block = log.take_block(Side::Client).expect("a block");
+        assert_eq!(block.frames.len(), 5);
+        assert_eq!(block.cpu_frame_ms, [6.0]);
+        assert!((block.frames[4].t - 0.04).abs() < 1e-9);
+        assert_eq!(block.frames[4].total_ms, Some(101.0));
+        assert_eq!(block.frames[4].passes[0].parts[0].ms, 25.0);
+        assert!(log.take_block(Side::Client).is_none());
+
+        // The timer's own median (9.0) is of its last frames; the capture's is the third of five sorted.
+        let own = Readings {
+            passes: vec![("World".into(), 9.0)],
+            parts: Vec::new(),
+            counters: Vec::new(),
+            support: support(None),
+        };
+        let readout = GpuReadout {
+            adapter: adapter(),
+            own: Some(own),
+            pack: None,
+        };
+        let got = gpu_passes(&readout, &log, Side::Client, &mut strings);
+        let world = &got[0].passes[0];
+        assert_eq!(world.ms, Some(3.0));
+        assert_eq!(world.parts[0].ms, 0.75);
+        assert_eq!(
+            got[0].device.as_ref().unwrap().pass_split(),
+            GpuPassSplit::DrawGroups
         );
     }
 }

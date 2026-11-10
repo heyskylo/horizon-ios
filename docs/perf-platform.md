@@ -264,6 +264,7 @@ message Capture {
   repeated BenchResult bench = 21;         // end
   repeated Attachment attachments = 22;    // end: added by drivers through horizon-perf attach
   repeated Stop stop = 23;                 // end: the side's last field
+  repeated GpuFrames gpu_frames = 24;      // live: clients only, the timed frames, a block about every second
 }
 
 enum Side { SIDE_UNSPECIFIED = 0; SIDE_CLIENT = 1; SIDE_SERVER = 2; }
@@ -367,6 +368,8 @@ message SampleProfile {
 }
 
 message GpuPasses { Side side = 1; GpuDevice device = 2; repeated GpuPass passes = 3; repeated GpuCounter counters = 4; GpuSource source = 5; }
+message GpuFrames { Side side = 1; repeated GpuFrame frames = 2; repeated float cpu_frame_ms = 3; }
+message GpuFrame { GpuSource source = 1; double t = 2; optional float total_ms = 3; repeated GpuPass passes = 4; }
 message NetTraffic { Side side = 1; float block_s = 2; repeated PlayerTraffic players = 3; }
 message WorldSnapshot { Side side = 1; double t = 2; uint32 label = 3; repeated DimensionCounts dims = 4; repeated EntityCost entity_costs = 5; }
 message BenchResult { Side side = 1; string format = 2; string report_json = 3; string corpus_id = 4; }
@@ -426,6 +429,15 @@ Notes on fields:
     with the counts. `--gpu` without a device that times passes writes `WARNING_CODE_GPU_UNAVAILABLE` and no field.
     `Options.gpu` records `--gpu` as asked. `HORIZON_SHADER_PACK_TIMING` and `HORIZON_GPU_PASS_DETAIL` start a capture
     (`--gpu`, `--gpu=detail`) at launch; the renderer no longer reads them.
+  - **Per frame:** every frame a timer times during a capture goes into `gpu_frames` (`GpuFrame`: its start on the
+    capture clock, `total_ms` from its first timestamp to its last, each pass and part with a name's occurrences
+    summed), about one block a second, with the CPU ms of every frame the window drew (`cpu_frame_ms`). `GpuPasses`
+    `ms` is then the median over the whole capture. Where the device has timestamps inside passes
+    (`GpuDevice.pass_split` = `DRAW_GROUPS`), the world passes are split into their draw groups (sky, solid terrain,
+    entities, translucent terrain, clouds, weather, hand...) and compute passes into their dispatches in every timed
+    frame; Metal keeps pass boundaries (`PASSES_ONLY`). `query gpu` adds each pass's and part's samples, p50, p95,
+    p99, max and share of the GPU frame p50, and a summary row with the GPU and CPU frame percentiles and a `bound`
+    verdict; `query gpu_frames` lists the frames, flagging those inside a slow frame.
 - `Mark.name` is the only free text in a capture. It is typed by the person profiling (`profile mark NAME`).
   `Warning`s are codes with numbers, so tools render them in their own language.
 - `BenchResult.report_json` embeds a `horizon-benchmark-report` v1 verbatim (or `scene_replay --json`, with
@@ -769,7 +781,7 @@ horizon-perf mcp                                                       §8
 | `ticks` | `--worst N`, `--over MS` | worst ticks/frames with span trees, from `spans.worst`, `slow_history` and `slow` | worst-ticks lines |
 | `tick` | `k:ID` | one tick's span tree, and its samples if the tick was slow | |
 | `series` | `FIELD…` (`h:` fields, `span:NAME`, `x:` counters), `--every S` | time series, resampled; `--from` before 0 reaches into `history`; the web UI and MCP can add `stats` (min, mean over the window, median, p95, max, last) to each series | `s3_windows.py`, `s3_counters.py` |
-| `world`, `net`, `gpu`, `meta`, `bench`, `marks`, `warnings` | section filters | the section, filtered and ranked | `s3a_table.py`, `s1b_table.py` |
+| `world`, `net`, `gpu`, `gpu_frames`, `meta`, `bench`, `marks`, `warnings` | section filters | the section, filtered and ranked | `s3a_table.py`, `s1b_table.py` |
 | `memory` | `--diff [LABEL_A LABEL_B]`, `--min-mb X` | a snapshot, or spec D's diff of two (`grew_mb`, `shrank_mb`, `counts`, `only_in_a/b`) | spec D's `memory-diff` |
 
 Filters, common to the sample-based ops:

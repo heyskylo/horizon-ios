@@ -125,6 +125,20 @@ fn synthetic_fields() -> Vec<Field> {
             }),
             ..Default::default()
         }));
+        fields.push(Field::GpuFrames(GpuFrames {
+            side: s,
+            frames: vec![GpuFrame {
+                source: GpuSource::Horizon as i32,
+                t: 1.25,
+                total_ms: Some(2.5),
+                passes: vec![GpuPass {
+                    name: 1,
+                    ms: Some(1.5),
+                    parts: vec![GpuPart { name: 2, ms: 0.25 }],
+                }],
+            }],
+            cpu_frame_ms: vec![4.0, 5.5],
+        }));
         fields.push(Field::Gpu(GpuPasses {
             side: s,
             source: GpuSource::Horizon as i32,

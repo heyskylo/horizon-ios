@@ -38,6 +38,7 @@ pub enum Field {
     Samples(v1::SampleProfile),
     Net(v1::NetTraffic),
     Gpu(v1::GpuPasses),
+    GpuFrames(v1::GpuFrames),
     Bench(v1::BenchResult),
     Stop(v1::Stop),
 }
@@ -63,6 +64,7 @@ impl Field {
             Field::Samples(m) => m.side(),
             Field::Net(m) => m.side(),
             Field::Gpu(m) => m.side(),
+            Field::GpuFrames(m) => m.side(),
             Field::Bench(m) => m.side(),
             Field::Stop(m) => m.side(),
         }
@@ -90,6 +92,7 @@ impl Field {
             Field::Samples(m) => c.samples.push(m),
             Field::Net(m) => c.net.push(m),
             Field::Gpu(m) => c.gpu.push(m),
+            Field::GpuFrames(m) => c.gpu_frames.push(m),
             Field::Bench(m) => c.bench.push(m),
             Field::Stop(m) => c.stop.push(m),
         }

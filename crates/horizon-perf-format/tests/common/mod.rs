@@ -104,6 +104,7 @@ pub fn push(expected: &mut Capture, field: Field) {
         Field::Samples(m) => expected.samples.push(m),
         Field::Net(m) => expected.net.push(m),
         Field::Gpu(m) => expected.gpu.push(m),
+        Field::GpuFrames(m) => expected.gpu_frames.push(m),
         Field::Bench(m) => expected.bench.push(m),
         Field::Stop(m) => expected.stop.push(m),
     }

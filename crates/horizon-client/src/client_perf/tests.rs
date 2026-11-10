@@ -455,7 +455,8 @@ fn a_gpu_capture_reads_back_its_pass_times_and_fragments_per_pixel() {
         (device.adapter.as_str(), device.driver.as_str()),
         ("Test GPU", "NVIDIA 570.1")
     );
-    let passes: Vec<_> = rows[1..]
+    assert!(matches!(&rows[1], Row::GpuSummary(_)), "{rows:?}");
+    let passes: Vec<_> = rows[2..]
         .iter()
         .map(|r| match r {
             Row::GpuPass(p) => p,
@@ -474,6 +475,50 @@ fn a_gpu_capture_reads_back_its_pass_times_and_fragments_per_pixel() {
         passes[0].counters.as_ref().unwrap().fragments_per_pixel,
         Some(3.04)
     );
+}
+
+#[test]
+fn timed_frames_go_out_in_blocks_and_the_end_section_takes_their_median() {
+    use crate::gfx::pack_timing::{TimedFrame, TimedFrames};
+    use horizon_perf::query::Row;
+    let scratch = Scratch::new("gpu-frames");
+    let mut perf = ClientPerf::new(SLOW_FRAME_MS);
+    begin(&mut perf, 0.0, &scratch.0, &gpu_options(GpuSwitch::Passes));
+    // 25 frames 0.1 s apart, World 1..=25 ms: blocks close after each second and at the stop.
+    for i in 1..=25u32 {
+        let frames = TimedFrames {
+            own: vec![TimedFrame {
+                at: Instant::now(),
+                total_ms: Some(i as f32 + 1.0),
+                passes: vec![("World".into(), i as f32), ("HUD".into(), 0.25)],
+                parts: Vec::new(),
+            }],
+            pack: Vec::new(),
+        };
+        perf.gpu_frames(f64::from(i) / 10.0, 4.0, &frames);
+    }
+    assert!(perf.stop_with_gpu(2.6, R::Normal, Some(readout())));
+    let saved = perf.take_saved(true).pop().unwrap().unwrap();
+    let c = read(&saved.path);
+    assert_eq!(c.gpu_frames.len(), 3);
+    let frames: Vec<_> = c.gpu_frames.iter().flat_map(|b| &b.frames).collect();
+    assert_eq!(frames.len(), 25);
+    assert!((frames[9].t - 1.0).abs() < 0.01, "{}", frames[9].t);
+    let cpu: usize = c.gpu_frames.iter().map(|b| b.cpu_frame_ms.len()).sum();
+    assert_eq!(cpu, 25);
+    let rows = gpu_query(&saved.path);
+    let Row::GpuSummary(summary) = &rows[1] else {
+        panic!("{rows:?}");
+    };
+    // Totals 2..=26: nearest rank 13 of 25 is 14; the CPU's 4 ms is under 14 / 1.2.
+    assert_eq!(summary.gpu_frame.p50, Some(14.0));
+    assert_eq!(summary.bound, Some(horizon_perf::wire::BoundName::Gpu));
+    let world = rows[2..].iter().find_map(|r| match r {
+        Row::GpuPass(p) if p.name == "World" => Some(p),
+        _ => None,
+    });
+    // The capture's median (the 13th of 25), not the readout's 1.5.
+    assert_eq!(world.unwrap().ms, Some(13.0));
 }
 
 #[test]
