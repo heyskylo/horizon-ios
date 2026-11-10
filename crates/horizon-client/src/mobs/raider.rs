@@ -775,7 +775,11 @@ mod tests {
         let mobs: Vec<Mob> = (0..300u32)
             .map(|i| {
                 let at = Vec3::new(f64::from(i % 20) * 3.0, 64.0, f64::from(i / 20) * 3.0);
-                let mob_kind = if i % 3 == 0 { cow.clone() } else { pillager.clone() };
+                let mob_kind = if i % 3 == 0 {
+                    cow.clone()
+                } else {
+                    pillager.clone()
+                };
                 Mob::new(i + 1, mob_kind, at, 0.0)
             })
             .collect();
