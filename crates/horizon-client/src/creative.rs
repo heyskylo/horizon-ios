@@ -916,6 +916,16 @@ impl Creative {
         let y = if tab.top { -28.0 } else { Self::HEIGHT - 4.0 };
         (x, y)
     }
+    /// `CreativeModeInventoryScreen.checkTabHovering`: the tab whose icon
+    /// rectangle, 3 pixels in from its 26x32 slot (`isHovering(x + 3, y + 3,
+    /// 21, 27)`), holds the cursor. The screen draws its display name.
+    pub fn hovered_tab(tabs: &[Tab], origin: (f32, f32), cursor: (f32, f32)) -> Option<usize> {
+        tabs.iter().position(|tab| {
+            let (x, y) = Self::tab_position(tab);
+            let (x, y) = (origin.0 + x + 3.0, origin.1 + y + 3.0);
+            cursor.0 >= x && cursor.0 < x + 21.0 && cursor.1 >= y && cursor.1 < y + 27.0
+        })
+    }
     /// `CreativeModeInventoryScreen.extractTabButton`'s cursor: an unselected
     /// tab asks for the pointing hand when the whole-pixel mouse, relative to
     /// the screen origin, is strictly inside its 26x32 button.
@@ -1792,5 +1802,22 @@ mod tests {
         assert!(c.items(&names).is_empty());
         assert!(c.tab_headers().is_empty());
         assert_eq!(c.search_tab(), None);
+    }
+
+    /// `CreativeModeInventoryScreen.checkTabHovering`: the 3-pixel inset of a
+    /// tab's 26x32 slot (21x27) is the hover area whose name the screen shows.
+    #[test]
+    fn only_a_tabs_inset_icon_is_hovered() {
+        let screen = tooltip_tabs();
+        let tab = &screen.tabs[0];
+        let (x, y) = Creative::tab_position(tab);
+        let at =
+            |dx: f32, dy: f32| Creative::hovered_tab(&screen.tabs, (0.0, 0.0), (x + dx, y + dy));
+        assert_eq!(at(4.0, 4.0), Some(0));
+        assert_eq!(at(23.5, 4.0), Some(0));
+        assert_eq!(at(2.0, 4.0), None);
+        assert_eq!(at(24.0, 4.0), None);
+        assert_eq!(at(4.0, 2.0), None);
+        assert_eq!(at(4.0, 30.0), None);
     }
 }
