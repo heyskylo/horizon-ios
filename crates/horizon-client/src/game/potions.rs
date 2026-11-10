@@ -415,7 +415,7 @@ impl Game<'_> {
 /// a guest keeps their own while the host's are in `PotionState`.
 #[derive(Default)]
 pub(super) struct BodyPotions {
-    applied: Vec<(&'static str, &'static str, f64, &'static str)>,
+    pub(super) applied: Vec<(&'static str, &'static str, f64, &'static str)>,
     protection_for: Option<(u64, Vec<Option<ItemStack>>)>,
     enchant_modifiers: Vec<(String, String, f64, String)>,
 }
@@ -426,7 +426,7 @@ pub(super) struct PotionState {
     thrown: Vec<ThrownPotion>,
     /// The area effect clouds a server tracks (game/remote_projectiles.rs).
     pub(super) clouds: Vec<super::remote_projectiles::RemoteCloud>,
-    applied: Vec<(&'static str, &'static str, f64, &'static str)>,
+    pub(super) applied: Vec<(&'static str, &'static str, f64, &'static str)>,
     /// Armor the protection table was computed for.
     protection_for: Option<(u64, Vec<Option<ItemStack>>)>,
 
