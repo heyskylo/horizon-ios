@@ -141,6 +141,12 @@ impl Game<'_> {
             let pitch = 0.8 + self.world.random.next_float() * 0.4;
             self.audio.play(sound, at, 1.0, pitch);
         }
+        // BlocksAttacks.hurtBlockingItem: the hit counts the blocking item as
+        // used, before the blocked-damage gate (vanilla awards it on the
+        // server even when the item blocks none of the damage).
+        if self.remote.is_none() {
+            self.award_stat("used", &stack.item, 1);
+        }
         if outcome.blocked <= 0.0 {
             return;
         }
