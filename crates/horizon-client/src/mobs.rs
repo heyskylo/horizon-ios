@@ -1115,9 +1115,7 @@ pub struct Extra {
     pub age: i32,
     /// `AgeLocked` (tadpoles fed a slime ball... and ageable mobs).
     pub age_locked: bool,
-    /// `AgeableMob.ageLockParticleTimer` (a tadpole's too): the ticks of
-    /// growth particles left after a golden dandelion, and the cooldown
-    /// before the next one can be used. Not saved.
+    /// `AgeableMob.ageLockParticleTimer`: growth particles left, and the cooldown. Not saved.
     pub age_lock_particle_timer: i32,
     /// AgeableMob.forcedAge: the age fed food added, restored as the age
     /// when it reaches 0 (`ForcedAge`).
@@ -1131,8 +1129,7 @@ pub struct Extra {
     /// Secondary variant (horse markings, tropical fish pattern colours, panda hidden gene).
     pub variant2: u8,
     pub variant3: u8,
-    /// `MushroomCow.stewEffects`: what a brown one took from a flower, given
-    /// back in its next bowl of stew. `None` is vanilla's null.
+    /// `MushroomCow.stewEffects`: what a brown one took from a flower, for its next stew.
     pub stew_effects: Option<Vec<(Arc<str>, i32)>>,
     /// Dye colour id (sheep wool, collars).
     pub color: u8,
@@ -1166,7 +1163,10 @@ pub struct Extra {
     /// Loaded signed values are independent of the gameplay modification cap.
     pub equine_temper: i32,
     pub tame: bool,
+    /// `TamableAnimal.isOrderedToSit` (the saved order), and in `sitting_pose`
+    /// `isInSittingPose` (bit 1 of `DATA_FLAGS_ID`, which only a sit goal writes).
     pub sitting: bool,
+    pub sitting_pose: bool,
     /// `Parrot.partyParrot` and `jukebox`: the playing jukebox it dances to.
     pub party_jukebox: Option<[i32; 3]>,
     /// The owner's UUID: a tamed animal's, or the reference a vex was loaded with.
@@ -2860,7 +2860,7 @@ impl Mob {
                 m.extra.vector[0],
                 m.attrs.speed,
             ],
-            sitting: m.extra.sitting,
+            sitting: m.extra.sitting_pose,
             silent: m.silent,
             lying: m.species() == Species::Cat && (m.extra.flag || m.extra.relax_one),
             ridden: m.rider.is_some() || m.extra.rider.is_some() || m.extra.mount.is_some(),

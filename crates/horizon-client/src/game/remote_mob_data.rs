@@ -154,9 +154,9 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
             }
             // Piglin.DATA_IS_DANCING: the dance pose.
             (Species::Piglin, 19, Value::Bool(dancing)) => m.extra.scratch[0] = i32::from(*dancing),
-            // TamableAnimal.DATA_FLAGS_ID: sitting 1, tame 4.
+            // TamableAnimal.DATA_FLAGS_ID: in the sitting pose 1, tame 4.
             (Species::Wolf | Species::Cat | Species::Parrot, 18, Value::Byte(flags)) => {
-                m.extra.sitting = flags & 1 != 0;
+                m.extra.sitting_pose = flags & 1 != 0;
                 m.extra.tame = flags & 4 != 0;
             }
             // Cat.IS_LYING and RELAX_STATE_ONE.
@@ -1169,7 +1169,7 @@ mod tests {
                 (21, s::INT, Value::Int(11)),
             ],
         );
-        assert!(m.extra.tame && m.extra.sitting);
+        assert!(m.extra.tame && m.extra.sitting_pose);
         assert_eq!(m.extra.color, 11);
     }
 
@@ -1504,3 +1504,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "pet_pose_meta_tests.rs"]
+mod pet_pose_meta_tests;

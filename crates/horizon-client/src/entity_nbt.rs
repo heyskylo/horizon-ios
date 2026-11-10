@@ -2388,7 +2388,7 @@ pub fn mob_from_nbt_with_random(
     if m.species() == crate::mobs::Species::Cat {
         m.extra.owner = crate::save::uuid_from_tag(tag.get("Owner"));
         m.extra.tame = m.extra.owner.is_some();
-        m.extra.sitting = flag(tag, "Sitting");
+        crate::mobs::tame::restore_sitting(&mut m, flag(tag, "Sitting"));
         m.extra.color =
             number(tag.get("CollarColor")).map_or(crate::mobs::tame::RED, |c| (c as u8) & 15);
     }
@@ -2400,7 +2400,7 @@ pub fn mob_from_nbt_with_random(
     if m.species() == crate::mobs::Species::Parrot {
         m.extra.owner = crate::save::uuid_from_tag(tag.get("Owner"));
         m.extra.tame = m.extra.owner.is_some();
-        m.extra.sitting = flag(tag, "Sitting");
+        crate::mobs::tame::restore_sitting(&mut m, flag(tag, "Sitting"));
     }
     if m.species() == crate::mobs::Species::Wolf {
         let health = m.health;
@@ -2408,7 +2408,7 @@ pub fn mob_from_nbt_with_random(
         let tame = m.extra.owner.is_some();
         crate::mobs::tame::set_tame(&mut m, tame);
         m.health = health;
-        m.extra.sitting = flag(tag, "Sitting");
+        crate::mobs::tame::restore_sitting(&mut m, flag(tag, "Sitting"));
         let armor = tag
             .get("equipment")
             .and_then(|e| e.get("body"))

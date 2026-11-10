@@ -118,7 +118,7 @@ pub struct BodyRotation {
 impl Mob {
     /// `Mob.getMaxHeadXRot`, with `Wolf`'s 20 degrees while sitting.
     pub fn max_head_x_rot(&self) -> f32 {
-        if self.species() == Species::Wolf && self.extra.sitting {
+        if self.species() == Species::Wolf && self.extra.sitting_pose {
             20.0
         } else {
             self.kind.max_head_x_rot

@@ -62,7 +62,7 @@ pub fn register(m: &mut Mob) {
     if trader {
         g.add(1, Panic::new(2.0));
     }
-    g.add(1, equine::RunAroundLikeCrazy);
+    g.add(1, equine::RunAroundLikeCrazy::new());
     g.add(2, super::caravan::FollowCaravan::new(f64::from(2.1_f32)));
     g.add(3, RangedAttack::new(1.25, 40, 40, 20.0, spit));
     g.add(3, Panic::new(1.2));

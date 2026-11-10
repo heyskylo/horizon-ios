@@ -134,7 +134,8 @@ impl Goal for LandOnOwnersShoulder {
             && m.age > 100
     }
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
-        if !m.extra.sitting
+        // `!isInSittingPose()`: an ordered parrot still in the water may land.
+        if !m.extra.sitting_pose
             && m.extra.leash.is_none()
             && is_owner(m, cx.w)
             && cx
@@ -398,6 +399,11 @@ impl Goal for SitWhenOrdered {
     /// stops.
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         m.nav_stop();
+        m.extra.sitting_pose = true;
+    }
+    /// `SitWhenOrderedToGoal.stop`.
+    fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
+        m.extra.sitting_pose = false;
     }
 }
 /// `Wolf.WolfAvoidEntityGoal`: untamed wolves flee llamas.
@@ -895,7 +901,7 @@ pub fn anim(m: &Mob, s: &State, p: &mut Poses) {
     } else {
         p.yrot("tail", (pos * 0.6662).mcos() * 1.4 * speed);
     }
-    if m.extra.sitting {
+    if m.extra.sitting_pose {
         let age = if baby { 0.5 } else { 1.0 };
         let add = |p: &mut Poses, part: &str, x: f32, y: f32, z: f32| {
             let v = p.get(part);
@@ -1014,7 +1020,7 @@ pub fn register_cat(m: &mut Mob) {
     g.add(8, LeapAtTarget::new(0.3));
     g.add(9, OcelotAttack { attack_time: 0 });
     g.add(10, Breed::new(0.8));
-    g.add(11, Stroll::avoiding_water(0.8));
+    g.add(11, cat_stroll());
     g.add(12, LookAtPlayer::new(10.0));
     // `reassessTameGoals` adds the avoidance after `registerGoals`: goals run
     // in insertion order, so it comes last.
@@ -1031,6 +1037,13 @@ pub fn register_cat(m: &mut Mob) {
         1,
         NonTameTarget::new(NearestTarget::new(Prey::Filter(baby_turtle_on_land), false)),
     );
+}
+/// `Cat.registerGoals`: `WaterAvoidingRandomStrollGoal(this, 0.8, 1.0000001E-5F)`,
+/// the ocelot's probability (a cat strolls out of water one tick in 100000).
+pub fn cat_stroll() -> Stroll {
+    let mut stroll = Stroll::avoiding_water(0.8);
+    stroll.water_avoiding = Some(1.000_000_1e-5);
+    stroll
 }
 /// `Ocelot.registerGoals`, then `reassessTrustingGoals` adds the player
 /// avoidance last. A trusting ocelot (`Ocelot.mobInteract`, the `Trusting`
@@ -1138,9 +1151,14 @@ impl Goal for OcelotAvoid {
         self.0.tick(m, cx)
     }
 }
-/// `Cat.isInSittingPose`: ordered to sit or sitting on a block.
+/// `TamableAnimal.readAdditionalSaveData`: the saved order sets the pose too.
+pub fn restore_sitting(m: &mut Mob, ordered: bool) {
+    m.extra.sitting = ordered;
+    m.extra.sitting_pose = ordered;
+}
+/// `Cat.isInSittingPose`: `SitWhenOrderedToGoal` or a chest/bed goal.
 pub fn cat_sitting(m: &Mob) -> bool {
-    m.extra.sitting || m.extra.flag2
+    m.extra.sitting_pose
 }
 /// `Cat.CatTemptGoal`: only wild cats come for fish. The second field is
 /// `selectedPlayer`, the player the cat has picked to approach unscared.
@@ -1288,7 +1306,7 @@ impl Goal for CatRelaxOnOwner {
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(g) = self.goal {
-            m.extra.flag2 = false;
+            m.extra.sitting_pose = false;
             m.nav_move_to(
                 cx.w,
                 [f64::from(g[0]), f64::from(g[1]), f64::from(g[2])],
@@ -1324,7 +1342,7 @@ impl Goal for CatRelaxOnOwner {
         let (Some(p), Some(g)) = (cx.w.player.as_ref(), self.goal) else {
             return;
         };
-        m.extra.flag2 = false;
+        m.extra.sitting_pose = false;
         m.nav_move_to(
             cx.w,
             [f64::from(g[0]), f64::from(g[1]), f64::from(g[2])],
@@ -1428,7 +1446,7 @@ impl Goal for CatLieOnBlock {
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx.w);
-        m.extra.flag2 = false;
+        m.extra.sitting_pose = false;
     }
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         m.extra.flag = false;
@@ -1438,7 +1456,7 @@ impl Goal for CatLieOnBlock {
     }
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.tick(m, cx.w);
-        m.extra.flag2 = false;
+        m.extra.sitting_pose = false;
         m.extra.flag = self.0.reached;
     }
 }
@@ -1487,17 +1505,17 @@ impl Goal for CatSitOnBlock {
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx.w);
-        m.extra.flag2 = false;
+        m.extra.sitting_pose = false;
     }
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
-        m.extra.flag2 = false;
+        m.extra.sitting_pose = false;
     }
     fn every_tick(&self) -> bool {
         true
     }
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.tick(m, cx.w);
-        m.extra.flag2 = self.0.reached;
+        m.extra.sitting_pose = self.0.reached;
     }
 }
 /// `OcelotAttackGoal`: stalk slowly, dash in, swipe every second.
@@ -2077,7 +2095,10 @@ mod tests {
             let mut m = sitting(species, name);
             m.id = id;
             m.extra.in_love = 600;
+            // Ordered to sit on the ground, so also in the pose the partner
+            // check reads.
             m.extra.sitting = sat;
+            m.extra.sitting_pose = sat;
             m
         };
         for (species, name, seeker_sat, partner_sat, breeds) in [
@@ -2399,3 +2420,7 @@ mod non_tame_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "pet_pose_tests.rs"]
+mod pet_pose_tests;
