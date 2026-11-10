@@ -71,3 +71,18 @@ fn a_wind_burst_pushes_the_dragon_without_damage() {
         "Wind Burst did not push the dragon"
     );
 }
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_wind_burst_scales_the_dragons_push_by_its_multiplier() {
+    let mut game = end_game();
+    game.spawn_dragon_spawned([0.0, 70.0, 0.0])
+        .expect("spawned dragon");
+    game.dragon.as_mut().expect("dragon").velocity = Vec3::ZERO;
+    game.wind_burst([0.0, 66.0, 0.0], 5.0, 1.22, false, false)
+        .unwrap();
+
+    let push = game.dragon.as_ref().expect("dragon").velocity.y;
+    assert!(push > 0.0, "Wind Burst did not push the dragon");
+    assert!(push > 0.6, "Wind Burst multiplier was not applied: {push}");
+}

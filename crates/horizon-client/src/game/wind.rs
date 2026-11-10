@@ -78,6 +78,7 @@ impl Game<'_> {
         &mut self,
         center: [f64; 3],
         radius: f32,
+        multiplier: f32,
         blocks: &[[i32; 3]],
     ) {
         let Some(d) = self.dragon.as_ref() else {
@@ -93,6 +94,9 @@ impl Game<'_> {
         else {
             return;
         };
+        for component in &mut push {
+            *component *= f64::from(multiplier);
+        }
         self.native_explosion_knockback(self.dim.id(), center, blocks, Some(id), &mut push);
         if let Some(d) = self.dragon.as_mut() {
             d.velocity = Vec3::new(
@@ -506,7 +510,7 @@ impl Game<'_> {
         self.post_game_event("minecraft:explode", center, ctx);
         let mut targets = self.wind_positions(center, radius);
         let pushed = self.wind_knockback(center, radius, multiplier, breeze, wind_charge, &targets);
-        self.wind_burst_knockback(center, radius, &targets);
+        self.wind_burst_knockback(center, radius, multiplier, &targets);
         let block_count = targets.len();
         // Explosion.canTriggerBlocks: a breeze's charge needs mob griefing.
         if !breeze || self.ui.rules.bool("mob_griefing") {
