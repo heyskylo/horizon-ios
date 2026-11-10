@@ -65,3 +65,45 @@ pub(super) fn tick_air(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    /// `LivingEntity.canBreatheUnderWater` on the drown path: the
+    /// `can_breathe_under_water` tag (an iron golem is not in it, a guardian is),
+    /// with the baby happy ghast and the sulfur cube holding a block on top of it.
+    /// 300 ticks take the air from 300 to 0 and 20 more deal the drown's 2.
+    #[test]
+    fn the_types_the_jar_lists_breathe_under_water() {
+        let ran = crate::mobs::world::with_test_world(&[], |w, types| {
+            let drowned = |id: &str, baby: bool, body: Option<&str>| {
+                let kind = Arc::new(types.types[id].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+                m.fluids.eye_in_water = true;
+                m.fluids.in_water = true;
+                if baby {
+                    m.extra.age = -24000;
+                }
+                m.extra.body = body.map(Into::into);
+                let start = m.health;
+                let mut events = Vec::new();
+                for _ in 0..320 {
+                    tick_air(&mut m, w, &mut events);
+                }
+                start - m.health
+            };
+            assert_eq!(drowned("minecraft:guardian", false, None), 0.0);
+            assert_eq!(drowned("minecraft:iron_golem", false, None), 2.0);
+            assert_eq!(drowned("minecraft:happy_ghast", false, None), 2.0);
+            assert_eq!(drowned("minecraft:happy_ghast", true, None), 0.0);
+            assert_eq!(drowned("minecraft:sulfur_cube", false, None), 2.0);
+            assert_eq!(
+                drowned("minecraft:sulfur_cube", false, Some("minecraft:stone")),
+                0.0
+            );
+        });
+        let _ = ran;
+    }
+}
