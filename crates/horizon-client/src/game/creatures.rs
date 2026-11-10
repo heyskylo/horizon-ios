@@ -2,6 +2,7 @@
 //! chunk-generation spawning (`NaturalSpawner`), mob events (attacks,
 //! breeding, conversions, drops), projectiles, player interactions
 //! (feeding, shearing, milking, spawn eggs, throwing) and rendering.
+mod bred_draws;
 mod mob_geometry;
 mod projectile_world;
 mod pufferfish_player;
@@ -3889,9 +3890,7 @@ impl Game<'_> {
             }
             return;
         }
-        // (Mooshroom draws its own coin in getOffspringVariant.)
-        let coin = p.species() != Species::Mooshroom
-            && self.world.random.next_int_bound(2).unwrap_or(0) == 0;
+        let coin = self.bred_coat_coin(parent, p.species());
         // Axolotl.getBreedOffspring: useRareVariant (one in 1200) makes it blue,
         // else either parent's variant. The draws come from the mother's random.
         let axolotl = if p.species() == Species::Axolotl {
@@ -3943,7 +3942,7 @@ impl Game<'_> {
             // No Mob.finalizeSpawn either: no follow range bonus, right-handed.
             spawning::bred_offspring(child);
             // getBreedOffspring creates the baby without finalizeSpawn: it keeps
-            // the default (`classic`) sound variant.
+            // the default (`classic`) sound variant (a wolf picks its own below).
             child.extra.sound_variant = None;
             // Fox.getBreedOffspring runs no finalizeSpawn: nothing in the
             // baby fox's mouth.
@@ -4058,6 +4057,7 @@ impl Game<'_> {
                         c.extra.color = mixed;
                     }
                 }
+                self.pick_bred_wolf_voice(parent, id);
                 self.breeding_orb(parent, [p.position.x, p.position.y, p.position.z]);
                 return;
             }
