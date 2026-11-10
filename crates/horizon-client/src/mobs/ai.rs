@@ -1454,6 +1454,19 @@ pub(super) fn in_powder_snow(m: &Mob, w: &MobWorld) -> bool {
 /// `LivingEntity.canFreeze`: not a `#freeze_immune_entity_types` mob and no
 /// worn piece in `#freeze_immune_wearables`.
 fn can_freeze(m: &Mob, w: &MobWorld) -> bool {
+    // Skeleton.canFreeze: a skeleton never freezes, so powder snow builds no
+    // frozen ticks on it and deals it no freeze damage; the stray, the bogged,
+    // the parched and the wither skeleton inherit the same answer.
+    if matches!(
+        m.species(),
+        super::Species::Skeleton
+            | super::Species::Stray
+            | super::Species::Bogged
+            | super::Species::Parched
+            | super::Species::WitherSkeleton
+    ) {
+        return false;
+    }
     if w.data
         .entity_has("minecraft:freeze_immune_entity_types", &m.kind.id)
     {
