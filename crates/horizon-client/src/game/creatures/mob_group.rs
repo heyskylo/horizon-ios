@@ -140,7 +140,7 @@ impl<M: MobSlot> Group<M> {
         }
     }
 
-    /// The group's grid answers as the whole list's grid of `whole` ([`SeenGrid::bounds`]) would.
+    /// The group's spatial query extent and scan threshold match the whole list's `whole`.
     pub(super) fn answering_as(self, whole: (f64, usize)) -> Self {
         Self {
             grid: self.grid.answering_as(whole),

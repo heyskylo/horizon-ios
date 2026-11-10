@@ -20,7 +20,7 @@
 //! copies and logs a tick whose result differs. The loop stays serial with native mods loaded
 //! (their hooks can touch anything), on a tick a performance report samples, under
 //! `HORIZON_TEST_SEEDS`, with few ticking mobs, with a mob whose reach is the whole level, or when
-//! one island holds most of them.
+//! one island holds most of them, or a mob belongs to a raid (its hurt sequence is shared).
 //!
 //! Whether a mob is loaded and ticking is decided at its turn, as the serial loop decides it, so
 //! every mob is given a ticking mob's reach: one moved before its turn may tick where it was resting.
@@ -65,6 +65,14 @@ thread_local! {
     static RAN: Cell<usize> = const { Cell::new(0) };
     static VERIFY: Cell<bool> = const { Cell::new(false) };
     static CHECK: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+    static FAIL_THREADS: std::cell::RefCell<Option<FailThreads>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct FailThreads {
+    spawn: bool,
+    started: Arc<std::sync::Barrier>,
 }
 
 fn verifying() -> bool {
@@ -115,6 +123,11 @@ impl Islands<'_> {
             || mobs.len() < MIN_TICKING
             || super::super::tick_profile::start().is_some()
             || horizon_client::random_source::repeating_per_thread()
+            // Raid hurt ordering allocates process-wide sequence IDs. Until its reference
+            // effects can be isolated, neither production nor verify splits such a tick.
+            || mobs.iter().any(|m| {
+                horizon_client::mobs::raider::state(m).is_some_and(|r| r.raid_id.is_some())
+            })
         {
             return None;
         }
@@ -186,7 +199,7 @@ impl Islands<'_> {
             .collect();
         #[cfg(test)]
         RAN.with(|r| r.set(lanes));
-        let board = Board::new(snapshot, &groups, Arc::clone(&draws));
+        let mut board = Board::new(snapshot, &groups, Arc::clone(&draws));
         self.run_threads(
             &mut groups,
             &board,
@@ -234,6 +247,11 @@ impl Islands<'_> {
             }
             start.ticked.extend(g.ticked.iter().copied());
             pushes.append(std::mem::take(&mut g.pushes));
+            // A later turn can also update an earlier member's snapshot (brain events), so
+            // merge the final group entries rather than only its turn-time publications.
+            for (&at, seen) in g.global.iter().zip(&g.snapshot) {
+                board.frozen[at] = seen.clone();
+            }
         }
         drop(groups);
         let Board { frozen, .. } = board;
@@ -308,6 +326,8 @@ impl Islands<'_> {
         let tickings: Vec<_> = groups.iter().map(|_| (self.ticking)()).collect();
         let mut parts = groups.iter_mut().zip(tickings);
         let (first, first_ticking) = parts.next().expect("a plan has groups");
+        #[cfg(test)]
+        let failure = FAIL_THREADS.with(|f| f.borrow().clone());
         std::thread::scope(|s| {
             // Guards for every not-yet-started lane live inside the scope's callback. If the
             // OS refuses a spawn, they drop before scope joins any started, waiting threads.
@@ -320,10 +340,35 @@ impl Islands<'_> {
                 .collect();
             for (g, ticking, done) in pending {
                 let run = &run;
+                #[cfg(test)]
+                let failure = failure.clone();
+                #[cfg(test)]
+                if let Some(failure) = &failure
+                    && failure.spawn
+                    && g.global[0] == 2
+                {
+                    // The first worker has reached its RNG request while the server lane and
+                    // this later lane have not started. Fail at the OS-spawn error boundary.
+                    failure.started.wait();
+                    panic!("injected spawn failure at the OS-spawn error boundary");
+                }
                 std::thread::Builder::new()
                     .name("mob-island".into())
                     .spawn_scoped(s, move || {
                         let _done = done;
+                        #[cfg(test)]
+                        if let Some(failure) = &failure
+                            && g.global[0] == 1
+                        {
+                            if !failure.spawn {
+                                panic!("injected worker setup failure");
+                            }
+                            use horizon_core::random::RandomSource;
+                            g.random.begin_item(1);
+                            failure.started.wait();
+                            g.random.next_long();
+                            g.random.end_item();
+                        }
                         horizon_client::mobs::sulfur_cube::set_tnt_explodes(tnt);
                         horizon_client::block_contact::in_level(level, || run(g, ticking));
                     })
@@ -800,21 +845,42 @@ fn difference(serial: &Group<Mob>, grouped: &Group<Mob>) -> Option<String> {
             })
             .collect::<Vec<_>>()
     };
+    let snapshot = |g: &Group<Mob>| {
+        g.snapshot
+            .iter()
+            .map(|seen| {
+                let mut seen = seen.clone();
+                // The same process-wide section ordering token excluded from Mob above.
+                seen.section.1 = 0;
+                format!("{seen:?}")
+            })
+            .collect::<Vec<_>>()
+    };
+    let stream = |g: &Group<Mob>| {
+        use horizon_core::random::RandomSource;
+        let mut random = g.random.clone();
+        (
+            random.state(),
+            random.next_gaussian().to_bits(),
+            random.next_long(),
+        )
+    };
     [
         (serial.keep != grouped.keep, "the kept mobs"),
         (
             debug(serial) != debug(grouped),
             "the events, deaths or targets",
         ),
-        (
-            format!("{:?}", serial.random) != format!("{:?}", grouped.random),
-            "the level random",
-        ),
+        (stream(serial) != stream(grouped), "the level random"),
         (
             serial.died != grouped.died || serial.bindings != grouped.bindings,
             "the death marks or player bindings",
         ),
         (serial.ticked != grouped.ticked, "the ticked mobs"),
+        (
+            snapshot(serial) != snapshot(grouped),
+            "the snapshot entries",
+        ),
         (
             pushed(serial) != pushed(grouped),
             "the pending pushes' results",
@@ -861,6 +927,125 @@ mod tests {
         assert_eq!(capped_lanes(2, Some(64)), 2);
         assert_eq!(capped_lanes(0, Some(64)), 1);
         assert_eq!(capped_lanes(64, Some(64)), 8);
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn partial_spawn_and_worker_setup_failures_release_every_lane() {
+        let (sent, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for spawn in [true, false] {
+                let mut game = super::super::super::native_machines::tests::server_game();
+                for x in [0.5, 1.5, 2.5] {
+                    game.spawn_mob("minecraft:cow", [x, 65.0, 0.5], true)
+                        .unwrap();
+                }
+                let mobs: Vec<Mob> = std::mem::take(&mut game.mobs).into();
+                let snapshot = mobs.iter().map(|m| m.seen(None)).collect();
+                let base = game.mob_world_base(&[]);
+                let players = super::super::super::natural_spawning::NearestPlayers::new(&[]);
+                let nearest = super::super::prep::MobsNearest::new(&players, &mobs, false);
+                let mut turns = Turns {
+                    base: &base,
+                    despawn: base.despawn_view(),
+                    ticking: &|_, _| true,
+                    nearest: &nearest,
+                    single_player: Some(None),
+                    canceled: &|_| false,
+                    difficulty: &|_| {
+                        horizon_client::mobs::spawning::LocalDifficulty::new(2, 0, 0, 0.0)
+                    },
+                    cached_difficulty: None,
+                };
+                let start = Start {
+                    events: Vec::new(),
+                    random: horizon_core::random::LegacyRandom::new(7),
+                    guests: Vec::new(),
+                    player: None,
+                    bindings: Default::default(),
+                    died: Default::default(),
+                    ticked: Default::default(),
+                    targets: vec![None; 3],
+                };
+                let shared = Shared {
+                    uuid: None,
+                    level_id: "minecraft:overworld",
+                    path_changes: &[],
+                    guest_ids: &[],
+                };
+                FAIL_THREADS.with(|f| {
+                    *f.borrow_mut() = Some(FailThreads {
+                        spawn,
+                        started: Arc::new(std::sync::Barrier::new(2)),
+                    });
+                });
+                let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    Islands {
+                        uuid: None,
+                        mods: false,
+                        ticking: &|| Box::new(|_, _| true),
+                    }
+                    .run(
+                        Plan {
+                            groups: vec![vec![0], vec![1], vec![2]],
+                        },
+                        mobs.clone(),
+                        snapshot,
+                        start,
+                        &mut turns,
+                        &shared,
+                    );
+                }));
+                FAIL_THREADS.with(|f| *f.borrow_mut() = None);
+                assert!(
+                    caught.is_err(),
+                    "injected failure reaches the server caller"
+                );
+            }
+            sent.send(()).unwrap();
+        });
+        finished
+            .recv_timeout(std::time::Duration::from_secs(120))
+            .expect("started workers finish after spawn/setup failure, with no stranded lane");
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn verification_detects_snapshot_and_gaussian_only_differences() {
+        use horizon_core::random::RandomSource;
+        let mut game = super::super::super::native_machines::tests::server_game();
+        game.spawn_mob("minecraft:cow", [0.5, 65.0, 0.5], true)
+            .unwrap();
+        let mobs = game.mobs.to_vec();
+        let snapshot = mobs.iter().map(|m| m.seen(None)).collect::<Vec<_>>();
+        let mut random = horizon_core::random::LegacyRandom::new(7);
+        random.next_gaussian();
+        let start = Start {
+            events: Vec::new(),
+            random,
+            guests: Vec::new(),
+            player: None,
+            bindings: Default::default(),
+            died: Default::default(),
+            ticked: Default::default(),
+            targets: vec![None],
+        };
+        let serial = Group::new(mobs.clone(), snapshot.clone(), start.clone());
+        let mut grouped = Group::new(mobs, snapshot, start);
+        assert_eq!(difference(&serial, &grouped), None);
+        grouped.snapshot[0].position.x += 1.0;
+        assert_eq!(
+            difference(&serial, &grouped),
+            Some("the snapshot entries differ".into())
+        );
+        grouped.snapshot[0] = serial.snapshot[0].clone();
+        // Consuming the cached Gaussian changes no LCG bits, only the stream's cache.
+        grouped.random.next_gaussian();
+        assert_eq!(serial.random.state(), grouped.random.state());
+        assert_eq!(
+            difference(&serial, &grouped),
+            Some("the level random differ".into())
+        );
     }
 
     #[test]
@@ -1337,13 +1522,14 @@ mod tests {
             ));
         }
         assert_eq!(runs[0].3, 0, "one lane runs serially");
+        let available = capped_lanes(
+            3,
+            std::thread::available_parallelism().ok().map(usize::from),
+        );
+        let grouped = if available > 1 { available } else { 0 };
         assert_eq!(
-            runs[1].3,
-            capped_lanes(
-                3,
-                std::thread::available_parallelism().ok().map(usize::from)
-            ),
-            "the islands ran on available hardware"
+            runs[1].3, grouped,
+            "the islands ran on available hardware, or fell back to serial"
         );
         assert_eq!(runs[0].0.len(), 330);
         assert!(
@@ -1366,9 +1552,34 @@ mod tests {
         }
         assert_eq!(
             CHECK.with(Cell::get),
-            (20, 0),
-            "the actual verify path checked every tick"
+            (if grouped > 1 { 20 } else { 0 }, 0),
+            "verify checked every grouped tick, or the hardware cap kept it serial"
         );
+        // This same otherwise-splittable world must not allocate raid hurt-order IDs twice
+        // through a cloned diagnostic reference. Inactive membership is conservative too.
+        game.spawn_mob("minecraft:pillager", [2.5, 66.0, 2.5], true)
+            .unwrap();
+        let raider = game.mobs.len() - 1;
+        horizon_client::mobs::raider::state_mut(&mut game.mobs[raider]).raid_id = Some(42);
+        for active in [false, true] {
+            horizon_client::mobs::raider::state_mut(&mut game.mobs[raider]).active_raid = active;
+            for verify in [false, true] {
+                VERIFY.with(|v| v.set(verify));
+                RAN.with(|r| r.set(0));
+                CHECK.with(|c| c.set((0, 0)));
+                game.tick_creature_entities().unwrap();
+                assert_eq!(
+                    RAN.with(Cell::get),
+                    0,
+                    "raid members force serial production"
+                );
+                assert_eq!(
+                    CHECK.with(Cell::get),
+                    (0, 0),
+                    "no cloned raid reference runs"
+                );
+            }
+        }
     }
 
     /// Islands are packed heaviest first, each into the lightest group.
