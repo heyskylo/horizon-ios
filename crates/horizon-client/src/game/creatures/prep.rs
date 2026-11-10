@@ -163,3 +163,83 @@ fn hookless<'w>(base: &MobWorld<'w>) -> impl Fn() -> MobWorld<'w> + Sync + use<'
         border,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::natural_spawning::LevelPlayer;
+    use super::*;
+    use horizon_core::geometry::Aabb;
+
+    #[test]
+    #[ignore = "needs prepared resources and scratch homes/cwd"]
+    fn preparation_refreshes_climbing_and_nearest_after_a_move() {
+        let mut game = super::super::super::native_machines::tests::server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        for command in [
+            "setblock 8 80 9 stone",
+            "setblock 8 80 8 ladder[facing=north]",
+            "summon pig 8.5 80 8.5 {NoAI:1b}",
+            "summon pig 9.5 80 8.5 {NoAI:1b}",
+        ] {
+            assert!(game.run_command(command), "{command}");
+        }
+        assert_eq!(game.mobs.len(), 2);
+        let examples = game.mobs.clone();
+        game.mobs = (0..MIN_MOBS + 37)
+            .map(|i| {
+                let mut mob = examples[i % 2].clone();
+                mob.id = 10_000 + i as u32;
+                mob.on_climbable = i % 2 != 0; // deliberately stale in both cases
+                mob
+            })
+            .collect::<Vec<_>>()
+            .into();
+        let mut snapshot = Vec::new();
+        game.prepare_mobs(None, &mut snapshot);
+        assert_eq!(snapshot.len(), game.mobs.len());
+        for (i, (m, seen)) in game.mobs.iter().zip(&snapshot).enumerate() {
+            assert_eq!(m.on_climbable, i % 2 == 0, "mob {i}");
+            assert_eq!(seen.id, m.id);
+            assert_eq!(seen.position, m.position);
+            assert_eq!(seen.pushable, i % 2 != 0, "snapshot {i}");
+        }
+
+        let player = |x, spectator| {
+            let position = Vec3::new(x, 80.0, 8.5);
+            LevelPlayer {
+                uuid: 0,
+                position,
+                bounds: Aabb::new(position, position),
+                alive: false, // dead players still count for checkDespawn
+                creative: false,
+                spectator,
+            }
+        };
+        let players = [player(8.5, true), player(7.5, false), player(9.5, false)];
+        let index = NearestPlayers::new(&players);
+        let nearest = MobsNearest::new(&index, &game.mobs, true);
+        for (i, mob) in game.mobs.iter().enumerate() {
+            let expected = if i % 2 == 0 {
+                players[1].position
+            } else {
+                players[2].position
+            };
+            assert_eq!(nearest.at(i, mob.position), Some(expected));
+            // A previous mob's push moved this mob across the nearest-player tie.
+            assert_eq!(
+                nearest.at(i, Vec3::new(10.0, 80.0, 8.5)),
+                Some(players[2].position)
+            );
+        }
+        let no_cache = MobsNearest::new(&index, &game.mobs, false);
+        assert_eq!(
+            no_cache.at(0, game.mobs[0].position),
+            Some(players[1].position)
+        );
+        let spectators = [player(8.5, true)];
+        let index = NearestPlayers::new(&spectators);
+        let nearest = MobsNearest::new(&index, &game.mobs, true);
+        assert_eq!(nearest.at(0, game.mobs[0].position), None);
+    }
+}
