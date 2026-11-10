@@ -1,3 +1,5 @@
+#[path = "hub/tests/cave_air_tests.rs"]
+mod cave_air_tests;
 #[path = "hub/tests/sound_tests.rs"]
 mod sound_tests;
 use super::*;

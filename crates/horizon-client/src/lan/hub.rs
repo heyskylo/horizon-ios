@@ -4588,7 +4588,7 @@ impl Hub {
             at[1] + f64::from(d.height) + 0.0625,
             at[2] + half,
         ];
-        no_blocks_in(world, lo, hi)
+        no_blocks_in(world, lo, hi, &self.encoder)
     }
 
     /// `ServerGamePacketListenerImpl.forceSendPlayerSupportBlocks`: the blocks just under the
@@ -5276,14 +5276,14 @@ const PLAYER_GRAVITY: f64 = 0.08;
 
 /// `ServerGamePacketListenerImpl.getMaximumFlyingTicks`: 80 ticks, more where
 /// gravity is weaker, none at all (never kicked) without gravity.
-/// `ServerGamePacketListenerImpl.noBlocksAround` over a box: every block from `lo` to `hi` is air, in
-/// loaded chunks (a chunk not loaded yet is not known to be air: nothing floats there).
-pub fn no_blocks_in(world: &World, lo: [f64; 3], hi: [f64; 3]) -> bool {
+/// `ServerGamePacketListenerImpl.noBlocksAround` over a box: every block from `lo` to `hi` is
+/// `isAir()` (`air`'s state table), in loaded chunks (a chunk not loaded yet is not known to be air).
+pub fn no_blocks_in(world: &World, lo: [f64; 3], hi: [f64; 3], air: &ChunkEncoder) -> bool {
     let cell = |v: f64| v.floor() as i32;
     (cell(lo[0])..=cell(hi[0])).all(|x| {
         (cell(lo[2])..=cell(hi[2])).all(|z| {
             world.loaded(x, z)
-                && (cell(lo[1])..=cell(hi[1])).all(|y| world.is_air(world.block(x, y, z)))
+                && (cell(lo[1])..=cell(hi[1])).all(|y| air.is_air(world.block(x, y, z).0))
         })
     })
 }
