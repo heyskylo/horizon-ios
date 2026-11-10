@@ -133,6 +133,9 @@ impl Game<'_> {
             {
                 return Ok((guest.conn, menu.slot_count() - 36, *window));
             }
+            if let Some(station) = host.play.get(&guest.conn).and_then(|p| p.station.as_ref()) {
+                return Ok((guest.conn, station.menu.slot_count() - 36, station.window));
+            }
             Ok((guest.conn, 0, 0))
         })
     }
@@ -720,6 +723,44 @@ impl Game<'_> {
                                     location: [0.0; 3],
                                     secondary: false,
                                 },
+                            ),
+                        );
+                        g.lan = Some(host);
+                        Ok(())
+                    })?;
+                }
+                "player_command" => {
+                    // The owner's real ServerboundPlayerCommandPacket, through the
+                    // server's own handler (START_RIDING_JUMP is action 3).
+                    let action = match op["action"].as_str() {
+                        Some("start_riding_jump") => 3,
+                        Some("stop_riding_jump") => 4,
+                        _ => return Err("player command: unknown action".into()),
+                    };
+                    let data = op["data"].as_i64().ok_or("player command: missing data")? as i32;
+                    let owner = self
+                        .serving
+                        .as_ref()
+                        .ok_or("command harness: no server")?
+                        .owner;
+                    self.in_owner_level(|g| -> Result<()> {
+                        let (conn, id) = g
+                            .lan
+                            .as_ref()
+                            .and_then(|h| {
+                                h.hub
+                                    .guests
+                                    .iter()
+                                    .find(|p| p.uuid == owner && p.placed)
+                                    .map(|p| (p.conn, p.entity_id))
+                            })
+                            .ok_or("player command: owner not connected")?;
+                        let mut host = g.lan.take().ok_or("player command: no hub")?;
+                        g.lan_guest_packet(
+                            &mut host,
+                            conn,
+                            horizon_protocol::packets::play::Serverbound::PlayerCommand(
+                                horizon_protocol::packets::play::PlayerCommand { id, action, data },
                             ),
                         );
                         g.lan = Some(host);

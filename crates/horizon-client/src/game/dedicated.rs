@@ -37,6 +37,7 @@ use std::{
 
 pub(super) mod events;
 mod management;
+mod predicate_graph;
 pub(super) mod report;
 mod status;
 mod transfer;
@@ -689,6 +690,16 @@ fn parse_identifier(text: &str) -> Option<String> {
     (valid(namespace, &[]) && valid(path, &['/'])).then(|| format!("{namespace}:{path}"))
 }
 
+/// The world's packs failed to load: the start ends before Ready, as vanilla's `Main` does.
+#[derive(Debug)]
+struct DatapacksRefused;
+impl std::fmt::Display for DatapacksRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Failed to load datapacks, can't proceed with server load")
+    }
+}
+impl std::error::Error for DatapacksRefused {}
+
 impl Game<'_> {
     /// DedicatedServerProperties.createDimensions for a world that doesn't
     /// exist yet: `level-type`'s preset, a flat world's `generator-settings`
@@ -903,6 +914,10 @@ impl Game<'_> {
             self.native_players_leaving();
             self.native_lifecycle_world_failed(&error.to_string());
             self.native_lifecycle_close_failed(&error.to_string());
+            // Main: a world the packs can't load ends the start, and the process, normally.
+            if error.downcast_ref::<DatapacksRefused>().is_some() {
+                return Ok(());
+            }
         }
         result
     }
@@ -1040,6 +1055,24 @@ impl Game<'_> {
             game_mode == 1,
             None,
         )?)?;
+        // WorldLoader: the world's packs must load before the server starts. The data store is read
+        // now rather than at the first tick (reading parses functions; it runs none), and a broken
+        // predicate graph stops the start before anything listens (a partial check: predicate_graph.rs).
+        self.ensure_datapacks();
+        if let Err(error) = predicate_graph::check(&self.fns.store.predicates) {
+            let level = match error {
+                predicate_graph::GraphError::Unbound(_) => "ERROR",
+                predicate_graph::GraphError::Recursive(_) => "WARN",
+            };
+            for line in error.lines() {
+                log(level, &line);
+            }
+            log(
+                "WARN",
+                "Failed to load datapacks, can't proceed with server load. You can either fix your datapacks or reset to vanilla with --safeMode",
+            );
+            return Err(Box::new(DatapacksRefused));
+        }
         if new_world {
             self.level.hardcore = props.hardcore;
         }
@@ -2438,6 +2471,7 @@ impl Game<'_> {
         // Only a successful final save closes the epoch; storage is still held.
         self.native_lifecycle_world_closed();
         self.lan_close(false);
+        self.native_server_stopped(true);
         Ok(())
     }
 }
@@ -2679,7 +2713,7 @@ mod tests {
     #[test]
     fn a_temporarily_banned_player_is_refused_with_the_end_until_it_has_passed() {
         use super::{BanEntry, BanList, Lists, NameAndId};
-        use horizon_chat_filter::now_millis;
+        use horizon_server_files::duration::now_millis;
         let dir = std::env::temp_dir().join(format!("horizon-can-login-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let mut lists = Lists {

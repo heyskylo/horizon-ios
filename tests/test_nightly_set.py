@@ -171,7 +171,7 @@ class AllowTests(unittest.TestCase):
         """Fails until tools/ci/resolve_reviewer_ids.py has filled in the IDs: until then no reviewer has access."""
         reviewers = ns.read_reviewers((ROOT / ns.REVIEWERS).read_text())
         self.assertEqual(reviewers.skipped, [])
-        self.assertEqual(reviewers.logins, {"kacpherek", "rdbtcvs", "online5277", "levzzz5154", "qwerner88880"})
+        self.assertEqual(reviewers.logins, {"kacpherek", "rdbtcvs", "online5277", "levzzz5154"})
         self.assertFalse(reviewers.paused)
         source = (ROOT / "tools/ci/nightly_set.py").read_text()
         self.assertRegex(source, r"(?m)^OWNER_ID: int \| None = [1-9][0-9]*$")

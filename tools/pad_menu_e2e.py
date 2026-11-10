@@ -44,18 +44,68 @@ Cases:
 - pause_icon: the pause menu's icons are targets, and A presses one.
 - studio_rows: the D-pad walks Replay Studio's recordings to its buttons, and B leaves.
 - erase_checkbox: the D-pad reaches Optimize World's Erase Cached Data box, and A ticks it.
+- controller_settings_pad: Controller Settings on the settings shell, by the pad alone: its pages, the D-pad through
+  every page and its rows, the strip describing the focused row, A changing Vibration, X undoing it, B leaving.
+- controller_bind: A on Bindings' Jump waits for a button (the row and the strip say so, Start cancels and leaves no
+  Undo), the next button binds and saves it with an Undo, Right and A reset it and the Undo goes.
+- controller_settings_keys: the keys: Tab to the search, typing finds a row by what it does, the focus off and back
+  keeps the search, a pad press gives the keys back, Escape leaves.
 - controller_nintendo_buttons: with Nintendo glyphs, A on Device's Nintendo Buttons picks By Letter and saves it, and
   again goes back to By Position.
+- nintendo_letters: a Nintendo pad going by its letters shows the letter of the button that acts on the title's
+  declared buttons (Options is X, Quit Game's B), and by places Y and A, and the guide's Jump is A or B; the guide
+  and a connected pad's notice are shot in both modes.
 - extras_shell: Horizon Extras on the settings shell: the D-pad walks its rows and scrolls through the hidden ones, past
   a greyed row, the right stick scrolls it, A changes and saves a toggle, the strip follows the row, B leaves.
 - graphics_shell: the Graphics screen on the settings shell: the D-pad goes from its Quality page into the rows, A
   turns Fog off and saves it, X presses the Undo that appears, which puts it back, and B leaves.
 - shell_choice_step: on Graphics, Left and Right on a focused choice (Preset) step it back and on, from the D-pad
   and the arrow keys alike, and the focus stays; up and down leave the row, and LB goes to the page list.
+- shader_screens: Shaders, on the settings shell, with a pack of more screens than its page list has rows for: they
+  collapse into one `‹ Name ›` strip, RB walks every one and round to the pack list, LB from the first goes back to
+  it, and Undo shows once the pack is picked.
 - extras_shell_edges: on Extras, which has no page list, down from the search field lands on the first row, not Done;
   a row the right stick leaves mostly hidden scrolls back into view when A presses it, and A changes it.
 Needs built fast binaries (`cargo build --profile fast -p horizon-client -p horizon-client-lib --bins`)
 and prepared resources in .local/horizon-client/26.3. Exit status 0 when every case passes.
+- radial_commit: holding the opener shows the overlay and pauses nothing; the stick selects; releasing runs the action once.
+- radial_no_selection: a release with nothing selected, after retention ran out, or on an empty slot runs nothing.
+- radial_retention: a stick let go just before the release still commits.
+- radial_pages: the bumpers change the page and clear the selection; no other action runs.
+- radial_cancel: B, Start, the pad going away and focus loss cancel, during retention too; nothing stays held.
+- radial_camera: the selecting stick leaves the camera alone, until it has been let go after the menu closes.
+- radial_precedence: menus and the on-screen keyboard keep the opener's button.
+- radial_editor: by the pad alone, the radial page steps a slot with A, Right and Left, adds, renames (Done, then Cancel
+  keeps the name) and deletes a page, resets, Undo puts back what it found, and the opener's row binds Y in place.
+- radial_held_sneak: a sneak held on the pad stays held while the menu opens, selects and commits.
+- radial_focus_background: with Play in Background on, losing the window's focus still cancels the menu.
+- radial_unavailable: on a single saved page, an action that can't run (Emote, cosmetics off) is dimmed and its commit does nothing.
+- radial_old_file: a settings file from before the radial menu keeps D-pad down on the advancements.
+- radial_flick_with_press: a stick flicked as the opener goes down selects; one leaning since well before waits.
+- radial_held_drop: a drop held through the menu doesn't throw the rest of the stack as it closes.
+- radial_death: dying with immediate respawn while it's open cancels it; the release runs nothing.
+- radial_dpad_roll: a D-pad press just after a commit on the D-pad opener reaches nothing; a later one does.
+- radial_fight_back: RT while it's open cancels it and swings; a key or a click cancels and goes on; the mouse moving
+  doesn't cancel it.
+- radial_toggle: in Toggle mode a tap opens it, A or the opener again commits, B cancels, nothing aimed runs nothing.
+- radial_left_stick: selecting with the left stick (Y opens it, D-pad Right being under that thumb), it walks nowhere
+  while the right stick still turns the view.
+- radial_bumper_opener: LB as the opener: RB turns the pages on, round the end with a second tick.
+- radial_haptics: no tick on an empty slot, a tick on a filled one, a buzz on a release that ran nothing.
+- radial_narration: with the narrator on, the page's name, then the slot's caption once it settles.
+- radial_actions: Social is dimmed in single player and its key says so on the action bar; Quick Actions is dimmed
+  with no dialog; the debug screen runs; an unknown action is Missing and runs nothing.
+- radial_commit_screen: committing Inventory gives the screen the view at once: the overlay neither flashes nor
+  fades over it.
+- radial_nintendo_glyphs: on a Nintendo pad the overlay's bumpers are L and R, and its Cancel is the button that
+  cancels: B going by letters, A by places.
+- radial_cancel_roll, radial_toggle_roll: after B cancels with the opener held, or toggle mode commits on its press,
+  the thumb rolling off the D-pad opener onto Drop drops nothing.
+- radial_either_takeover: with Either, the right stick taking over from a walking left one selects at once, and the
+  walking thumb easing on its frozen stick never takes over.
+- radial_stick_back: Selects With stepped from Left (Y the opener) back to Right gives D-pad Right again; Right and Left
+  step the row as every shell choice does.
+- radial_status_rows: survival with armour and absorption, shot at 427x240 and 320x180: the dial clear of the rows.
 """
 import argparse
 import json
@@ -86,7 +136,7 @@ WINDOW_ASPECT_SLACK = 0.1
 
 
 class Game:
-    def __init__(self, args, name, world=False, seed=None):
+    def __init__(self, args, name, world=False, seed=None, env=None, extra=()):
         self.args = args
         self.home = Path(tempfile.mkdtemp(prefix=f'pad-menu-{name}-'))
         homes = {key: self.home / key for key in ('HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME',
@@ -98,12 +148,13 @@ class Game:
         (self.game_home / 'options.txt').write_text('onboardAccessibility:false\n')
         if seed:
             seed(self.game_home)
-        self.env = lab.game_env(**homes)
+        self.env = {**lab.game_env(**homes), **(env or {})}
         self.socket = self.home / 'ctl.json'
         self.launch = ['launch', '--game', args.game, '--offscreen', '--render-distance', 2,
                        '--resources', args.resources]
         if world:
             self.launch += ['--world', 'Menus', '--creative', '--no-pause', '--wait']
+        self.launch += list(extra)
         self.ctl(*self.launch, timeout=500)
         self.warn_if_reshaped()
 
@@ -849,6 +900,9 @@ def tabs_world(args, name):
         time.sleep(1)
         game.ctl('key', 'escape', 'tap')
         time.sleep(1)
+        # Social opens only on a server: this world, open to the network.
+        game.ctl('command', 'publish')
+        time.sleep(1)
         game.ctl('key', 'p', 'tap')
         steps('Player Social', 3)
     finally:
@@ -1371,6 +1425,9 @@ def open_controller(game, page=None):
             game.pad('rb')
 
 
+VIBRATION_ABOUT = 'Rumble when something happens to you.'
+
+
 def controller_saved(game):
     path = game.game_home / 'horizon-controller.txt'
     return path.read_text() if path.exists() else ''
@@ -1429,6 +1486,7 @@ def controller_settings_pad(args, name):
                 break
             game.pad('down')
         check('vibration' in (game.focused_label() or '').lower(), f'never reached Vibration: {game.focused_label()}')
+        check(has_label(game, VIBRATION_ABOUT), f'the strip does not describe the focused row: {labels(game)}')
         game.pad('south')
         check(has_label(game, 'Undo'), 'no Undo after a change')
         check('vibration:false' in controller_saved(game), f'not saved: {controller_saved(game)}')
@@ -1458,16 +1516,22 @@ def controller_bind(args, name):
         check('jump' in (game.focused_label() or '').lower(), f'never reached Jump: {game.focused_label()}')
         game.pad('south')
         check(has_label(game, '> '), f'A did not start the wait: {labels(game)}')
+        check(has_label(game, 'cancels'), f'the strip does not say what cancels the wait: {labels(game)}')
+        shot(game, 'controller-waiting')
         game.pad('start')
         check(not has_label(game, '> '), 'Start did not cancel the wait')
         check(has_label(game, 'Editing:'), 'Start left the screen instead of cancelling')
+        check(not has_label(game, 'Undo'), 'a cancelled wait left an Undo')
         game.pad('south')
         game.pad('rs')
         check('key.jump' in controller_saved(game), f'the binding was not saved: {controller_saved(game)}')
+        check(has_label(game, 'Undo'), 'no Undo after a binding')
+        check(has_label(game, 'This button also does'), f'the strip does not say the button is shared: {labels(game)}')
         shot(game, 'controller-bound')
         game.pad('right')
         game.pad('south')
         check('key.jump' not in controller_saved(game), f'reset did not clear it: {controller_saved(game)}')
+        check(not has_label(game, 'Undo'), 'Undo stayed with the binding back on its default')
         check((game.menu()['focus'] or {}).get('kind') != 'field', f'reset sent the focus to the search: {game.menu()["focus"]}')
     finally:
         game.quit()
@@ -1524,6 +1588,16 @@ def controller_settings_keys(args, name):
         game.ctl('key', 'up', 'tap')
         time.sleep(SETTLE)
         check(not has_label(game, 'Look Sensitivity'), 'coming back to the search cleared it')
+        # The pad moves the focus off the field (its first press lands it), which gives the keys back: typing
+        # changes nothing.
+        for _ in range(3):
+            game.pad('down')
+            if (game.menu()['focus'] or {}).get('kind') not in (None, 'field'):
+                break
+        check((game.menu()['focus'] or {}).get('kind') not in (None, 'field'), f"the pad stayed on the field: {game.menu()['focus']}")
+        game.ctl('type', 'zzz')
+        time.sleep(SETTLE)
+        check(has_label(game, 'Vibration'), f'the search kept the keys after the pad left it: {labels(game)}')
         game.ctl('key', 'esc', 'tap')
         time.sleep(SETTLE)
         check(not has_label(game, 'Editing:'), 'Escape did not leave the screen')
@@ -1532,7 +1606,7 @@ def controller_settings_keys(args, name):
     return check.failures
 
 
-OPTIONS_PAGES = ('main', 'video', 'sound', 'controls', 'keybinds', 'controller', 'controller-binds', 'mouse', 'chat',
+OPTIONS_PAGES = ('main', 'video', 'sound', 'controls', 'keybinds', 'controller', 'controller-binds', 'controller-radial', 'mouse', 'chat',
                  'accessibility', 'language', 'font', 'packs', 'mods', 'shader-packs', 'graphics', 'graphics-advanced',
                  'graphics-hdr', 'extras', 'pvp', 'credits', 'horizon', 'agent')
 # Screens allowed to draw no target, and why. The pad falls back to the crosshair on these.
@@ -1788,6 +1862,58 @@ def extras_shell_edges(args, name):
         check(after and after != before and after.split(':')[0] == before.split(':')[0],
               f'A on the half-hidden row left it {before} -> {after}')
         shot(game, 'extras-revealed')
+    finally:
+        game.quit()
+    return check.failures
+
+
+# A shader pack with more screens than Shaders' page list has rows for in a 427x240 GUI view.
+MANY_SCREENS = [f'S{i:02}' for i in range(12)]
+
+
+def seed_many_screens(game_home):
+    pack = game_home / 'shaderpacks' / 'ManyScreens' / 'shaders'
+    pack.mkdir(parents=True)
+    options = [f'O_{name}' for name in MANY_SCREENS]
+    (pack / 'final.fsh').write_text('#version 120\n' + ''.join(f'#define {o}\n#ifdef {o}\n#endif\n' for o in options)
+                                    + 'void main() { gl_FragColor = vec4(1.0); }\n')
+    (pack / 'shaders.properties').write_text(
+        'screen = ' + ' '.join(f'[{name}]' for name in MANY_SCREENS) + '\n'
+        + ''.join(f'screen.{name} = {o}\n' for name, o in zip(MANY_SCREENS, options)))
+
+
+def open_tab(game):
+    """The label of the page list's lit tab."""
+    lit = [tuple(t['rect']) for t in game.menu()['targets'] if t['kind'] == 'tab*']
+    return next((w.get('label') for w in game.widgets() if tuple(w['bounds']) in lit), None)
+
+
+def shader_screens(args, name):
+    game = Game(args, name, seed=seed_many_screens)
+    check = Check()
+    try:
+        game.press_through('west')
+        game.ctl('options', 'shader-packs')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        # On the settings shell a pack is a tick box: "ManyScreens: Off".
+        pack = next((w for w in game.widgets() if (w.get('label') or '').startswith('ManyScreens')), None)
+        check(pack is not None, f'no ManyScreens pack: {labels(game)}')
+        game.ctl('click', pack['id'])
+        time.sleep(SETTLE)
+        # RB from the pack list through every screen, none left out, and round to the pack list.
+        walked = []
+        for _ in range(len(MANY_SCREENS) + 2):
+            game.pad('rb')
+            walked.append(open_tab(game))
+        packs = walked[-1]
+        check(walked[1:-1] == MANY_SCREENS, f'RB walked {walked}')
+        # LB back from the first screen leaves the strip for the pack list.
+        game.pad('rb')
+        game.pad('lb')
+        check(open_tab(game) == packs, f'LB from {walked[0]} went to {open_tab(game)}')
+        # Picking the pack is a change the shell's Undo puts back.
+        check(has_label(game, 'Undo'), f'no Undo after picking a pack: {labels(game)}')
     finally:
         game.quit()
     return check.failures
@@ -2281,6 +2407,9 @@ def osk_social(args, name):
     game = Game(args, name, world=True)
     check = Check()
     try:
+        # Social opens only on a server: this world, open to the network.
+        game.ctl('command', 'publish')
+        time.sleep(1)
         game.ctl('key', 'p', 'tap')
         time.sleep(1)
         game.wait_targets()
@@ -2850,6 +2979,46 @@ def glyph_art_world(args, name):
     return check.failures
 
 
+def nintendo_letters(args, name):
+    check = Check()
+    # By letters the pad's X (on top) plays West and its B (at the bottom) East; by places Y and A.
+    for letters, west, east in ((True, 'X', 'B'), (False, 'Y', 'A')):
+        mode = 'letters' if letters else 'places'
+        seed = seed_controller(f'nintendoLetters:{str(letters).lower()}\n')
+        game = Game(args, f'{name}-{mode}', seed=seed)
+        try:
+            game.ctl('pad', 'family', 'nintendo')
+            game.wait_targets()
+            game.pad('down')
+            shown = {g['button']: g for g in game.menu()['glyphs']}
+            for part, label in (('West', west), ('East', east)):
+                glyph = shown.get(part) or {}
+                check(glyph.get('label') == label, f'{mode} {part}: {glyph.get("label")}, not {label}')
+                sprite = f'horizon:gui/controller/nx_{label.lower()}'
+                check(glyph.get('sprite') == sprite, f'{mode} {part}: {glyph.get("sprite")}, not {sprite}')
+            shot(game, f'nintendo_{mode}_title')
+        finally:
+            game.quit()
+        game = Game(args, f'{name}-{mode}-world', world=True, seed=seed)
+        try:
+            game.ctl('pad', 'family', 'nintendo')
+            game.pad('lb')
+            left, right = guide(game)
+            check(left or right, f'{mode}: no gameplay guide rows')
+            # Jump is South: the A on the right by letters, the B at the bottom by places.
+            labels = {r['caption']: r['label'] for r in game.ctl('pad', 'status')['guide']['left']}
+            jump = 'A' if letters else 'B'
+            check(labels.get('key.jump') == jump, f'{mode}: jump shows {labels.get("key.jump")}, not {jump}')
+            shot(game, f'nintendo_{mode}_guide')
+            game.ctl('pad', 'connection', 'connected', 'nintendo')
+            time.sleep(1)
+            check(game.ctl('pad', 'status').get('notice'), f'{mode}: no notice for the connected pad')
+            shot(game, f'nintendo_{mode}_notice')
+        finally:
+            game.quit()
+    return check.failures
+
+
 def controller_trigger_threshold(args, name):
     game = Game(args, name)
     check = Check()
@@ -3139,6 +3308,1061 @@ def gameplay_guide_off(args, name):
 
 
 
+def radial(game):
+    return game.ctl('pad', 'status')['radial']
+
+
+def hold_opener(game):
+    game.ctl('pad', 'right', 'down')
+    time.sleep(0.2)
+
+
+def aim(game, x, y, settle=0.15):
+    game.ctl('pad', 'stick', 'right', x, y)
+    time.sleep(settle)
+
+
+def radial_case(body):
+    def case(args, name):
+        game = Game(args, name, world=True)
+        check = Check()
+        try:
+            game.ctl('pad', 'focus', 'true')
+            time.sleep(SETTLE)
+            body(game, check)
+        finally:
+            game.quit()
+        return check.failures
+    return case
+
+
+@radial_case
+def radial_commit(game, check):
+    ticks = game.ctl('status')['ticks']
+    hold_opener(game)
+    check(radial(game)['open'], 'holding the opener did not open it')
+    check(radial(game)['shown'], 'held past the draw delay, it does not show')
+    aim(game, 0, 1)
+    check(radial(game)['selected'] == 0, f"up selected {radial(game)['selected']}, not the first slot")
+    rumble = game.ctl('pad', 'status')['last_rumble']
+    check(rumble and rumble['reason'] == 'radial', f'no tick on reaching a slot: {rumble}')
+    shot(game, 'radial_overlay')
+    time.sleep(1)
+    check(game.ctl('status')['ticks'] > ticks, 'the world stopped behind the overlay')
+    before = game.ctl('ui')['screen']
+    game.ctl('pad', 'right', 'up')
+    time.sleep(SETTLE)
+    state = radial(game)
+    check(not state['open'], 'still open after the release')
+    check(state['runs'] == ['key.advancements'], f"ran {state['runs']}")
+    check(state['run_count'] == 1, f"counted {state['run_count']} runs")
+    check(game.ctl('ui')['screen'] != before, 'the advancements did not open')
+    game.ctl('pad', 'stick', 'right', 0, 0)
+
+
+@radial_case
+def radial_no_selection(game, check):
+    hold_opener(game)
+    game.ctl('pad', 'right', 'up')
+    time.sleep(SETTLE)
+    hold_opener(game)
+    aim(game, 0, 1)
+    aim(game, 0, 0, settle=0.5)
+    check(radial(game)['selected'] is None, 'the selection outlived the retention')
+    game.ctl('pad', 'right', 'up')
+    time.sleep(SETTLE)
+    hold_opener(game)
+    game.ctl('pad', 'rb', 'tap')
+    time.sleep(0.2)
+    aim(game, 0.7, 0.7)
+    state = radial(game)
+    check(state['selected'] == 1 and state['slots'][1] is None, f'not on an empty slot: {state}')
+    game.ctl('pad', 'right', 'up')
+    time.sleep(SETTLE)
+    check(radial(game)['runs'] == [], f"ran {radial(game)['runs']}")
+
+
+@radial_case
+def radial_retention(game, check):
+    hold_opener(game)
+    aim(game, 0, 1)
+    game.ctl('pad', 'stick', 'right', 0, 0)
+    game.ctl('pad', 'right', 'up')
+    time.sleep(SETTLE)
+    check(radial(game)['runs'] == ['key.advancements'], f"ran {radial(game)['runs']}")
+
+
+@radial_case
+def radial_pages(game, check):
+    hotbar = game.ctl('status')['selected']
+    hold_opener(game)
+    aim(game, 0, 1)
+    check(radial(game)['selected'] == 0, 'the stick selected nothing')
+    game.ctl('pad', 'rb', 'tap')
+    time.sleep(0.2)
+    state = radial(game)
+    check(state['page'] == 1 and state['selected'] is None, f'after RB: {state}')
+    check(state['waiting'], f'a stick held through the page turn is not waiting to centre: {state}')
+    shot(game, 'radial_camera_page_waiting')
+    game.ctl('pad', 'lb', 'tap')
+    time.sleep(0.2)
+    game.ctl('pad', 'lb', 'tap')
+    time.sleep(0.2)
+    check(radial(game)['page'] == 1, 'LB did not wrap')
+    game.ctl('pad', 'right', 'up')
+    time.sleep(SETTLE)
+    check(radial(game)['runs'] == [], 'a stick held through the page turn ran something')
+    check(game.ctl('status')['selected'] == hotbar, 'the bumpers moved the hotbar')
+    game.ctl('pad', 'stick', 'right', 0, 0)
+    # Every hold starts on the first page, so a flick aimed blind lands where it did.
+    time.sleep(SETTLE)
+    hold_opener(game)
+    check(radial(game)['page'] == 0, f"opened on page {radial(game)['page']}")
+    game.ctl('pad', 'right', 'up')
+
+
+@radial_case
+def radial_cancel(game, check):
+    screen = game.ctl('ui')['screen']
+
+    def selected_then_neutral():
+        hold_opener(game)
+        aim(game, 0, 1)
+        game.ctl('pad', 'stick', 'right', 0, 0)
+
+    def ends(what):
+        time.sleep(0.05)
+        check(not radial(game)['open'], f'{what} left it open')
+
+    for button in ('east', 'start'):
+        selected_then_neutral()
+        game.ctl('pad', button, 'tap')
+        ends(button)
+        game.ctl('pad', 'right', 'up')
+        time.sleep(SETTLE)
+        check(game.ctl('ui')['screen'] == screen, f'{button} opened a screen')
+
+    # The pad going away: `pad release` lets go of the opener too.
+    selected_then_neutral()
+    game.ctl('pad', 'release')
+    ends('the pad going away')
+    time.sleep(SETTLE)
+
+    # Focus loss, with an action held since before the menu opened.
+    game.ctl('pad', 'south', 'down')
+    time.sleep(0.2)
+    check('Space' in game.ctl('status')['keys'], 'A held no jump to begin with')
+    selected_then_neutral()
+    game.ctl('pad', 'focus', 'false')
+    time.sleep(0.2)
+    check(not radial(game)['open'], 'focus loss left it open')
+    check(game.ctl('pad', 'status')['held'] == [], 'focus loss left buttons held')
+    check('Space' not in game.ctl('status')['keys'], 'focus loss left the jump held')
+    game.ctl('pad', 'right', 'up')
+    game.ctl('pad', 'south', 'up')
+    game.ctl('pad', 'focus', 'true')
+    time.sleep(SETTLE)
+    check(radial(game)['runs'] == [], f"cancelled but ran {radial(game)['runs']}")
+    check(game.ctl('ui')['screen'] == screen, 'a cancelled menu opened a screen')
+
+    # A commit leaves nothing held either: Hide HUD, on the camera page.
+    hold_opener(game)
+    game.ctl('pad', 'rb', 'tap')
+    time.sleep(0.2)
+    aim(game, 1, 0)
+    game.ctl('pad', 'right', 'up')
+    game.ctl('pad', 'stick', 'right', 0, 0)
+    time.sleep(SETTLE)
+    check(radial(game)['runs'] == ['key.toggleGui'], f"ran {radial(game)['runs']}")
+    check(game.ctl('status')['keys'] == [], f"left {game.ctl('status')['keys']} held")
+
+
+@radial_case
+def radial_camera(game, check):
+    yaw = lambda: game.ctl('status')['yaw']
+    was = yaw()
+    aim(game, 1, 0, settle=0.3)
+    check(yaw() != was, 'the stick does not turn the view at all')
+    game.ctl('pad', 'stick', 'right', 0, 0)
+    time.sleep(SETTLE)
+    was = yaw()
+    hold_opener(game)
+    aim(game, 1, 0, settle=0.4)
+    check(yaw() == was, 'the selecting stick turned the view')
+    game.ctl('pad', 'east', 'tap')
+    time.sleep(0.3)
+    check(not radial(game)['open'] and yaw() == was, 'a stick still leaning turned the view after the cancel')
+    game.ctl('pad', 'right', 'up')
+    game.ctl('pad', 'stick', 'right', 0, 0)
+    time.sleep(SETTLE)
+    was = yaw()
+    aim(game, 1, 0, settle=0.3)
+    check(yaw() != was, 'the stick stayed blocked after it was let go')
+    game.ctl('pad', 'stick', 'right', 0, 0)
+
+
+@radial_case
+def radial_precedence(game, check):
+    game.ctl('key', 'e', 'tap')
+    time.sleep(SETTLE)
+    game.wait_targets()
+    game.pad('down')
+    check(not radial(game)['open'], 'it opened over the inventory')
+    game.ctl('key', 'e', 'tap')
+    time.sleep(SETTLE)
+    game.ctl('key', 't', 'tap')
+    time.sleep(SETTLE)
+    game.wait_targets()
+    game.pad('south')
+    check(game.menu()['keyboard'], 'A on the chat field opened no on-screen keyboard')
+    game.ctl('pad', 'right', 'down')
+    time.sleep(0.2)
+    check(not radial(game)['open'], 'it opened over the on-screen keyboard')
+    game.ctl('pad', 'right', 'up')
+
+
+# Three saved pages, the third the player's own.
+RADIAL_SEED = ('bindLayout:2\n'
+               'radial_0_name:horizon.radial.page.general\nradial_0_slots:key.advancements,,key.command,,key.socialInteractions,,,\n'
+               'radial_1_name:horizon.radial.page.camera\nradial_1_slots:key.screenshot,,key.toggleGui,,key.smoothCamera,,,\n'
+               'radial_2_label:Mine\nradial_2_slots:key.chat,,,,,,,\n')
+# The opener's row, D-pad Right as the Bindings page names it, and LB once bound to it.
+OPENER_ROW = 'Opener: \u2192'
+OPENER_LB = 'Opener: LB'
+
+
+def pad_to(game, label, way, tries=30):
+    """The D-pad that way until the focus is on what says `label`."""
+    for _ in range(tries):
+        if game.focused_label() == label:
+            return True
+        game.pad(way)
+    return game.focused_label() == label
+
+
+def radial_editor(args, name):
+    game = Game(args, name, world=True, seed=lambda home: (home / 'horizon-controller.txt').write_text(RADIAL_SEED))
+    check = Check()
+    saved = lambda: (game.game_home / 'horizon-controller.txt').read_text()
+    pages = lambda: radial(game)['pages']
+    enabled = lambda label: next((w.get('enabled') for w in game.widgets() if w.get('label') == label), None)
+    try:
+        game.ctl('pad', 'focus', 'true')
+        time.sleep(SETTLE)
+        game.ctl('options', 'controller')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        # Bindings, then down its list to the page's row.
+        game.pad('down')
+        game.pad('rb')
+        game.pad('right')
+        pad_to(game, 'Radial Menu...', 'up', tries=6) or pad_to(game, 'Radial Menu...', 'down', tries=60)
+        check(game.focused_label() == 'Radial Menu...', f'never reached the radial page: {game.focused_label()}')
+        game.pad('south')
+        game.wait_targets()
+        shot(game, 'radial_editor')
+        check(declared(game).get('Done') is True, f'the page declares {declared(game)}')
+        check(game.menu()['undeclared'] == [], f"undeclared: {game.menu()['undeclared']}")
+        check(all(has_label(game, page) for page in ('General', 'Camera', 'Mine')), f'the page list: {labels(game)}')
+        check('Apply' not in declared(game), 'Undo before any change')
+
+        # A slot: the focus opens on the first row (else it is across from the search field), and A steps it on.
+        if not (game.focused_label() or '').startswith('Up:'):
+            game.pad('right')
+        check(game.focused_label() == 'Up: Advancements', f'the first row is {game.focused_label()}')
+        # A opens the list of actions, on the slot's own, marked.
+        game.pad('south')
+        game.wait_targets()
+        shot(game, 'radial_picker')
+        check(has_label(game, 'Empty') and has_label(game, 'Inventory'), f'the list: {labels(game)}')
+        check(game.focused_label() == 'Advancements: Current', f'the list opened on {game.focused_label()}')
+        game.pad('down')
+        check(game.focused_label() == 'Perspective', f'down went to {game.focused_label()}')
+        game.pad('south')
+        game.wait_targets()
+        check(game.focused_label() == 'Up: Perspective', f'the pick left the slot as {game.focused_label()}')
+        check(radial(game)['slots'][0] == 'key.togglePerspective', f"slots: {radial(game)['slots']}")
+        check(declared(game).get('Apply') is True, f'a change shows no Undo: {declared(game)}')
+        shot(game, 'radial_editor_undo')
+        # Right steps it on and Left back, the focus staying on the slot.
+        game.pad('right')
+        check(game.focused_label() == 'Up: Swap Hands', f'Right left the slot as {game.focused_label()}')
+        shot(game, 'radial_editor_stepped')
+        game.pad('left')
+        check(game.focused_label() == 'Up: Perspective', f'Left left the slot as {game.focused_label()}')
+
+        # A new page, shown; then renamed on the keyboard the pad opens.
+        check(pad_to(game, 'New Page', 'down'), f'never reached New Page: {game.focused_label()}')
+        game.pad('south')
+        check(pages() == 4, f'{pages()} pages after New Page')
+        check(pad_to(game, 'Rename Page', 'up'), f'never reached Rename Page: {game.focused_label()}')
+        game.pad('south')
+        game.wait_targets()
+        check(labels(game)[:2] == ['Done', 'Cancel'], f'Rename opened {labels(game)}')
+        shot(game, 'radial_rename')
+        field = (game.menu()['focus'] or {}).get('kind') == 'field' or pad_to(game, 'New Page', 'up', tries=3)
+        check(field, f"the name page opened on {game.menu()['focus']}")
+        game.pad('south')
+        check(game.menu()['keyboard'], 'A on the name did not open the keyboard')
+        game.pad('south')
+        game.pad('start')
+        game.wait_targets()
+        renamed = [label for label in labels(game) if label.startswith('New Page') and label != 'New Page']
+        check(not has_label(game, 'Cancel') and renamed, f'the name was not kept: {labels(game)}')
+        check(game.focused_label() == 'Rename Page', f'Done left the focus on {game.focused_label()}')
+        shot(game, 'radial_editor_renamed')
+
+        # Rename again, then B: Cancel keeps the name, and the focus comes back to Rename Page.
+        check(pad_to(game, 'Rename Page', 'up'), f'never reached Rename Page: {game.focused_label()}')
+        game.pad('south')
+        game.wait_targets()
+        check(declared(game).get('Cancel') is True, f'the name page declares {declared(game)}')
+        game.pad('south')
+        game.pad('south')
+        game.pad('east')
+        game.pad('east')
+        game.wait_targets()
+        kept = [label for label in labels(game) if label.startswith('New Page') and label != 'New Page']
+        check(kept == renamed, f'Cancel changed the name: {kept}, not {renamed}')
+        check(game.focused_label() == 'Rename Page', f'Cancel left the focus on {game.focused_label()}')
+
+        # Delete acts at once, on the page shown.
+        check(pad_to(game, 'Delete Page', 'down'), f'never reached Delete Page: {game.focused_label()}')
+        game.pad('south')
+        check(pages() == 3 and not any(label in labels(game) for label in renamed), f'{pages()} pages after Delete: {labels(game)}')
+
+        # Reset, at once too, then greyed.
+        check(pad_to(game, 'Reset All Pages', 'down'), f'never reached Reset All Pages: {game.focused_label()}')
+        game.pad('south')
+        check(pages() == 2 and not has_label(game, 'Mine'), f'{pages()} pages after Reset: {labels(game)}')
+        check(enabled('Reset All Pages') is False, 'Reset stays live at the defaults')
+        shot(game, 'radial_editor_reset')
+
+        # Undo, by the pad, puts back the three pages and the slot as the screen found them.
+        game.pad('left')
+        check(pad_to(game, 'Undo', 'down'), f'never reached Undo: {game.focused_label()}')
+        game.pad('south')
+        check(pages() == 3 and has_label(game, 'Mine'), f'{pages()} pages after Undo: {labels(game)}')
+        check(radial(game)['slots'][0] == 'key.advancements', f"Undo left the slots {radial(game)['slots']}")
+        check('Apply' not in declared(game), 'Undo stayed after undoing')
+        check('radial_2_label:Mine' in saved(), f'saved after Undo: {saved()}')
+
+        # Down to one page: Delete greys, and says why.
+        game.pad('right')
+        for _ in range(2):
+            check(pad_to(game, 'Delete Page', 'down'), f'never reached Delete Page: {game.focused_label()}')
+            game.pad('south')
+        check(pages() == 1, f'{pages()} pages after two deletes')
+        check(enabled('Delete Page') is False, 'the last page can be deleted')
+        shot(game, 'radial_editor_one_page')
+
+        # The opener's row waits on itself for a button: LB binds; Y is refused, Start cancels.
+        check(pad_to(game, OPENER_ROW, 'down'), f'never reached the opener: {game.focused_label()}')
+        shot(game, 'radial_editor_opener')
+        game.pad('south')
+        check(has_label(game, 'Press the button for this.'), f'the opener does not wait: {labels(game)}')
+        check(not has_label(game, 'Radial Menu...'), 'the opener opened Bindings')
+        shot(game, 'radial_editor_opener_waiting')
+        game.pad('lb')
+        check(game.focused_label() == OPENER_LB, f'LB left the opener as {game.focused_label()}')
+        check('bind_pad.radial:lb' in saved(), f'the opener was not saved: {saved()}')
+        shot(game, 'radial_editor_opener_lb')
+        for refused in ('north', 'start'):
+            game.pad('south')
+            game.pad(refused)
+            check(game.focused_label() == OPENER_LB, f'{refused} left the opener as {game.focused_label()}')
+            check(has_label(game, OPENER_LB), f'{refused} left the page: {labels(game)}')
+        game.pad('east')
+        game.wait_targets()
+        check(not has_label(game, OPENER_ROW), 'B did not leave the radial page')
+        game.restart()
+        check(pages() == 1, f'{pages()} pages after the restart')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def radial_held_sneak(args, name):
+    def seed(home):
+        # Sneak held on its stick click, not toggled: what the menu must not let go of.
+        (home / 'horizon-controller.txt').write_text('toggleSneak:false\nbindLayout:1\n')
+    game = Game(args, name, world=True, seed=seed)
+    check = Check()
+    sneaking = lambda: 'ShiftLeft' in game.ctl('status')['keys']
+    try:
+        game.ctl('pad', 'focus', 'true')
+        time.sleep(SETTLE)
+        game.ctl('pad', 'rs', 'down')
+        time.sleep(SETTLE)
+        check(sneaking(), 'holding the stick click did not sneak')
+        hold_opener(game)
+        check(radial(game)['open'], 'holding the opener did not open it')
+        time.sleep(SETTLE)
+        check(sneaking(), 'opening the menu stood the player up')
+        # A press while it's open reaches no mapping, down or up.
+        game.ctl('pad', 'south', 'down')
+        time.sleep(0.2)
+        check('Space' not in game.ctl('status')['keys'], 'A jumped through the open menu')
+        game.ctl('pad', 'south', 'up')
+        time.sleep(0.2)
+        check(radial(game)['open'], 'A closed the menu')
+        # An action that opens no screen (a screen would let go of everything anyway): Hide HUD,
+        # on the camera page.
+        game.ctl('pad', 'rb', 'tap')
+        time.sleep(0.2)
+        aim(game, 1, 0, settle=SETTLE)
+        check(sneaking(), 'aiming stood the player up')
+        game.ctl('pad', 'right', 'up')
+        game.ctl('pad', 'stick', 'right', 0, 0)
+        time.sleep(SETTLE)
+        check(radial(game)['runs'] == ['key.toggleGui'], f"ran {radial(game)['runs']}")
+        check(sneaking(), 'the commit stood the player up')
+        game.ctl('pad', 'rs', 'up')
+        time.sleep(SETTLE)
+        check(not sneaking(), 'still sneaking after the stick click came up')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def radial_focus_background(args, name):
+    def seed(home):
+        # The pad keeps playing without the window's focus: the menu still ends with it.
+        (home / 'horizon-controller.txt').write_text('playInBackground:true\nbindLayout:2\n')
+    game = Game(args, name, world=True, seed=seed)
+    check = Check()
+    try:
+        game.ctl('pad', 'focus', 'true')
+        time.sleep(SETTLE)
+        hold_opener(game)
+        aim(game, 0, 1)
+        check(radial(game)['selected'] == 0, f'nothing selected: {radial(game)}')
+        game.ctl('pad', 'focus', 'false')
+        time.sleep(0.2)
+        check(not radial(game)['open'], 'focus loss left it open with Play in Background on')
+        game.ctl('pad', 'right', 'up')
+        game.ctl('pad', 'stick', 'right', 0, 0)
+        time.sleep(SETTLE)
+        check(radial(game)['runs'] == [], f"cancelled but ran {radial(game)['runs']}")
+        # Still playing in the background: the opener opens it again, unfocused.
+        hold_opener(game)
+        check(radial(game)['open'], 'the opener did nothing in the background')
+        game.ctl('pad', 'right', 'up')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def radial_unavailable(args, name):
+    def seed(home):
+        # One page: Emote up, Commands right.
+        (home / 'horizon-controller.txt').write_text(
+            'bindLayout:2\nradial_0_name:horizon.radial.page.general\nradial_0_slots:key.emote,,key.command,,,,,\n')
+    game = Game(args, name, world=True, seed=seed, env={'HORIZON_COSMETICS': '0'})
+    check = Check()
+    try:
+        game.ctl('pad', 'focus', 'true')
+        time.sleep(SETTLE)
+        screen = game.ctl('ui')['screen']
+        hold_opener(game)
+        aim(game, 0, 1)
+        state = radial(game)
+        check(state['pages'] == 1 and state['slots'][0] == 'horizon:emote', f'not the saved page: {state}')
+        check(state['selected'] == 0, f'up selected {state["selected"]}')
+        check(state['available'][0] is False and state['available'][2] is True, f"available: {state['available']}")
+        shot(game, 'radial_single_page_unavailable')
+        game.ctl('pad', 'right', 'up')
+        game.ctl('pad', 'stick', 'right', 0, 0)
+        time.sleep(SETTLE)
+        state = radial(game)
+        check(state['runs'] == [] and state['run_count'] == 0, f"an unavailable action ran: {state['runs']}")
+        check(game.ctl('ui')['screen'] == screen, 'an unavailable action opened a screen')
+        # The one beside it still runs.
+        hold_opener(game)
+        aim(game, 1, 0)
+        game.ctl('pad', 'right', 'up')
+        game.ctl('pad', 'stick', 'right', 0, 0)
+        time.sleep(SETTLE)
+        check(radial(game)['runs'] == ['key.command'], f"ran {radial(game)['runs']}")
+    finally:
+        game.quit()
+    return check.failures
+
+
+def radial_old_file(args, name):
+    def seed(home):
+        (home / 'horizon-controller.txt').write_text('vibration:false\n')
+    game = Game(args, name, world=True, seed=seed)
+    check = Check()
+    try:
+        game.ctl('pad', 'focus', 'true')
+        time.sleep(SETTLE)
+        before = game.ctl('ui')['screen']
+        game.ctl('pad', 'down', 'tap')
+        time.sleep(SETTLE)
+        check(radial(game)['runs'] == [], 'the old file ran a radial action')
+        check(game.ctl('ui')['screen'] != before, 'D-pad down no longer opens the advancements')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def seeded_radial(text, env=None):
+    """A radial case whose game starts from this controller file."""
+    def wrap(body):
+        def case(args, name):
+            game = Game(args, name, world=True, env=env,
+                        seed=lambda home: (home / 'horizon-controller.txt').write_text(text))
+            check = Check()
+            try:
+                game.ctl('pad', 'focus', 'true')
+                time.sleep(SETTLE)
+                body(game, check)
+            finally:
+                game.quit()
+            return check.failures
+        return case
+    return wrap
+
+
+@seeded_radial('bindLayout:2\nradial_0_name:horizon.radial.page.general\nradial_0_slots:key.inventory,,,,,,,\n')
+def radial_commit_screen(game, check):
+    hold_opener(game)
+    aim(game, 0, 1)
+    check(radial(game)['drawn'], 'the overlay is not drawn while it is held')
+    game.ctl('pad', 'right', 'up')
+    # Every poll for half a second: once the inventory is up, the overlay is gone.
+    end = time.time() + 0.5
+    over = []
+    while time.time() < end:
+        screen = game.ctl('ui')['screen']
+        if screen != 'playing' and radial(game)['drawn']:
+            over.append(screen)
+    check(not over, f'the overlay drew over {over[:3]}')
+    # Creative's inventory, in this creative world.
+    check(game.ctl('ui')['screen'] != 'playing', 'no inventory opened')
+    shot(game, 'radial_commit_screen')
+    game.ctl('pad', 'stick', 'right', 0, 0)
+
+
+def radial_nintendo_glyphs(args, name):
+    check = Check()
+    for letters, cancel in ((True, 'B'), (False, 'A')):
+        seed = seed_controller(f'glyphs:nintendo\nnintendoLetters:{str(letters).lower()}\n')
+        game = Game(args, f'{name}-{cancel}', world=True, seed=seed)
+        try:
+            game.ctl('pad', 'focus', 'true')
+            game.ctl('pad', 'family', 'nintendo')
+            time.sleep(SETTLE)
+            hold_opener(game)
+            glyphs = radial(game)['glyphs']
+            check(glyphs['pages'] == ['L', 'R'], f'letters={letters}: bumpers {glyphs}')
+            check(glyphs['cancel'] == cancel, f'letters={letters}: cancel {glyphs}')
+            shot(game, f'radial_nintendo_{"letters" if letters else "places"}')
+            game.ctl('pad', 'east', 'tap')
+            game.ctl('pad', 'right', 'up')
+        finally:
+            game.quit()
+    return check.failures
+
+
+def let_go(game):
+    game.ctl('pad', 'right', 'up')
+    game.ctl('pad', 'stick', 'right', 0, 0)
+    time.sleep(SETTLE)
+
+
+def counts(game):
+    return game.ctl('inventory').get('counts')
+
+
+def stack_of(game, item):
+    return sum(n for name, n in (counts(game) or {}).items() if name.endswith(item))
+
+
+@radial_case
+def radial_flick_with_press(game, check):
+    # The thumb rolls onto the opener as the other flicks: both at once.
+    game.ctl('pad', 'stick', 'right', 0, 1)
+    game.ctl('pad', 'right', 'down')
+    time.sleep(0.3)
+    state = radial(game)
+    check(state['selected'] == 0 and not state['waiting'], f'a flick with the press: {state}')
+    let_go(game)
+    check(radial(game)['runs'] == ['key.advancements'], f"ran {radial(game)['runs']}")
+    game.ctl('key', 'escape', 'tap')
+    time.sleep(SETTLE)
+    # Leaning since well before: turning the camera, so it waits to be let go.
+    game.ctl('pad', 'stick', 'right', 0, 1)
+    time.sleep(0.4)
+    game.ctl('pad', 'right', 'down')
+    time.sleep(0.2)
+    state = radial(game)
+    check(state['waiting'] and state['selected'] is None, f'a lean from before: {state}')
+    let_go(game)
+    check(radial(game)['run_count'] == 1, f"ran {radial(game)['runs']}")
+
+
+@radial_case
+def radial_held_drop(game, check):
+    game.ctl('command', 'clear @s')
+    game.ctl('command', 'item replace entity @s hotbar.0 with minecraft:dirt 64')
+    game.ctl('select', '1')
+    time.sleep(SETTLE)
+    game.ctl('pad', 'down', 'down')
+    time.sleep(0.05)
+    game.ctl('pad', 'right', 'down')
+    # Held past the drop's stack hold, with the menu open.
+    time.sleep(1.6)
+    check(radial(game)['open'], 'the opener did not open it')
+    during = stack_of(game, 'dirt')
+    check(0 < during < 64, f'no drop before the open, or the stack went with it open: {counts(game)}')
+    game.ctl('pad', 'right', 'up')
+    time.sleep(0.15)
+    after = stack_of(game, 'dirt')
+    check(after == during, f'the menu closing threw {during - after} at once')
+    # Still held, the drop starts its wait again and then goes on.
+    time.sleep(1.0)
+    check(stack_of(game, 'dirt') < after, f'the held drop never resumed: {counts(game)}')
+    game.ctl('pad', 'down', 'up')
+
+
+@seeded_radial('bindLayout:2\n')
+def radial_death(game, check):
+    for rule in ('immediate_respawn', 'doImmediateRespawn'):
+        try:
+            game.ctl('command', f'gamerule {rule} true')
+            break
+        except Exception:
+            continue
+    game.ctl('command', 'gamemode survival')
+    time.sleep(SETTLE)
+    hold_opener(game)
+    aim(game, 0, 1)
+    check(radial(game)['selected'] == 0, f'nothing selected: {radial(game)}')
+    game.ctl('command', 'kill @s')
+    time.sleep(1.0)
+    # Respawned at once, no death screen: what closed it is the new body, not a screen.
+    check(game.ctl('ui')['screen'] == 'playing', f"no immediate respawn: {game.ctl('ui')['screen']}")
+    check(not radial(game)['open'], 'the menu outlived the death')
+    let_go(game)
+    check(radial(game)['runs'] == [], f"ran {radial(game)['runs']} on the new body")
+    check(game.ctl('ui')['screen'] != 'advancements', 'the advancements opened after the death')
+
+
+
+@radial_case
+def radial_cancel_roll(game, check):
+    # B cancels with the opener still held; the thumb lets it go later and rolls onto Drop.
+    game.ctl('command', 'clear @s')
+    game.ctl('command', 'item replace entity @s hotbar.0 with minecraft:stone 64')
+    game.ctl('select', '1')
+    time.sleep(SETTLE)
+    hold_opener(game)
+    aim(game, 0, 1)
+    game.ctl('pad', 'east', 'tap')
+    time.sleep(0.25)
+    check(not radial(game)['open'], f'B did not cancel: {radial(game)}')
+    game.ctl('pad', 'right', 'up')
+    game.ctl('pad', 'stick', 'right', 0, 0)
+    time.sleep(0.03)
+    game.ctl('pad', 'down', 'down')
+    time.sleep(0.3)
+    game.ctl('pad', 'down', 'up')
+    time.sleep(SETTLE)
+    check(stack_of(game, 'stone') == 64, f'the rolled thumb dropped after a cancel: {counts(game)}')
+    check(radial(game)['runs'] == [], f"ran {radial(game)['runs']}")
+    # Past the settle a press is the player's own.
+    game.ctl('pad', 'down', 'tap')
+    time.sleep(SETTLE)
+    check(stack_of(game, 'stone') == 63, f'a later D-pad Down dropped nothing: {counts(game)}')
+
+
+@seeded_radial('bindLayout:2\nradialMode:toggle\n')
+def radial_toggle_roll(game, check):
+    # Toggle mode commits on the opener's second press: the thumb comes up after the close.
+    game.ctl('command', 'clear @s')
+    game.ctl('command', 'item replace entity @s hotbar.0 with minecraft:stone 64')
+    game.ctl('select', '1')
+    time.sleep(SETTLE)
+    game.ctl('pad', 'right', 'tap')
+    time.sleep(0.2)
+    check(radial(game)['latched'], f'a tap did not latch it: {radial(game)}')
+    aim(game, 0, 1)
+    game.ctl('pad', 'right', 'down')
+    time.sleep(0.25)
+    check(not radial(game)['open'], f'the second press did not commit: {radial(game)}')
+    game.ctl('pad', 'right', 'up')
+    game.ctl('pad', 'stick', 'right', 0, 0)
+    time.sleep(0.03)
+    game.ctl('pad', 'down', 'down')
+    time.sleep(0.3)
+    game.ctl('pad', 'down', 'up')
+    time.sleep(SETTLE)
+    check(stack_of(game, 'stone') == 64, f'the rolled thumb dropped after a toggle commit: {counts(game)}')
+    check(radial(game)['runs'] == ['key.advancements'], f"ran {radial(game)['runs']}")
+    if game.ctl('ui')['screen'] != 'playing':
+        game.ctl('key', 'escape', 'tap')
+
+
+@seeded_radial('bindLayout:2\nradialStick:either\nbind_pad.radial:rb\n')
+def radial_either_takeover(game, check):
+    # Walking with the left stick, the opener down: waiting for the left; the right flicks and selects.
+    game.ctl('pad', 'stick', 'left', 0, 1)
+    time.sleep(0.4)
+    game.ctl('pad', 'rb', 'down')
+    time.sleep(0.2)
+    check(radial(game)['waiting'], f'the walking stick does not wait: {radial(game)}')
+    aim(game, 0, 1, settle=0.2)
+    state = radial(game)
+    check(state['selecting'] == 1 and state['selected'] == 0 and not state['waiting'],
+          f'the right stick taking over: {state}')
+    game.ctl('pad', 'rb', 'up')
+    game.ctl('pad', 'stick', 'right', 0, 0)
+    game.ctl('pad', 'stick', 'left', 0, 0)
+    time.sleep(SETTLE)
+    check(radial(game)['runs'] == ['key.advancements'], f"the first flick ran {radial(game)['runs']}")
+    if game.ctl('ui')['screen'] != 'playing':
+        game.ctl('key', 'escape', 'tap')
+        time.sleep(SETTLE)
+    # The walking thumb, frozen while it's open, eases off and on again: it never takes over.
+    game.ctl('pad', 'stick', 'left', 0, 0.6)
+    time.sleep(0.4)
+    game.ctl('pad', 'rb', 'down')
+    time.sleep(0.2)
+    aim(game, 1, 0, settle=0.2)
+    check(radial(game)['selected'] == 2, f'the right stick: {radial(game)}')
+    game.ctl('pad', 'stick', 'right', 0, 0)
+    for y in (0.4, 0.7, 0.4, 0.75):
+        game.ctl('pad', 'stick', 'left', 0, y)
+        time.sleep(0.04)
+    state = radial(game)
+    check(state['selecting'] == 1 and state['selected'] == 2, f'the walking thumb took over: {state}')
+    game.ctl('pad', 'rb', 'up')
+    game.ctl('pad', 'stick', 'left', 0, 0)
+    time.sleep(SETTLE)
+    check(radial(game)['runs'][-1:] == ['key.command'], f"ran {radial(game)['runs']}")
+    if game.ctl('ui')['screen'] != 'playing':
+        game.ctl('key', 'escape', 'tap')
+
+
+def radial_stick_back(args, name):
+    """Selects With stepped from Left (Y opening it) back to Right: D-pad Right opens it again. Right and Left
+    step the row, as every shell choice."""
+    seed = lambda home: (home / 'horizon-controller.txt').write_text(
+        'bindLayout:2\nradialStick:left\nbind_pad.radial:north\n')
+    game = Game(args, name, world=True, seed=seed)
+    check = Check()
+    row = 'Radial Menu Selects With'
+    try:
+        game.ctl('pad', 'focus', 'true')
+        time.sleep(SETTLE)
+        game.ctl('options', 'controller')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        # The first press lands the focus on the page list (General); then into its rows, and down
+        # to the radial group.
+        game.pad('down')
+        game.pad('right')
+        seen = []
+        for _ in range(60):
+            seen.append(game.focused_label())
+            if (game.focused_label() or '').startswith(row):
+                break
+            game.pad('down')
+        label = game.focused_label() or ''
+        check(label.startswith(row) and 'Left' in label, f'never reached the row: {label}, passing {seen}')
+        shot(game, 'radial_stick_left')
+        # Right and Left step it as every shell choice does, and the focus stays on the row.
+        game.pad('right')
+        stepped = game.focused_label() or ''
+        game.pad('left')
+        back = game.focused_label() or ''
+        check(stepped.startswith(row) and 'Either' in stepped and back.startswith(row) and 'Left' in back,
+              f'Right and Left did not step the row: {stepped}, then {back}')
+        # A steps it on: Either (no opener, Y being under the right thumb too), then Right.
+        steps = []
+        for _ in range(2):
+            game.pad('south')
+            steps.append(game.focused_label() or '')
+        label = steps[-1]
+        check('Either' in steps[0] and 'Right' in label, f'A did not step it round to the right stick: {steps}')
+        shot(game, 'radial_stick_back_right')
+        for _ in range(3):
+            if game.ctl('ui')['screen'] == 'playing':
+                break
+            game.pad('east')
+        time.sleep(SETTLE)
+        check('radialStick:left' not in controller_saved(game), f'not saved: {controller_saved(game)}')
+        game.ctl('pad', 'right', 'down')
+        time.sleep(0.2)
+        check(radial(game)['open'], f'D-pad Right does not open it on the right stick: {radial(game)}')
+        game.ctl('pad', 'right', 'up')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def radial_status_rows(args, name):
+    """Survival with armour and absorption: the dial draws clear of the rows over the hotbar, at
+    427x240 and 320x180 (shots only; the layout's own test checks the numbers)."""
+    check = Check()
+    for w, h in ((1280, 720), (320, 180)):
+        game = Game(args, f'{name}-{w}', world=True, extra=('--width', w, '--height', h))
+        try:
+            game.ctl('pad', 'focus', 'true')
+            time.sleep(SETTLE)
+            game.ctl('command', 'gamemode survival')
+            game.ctl('command', 'item replace entity @s armor.chest with minecraft:diamond_chestplate')
+            game.ctl('command', 'effect give @s minecraft:absorption 60 1 true')
+            time.sleep(SETTLE)
+            hold_opener(game)
+            aim(game, 0, -1)
+            check(radial(game)['drawn'], f'{w}x{h}: not drawn')
+            shot(game, f'radial_status_rows_{w}x{h}')
+            game.ctl('pad', 'east', 'tap')
+            let_go(game)
+        finally:
+            game.quit()
+    return check.failures
+
+# One page: Hide HUD up, Commands right, the rest empty.
+HIDE_HUD_SEED = ('bindLayout:2\nradial_0_name:horizon.radial.page.general\n'
+                 'radial_0_slots:key.toggleGui,,key.command,,,,,\n')
+
+
+@seeded_radial(HIDE_HUD_SEED)
+def radial_dpad_roll(game, check):
+    game.ctl('command', 'clear @s')
+    game.ctl('command', 'item replace entity @s hotbar.0 with minecraft:stone 10')
+    game.ctl('select', '1')
+    time.sleep(SETTLE)
+    hold_opener(game)
+    aim(game, 0, 1)
+    # Off D-pad Right, then onto D-pad Down (Drop) a poll or two later, inside the settle.
+    game.ctl('pad', 'right', 'up')
+    time.sleep(0.03)
+    game.ctl('pad', 'down', 'down')
+    time.sleep(0.3)
+    game.ctl('pad', 'down', 'up')
+    game.ctl('pad', 'stick', 'right', 0, 0)
+    time.sleep(SETTLE)
+    check(radial(game)['runs'] == ['key.toggleGui'], f"ran {radial(game)['runs']}")
+    check(stack_of(game, 'stone') == 10, f'the rolled thumb dropped: {counts(game)}')
+    # Past the settle a press is the player's own.
+    game.ctl('pad', 'down', 'tap')
+    time.sleep(SETTLE)
+    check(stack_of(game, 'stone') == 9, f'a later D-pad Down dropped nothing: {counts(game)}')
+    # The opener again just after a close opens the menu.
+    hold_opener(game)
+    game.ctl('pad', 'right', 'up')
+    time.sleep(0.03)
+    game.ctl('pad', 'right', 'down')
+    time.sleep(0.2)
+    check(radial(game)['open'], 'the opener right after a close was eaten')
+    game.ctl('pad', 'right', 'up')
+    time.sleep(SETTLE)
+    # Hide HUD back off.
+    hold_opener(game)
+    aim(game, 0, 1)
+    let_go(game)
+
+
+@seeded_radial(HIDE_HUD_SEED)
+def radial_fight_back(game, check):
+    game.ctl('command', 'clear @s')
+    game.ctl('command', 'item replace entity @s hotbar.0 with minecraft:stone 10')
+    game.ctl('select', '1')
+    time.sleep(SETTLE)
+    swings = lambda: game.ctl('state')['swings']
+    # RT: the menu closes and the swing goes on, in the same poll.
+    hold_opener(game)
+    aim(game, 0, 1)
+    was = swings()
+    game.ctl('pad', 'trigger', 'right', 1)
+    time.sleep(0.3)
+    check(not radial(game)['open'], 'RT left it open')
+    check(swings() > was, 'RT did not swing')
+    game.ctl('pad', 'trigger', 'right', 0)
+    let_go(game)
+    check(radial(game)['runs'] == [], f"RT's cancel ran {radial(game)['runs']}")
+    # A key: Q closes it and drops.
+    hold_opener(game)
+    aim(game, 0, 1)
+    game.ctl('key', 'q', 'tap')
+    time.sleep(SETTLE)
+    check(not radial(game)['open'], 'Q left it open')
+    check(stack_of(game, 'stone') == 9, f'Q was swallowed: {counts(game)}')
+    let_go(game)
+    # A click: closes it and swings.
+    hold_opener(game)
+    aim(game, 0, 1)
+    was = swings()
+    game.ctl('mouse', 'left', 'click')
+    time.sleep(SETTLE)
+    check(not radial(game)['open'], 'a click left it open')
+    check(swings() > was, 'the click was swallowed')
+    let_go(game)
+    # An agent's mouse glide (its turn tool, not the window's raw motion, which
+    # `device_event` drops while it's open) leaves it open.
+    hold_opener(game)
+    aim(game, 0, 1)
+    game.ctl('mouse-move', 200, 0)
+    time.sleep(SETTLE)
+    check(radial(game)['open'], 'the mouse moving closed it')
+    game.ctl('pad', 'east', 'tap')
+    let_go(game)
+    check(radial(game)['runs'] == [], f"cancelled but ran {radial(game)['runs']}")
+
+
+@seeded_radial('bindLayout:2\nradialMode:toggle\n')
+def radial_toggle(game, check):
+    game.ctl('pad', 'right', 'tap')
+    time.sleep(SETTLE)
+    state = radial(game)
+    check(state['open'] and state['latched'] and state['shown'], f'a tap did not open it: {state}')
+    aim(game, 0, 1)
+    # The right thumb lets go of the stick to press A: the selection waits for it.
+    game.ctl('pad', 'stick', 'right', 0, 0)
+    time.sleep(0.5)
+    check(radial(game)['selected'] == 0, f"letting go lost the selection: {radial(game)}")
+    game.ctl('pad', 'south', 'tap')
+    time.sleep(SETTLE)
+    check(radial(game)['runs'] == ['key.advancements'], f"A ran {radial(game)['runs']}")
+    game.ctl('key', 'escape', 'tap')
+    time.sleep(SETTLE)
+    # The opener again commits.
+    game.ctl('pad', 'right', 'tap')
+    time.sleep(SETTLE)
+    aim(game, 1, 0)
+    game.ctl('pad', 'right', 'tap')
+    time.sleep(SETTLE)
+    check(radial(game)['runs'][-1:] == ['key.command'], f"the opener again ran {radial(game)['runs']}")
+    game.ctl('pad', 'stick', 'right', 0, 0)
+    game.ctl('key', 'escape', 'tap')
+    time.sleep(SETTLE)
+    # B closes it; nothing aimed runs nothing.
+    game.ctl('pad', 'right', 'tap')
+    time.sleep(SETTLE)
+    game.ctl('pad', 'east', 'tap')
+    time.sleep(SETTLE)
+    check(not radial(game)['open'], 'B left it open')
+    game.ctl('pad', 'right', 'tap')
+    time.sleep(SETTLE)
+    game.ctl('pad', 'south', 'tap')
+    time.sleep(SETTLE)
+    state = radial(game)
+    check(not state['open'] and state['run_count'] == 2, f'nothing aimed: {state}')
+
+
+# Selecting with the left stick, D-pad Right is under that thumb: Y opens it instead.
+@seeded_radial('bindLayout:2\nradialStick:left\nbind_pad.radial:north\n')
+def radial_left_stick(game, check):
+    position = lambda: game.ctl('status')['player']['position']
+    yaw = lambda: game.ctl('status')['yaw']
+    game.ctl('pad', 'north', 'down')
+    time.sleep(0.2)
+    check(radial(game)['open'], f'Y did not open it: {radial(game)}')
+    before = position()
+    game.ctl('pad', 'stick', 'left', 0, 1)
+    time.sleep(0.4)
+    check(radial(game)['selected'] == 0, f'the left stick selected {radial(game)}')
+    check(position() == before, f'the selecting stick walked: {before} -> {position()}')
+    was = yaw()
+    aim(game, 1, 0, settle=0.3)
+    check(yaw() != was, 'the right stick no longer turns the view')
+    game.ctl('pad', 'stick', 'right', 0, 0)
+    game.ctl('pad', 'north', 'up')
+    game.ctl('pad', 'stick', 'left', 0, 0)
+    time.sleep(SETTLE)
+    check(radial(game)['runs'] == ['key.advancements'], f"ran {radial(game)['runs']}")
+
+
+@seeded_radial('bindLayout:2\nbind_pad.radial:lb\n')
+def radial_bumper_opener(game, check):
+    rumble = lambda: (game.ctl('pad', 'status')['last_rumble'] or {}).get('reason')
+    game.ctl('pad', 'lb', 'down')
+    time.sleep(0.2)
+    check(radial(game)['open'], 'LB did not open it')
+    game.ctl('pad', 'rb', 'tap')
+    time.sleep(0.2)
+    check(radial(game)['page'] == 1 and rumble() == 'radial_page', f'RB: {radial(game)} {rumble()}')
+    game.ctl('pad', 'rb', 'tap')
+    time.sleep(0.3)
+    check(radial(game)['page'] == 0, f'RB did not go round: {radial(game)}')
+    check(rumble() == 'radial_wrap', f'no second tick going round: {rumble()}')
+    aim(game, 0, 1)
+    game.ctl('pad', 'lb', 'up')
+    game.ctl('pad', 'stick', 'right', 0, 0)
+    time.sleep(SETTLE)
+    check(radial(game)['runs'] == ['key.advancements'], f"ran {radial(game)['runs']}")
+
+
+@radial_case
+def radial_haptics(game, check):
+    rumble = lambda: (game.ctl('pad', 'status')['last_rumble'] or {}).get('reason')
+    hold_opener(game)
+    aim(game, 0.7, 0.7)
+    check(radial(game)['selected'] == 1, f'not on the empty slot: {radial(game)}')
+    check(rumble() != 'radial', f'an empty slot ticked: {rumble()}')
+    aim(game, 0, 1)
+    check(rumble() == 'radial', f'a filled slot did not tick: {rumble()}')
+    aim(game, 0.7, 0.7)
+    let_go(game)
+    check(radial(game)['runs'] == [], f"ran {radial(game)['runs']}")
+    check(rumble() == 'radial_nothing', f'a release that ran nothing: {rumble()}')
+
+
+@radial_case
+def radial_narration(game, check):
+    game.ctl('options-set', 'narrator', '1')
+    time.sleep(SETTLE)
+    said = lambda: game.ctl('narration')['recent']
+    hold_opener(game)
+    time.sleep(0.2)
+    check('General' in said(), f'the page was not said: {said()}')
+    aim(game, 0, 1, settle=0.4)
+    check('Advancements' in said(), f'the slot was not said: {said()}')
+    game.ctl('pad', 'east', 'tap')
+    let_go(game)
+
+
+ACTIONS_SEED = ('bindLayout:2\nradial_0_label:Mine\n'
+                'radial_0_slots:key.debug.overlay,mymod:dash,key.quickActions,,key.socialInteractions,,,\n'
+                'radial_0_icon:minecraft:diamond\n')
+
+
+@seeded_radial(ACTIONS_SEED)
+def radial_actions(game, check):
+    hold_opener(game)
+    state = radial(game)
+    check(state['slots'][1] == 'mymod:dash', f'the unknown action: {state}')
+    check(state['available'] == [True, False, False, True, False, True, True, True],
+          f"available: {state['available']}")
+    shot(game, 'radial_actions')
+    aim(game, 0.7, 0.7)
+    let_go(game)
+    check(radial(game)['runs'] == [], f"a missing action ran {radial(game)['runs']}")
+    # The debug screen.
+    hold_opener(game)
+    aim(game, 0, 1)
+    let_go(game)
+    check(game.ctl('status')['debug']['overlay'], 'the debug screen did not show')
+    hold_opener(game)
+    aim(game, 0, 1)
+    let_go(game)
+    check(not game.ctl('status')['debug']['overlay'], 'the debug screen did not hide')
+    # Social in single player, dimmed, goes through its key: the action bar says why, and
+    # nothing opens.
+    game.ctl('options-set', 'narrator', '1')
+    hold_opener(game)
+    aim(game, 0, -1)
+    let_go(game)
+    check(game.ctl('ui')['screen'] == 'playing', f"Social opened: {game.ctl('ui')['screen']}")
+    said = game.ctl('narration')['recent']
+    check(any('only available in multiplayer' in line.lower() for line in said), f'nothing said: {said}')
+
+
 CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': release, 'move_cancels': move_cancels,
          'pad_release': pad_release, 'pause_y': pause_y, 'settings': settings, 'create_world': create_world,
          'world_options': world_options, 'key_row_b': key_row_b, 'lock_question': lock_question,
@@ -3178,8 +4402,10 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'extras_shell_edges': extras_shell_edges,
          'graphics_shell': graphics_shell,
          'shell_choice_step': shell_choice_step,
+         'shader_screens': shader_screens,
          'glyph_art': glyph_art,
          'glyph_art_world': glyph_art_world,
+         'nintendo_letters': nintendo_letters,
          'key_row_a_x': key_row_a_x,
          'prompt_dialog': prompt_dialog,
          'prompt_dialog_field': prompt_dialog_field,
@@ -3195,6 +4421,21 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'osk_command_block': osk_command_block,
          'osk_jigsaw': osk_jigsaw,
          'controller_trigger_threshold': controller_trigger_threshold,
+         'radial_commit': radial_commit, 'radial_no_selection': radial_no_selection,
+         'radial_flick_with_press': radial_flick_with_press, 'radial_held_drop': radial_held_drop,
+         'radial_death': radial_death, 'radial_dpad_roll': radial_dpad_roll,
+         'radial_fight_back': radial_fight_back, 'radial_toggle': radial_toggle,
+         'radial_left_stick': radial_left_stick, 'radial_bumper_opener': radial_bumper_opener,
+         'radial_haptics': radial_haptics, 'radial_narration': radial_narration,
+         'radial_actions': radial_actions,
+         'radial_retention': radial_retention, 'radial_pages': radial_pages, 'radial_cancel': radial_cancel,
+         'radial_camera': radial_camera, 'radial_precedence': radial_precedence, 'radial_editor': radial_editor,
+         'radial_held_sneak': radial_held_sneak, 'radial_focus_background': radial_focus_background,
+         'radial_unavailable': radial_unavailable, 'radial_old_file': radial_old_file,
+         'radial_commit_screen': radial_commit_screen, 'radial_nintendo_glyphs': radial_nintendo_glyphs,
+         'radial_cancel_roll': radial_cancel_roll, 'radial_toggle_roll': radial_toggle_roll,
+         'radial_either_takeover': radial_either_takeover, 'radial_stick_back': radial_stick_back,
+         'radial_status_rows': radial_status_rows,
          'slider_needs_a': slider_needs_a,
          'gameplay_guide': gameplay_guide,
          'gameplay_guide_basic': gameplay_guide_basic,

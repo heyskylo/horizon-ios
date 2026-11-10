@@ -913,6 +913,20 @@ pub trait Backend {
     fn unpause(&mut self, channel: ChannelId);
     /// `Channel.stopped`.
     fn stopped(&mut self, channel: ChannelId) -> bool;
+    /// Update volume, pitch, and position in a single backend call.
+    fn update_channel(&mut self, channel: ChannelId, volume: f32, pitch: f32, position: [f64; 3]) {
+        self.set_volume(channel, volume);
+        self.set_pitch(channel, pitch);
+        self.set_position(channel, position);
+    }
+    /// Filter which handles have stopped playing in a single pass.
+    fn filter_stopped(&mut self, live: &[(u64, ChannelId)], stopped: &mut Vec<u64>) {
+        for &(h, c) in live {
+            if self.stopped(c) {
+                stopped.push(h);
+            }
+        }
+    }
     /// Whether the channel plays clearly through a mod's muffle (`Audio::muffle`): its sound
     /// event is one the mod exempted. A backend without a muffle ignores it.
     fn set_unmuffled(&mut self, _channel: ChannelId, _unmuffled: bool) {}
@@ -978,6 +992,10 @@ pub struct SoundEngine {
     instance_by_source: Vec<(usize, InstanceId)>,
     gain_by_source: [f32; 11],
     ticking: Vec<InstanceId>,
+    live_scratch: Vec<(u64, ChannelId)>,
+    mapped_scratch: Vec<u64>,
+    removed_scratch: Vec<InstanceId>,
+    ticking_scratch: Vec<InstanceId>,
     /// `queuedSounds` (insertion order).
     queued: Vec<(InstanceId, i32)>,
     delete_time: HashMap<InstanceId, i32>,
@@ -1015,6 +1033,10 @@ impl SoundEngine {
             instance_by_source: Vec::new(),
             gain_by_source: [1.0; 11],
             ticking: Vec::new(),
+            live_scratch: Vec::new(),
+            mapped_scratch: Vec::new(),
+            removed_scratch: Vec::new(),
+            ticking_scratch: Vec::new(),
             queued: Vec::new(),
             delete_time: HashMap::new(),
             queued_tickable: Vec::new(),
@@ -1479,20 +1501,27 @@ impl SoundEngine {
         self.schedule_tick(backend);
     }
     fn schedule_tick(&mut self, backend: &mut impl Backend) {
-        let live: Vec<(u64, ChannelId)> = self
-            .handles
-            .iter()
-            .filter_map(|(h, handle)| handle.channel.map(|c| (*h, c)))
-            .collect();
-        for (h, c) in live {
-            if backend.stopped(c) {
-                self.release_handle(h, backend);
-            }
+        let mut live = std::mem::take(&mut self.live_scratch);
+        live.clear();
+        live.extend(
+            self.handles
+                .iter()
+                .filter_map(|(h, handle)| handle.channel.map(|c| (*h, c))),
+        );
+        let mut stopped = std::mem::take(&mut self.mapped_scratch);
+        stopped.clear();
+        backend.filter_stopped(&live, &mut stopped);
+        for h in stopped.drain(..) {
+            self.release_handle(h, backend);
         }
         // Released handles nobody maps any more.
-        let mapped: Vec<u64> = self.instance_to_channel.iter().map(|(_, h)| *h).collect();
+        let mut mapped = stopped;
+        mapped.clear();
+        mapped.extend(self.instance_to_channel.iter().map(|(_, h)| *h));
         self.handles
             .retain(|h, handle| handle.channel.is_some() || mapped.contains(h));
+        self.live_scratch = live;
+        self.mapped_scratch = mapped;
     }
     fn handle_stopped(&self, handle: u64) -> bool {
         self.handles.get(&handle).is_none_or(|h| h.stopped)
@@ -1502,7 +1531,10 @@ impl SoundEngine {
         for id in std::mem::take(&mut self.queued_tickable) {
             self.play(id, backend);
         }
-        for id in self.ticking.clone() {
+        let mut ticking = std::mem::take(&mut self.ticking_scratch);
+        ticking.clear();
+        ticking.extend(self.ticking.iter().copied());
+        for id in ticking.drain(..) {
             let Some(instance) = self.instances.get(&id) else {
                 continue;
             };
@@ -1533,9 +1565,7 @@ impl SoundEngine {
                 h.pitch_edited = pitch_edited;
             }
             if let Some(c) = self.handles.get(&handle).and_then(handle_channel) {
-                backend.set_volume(c, volume);
-                backend.set_pitch(c, pitch);
-                backend.set_position(c, position);
+                backend.update_channel(c, volume, pitch, position);
             }
             let instance = self.instances.get_mut(&id).expect("present");
             if instance.looping
@@ -1549,7 +1579,8 @@ impl SoundEngine {
                 self.notify(id, subtitle, distance);
             }
         }
-        let mut removed = Vec::new();
+        let mut removed = std::mem::take(&mut self.removed_scratch);
+        removed.clear();
         let mut index = 0;
         while index < self.instance_to_channel.len() {
             let (id, handle) = self.instance_to_channel[index];
@@ -1596,9 +1627,11 @@ impl SoundEngine {
                 index += 1;
             }
         }
-        for id in removed {
+        for id in removed.drain(..) {
             self.collect(id);
         }
+        self.ticking_scratch = ticking;
+        self.removed_scratch = removed;
     }
     fn tick_music_when_paused(&mut self) {
         let mut index = 0;

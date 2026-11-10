@@ -29,7 +29,7 @@ FallingBlockEntity.addAdditionalSaveData	port	crates/horizon-client/src/entity_n
 FallingBlockEntity.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::falling_block_from_nbt	gap: minor: TileEntityData is not read; damage settings come from falling_block::Damage::from_nbt
 FallingBlockEntity.fillCrashReportCategory	skip:debug		crash report detail
 FallingBlockEntity.getTypeName	skip:data	-	the anvil death text is its damage type's message id (death.attack.anvil), which takes no block-name argument; game/falling_damage.rs picks falling_anvil, falling_stalactite or falling_block
-FallingBlockEntity.teleport	inline	crates/horizon-client/src/game.rs::Game::fall_step	the portal move itself is falling_through_portal; the End-crossing duplicate tick (`forceTickAfterTeleportToDuplicate`) is in fall_step
+FallingBlockEntity.teleport	inline	crates/horizon-client/src/game/falling_blocks.rs::Game::fall_step	the portal move itself is falling_through_portal; the End-crossing duplicate tick (`forceTickAfterTeleportToDuplicate`) is in fall_step
 ItemEntity.restoreFrom	skip:other		the ItemEntity value moves between levels with thrower kept; nothing to copy
 ItemEntity.setFluidMovement	inline	crates/horizon-client/src/entities.rs::ItemEntity::tick	water and lava drag and buoyancy are applied in tick
 ItemEntity.fireImmune	inline	crates/horizon-client/src/entities.rs::ItemEntity::environment_tick	fire immunity via resists_fire in environment_tick
@@ -116,7 +116,7 @@ Ravager.strongKnockback	inline	crates/horizon-client/src/mobs/ravager.rs::roar	t
 Ravager.addRoarParticleEffects	inline	crates/horizon-client/src/mobs/ravager.rs::roar	the poof particles are emitted in roar
 Shulker.registerGoals	port	crates/horizon-client/src/mobs/shulker.rs::register	gap: minor: no defense target goal (priority 3)
 Shulker.defineSynchedData	skip:other		attach face, peek and colour are Mob extra fields
-Shulker.readAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	AttachFace, Peek and Color are read there
+Shulker.readAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	AttachFace wraps through Direction.from3DDataValue, Peek and Color are raw getByteOr bytes
 Shulker.addAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	AttachFace, Peek and Color are written there
 Shulker.findNewAttachment	inline	crates/horizon-client/src/mobs/shulker.rs::tick	keeps its face or teleports in tick, through attachable and teleport
 Shulker.makeBoundingBox	port	crates/horizon-client/src/mobs/shulker.rs::progress_aabb	

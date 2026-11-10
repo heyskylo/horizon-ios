@@ -325,6 +325,51 @@ fn a_review_protects_published_files() {
 }
 
 #[test]
+fn a_version_taken_down_by_hash_may_leave_its_entry() {
+    // A lost signing key: the next version comes under a new key, and the old one is dropped.
+    let base: Entry = toml::from_str(&hud_entry()).unwrap();
+    let old = base.versions[0].clone();
+    let mut rotated = base.clone();
+    rotated.versions[0].version = "0.2.0".into();
+    rotated.versions[0].sha256 = HPACK.into();
+    let down = |id: &str, sha256: &str| Revoked {
+        id: id.into(),
+        sha256: Some(sha256.into()),
+        reason: "signed with a lost key".into(),
+        date: "2026-11-09".into(),
+    };
+    let one = std::slice::from_ref(&base);
+    let next = std::slice::from_ref(&rotated);
+
+    let r = review_with_revoked(one, next, &[down("coords_hud", &old.sha256)], "ludovic111");
+    assert!(r.errors.is_empty(), "{r:?}");
+    assert!(
+        r.notes
+            .iter()
+            .any(|n| n == "coords_hud 0.1.0: leaves the entry, taken down in revoked.toml"),
+        "{r:?}"
+    );
+    // Not taken down, another project's take-down, or a take-down of every version
+    // without a hash: still refused.
+    for revoked in [
+        vec![],
+        vec![down("other_mod", &old.sha256)],
+        vec![Revoked {
+            sha256: None,
+            ..down("coords_hud", "")
+        }],
+    ] {
+        let r = review_with_revoked(one, next, &revoked, "ludovic111");
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| e.contains("coords_hud 0.1.0: removed")),
+            "{revoked:?}: {r:?}"
+        );
+    }
+}
+
+#[test]
 fn a_review_refuses_following_a_repository() {
     let pinned: Entry = toml::from_str(COZY).unwrap();
     let follows: Entry = toml::from_str(COZY_REPO).unwrap();
@@ -395,6 +440,31 @@ fn a_mod_may_turn_native_once() {
         r.errors.iter().any(|e| e.contains("kind can't change")),
         "{r:?}"
     );
+}
+
+#[test]
+fn a_new_icon_is_a_new_address() {
+    let s = Scratch::new("icon-address");
+    let icon = |s: &Scratch| {
+        s.build()
+            .unwrap()
+            .project("coords_hud")
+            .unwrap()
+            .icon
+            .clone()
+            .unwrap()
+    };
+    let before = icon(&s);
+    let (path, version) = before.split_once("?v=").unwrap();
+    assert_eq!(
+        path,
+        "https://horizon-rust.github.io/horizon-mods/icons/coords_hud.png"
+    );
+    assert_eq!(version.len(), 12, "{before}");
+    assert_eq!(icon(&s), before, "the same icon keeps its address");
+    s.write_bytes("icons/coords_hud.png", &png(256, 256));
+    let after = icon(&s);
+    assert!(after.starts_with(path) && after != before, "{after}");
 }
 
 #[test]

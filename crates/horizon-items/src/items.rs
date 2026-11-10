@@ -481,10 +481,22 @@ fn load_instruments(root: &Path) -> HashMap<String, Instrument> {
     }
     instruments
 }
+/// `minecraft`'s songs and, in a content root, the mods' under their own
+/// namespaces: vanilla lists a registry in every namespace
+/// (`ResourceManagerRegistryLoadTask.load`, `FileToIdConverter.registry`).
 fn load_songs(root: &Path) -> HashMap<String, Song> {
     let mut songs = HashMap::new();
-    let Ok(dir) = fs::read_dir(root.join("data/minecraft/jukebox_song")) else {
-        return songs;
+    read_songs(root, "minecraft", &mut songs);
+    for namespace in crate::content_namespaces::namespaces(root) {
+        if namespace != "minecraft" {
+            read_songs(root, &namespace, &mut songs);
+        }
+    }
+    songs
+}
+fn read_songs(root: &Path, namespace: &str, songs: &mut HashMap<String, Song>) {
+    let Ok(dir) = fs::read_dir(root.join(format!("data/{namespace}/jukebox_song"))) else {
+        return;
     };
     for entry in dir.flatten() {
         let path = entry.path();
@@ -500,7 +512,7 @@ fn load_songs(root: &Path) -> HashMap<String, Song> {
             other => other["sound_id"].as_str().unwrap_or("").to_owned(),
         };
         songs.insert(
-            format!("minecraft:{stem}"),
+            format!("{namespace}:{stem}"),
             Song {
                 sound,
                 length_ticks: (v["length_in_seconds"].as_f64().unwrap_or(0.0) as f32 * 20.0).ceil()
@@ -510,7 +522,6 @@ fn load_songs(root: &Path) -> HashMap<String, Song> {
             },
         );
     }
-    songs
 }
 pub fn load_tags(
     root: &Path,
@@ -1266,6 +1277,44 @@ impl Items {
             );
         }
         self.get(&stack.item)?.tool_damage_per_block
+    }
+    /// `ItemAttributeModifiers` from the stack's component, else the item's
+    /// prototype: (attribute, id, amount, operation, slot group).
+    pub fn attribute_modifiers(
+        &self,
+        stack: &ItemStack,
+    ) -> Vec<(String, String, f64, String, String)> {
+        if stack
+            .data()
+            .is_some_and(|d| d.other("!minecraft:attribute_modifiers").is_some())
+        {
+            return Vec::new();
+        }
+        if let Some(horizon_world::nbt::Tag::List(entries)) = stack
+            .data()
+            .and_then(|d| d.other("minecraft:attribute_modifiers"))
+        {
+            return entries
+                .iter()
+                .filter_map(|entry| {
+                    let string = |key: &str| match entry.get(key) {
+                        Some(horizon_world::nbt::Tag::String(s)) => Some(s.to_string_lossy()),
+                        _ => None,
+                    };
+                    Some((
+                        string("type")?,
+                        string("id")?,
+                        horizon_world::datafix::dynamic::as_number(entry.get("amount")?)?
+                            .double_value(),
+                        string("operation").unwrap_or_else(|| "add_value".into()),
+                        string("slot").unwrap_or_else(|| "any".into()),
+                    ))
+                })
+                .collect();
+        }
+        self.get(&stack.item)
+            .map(|i| i.modifiers.clone())
+            .unwrap_or_default()
     }
     /// Mining wear on an already durable item prototype. Custom durability on
     /// non-durable items needs item-aware DAMAGE-presence decoding first.
@@ -2688,7 +2737,7 @@ pub fn bucket_contents(
             "minecraft:item.bucket.empty_sulfur_cube",
             Some("sulfur_cube"),
         ),
-        _ => return None,
+        _ => return horizon_world::level::mod_bucket_contents(item),
     })
 }
 
@@ -2884,6 +2933,81 @@ mod tests {
         ids.sort();
         assert_eq!(ids, ["mymod:rooms/a", "mypack:b"]);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A content mod's songs load under its own namespace, beside vanilla's;
+    /// a root without the mods' marker reads `minecraft` only.
+    #[test]
+    fn content_mod_songs_load_under_their_namespace() {
+        let root = std::env::temp_dir().join(format!("horizon-songs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for ns in ["minecraft", "mymod"] {
+            fs::create_dir_all(root.join(format!("data/{ns}/jukebox_song"))).unwrap();
+        }
+        fs::write(root.join("items.json"), "{}").unwrap();
+        let song = json!({"sound_event": "mymod:music_disc.tune", "length_in_seconds": 5.0, "comparator_output": 3, "description": "tune"});
+        fs::write(
+            root.join("data/mymod/jukebox_song/tune.json"),
+            song.to_string(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("data/minecraft/jukebox_song/cat.json"),
+            json!({"sound_event": "minecraft:music_disc.cat", "length_in_seconds": 185.0, "comparator_output": 2, "description": "cat"}).to_string(),
+        )
+        .unwrap();
+
+        let items = Items::catalog(&root, &PackOverlay::NONE).unwrap();
+        assert!(items.songs.contains_key("minecraft:cat"));
+        assert!(!items.songs.contains_key("mymod:tune"));
+
+        fs::write(root.join(crate::content_namespaces::MARKER), r#"["mymod"]"#).unwrap();
+        let items = Items::catalog(&root, &PackOverlay::NONE).unwrap();
+        let tune = &items.songs["mymod:tune"];
+        assert_eq!(tune.sound, "mymod:music_disc.tune");
+        assert_eq!((tune.length_ticks, tune.comparator), (100, 3));
+        assert!(items.songs.contains_key("minecraft:cat"));
+        assert!(!items.songs.contains_key("minecraft:tune"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn attribute_modifiers_come_from_the_stack() {
+        let items = Items::for_tests(HashMap::new());
+        let mut sword = ItemStack::new("minecraft:diamond_sword", 1);
+        let attack = horizon_world::nbt::Tag::compound([
+            (
+                "type",
+                horizon_world::nbt::Tag::String("minecraft:attack_damage".into()),
+            ),
+            (
+                "id",
+                horizon_world::nbt::Tag::String("minecraft:test".into()),
+            ),
+            ("amount", horizon_world::nbt::Tag::Double(0.1f64.to_bits())),
+            (
+                "operation",
+                horizon_world::nbt::Tag::String("add_value".into()),
+            ),
+            ("slot", horizon_world::nbt::Tag::String("mainhand".into())),
+        ]);
+        sword.data_mut().set_other(
+            "minecraft:attribute_modifiers",
+            Some(horizon_world::nbt::Tag::List(vec![attack])),
+        );
+        let modifiers = items.attribute_modifiers(&sword);
+        assert_eq!(modifiers.len(), 1);
+        assert_eq!(modifiers[0].0, "minecraft:attack_damage");
+        // A double, as `AttributeModifier.amount`: not rounded through a float.
+        assert_eq!(modifiers[0].2, 0.1);
+        sword.data_mut().set_other(
+            "!minecraft:attribute_modifiers",
+            Some(horizon_world::nbt::Tag::compound(Vec::<(
+                &str,
+                horizon_world::nbt::Tag,
+            )>::new())),
+        );
+        assert!(items.attribute_modifiers(&sword).is_empty());
     }
 
     #[test]

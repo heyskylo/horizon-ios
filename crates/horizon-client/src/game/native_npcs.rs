@@ -8,7 +8,7 @@
 //! the one that was is put back. A level nobody opened is not opened.
 use super::{Game, commands::Target, creatures::seen};
 use horizon_client::mobs::{Mob, MobWorld, Seen, Who, ai::do_hurt_target, goals::Cx};
-use horizon_world::nbt::Compound;
+use horizon_world::nbt::{Compound, Tag};
 
 // Native mods use these; nothing in Horizon does.
 #[allow(dead_code)]
@@ -52,6 +52,10 @@ impl Game<'_> {
                 {
                     return None;
                 }
+                // The mod API has no natural fence knots (#13036).
+                if let Target::Knot(_) = t {
+                    return None;
+                }
                 Some((id, g.target_type(t)))
             });
             if let Some(Some((id, kind))) = found {
@@ -59,6 +63,40 @@ impl Game<'_> {
             }
         }
         None
+    }
+    /// The `minecraft:marker` entities of the loaded level `dimension`: each one's id, its position
+    /// and its `data` compound (empty for a marker saved without data), as `/data get entity <marker>
+    /// data` shows it. Reads only the level's list of kept entities (displays, interactions, markers),
+    /// not every entity, so a mod can poll it for the markers it uses as anchors (a region, a spawn
+    /// point) far more cheaply than it could filter `native_level_entities`. Empty on a client and for
+    /// a level not loaded. API @API:level_markers@.
+    pub(super) fn native_level_markers(
+        &mut self,
+        dimension: &str,
+    ) -> Vec<(u32, [f64; 3], Compound)> {
+        self.npc_in_level(dimension, |g| {
+            let markers: Vec<_> = g
+                .others
+                .iter()
+                .filter(|o| matches!(o.kind.as_str(), "minecraft:marker" | "marker"))
+                .map(|o| (o.id, [o.position.x, o.position.y, o.position.z]))
+                .collect();
+            markers
+                .into_iter()
+                .map(|(id, at)| {
+                    let data = match g
+                        .entity_nbt(Target::Other(id))
+                        .as_ref()
+                        .and_then(|t| t.get("data"))
+                    {
+                        Some(Tag::Compound(c)) => c.clone(),
+                        _ => Compound::default(),
+                    };
+                    (id, at, data)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
     }
     /// Merges `nbt` into entity `id`'s data in the loaded level `dimension`,
     /// as `/execute in <dimension> run data merge entity` does: what
@@ -159,6 +197,52 @@ impl Game<'_> {
             m.nav_move_to_path(w, path, speed)
         })
         .unwrap_or(false)
+    }
+    /// The walkable path mob `mob` of the loaded level `dimension` would take
+    /// to `to` (`PathNavigation.createPath`, the engine's own pathfinder for
+    /// that mob's kind), without moving it: the block positions from the
+    /// mob's own block on, in walking order, and whether the path reaches
+    /// `to` within `reach` blocks. When `to` can't be reached, the path ends at
+    /// the nearest node vanilla reached, with `reached` false. None for no path
+    /// at all (beyond the follow range, as vanilla's), a level not loaded, no
+    /// such living mob, a negative `reach` or a value that isn't finite. Nothing
+    /// is set on the mob: pass the nodes to a mob's own walk or to your NPC's
+    /// movement yourself. API @API:npc_mob_path@.
+    pub(super) fn native_mob_path(
+        &mut self,
+        dimension: &str,
+        mob: u32,
+        to: [f64; 3],
+        reach: i32,
+    ) -> Option<(Vec<[i32; 3]>, bool)> {
+        if !to.into_iter().all(f64::is_finite) || reach < 0 {
+            return None;
+        }
+        let at = to.map(|v| v.floor() as i32);
+        self.npc_drive(dimension, mob, |m, w| {
+            m.create_path_to(w, at, reach).map(|path| {
+                let nodes = path.nodes.iter().map(|n| [n.x, n.y, n.z]).collect();
+                (nodes, path.reached)
+            })
+        })
+        .flatten()
+    }
+    /// Strikes lightning at `pos` in the loaded level `dimension`, as `/summon
+    /// lightning_bolt` does; with `visual_only` only the bolt is shown, with no
+    /// fire, damage or sound-of-strike event (`EntityType.LIGHTNING_BOLT`'s
+    /// `visualOnly`). False for a non-finite position and a level not loaded or
+    /// a client. API @API:living_helpers@.
+    pub(super) fn native_lightning_bolt(
+        &mut self,
+        dimension: &str,
+        pos: [f64; 3],
+        visual_only: bool,
+    ) -> bool {
+        if !pos.into_iter().all(f64::is_finite) {
+            return false;
+        }
+        self.npc_in_level(dimension, |g| g.spawn_bolt(pos, visual_only))
+            .is_some()
     }
     /// Walks mob `mob` towards where entity `target` (a mob, a player or any
     /// other entity of the same level) stands now, as
@@ -331,6 +415,10 @@ impl Game<'_> {
         {
             return None;
         }
+        // The mod API has no natural fence knots (#13036).
+        if let Target::Knot(_) = t {
+            return None;
+        }
         self.target_position(t)
     }
 }
@@ -363,3 +451,7 @@ impl Game<'_> {
         Some(out)
     }
 }
+
+#[cfg(test)]
+#[path = "native_lookup_tests.rs"]
+mod lookup_tests;

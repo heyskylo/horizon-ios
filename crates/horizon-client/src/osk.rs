@@ -4,7 +4,9 @@
 //! A types the key, X deletes, Y is a space, Start is Enter, B closes it.
 //! It only produces [`Output`]s; the game feeds them to the focused field
 //! the way typed keys reach it.
-use crate::gamepad::{Button, GlyphStyle};
+use crate::gamepad::{Button, MenuJob};
+use crate::hud_kit::hint::HintRow;
+use crate::pad_glyph::{Glyph, Glyphs};
 use crate::ui_theme::{self, Face, Ui, color};
 
 /// A label of the keyboard: the language table's, or the English text.
@@ -247,23 +249,28 @@ impl Keyboard {
     }
     /// A pad button while the keyboard is open; `None` when it does nothing
     /// to the field (moving, Shift).
+    /// Its jobs are menu jobs (`MenuJob`), the map its hint line's glyphs come from.
     pub fn button(&mut self, button: Button) -> Option<Output> {
-        match button {
-            Button::South => self.press(),
-            Button::West => Some(Output::Backspace),
-            Button::North => Some(Output::Text(" ".into())),
-            Button::Start => Some(Output::Enter),
-            Button::East => Some(Output::Close),
-            Button::LeftStick | Button::LeftTrigger => {
+        match MenuJob::of(button) {
+            Some(MenuJob::Confirm) => self.press(),
+            Some(MenuJob::Alternate) => Some(Output::Backspace),
+            Some(MenuJob::Extra) => Some(Output::Text(" ".into())),
+            Some(MenuJob::Start) => Some(Output::Enter),
+            Some(MenuJob::Back) => Some(Output::Close),
+            Some(MenuJob::LeftStick | MenuJob::GroupPrev) => {
                 self.shift = !self.shift;
                 None
             }
-            Button::RightBumper | Button::LeftBumper => {
+            Some(MenuJob::PageNext | MenuJob::PagePrev) => {
                 self.symbols = !self.symbols;
                 self.col = self.col.min(self.rows()[self.row].len() - 1);
                 None
             }
-            Button::DPadUp | Button::DPadDown | Button::DPadLeft | Button::DPadRight => {
+            _ if matches!(
+                button,
+                Button::DPadUp | Button::DPadDown | Button::DPadLeft | Button::DPadRight
+            ) =>
+            {
                 self.step(button);
                 None
             }
@@ -272,9 +279,8 @@ impl Keyboard {
     }
 
     /// Draw the keyboard across the bottom of the screen, or the top when
-    /// the field it types into is in the lower half. `by_letter`: the pad goes by its letters
-    /// and the glyphs are Nintendo's, so a hint names the button playing its part.
-    pub fn draw(&self, ui: &mut Ui, at_top: bool, glyphs: GlyphStyle, by_letter: bool) {
+    /// the field it types into is in the lower half.
+    pub fn draw(&self, ui: &mut Ui, at_top: bool, glyphs: Glyphs) {
         const UNIT: f32 = 50.0;
         const GAP: f32 = 6.0;
         const KEY_H: f32 = 38.0;
@@ -287,16 +293,16 @@ impl Keyboard {
             y0 - 12.0,
             width + 24.0,
             height,
-            ui_theme::RADIUS_PLATE,
-            color::with_alpha(color::BG, 0.94),
+            ui_theme::radius_plate(),
+            color::with_alpha(color::bg(), 0.94),
         );
         ui.border(
             x0 - 12.0,
             y0 - 12.0,
             width + 24.0,
             height,
-            ui_theme::RADIUS_PLATE,
-            color::BORDER,
+            ui_theme::radius_plate(),
+            color::border(),
         );
         for (r, row) in self.rows().iter().enumerate() {
             let y = y0 + r as f32 * (KEY_H + GAP);
@@ -308,13 +314,13 @@ impl Keyboard {
                 let lit = matches!(key, Key::Shift) && (self.shift || self.caps)
                     || matches!(key, Key::Layer) && self.symbols;
                 let (plate, ink) = if focused {
-                    (color::ACCENT, color::ON_ACCENT)
+                    (color::accent(), color::on_accent())
                 } else if lit {
-                    (color::HOVER, color::TEXT)
+                    (color::hover(), color::text())
                 } else {
-                    (color::RAISED, color::TEXT)
+                    (color::raised(), color::text())
                 };
-                ui.rounded(x, y, w, KEY_H, ui_theme::RADIUS, plate);
+                ui.rounded(x, y, w, KEY_H, ui_theme::radius(), plate);
                 let label = match key {
                     Key::Char(ch) => self.letter(*ch),
                     Key::Shift if self.caps => "CAPS".into(),
@@ -325,10 +331,10 @@ impl Keyboard {
                     Key::Backspace => tr("horizon.osk.delete", "Delete"),
                     Key::Done => tr("gui.done", "Done"),
                 };
-                let lw = ui.measure(Face::Medium, ui_theme::BODY, &label);
+                let lw = ui.measure(Face::Medium, ui_theme::body(), &label);
                 ui.text_line(
                     Face::Medium,
-                    ui_theme::BODY,
+                    ui_theme::body(),
                     KEY_H,
                     x + ((w - lw) / 2.0).round(),
                     y,
@@ -338,27 +344,25 @@ impl Keyboard {
             }
         }
         let hints = [
-            (Button::South, tr("horizon.osk.type", "Type")),
-            (Button::West, tr("horizon.osk.delete", "Delete")),
-            (Button::North, tr("horizon.osk.space", "Space")),
-            (Button::LeftTrigger, tr("horizon.osk.shift", "Shift")),
-            (Button::RightBumper, tr("horizon.osk.symbols", "Symbols")),
-            (Button::Start, tr("gui.done", "Done")),
-            (Button::East, tr("horizon.osk.close", "Close")),
+            (MenuJob::Confirm, tr("horizon.osk.type", "Type")),
+            (MenuJob::Alternate, tr("horizon.osk.delete", "Delete")),
+            (MenuJob::Extra, tr("horizon.osk.space", "Space")),
+            (MenuJob::GroupPrev, tr("horizon.osk.shift", "Shift")),
+            (MenuJob::PageNext, tr("horizon.osk.symbols", "Symbols")),
+            (MenuJob::Start, tr("gui.done", "Done")),
+            (MenuJob::Back, tr("horizon.osk.close", "Close")),
         ];
+        // This font draws no glyph art: each button by its print, "A Type".
         let line: Vec<String> = hints
-            .iter()
-            .map(|(b, what)| {
-                let b = if by_letter { b.by_letter() } else { *b };
-                format!("{} {what}", b.label(glyphs))
-            })
+            .into_iter()
+            .map(|(job, what)| HintRow::new([Glyph::menu(job, glyphs)], what).text())
             .collect();
         ui.text_centered(
             Face::Regular,
-            ui_theme::SMALL,
+            ui_theme::small(),
             x0 + width / 2.0,
             y0 + 5.0 * (KEY_H + GAP) + 2.0,
-            color::MUTED,
+            color::muted(),
             &line.join("   "),
         );
     }

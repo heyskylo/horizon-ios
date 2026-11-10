@@ -33,6 +33,8 @@ fn book_title_box() -> ui::EditBox {
     edit.bordered = false;
     edit.max_length = 15;
     edit.text_color = BLACK;
+    // BookSignScreen sets the title box centred.
+    edit.centered = true;
     edit.focused = true;
     edit
 }
@@ -67,6 +69,23 @@ pub(super) enum BookScreen {
         page: usize,
         lectern: Option<(i32, i32, i32)>,
     },
+}
+impl BookScreen {
+    /// `BookSignScreen`'s constructor: its title box opens with the title
+    /// kept from the last time, which Cancel stored (`titleValue`).
+    fn begin_signing(&mut self) {
+        if let Self::Edit {
+            signing,
+            title,
+            title_edit,
+            ..
+        } = self
+        {
+            *signing = true;
+            title_edit.set_value(title.as_str());
+            title_edit.reset_blink();
+        }
+    }
 }
 /// The pages a book screen reads: a written book's components (so their
 /// click events stay), else a writable book's text.
@@ -832,11 +851,13 @@ impl Game<'_> {
             return false;
         }
         let has_book = matches!(self.world.block_entities.get(&key), Some(BlockEntity::Lectern(l)) if l.book.is_some());
+        // `LecternBlock.useItemOn`: `ItemTags.LECTERN_BOOKS`, which a data
+        // pack can add its own books to, not only the two vanilla items.
         let Some(book) = held.filter(|h| {
-            matches!(
-                &*h.item,
-                "minecraft:writable_book" | "minecraft:written_book"
-            )
+            world_items!(self)
+                .item_tags
+                .get("minecraft:lectern_books")
+                .is_some_and(|books| books.contains(&*h.item))
         }) else {
             return false;
         };
@@ -984,7 +1005,7 @@ impl Game<'_> {
                     title,
                     ..
                 }) if !title.trim().is_empty() => self.save_book(true),
-                Some(BookScreen::Edit { signing, .. }) => *signing = true,
+                Some(book @ BookScreen::Edit { .. }) => book.begin_signing(),
                 _ => return Err("not a book and quill".into()),
             },
             Some("done") => match self.book.as_mut() {
@@ -1105,24 +1126,42 @@ impl Game<'_> {
         }
     }
     /// The open lectern screen follows its block entity (`LecternScreen`'s
-    /// menu listener): the page, and closing once the book is gone.
+    /// menu listener): the page, and closing once the book is gone or the
+    /// player is out of `LecternMenu.stillValid`'s reach.
     pub(super) fn follow_lectern(&mut self) {
         let Some(BookScreen::View {
-            lectern: Some(key),
-            page,
-            pages,
-        }) = self.book.as_mut()
+            lectern: Some(key), ..
+        }) = self.book.as_ref()
         else {
             return;
         };
         if self.remote.is_some() {
             return;
         }
-        match self.world.block_entities.get(key) {
-            Some(BlockEntity::Lectern(l)) if l.book.is_some() => {
-                *page = (l.page.max(0) as usize).min(pages.len().saturating_sub(1));
-            }
-            _ => self.close_book(),
+        let key = *key;
+        // `LecternMenu.stillValid` -> `LecternBlockEntity$1.stillValid`:
+        // `Container.stillValidBlockEntity` (the same block entity) and
+        // `hasBook()`, plus the player's reach with the 4-block buffer.
+        let has_book = matches!(
+            self.world.block_entities.get(&key),
+            Some(BlockEntity::Lectern(l)) if l.book.is_some()
+        );
+        let in_reach = self.eye_position().is_some_and(|eye| {
+            horizon_client::lan::guest::within_block_range(
+                eye,
+                self.reach() + 4.0,
+                [key.0, key.1, key.2],
+            )
+        });
+        if !has_book || !in_reach {
+            self.close_book();
+            return;
+        }
+        let Some(BookScreen::View { page, pages, .. }) = self.book.as_mut() else {
+            return;
+        };
+        if let Some(BlockEntity::Lectern(l)) = self.world.block_entities.get(&key) {
+            *page = (l.page.max(0) as usize).min(pages.len().saturating_sub(1));
         }
     }
     pub(super) fn book_click(&mut self, size: [u32; 2]) {
@@ -1168,8 +1207,8 @@ impl Game<'_> {
                     self.turn_page(false);
                 } else if inside(w / 2.0 - 100.0, 196.0, 98.0, 20.0) {
                     click(self);
-                    if let Some(BookScreen::Edit { signing, .. }) = self.book.as_mut() {
-                        *signing = true;
+                    if let Some(book) = self.book.as_mut() {
+                        book.begin_signing();
                     }
                 } else if inside(w / 2.0 + 2.0, 196.0, 98.0, 20.0) {
                     click(self);
@@ -1569,6 +1608,16 @@ impl Game<'_> {
         }
     }
 }
+/// `LecternBlock.getAnalogOutputSignal`'s `HAS_BOOK` check.
+pub(super) fn has_book_state(
+    registry: &'static horizon_world::registry::BlockRegistry,
+    state: horizon_world::registry::BlockStateId,
+) -> bool {
+    registry
+        .state(state)
+        .is_some_and(|s| s.properties.get("has_book").is_some_and(|v| v == "true"))
+}
+
 /// `LecternBlockEntity.getRedstoneSignal`.
 pub(super) fn lectern_signal(world: &horizon_client::world::World, pos: BlockPos) -> Option<i32> {
     match world.block_entities.get(&(pos.x, pos.y, pos.z)) {
@@ -1584,8 +1633,299 @@ pub(super) fn lectern_signal(world: &horizon_client::world::World, pos: BlockPos
             } else {
                 1.0
             };
-            (f * 14.0).floor() as i32 + 1
+            // `LecternBlockEntity.hasBook`: a `written_book_content` or
+            // `writable_book_content` component, not just any stack. A book
+            // item carries its content by default, so its id counts too.
+            let has_book = matches!(
+                &*b.item,
+                "minecraft:writable_book" | "minecraft:written_book"
+            ) || data
+                .is_some_and(|d| d.written.is_some() || !d.writable_pages.is_empty());
+            (f * 14.0).floor() as i32 + i32::from(has_book)
         })),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod title_box_tests {
+    use super::book_title_box;
+
+    /// `BookSignScreen` sets its 15 character title box centred and unbordered.
+    #[test]
+    fn the_sign_title_box_is_centred() {
+        let edit = book_title_box();
+        assert!(edit.centered);
+        assert!(!edit.bordered);
+        assert_eq!(edit.max_length, 15);
+    }
+}
+#[cfg(test)]
+mod lectern_books_tag_tests {
+    use super::super::native_machines::tests::server_game;
+    use horizon_client::{containers::BlockEntity, items::ItemStack};
+
+    /// `LecternBlock.useItemOn` checks `ItemTags.LECTERN_BOOKS`; a world's
+    /// data pack adds its own book to that tag, and the lectern takes it.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_packs_lectern_books_entry_goes_onto_the_lectern() {
+        let mut game = server_game();
+        let dir =
+            std::env::temp_dir().join(format!("horizon-lectern-books-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let tags = dir.join("datapacks/books/data/minecraft/tags/item");
+        std::fs::create_dir_all(&tags).unwrap();
+        std::fs::write(
+            dir.join("datapacks/books/pack.mcmeta"),
+            r#"{"pack":{"description":"fixture"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            tags.join("lectern_books.json"),
+            r#"{"values":["minecraft:written_book","minecraft:writable_book","minecraft:book"]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("datapacks.json"),
+            r#"{"enabled":["file/books"],"disabled":[]}"#,
+        )
+        .unwrap();
+        game.world_root = dir;
+        game.world_tables = game.build_world_tables(false, &[]).unwrap().0;
+
+        let state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:lectern")
+            .unwrap();
+        let key = (8, 64, 8);
+        game.world.set(key.0, key.1, key.2, state).unwrap();
+
+        // A book the pack put in the tag is placed; one it did not is not.
+        let stone = ItemStack::new("minecraft:stone", 1);
+        assert!(!game.use_lectern([8, 64, 8], Some(&stone)));
+        let book = ItemStack::new("minecraft:book", 1);
+        assert!(
+            game.use_lectern([8, 64, 8], Some(&book)),
+            "the pack's `#minecraft:lectern_books` entry was refused"
+        );
+        let Some(BlockEntity::Lectern(lectern)) = game.world.block_entities.get(&key) else {
+            panic!("no lectern block entity");
+        };
+        assert_eq!(
+            lectern.book.as_ref().map(|b| &*b.item),
+            Some("minecraft:book")
+        );
+    }
+}
+
+#[cfg(test)]
+mod lectern_signal_tests {
+    use super::super::native_machines::tests::server_game;
+    use super::lectern_signal;
+    use horizon_client::{
+        containers::{BlockEntity, Lectern},
+        item_data::{StackData, WrittenBook},
+        items::ItemStack,
+    };
+    use horizon_core::position::BlockPos;
+    use horizon_world::level::LevelAccess;
+    use horizon_world::registry::BlockStateId;
+
+    fn signal(game: &mut super::Game<'_>, book: Option<ItemStack>, page: i32) -> i32 {
+        let key = (8, 64, 8);
+        let state: BlockStateId = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:lectern")
+            .unwrap();
+        game.world.set(key.0, key.1, key.2, state).unwrap();
+        game.world
+            .block_entities
+            .insert(key, BlockEntity::Lectern(Lectern { book, page }));
+        lectern_signal(&game.world, BlockPos::new(key.0, key.1, key.2)).unwrap()
+    }
+
+    /// `LecternBlock.getAnalogOutputSignal` reads the block entity only while
+    /// the state's `HAS_BOOK` is true.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_lectern_without_the_has_book_state_feeds_no_comparator() {
+        let mut game = server_game();
+        let key = (8, 64, 8);
+        let state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:lectern")
+            .unwrap();
+        game.world.set(key.0, key.1, key.2, state).unwrap();
+        game.world.block_entities.insert(
+            key,
+            BlockEntity::Lectern(Lectern {
+                book: Some(ItemStack::new("minecraft:writable_book", 1)),
+                page: 0,
+            }),
+        );
+        let signal = |game: &mut super::Game<'_>, state| {
+            game.with_level(|_, level, _| {
+                level.block_entity_analog_signal(
+                    BlockPos::new(key.0, key.1, key.2),
+                    state,
+                    horizon_core::geometry::Direction::North,
+                )
+            })
+        };
+        assert_eq!(
+            signal(&mut game, state),
+            0,
+            "the block state says the lectern holds no book"
+        );
+        let registry = game.pack.assets.registry;
+        let mut with_book = registry.state(state).unwrap().clone();
+        with_book
+            .properties
+            .insert("has_book".into(), "true".into());
+        let with_book = registry.id(&with_book).unwrap();
+        game.world.set(key.0, key.1, key.2, with_book).unwrap();
+        assert_eq!(
+            signal(&mut game, with_book),
+            15,
+            "with HAS_BOOK the book's page signal"
+        );
+    }
+
+    /// `LecternBlockEntity.getRedstoneSignal`: `floor(page / (pageCount - 1)
+    /// * 14) + (hasBook() ? 1 : 0)`. `hasBook()` asks for a book-content
+    /// component, so a stack that only sits in the lectern (a non-book item a
+    /// command left in `Book`) reads 14, not the book's 15.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_lecterns_signal_adds_one_only_for_a_book() {
+        let mut game = server_game();
+        assert_eq!(signal(&mut game, None, 0), 0, "no book");
+        assert_eq!(
+            signal(&mut game, Some(ItemStack::new("minecraft:stone", 1)), 0),
+            14,
+            "a non-book stack has no book content"
+        );
+        // `writable_book_content` is a writable book's default component.
+        assert_eq!(
+            signal(
+                &mut game,
+                Some(ItemStack::new("minecraft:writable_book", 1)),
+                0
+            ),
+            15,
+            "a writable book is a book"
+        );
+        let mut written = ItemStack::new("minecraft:written_book", 1);
+        written.extra = Some(Box::new(StackData {
+            written: Some(WrittenBook {
+                title: "T".into(),
+                author: "A".into(),
+                pages: vec!["one".into(), "two".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
+        assert_eq!(signal(&mut game, Some(written.clone()), 0), 1, "page 0");
+        assert_eq!(signal(&mut game, Some(written), 1), 15, "last page");
+    }
+}
+
+#[cfg(test)]
+mod lectern_reach_tests {
+    use super::super::native_machines::tests::server_game;
+    use horizon_client::{
+        containers::{BlockEntity, Lectern},
+        items::ItemStack,
+        motion::PlayerMotion,
+    };
+    use horizon_core::geometry::Vec3;
+
+    /// `LecternMenu.stillValid` -> `Container.stillValidBlockEntity`: the open
+    /// lectern screen closes once the player is out of the interaction range
+    /// (with vanilla's four-block buffer), as the guest path already does.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_lectern_screen_closes_out_of_reach() {
+        let mut game = server_game();
+        game.player = Some(
+            PlayerMotion::new(game.motion, Vec3::new(8.5, 64.0, 8.5)).expect("a player position"),
+        );
+        let key = (8, 64, 8);
+        let state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:lectern")
+            .unwrap();
+        game.world.set(key.0, key.1, key.2, state).unwrap();
+        game.world.block_entities.insert(
+            key,
+            BlockEntity::Lectern(Lectern {
+                book: Some(ItemStack::new("minecraft:writable_book", 1)),
+                page: 0,
+            }),
+        );
+        assert!(game.open_lectern([8, 64, 8]));
+        assert!(game.book.is_some(), "the lectern screen opened");
+
+        game.tick_lecterns();
+        assert!(game.book.is_some(), "the player is within reach");
+
+        game.player.as_mut().unwrap().position = Vec3::new(30.0, 64.0, 10.5);
+        game.tick_lecterns();
+        assert!(
+            game.book.is_none(),
+            "the lectern screen stayed open out of reach"
+        );
+    }
+}
+
+#[cfg(test)]
+mod sign_tests {
+    use super::{BookScreen, book_page_box, book_title_box};
+
+    /// `BookSignScreen`'s constructor sets its title box to `titleValue`, what
+    /// Cancel kept; reopening the sign screen shows the title typed before,
+    /// not an empty box beside a stale `title`.
+    #[test]
+    fn the_sign_screen_opens_with_the_title_it_kept() {
+        let mut book = BookScreen::Edit {
+            slot: 0,
+            pages: vec!["page".into()],
+            page: 0,
+            signing: false,
+            title: "My Book".into(),
+            title_edit: book_title_box(),
+            page_edit: book_page_box(),
+        };
+        assert_eq!(book_title_value(&book), "");
+        book.begin_signing();
+        let BookScreen::Edit {
+            signing,
+            title,
+            title_edit,
+            ..
+        } = &book
+        else {
+            panic!("the book stays open");
+        };
+        assert!(signing);
+        assert_eq!(title.as_str(), "My Book");
+        assert_eq!(title_edit.value, "My Book");
+        assert_eq!(title_edit.cursor, 7);
+    }
+
+    fn book_title_value(book: &BookScreen) -> String {
+        match book {
+            BookScreen::Edit { title_edit, .. } => title_edit.value.clone(),
+            BookScreen::View { .. } => String::new(),
+        }
     }
 }

@@ -1,6 +1,7 @@
 [workspace]
 exclude = ["launcher", "crates/horizon-telemetry-server", "crates/horizon-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys"]
 members = [
+    "crates/horizon-addresses",
     "crates/horizon-core",
     "crates/horizon-dualsense",
     "crates/horizon-narrator",
@@ -27,6 +28,14 @@ members = [
     "crates/horizon-theme",
     "crates/horizon-prepare",
     "crates/horizon-telemetry",
+    "crates/horizon-system",
+    "crates/horizon-platform",
+    "crates/horizon-hooks",
+    "crates/horizon-game",
+    "crates/horizon-official",
+    "crates/horizon-heartbeat",
+    "crates/horizon-discord",
+    "crates/horizon-official-servers",
     "crates/horizon-bench",
     "crates/horizon-perf-format",
     "crates/horizon-perf",

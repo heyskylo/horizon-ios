@@ -42,7 +42,7 @@ pub type Log<'a> = &'a dyn Fn(&str);
 pub type Progress<'a> = &'a dyn Fn(f32);
 
 /// The stages of `steps`, each opened by `Run::stage`: what the fraction counts.
-const STAGES: u32 = 18;
+const STAGES: u32 = 19;
 
 /// The exporter bundle side, and the worker index that runs it (a Prism install has no server
 /// jar, so the client jar is the server side; the sides still compile and run separately).
@@ -59,7 +59,7 @@ pub const SCHEMA: i64 = 7;
 /// the preparer and fails when the output is not the one output-versions.txt gives this number
 /// (`python3 tools/prepare_output.py check`). The launcher reads this line from the version
 /// folder's sources: keep it on one line, as it is.
-pub const OUTPUT_VERSION: u32 = 3;
+pub const OUTPUT_VERSION: u32 = 4;
 
 /// Digest of this crate's sources (build.rs): the launcher prepares a version in-process when
 /// that version ships these same sources, and runs the version's own binary otherwise.
@@ -166,10 +166,20 @@ fn mkdir(path: &Path) -> Result<(), String> {
 /// The lock file each preparation holds in the folders it writes (`LOCK`).
 pub const LOCK: &str = ".horizon-prepare.lock";
 
+pub(crate) struct PreparationLock(fs::File);
+
+impl Drop for PreparationLock {
+    fn drop(&mut self) {
+        // Closing one descriptor does not release a Unix lock while a forked child
+        // still holds another reference. End the preparation's lock explicitly.
+        let _ = self.0.unlock();
+    }
+}
+
 /// One preparation at a time per folder: two launchers or instances preparing into one `--output`,
 /// or sharing `root`'s `.local`, would interleave their writes. A second one waits, saying so;
-/// the lock goes with the returned file, so with the process too.
-pub(crate) fn hold_lock(dir: &Path, log: Log) -> Result<fs::File, String> {
+/// the returned guard releases it when preparation ends, even if a child inherited the file.
+pub(crate) fn hold_lock(dir: &Path, log: Log) -> Result<PreparationLock, String> {
     mkdir(dir)?;
     let path = dir.join(LOCK);
     let error = |e: std::io::Error| format!("{}: {e}", path.display());
@@ -190,7 +200,7 @@ pub(crate) fn hold_lock(dir: &Path, log: Log) -> Result<fs::File, String> {
         }
         Err(fs::TryLockError::Error(e)) => return Err(error(e)),
     }
-    Ok(file)
+    Ok(PreparationLock(file))
 }
 
 /// Whether two folders are one, through `..`, links and case; a missing folder is created first.
@@ -1056,6 +1066,20 @@ fn steps(
             &[],
             "behaviour-export.log",
         )?;
+        // The id tables of the 1.13-era data fixers, for upgrading saves made before 1.13
+        // (horizon-world's datafix/tables.rs and block_state_data.rs).
+        run.stage();
+        let datafix = single(
+            "datafix tables",
+            "datafix-tables.json",
+            &["VanillaDataFixTablesExporter.java"],
+            "datafix_exporters_sha256",
+            "server_sha256",
+            "datafix-tables/classes",
+            "1G",
+            &[],
+            "datafix-export.log",
+        )?;
         if !split_blocks {
             worldgen_blocks(run, 0)?;
         }
@@ -1064,6 +1088,7 @@ fn steps(
             ("gameplay_exporters_sha256", gameplay),
             ("entity_types_exporters_sha256", entity_types),
             ("behaviour_exporters_sha256", behaviour),
+            ("datafix_exporters_sha256", datafix),
         ])
     });
 
@@ -1302,6 +1327,10 @@ fn steps(
         (
             "behaviour_exporters_sha256".into(),
             entry("behaviour_exporters_sha256"),
+        ),
+        (
+            "datafix_exporters_sha256".into(),
+            entry("datafix_exporters_sha256"),
         ),
         (
             "command_registries_exporters_sha256".into(),

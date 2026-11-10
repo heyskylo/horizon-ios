@@ -107,6 +107,9 @@ struct Guest<'a> {
 pub(super) struct Split<'a> {
     pub(super) host: Game<'a>,
     guests: Vec<Guest<'a>>,
+    /// The run's `--offscreen`: no window is shown, splitscreen's included, and P1 draws
+    /// offscreen again when it is alone (`options.offscreen` is set while others play).
+    offscreen: bool,
     /// `HORIZON_SPLIT=N`: players still to add once P1 is in a world.
     test_players: usize,
     /// `HORIZON_SPLIT` is set: splitscreen is on for this run, without touching the saved switch.
@@ -175,9 +178,11 @@ impl<'a> Split<'a> {
             .as_ref()
             .and_then(|n| n.parse::<usize>().ok())
             .map_or(0, |n| n.clamp(1, MAX_PLAYERS) - 1);
+        let offscreen = host.options.offscreen;
         Self {
             host,
             guests: Vec::new(),
+            offscreen,
             test_players,
             forced: split.is_some(),
             surfaces: Vec::new(),
@@ -256,6 +261,8 @@ impl<'a> Split<'a> {
                 .get(i.wrapping_sub(1))
                 .map(|g| g.options.clone()),
         );
+        let seat = self.guests.get(i.wrapping_sub(1)).map_or(1, |g| g.seat);
+        horizon_hooks::engine::set_seat(seat - 1);
         self.turn = i;
     }
 
@@ -373,8 +380,9 @@ impl<'a> Split<'a> {
             None,
             api,
             batching,
-            self.host.settings.horizon.wide_frame(),
+            &self.host.settings.horizon,
             shader_pack,
+            old.display_reading(),
             (
                 self.host.settings.file.int("textureFiltering"),
                 self.host.settings.file.int("maxAnisotropyBit"),
@@ -400,7 +408,7 @@ impl<'a> Split<'a> {
         };
         self.host.renderer = Some(renderer);
         self.host.forget_atlas_slots();
-        self.host.split_window = !self.host.options.offscreen;
+        self.host.split_window = !self.offscreen;
         self.host.options.offscreen = true;
         self.host.options.paced_by_split = true;
         // The new renderer takes the old one's present mode, settings and all: P1's again.
@@ -439,7 +447,7 @@ impl<'a> Split<'a> {
             return Ok(());
         };
         let window = main.window.clone();
-        window.set_visible(true);
+        window.set_visible(windows::window_shown(true, self.offscreen));
         self.window1_shown = true;
         self.host.window = Some(window.clone());
         let old = self.host.renderer.take().ok_or("no renderer")?;
@@ -449,15 +457,16 @@ impl<'a> Split<'a> {
         let shader_pack = super::shader_packs::picked_pack_shape(&self.host.settings);
         let built = build_renderer(
             window.clone(),
-            false,
+            self.offscreen,
             &self.host.pack,
             &self.host.gui,
             Some(&old),
             None,
             api,
             batching,
-            self.host.settings.horizon.wide_frame(),
+            &self.host.settings.horizon,
             shader_pack,
+            old.display_reading(),
             (
                 self.host.settings.file.int("textureFiltering"),
                 self.host.settings.file.int("maxAnisotropyBit"),
@@ -476,7 +485,7 @@ impl<'a> Split<'a> {
         drop(old);
         self.host.renderer = Some(renderer);
         self.host.forget_atlas_slots();
-        self.host.options.offscreen = false;
+        self.host.options.offscreen = self.offscreen;
         self.host.split_window = false;
         self.host.options.paced_by_split = false;
         // Alone again: the pointer is P1's, its view the whole window.
@@ -565,7 +574,10 @@ impl<'a> Split<'a> {
                 .filter_map(|(r, v)| Some((r.as_ref()?.offscreen_frame()?, v.1)))
                 .collect();
             surface.compositor.set_vsync(vsync && k == paced);
-            surface.compositor.present(&frames);
+            // Wayland shows a window once something is presented on it.
+            if windows::presents(self.offscreen) {
+                surface.compositor.present(&frames);
+            }
         }
         let presented = Instant::now();
         // One player's CPU work overlapped the GPU drawing another's.
@@ -857,7 +869,8 @@ impl ApplicationHandler for Split<'_> {
             ))
             .and_then(|s| s.window.current_monitor()?.refresh_rate_millihertz())
             .map_or(60, |mhz| mhz.div_ceil(1000) as i32);
-        if !(self.host.settings.vsync && limit >= refresh_hz) {
+        // Offscreen, nothing presents: no display paces the frames.
+        if !(self.host.settings.vsync && limit >= refresh_hz && windows::presents(self.offscreen)) {
             horizon_client::window::end_frame(&mut self.limiter, limit, &mut self.clock);
         }
     }
@@ -904,10 +917,8 @@ impl Game<'_> {
         self.drag_button = None;
         self.modifiers = Default::default();
         // A press this player's pad holds goes on, as for its keys.
-        self.left = self
-            .pad
-            .holds_action(&self.settings.controller, "key.attack");
-        self.right = self.pad.holds_action(&self.settings.controller, "key.use");
+        self.left = self.pad.holds_action("key.attack");
+        self.right = self.pad.holds_action("key.use");
         self.inventory_mouse_release(false);
         self.inventory_mouse_release(true);
         self.inventory_pick_release();

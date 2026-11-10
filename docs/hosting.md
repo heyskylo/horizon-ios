@@ -20,7 +20,7 @@ plan are in [server.md](server.md).
   takes the account's UUID when someone owns that name, as vanilla does, and that player is then refused.
 - **An offline server** (`online_mode = false`) never checks accounts: anyone who reaches it can join under
   any name. Keep it on your LAN or a tailnet (Tailscale, ZeroTier), or share it only with friends you trust.
-  A Horizon player under an offline name can join only such a server.
+  A Horizon game started without a session (no network at Play) can join only such a server.
 - **Secure chat** works as on vanilla's server: in online mode, vanilla clients and Horizon's (Nightly
   2026-11-01 and newer) sign their chat, and with `enforce-secure-profile=true` (the default) unsigned chat is
   refused. On an offline server, or for a player without a chat session, chat stays unsigned and shows as not
@@ -65,6 +65,8 @@ for Windows includes it), else against the SHA-256 GitHub publishes, and never a
 Options: `--version vX.Y.Z`, `--dir FOLDER`, `--bin FOLDER` (Windows: `-Version`, `-Dir`). Other systems,
 such as Linux on ARM, build from source: `cargo build --release -p horizon-client --bin horizon-client -p
 horizon-server` and keep both programs in one folder.
+
+On Nix and NixOS, the repository's flake builds `horizon-server` from source: [nix.md](nix.md).
 
 The Horizon launcher also installs releases. Every release folder holds `horizon-server`, so you can run it
 from there too.
@@ -702,9 +704,8 @@ docker run -d --name horizon -p 25565:25565 --stop-timeout 180 \
 The latest bot benchmark compares Horizon with vanilla 26.3, Paper and Fabric + Lithium:
 [benchmarks/server-four-way-2026-10-19](https://github.com/horizon-rust/horizon/blob/main/benchmarks/server-four-way-2026-10-19/README.md).
 It ran release v2026.10.19 on a 4-thread laptop CPU (i7-7500U), with 1 to 50 players walking, exploring and
-standing around spawn, the bots on another machine. All four servers did the same work. Earlier
-measurements are in [docs/server.md](https://github.com/horizon-rust/horizon/blob/main/docs/server.md). In
-short:
+standing around spawn, the bots on another machine. All four servers did the same work. Against
+Pumpkin: [performance/server-vs-pumpkin.md](performance/server-vs-pumpkin.md). In short:
 
 - **Memory:** 0.7 GB with one player and 1.1 GB with 50, against 3.4 to 4.5 GB for the Java servers
   (each with a 4 GB heap): 3.8 to 4.8 times less.

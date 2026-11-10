@@ -84,6 +84,19 @@ impl AmbientTables {
             .cloned()
             .unwrap_or_default()
     }
+    /// `get` in a biome a data pack gave (`pack`, its file) or the
+    /// built-in biome `biome`.
+    pub fn at(&self, dimension: &str, biome: &str, pack: Option<&Value>) -> AmbientSounds {
+        let Some(json) = pack else {
+            return self.get(dimension, biome);
+        };
+        let v = &json["attributes"]["minecraft:audio/ambient_sounds"];
+        if v.is_null() {
+            self.dimensions.get(dimension).cloned().unwrap_or_default()
+        } else {
+            AmbientSounds::parse(v)
+        }
+    }
 }
 /// What the handlers read about the player and level each tick.
 pub struct AmbientContext<'a> {
@@ -392,6 +405,34 @@ mod tests {
             &|_, _| true,
         );
         SoundEngine::new(registry)
+    }
+    /// A data pack's biome file replaces the built-in biome's ambient
+    /// sounds: without the attribute, the dimension's apply.
+    #[test]
+    fn a_pack_biome_reads_its_own_file_over_the_dimension() {
+        let sounds = |json: serde_json::Value| AmbientSounds::parse(&json);
+        let tables = AmbientTables {
+            dimensions: HashMap::from([(
+                "minecraft:the_nether".to_owned(),
+                sounds(serde_json::json!({"loop": "minecraft:ambient.nether"})),
+            )]),
+            biomes: HashMap::from([(
+                "minecraft:crimson_forest".to_owned(),
+                sounds(serde_json::json!({"loop": "minecraft:crimson"})),
+            )]),
+        };
+        let at = |pack: Option<&serde_json::Value>| {
+            tables
+                .at("minecraft:the_nether", "minecraft:crimson_forest", pack)
+                .r#loop
+        };
+        assert_eq!(at(None).as_deref(), Some("minecraft:crimson"));
+        let pack = serde_json::json!({"attributes": {
+            "minecraft:audio/ambient_sounds": {"loop": "minecraft:warped"}
+        }});
+        assert_eq!(at(Some(&pack)).as_deref(), Some("minecraft:warped"));
+        let bare = serde_json::json!({"temperature": 2.0});
+        assert_eq!(at(Some(&bare)).as_deref(), Some("minecraft:ambient.nether"));
     }
     fn ctx<'a>(
         sounds: &'a AmbientSounds,

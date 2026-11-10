@@ -17,6 +17,7 @@ use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 /// Where overlay roots are built (beside options.txt).
@@ -139,6 +140,29 @@ pub(super) fn pack_infos(vanilla: &Path, server: &[Pack]) -> Vec<PackInfo> {
     infos.push(vanilla_info(vanilla));
     infos
 }
+/// The folder packs' Polytone config entries (#11486), by pack id, for those that have some:
+/// what the Pack Options page edits.
+pub(super) fn pack_configs(vanilla: &Path) -> std::collections::BTreeMap<String, packs::Configs> {
+    packs::discover(vanilla, &packs_dir())
+        .into_iter()
+        .filter(|p| !p.polytone_configs.entries().is_empty())
+        .map(|p| (p.id, p.polytone_configs))
+        .collect()
+}
+/// The player changed Pack Options: `chosen` replaces their choices for `entries`, kept in
+/// `polytone-configs.json`.
+pub(super) fn save_pack_options(
+    entries: &[String],
+    chosen: std::collections::BTreeMap<String, packs::ConfigValue>,
+) {
+    let mut all = packs::polytone_choices();
+    all.retain(|id, _| !entries.contains(id));
+    all.extend(chosen);
+    if let Err(e) = packs::save_polytone_choices(&packs::polytone_choices_file(), &all) {
+        log::warn!("could not save the pack options: {e}");
+    }
+    packs::set_polytone_choices(all);
+}
 impl Game<'_> {
     pub(super) fn vanilla_root(&self) -> PathBuf {
         if self.ui.vanilla_root.as_os_str().is_empty() {
@@ -168,10 +192,12 @@ impl Game<'_> {
     /// (`PackSelectionScreen` makes its `PackSelectionModel` from them).
     pub(super) fn refresh_pack_lists(&mut self) {
         let infos = pack_infos(&self.vanilla_root(), &self.server_packs.active);
+        let configs = pack_configs(&self.vanilla_root());
         let browsing = self.settings.extras.pack_browser;
         let o = &mut self.ui.options;
         o.pack_browser = browsing;
         o.pack_infos = infos;
+        o.pack_configs = configs;
         o.pack_selection = self.settings.resource_packs.clone();
         o.pack_screen = None;
     }
@@ -215,6 +241,7 @@ impl Game<'_> {
             let selection = self.settings.resource_packs.clone();
             let infos = pack_infos(&self.vanilla_root(), &self.server_packs.active);
             self.ui.options.pack_infos = infos;
+            self.ui.options.pack_configs = pack_configs(&self.vanilla_root());
             self.ui.options.pack_selection = selection;
             self.ui.options.pack_screen = None;
         }
@@ -280,10 +307,11 @@ impl Game<'_> {
         if self.ui.vanilla_root.as_os_str().is_empty() {
             self.ui.vanilla_root = vanilla.clone();
         }
-        let (selected, server, mods, dev_mods) = (
+        let (selected, server, mods, disabled, dev_mods) = (
             self.settings.resource_packs.clone(),
             self.server_packs.active.clone(),
             self.applied_mods(),
+            self.settings.mods.disabled.clone(),
             self.options.dev_mods.clone(),
         );
         let (assets, res, context) = (
@@ -294,8 +322,8 @@ impl Game<'_> {
         let (unicode, japanese) = (self.settings.force_unicode, self.settings.japanese_glyphs);
         self.pack_reload = Some(PackReload::spawn(kind, move |progress| {
             stage_pack(
-                &vanilla, &selected, &server, &mods, &dev_mods, &assets, &res, &context, unicode,
-                japanese, progress,
+                &vanilla, &selected, &server, &mods, &disabled, &dev_mods, &assets, &res, &context,
+                unicode, japanese, progress,
             )
             .map_err(|e| e.to_string())
         })?);
@@ -340,6 +368,9 @@ impl Game<'_> {
             ui_metadata,
             language,
         } = staged;
+        // The packs' Polytone creative tab modifiers.
+        let tab_modifiers = horizon_client::polytone_creative_tabs::TabModifier::read_all(&root);
+        self.creative_screen.set_pack_modifiers(tab_modifiers);
         // Keep the working GPU resources, and hand its window surface over.
         if let Some(renderer) = &mut self.renderer {
             renderer.release_surface();
@@ -357,8 +388,12 @@ impl Game<'_> {
                     Some(textures),
                     self.settings.horizon.api,
                     self.settings.horizon.translucent_batching,
-                    self.settings.horizon.wide_frame(),
+                    &self.settings.horizon,
                     super::shader_packs::picked_pack_shape(&self.settings),
+                    self.renderer
+                        .as_ref()
+                        .map(|r| r.display_reading())
+                        .unwrap_or_default(),
                     (
                         self.settings.file.int("textureFiltering"),
                         self.settings.file.int("maxAnisotropyBit"),
@@ -492,6 +527,7 @@ pub(super) fn stage_pack(
     selected: &[String],
     server: &[Pack],
     mods_enabled: &BTreeSet<String>,
+    mods_disabled: &BTreeSet<String>,
     dev_mods: &[PathBuf],
     assets: &Arc<Assets>,
     res: &Resources,
@@ -500,7 +536,7 @@ pub(super) fn stage_pack(
     japanese: bool,
     progress: &super::Progress,
 ) -> horizon_client::Result<StagedPack> {
-    let base = super::mods::content_root(vanilla_root, mods_enabled, dev_mods);
+    let base = super::mods::content_root(vanilla_root, mods_enabled, mods_disabled, dev_mods);
     let root = startup_root(vanilla_root, &base, selected, server)?;
     progress.set(1);
     // The world's models and sprites and the GUI atlas read the same root and nothing of
@@ -612,11 +648,29 @@ pub(super) struct PackReload {
     pub(super) progress: super::Progress,
     kind: ReloadKind,
     handle: Option<std::thread::JoinHandle<StageResult>>,
+    /// When the overlay went up. `LoadingOverlay.fadeInStart`, set on the
+    /// first frame it draws.
+    started: Instant,
+    /// How long the overlay stays up before the reload may be applied.
+    hold: Duration,
 }
+/// `LoadingOverlay.isReadyToFadeOut`: a reload started from inside the game
+/// (`fadeIn`) is not ready while `Util.getMillis() - fadeInStart < 1000L`, so
+/// a pack that stages in a few frames still shows its overlay for a second
+/// instead of flashing.
+pub(super) const OVERLAY_HOLD: Duration = Duration::from_millis(1000);
 impl PackReload {
     /// Starts `stage` on its own thread and returns at once.
     fn spawn(
         kind: ReloadKind,
+        stage: impl FnOnce(&super::Progress) -> StageResult + Send + 'static,
+    ) -> std::io::Result<Self> {
+        Self::spawn_holding(kind, OVERLAY_HOLD, stage)
+    }
+    /// `spawn` with the overlay's hold spelled out, so a test need not wait it.
+    fn spawn_holding(
+        kind: ReloadKind,
+        hold: Duration,
         stage: impl FnOnce(&super::Progress) -> StageResult + Send + 'static,
     ) -> std::io::Result<Self> {
         let progress = super::Progress::with(&RELOAD_LINES);
@@ -628,14 +682,17 @@ impl PackReload {
             progress,
             kind,
             handle: Some(handle),
+            started: Instant::now(),
+            hold,
         })
     }
     pub(super) fn kind(&self) -> ReloadKind {
         self.kind
     }
-    /// The staged pack once the worker is done (taken once); none while it runs.
+    /// The staged pack once the worker is done and the overlay has had its
+    /// second (taken once); none while either is outstanding.
     fn finished(&mut self) -> Option<(ReloadKind, StageResult)> {
-        if !self.handle.as_ref()?.is_finished() {
+        if self.started.elapsed() < self.hold || !self.handle.as_ref()?.is_finished() {
             return None;
         }
         let staged = self
@@ -697,6 +754,36 @@ mod tests {
             staged.err().as_deref(),
             Some("the pack reload worker panicked")
         );
+    }
+
+    /// `LoadingOverlay.isReadyToFadeOut`: a reload that stages at once still
+    /// keeps its overlay up - the 1000 ms `fadeInStart` gate - so a small pack
+    /// does not flash the Mojang logo for a frame or two.
+    #[test]
+    fn a_fast_reload_keeps_the_overlay_up_before_it_applies() {
+        assert_eq!(OVERLAY_HOLD, Duration::from_millis(1000));
+        let mut quick = PackReload::spawn_holding(ReloadKind::Selection, Duration::ZERO, |_| {
+            Err("staged".into())
+        })
+        .unwrap();
+        assert_eq!(wait(&mut quick).0, ReloadKind::Selection);
+        // A hold no test machine outlasts, however loaded: the worker is done long
+        // before the overlay has had its time.
+        let hold = Duration::from_secs(3600);
+        let mut held =
+            PackReload::spawn_holding(ReloadKind::Selection, hold, |_| Err("staged".into()))
+                .unwrap();
+        for _ in 0..500 {
+            if held.handle.as_ref().is_some_and(|h| h.is_finished()) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(held.handle.as_ref().is_some_and(|h| h.is_finished()));
+        assert!(held.finished().is_none(), "the overlay is still up");
+        // Once the hold has passed, the staged pack is handed over.
+        held.hold = Duration::ZERO;
+        assert_eq!(wait(&mut held).0, ReloadKind::Selection);
     }
 
     #[test]

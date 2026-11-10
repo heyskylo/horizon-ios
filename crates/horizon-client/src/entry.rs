@@ -13,12 +13,21 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         log::warn!("Trait mods already installed; ignoring the second list");
     }
     horizon_threads::configure_allocator();
+    crate::horizon_look::give();
+    // OptiFine's and Polytone's pack formats (platform, docs/layers.md), before any pack loads.
+    horizon_client::pack_formats::install();
     // horizon-extras (docs/forking.md): without the feature, no Horizon Settings or Mods page.
     if !cfg!(feature = "horizon-extras") {
         horizon_client::options_ui::HORIZON_EXTRAS
             .store(false, std::sync::atomic::Ordering::Relaxed);
     }
     horizon_client::telemetry::mark_start();
+    // Opt-in telemetry keeps each crash report (docs/telemetry.md), whatever the mode.
+    crash::on_report(horizon_client::telemetry::keep_crash);
+    // Crates above the engine registered their hooks before this (horizon-official's `main`),
+    // then the Horizon parts still in this crate; none registers after this point.
+    game::player_hooks::register();
+    horizon_hooks::engine::seal();
     horizon_client::spans::startup::init(std::time::Instant::now());
     let args: Vec<String> = std::env::args().skip(1).collect();
     let game_args = args.iter().take_while(|a| *a != "--dedicated");
@@ -154,6 +163,26 @@ pub fn main_with(mods: crate::mod_api::Mods) {
                 cancel,
             );
         },
+        player_chat_v2: |player, name, level, message, replies, cancel| {
+            crate::mod_api::dispatch_player_chat_v2(
+                crate::mod_api::mods(),
+                player,
+                name,
+                level,
+                message,
+                replies,
+                cancel,
+            );
+        },
+        chat_decorate: |player, name, message, decorated| {
+            crate::mod_api::dispatch_chat_decorate(
+                crate::mod_api::mods(),
+                player,
+                name,
+                message,
+                decorated,
+            );
+        },
         sound_play: |sound, volume, pitch, cancel| {
             crate::mod_api::dispatch_sound_play(
                 crate::mod_api::mods(),
@@ -280,6 +309,7 @@ pub fn main_with(mods: crate::mod_api::Mods) {
             game::exit_code::ERROR
         });
     }
+    horizon_hooks::engine::shutdown();
     logging::flush();
 }
 

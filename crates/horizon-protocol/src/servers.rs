@@ -67,6 +67,13 @@ impl ServerEntry {
     }
 }
 
+/// Held while servers.dat is read and written back, so a ping storing an icon and a list
+/// saved by the screen or at startup don't undo each other's change.
+pub fn lock() -> std::sync::MutexGuard<'static, ()> {
+    static SAVING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    SAVING.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// ServerList.load: the shown entries; missing or unreadable files give an empty list.
 pub fn load(path: &Path) -> Vec<ServerEntry> {
     load_all(path).0
@@ -146,24 +153,32 @@ pub fn add_hidden(path: &Path, entry: ServerEntry) -> std::io::Result<()> {
 pub fn prepend(path: &Path, entry: &ServerEntry) -> std::io::Result<()> {
     insert(path, entry, |_| None)
 }
-/// Puts `entry` just after the first entry whose address `after` accepts, or last when none
-/// does, keeping every other entry and field as the file has them (the hidden ones too).
-pub fn insert_after(
-    path: &Path,
-    entry: &ServerEntry,
-    after: impl Fn(&str) -> bool,
-) -> std::io::Result<()> {
-    insert(path, entry, |list| {
-        let ip = |t: &Tag| match t.get("ip") {
-            Some(Tag::String(s)) => s.to_string_lossy(),
-            _ => String::new(),
-        };
-        Some(
-            list.iter()
-                .position(|t| after(&ip(t)))
-                .map_or(list.len(), |i| i + 1),
-        )
-    })
+/// Removes every entry `matches` accepts (given its name and address), keeping the other
+/// entries and every field as the file has them (the hidden ones too). Whether any went; a
+/// missing file has none, and the file is only written when something went.
+pub fn remove_where(path: &Path, matches: impl Fn(&str, &str) -> bool) -> std::io::Result<bool> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    let mut root = nbt::read_named(&bytes, nbt::Limits::default())
+        .map_err(std::io::Error::other)?
+        .0;
+    let Some(Tag::List(list)) = root.tag.get_mut("servers") else {
+        return Ok(false);
+    };
+    let text = |t: &Tag, key: &str| match t.get(key) {
+        Some(Tag::String(s)) => s.to_string_lossy(),
+        _ => String::new(),
+    };
+    let before = list.len();
+    list.retain(|t| !matches(&text(t, "name"), &text(t, "ip")));
+    if list.len() == before {
+        return Ok(false);
+    }
+    write(path, &root)?;
+    Ok(true)
 }
 /// Inserts `entry` at the index `at` picks in the file's list (`None`: first).
 fn insert(

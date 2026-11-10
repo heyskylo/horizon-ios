@@ -2,13 +2,16 @@
 //! notices.
 use super::*;
 use horizon_client::controller_notice::NoticeSlot;
-use horizon_client::gamepad::Button;
+use horizon_client::gamepad::{GlyphStyle, MenuJob};
+use horizon_client::hud::HudAtlas;
 use horizon_client::hud::{HudBatch, rgba};
 use horizon_client::hud_kit::{
+    fit::ellipsize,
+    hint::{self, HintRow},
     plate::{self, Plate},
     room::Room,
 };
-use horizon_client::pad_glyph;
+use horizon_client::pad_glyph::{Glyph, Glyphs};
 use std::time::Duration;
 
 /// Where the join strip and notices go with nothing above them, in GUI px from the view's top.
@@ -17,6 +20,55 @@ const TOP: f32 = 18.0;
 const STRIP: f32 = 34.0;
 /// The gap in GUI px between the join strip and a notice under it.
 const GAP: f32 = 4.0;
+/// GUI px a prompt's plate keeps clear of the view's sides, and its text of the plate's.
+const SIDE: f32 = 12.0;
+const INNER: f32 = 8.0;
+/// GUI px after an answer's words, before the next answer's glyph.
+const BETWEEN: f32 = 12.0;
+
+/// A prompt's answers as hint rows, each caption cut to an equal share of what `max` (GUI px)
+/// leaves after the glyphs and the gaps, when the whole line is wider than that.
+fn answers(
+    atlas: &HudAtlas,
+    choices: &[(MenuJob, String)],
+    places: Glyphs,
+    max: f32,
+) -> Vec<HintRow> {
+    let rows: Vec<HintRow> = choices
+        .iter()
+        .map(|(job, what)| HintRow::new([Glyph::menu(*job, places)], what.as_str()))
+        .collect();
+    if line_width(atlas, &rows) <= max {
+        return rows;
+    }
+    let captions: f32 = rows.iter().map(|r| atlas.font.width(&r.caption)).sum();
+    let share = (max - (line_width(atlas, &rows) - captions)) / rows.len().max(1) as f32;
+    rows.iter()
+        .map(|r| HintRow {
+            glyphs: r.glyphs.clone(),
+            caption: ellipsize(atlas, &r.caption, share).into_owned(),
+        })
+        .collect()
+}
+
+/// How wide a prompt's answers draw on one line: each row, then `BETWEEN` after its words.
+fn line_width(atlas: &HudAtlas, rows: &[HintRow]) -> f32 {
+    let drawn: f32 = rows.iter().map(|r| advance(atlas, r) + after(r)).sum();
+    drawn - BETWEEN
+}
+
+/// The room after an answer: `BETWEEN` after words; a glyph alone sits by the next.
+fn after(row: &HintRow) -> f32 {
+    if row.caption.is_empty() { 0.0 } else { BETWEEN }
+}
+
+/// From one answer's glyph to where the next one's goes, less the gap after its words: its
+/// glyphs, the gap, its words. The glyph's art starts a pixel left of where it draws
+/// (`pad_glyph::rect`), so the gap from there is a pixel less.
+fn advance(atlas: &HudAtlas, row: &HintRow) -> f32 {
+    let look = &hint::PROMPT;
+    row.glyphs_width(atlas, look) + look.gap - 1.0 + atlas.font.width(&row.caption)
+}
 
 /// What splitscreen draws over a player's view (`Game::split_hud`): its corner badge (who, for a
 /// moment, with why), a question its controller answers, and notices nobody has to answer.
@@ -36,7 +88,11 @@ pub(in crate::game) struct Hud {
 pub(super) struct Prompt {
     pub(super) ask: Ask,
     pub(super) title: String,
-    pub(super) choices: Vec<(Button, String)>,
+    /// Each answer: the menu job whose button gives it, and its words.
+    pub(super) choices: Vec<(MenuJob, String)>,
+    /// The family of the controller asked (a joining one), whose glyphs answer it; none when any
+    /// controller may answer (one lost), shown in this player's family.
+    pub(super) family: Option<GlyphStyle>,
 }
 
 /// What a prompt asks: a controller may join (every view, a strip at the top: nobody stops
@@ -72,9 +128,10 @@ pub(super) fn lost_prompt(name: &str) -> Prompt {
         ask: Ask::Lost,
         title: tr("lost", &[&name]),
         choices: vec![
-            (Button::South, tr("lost.use_another", &[])),
-            (Button::East, tr("lost.leave", &[])),
+            (MenuJob::Confirm, tr("lost.use_another", &[])),
+            (MenuJob::Back, tr("lost.leave", &[])),
         ],
+        family: None,
     }
 }
 
@@ -94,9 +151,6 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         let width = |text: &str| HudBatch::text_width(atlas, text).ceil();
-        // After a choice's words, room before the next; a glyph without words ("LB" of "LB RB
-        // Move") sits right next to the next glyph.
-        let gap = |what: &str| if what.is_empty() { 0.0 } else { 12.0 };
         // The badge, top left: who, and a moment where. F1 hides it with the rest of the HUD.
         if let (false, Some(badge)) = (hidden, &self.split_hud.badge) {
             let place = self.split_hud.place.as_ref();
@@ -112,22 +166,19 @@ impl Game<'_> {
         let (top, notice_top) = tops(&self.ui.room, below_strip);
         // A question: centred over the view dimmed, or a strip at the top (a controller joining).
         if let Some(prompt) = &self.split_hud.prompt {
-            let style = self.ui.options.pad_style;
+            // Join and lost-controller questions are answered by a controller nobody holds yet,
+            // whose letters aren't read yet: by places (docs/controllers.md, Nintendo pads).
+            let family = prompt.family.unwrap_or(self.pad.style);
+            let places = Glyphs::unheld(&self.settings.controller, family);
             let dim = prompt.ask != Ask::Join;
             if dim {
                 batch.fill(atlas, 0.0, 0.0, w, h, rgba(0, 0, 0, 120));
             }
-            let glyphs: Vec<_> = prompt
-                .choices
-                .iter()
-                .map(|(b, what)| (*b, pad_glyph::width(atlas, *b, style), what.as_str()))
-                .collect();
-            let line: f32 = glyphs
-                .iter()
-                .map(|(_, gw, what)| gw + 4.0 + width(what) + gap(what))
-                .sum::<f32>()
-                - 12.0;
-            let pw = width(&prompt.title).max(line) + 16.0;
+            let max = w - 2.0 * SIDE - 2.0 * INNER;
+            let rows = answers(atlas, &prompt.choices, places, max);
+            let line = line_width(atlas, &rows);
+            let title = ellipsize(atlas, &prompt.title, max);
+            let pw = width(&title).max(line) + 2.0 * INNER;
             let (px, py) = (
                 ((w - pw) / 2.0).floor(),
                 if dim {
@@ -137,22 +188,14 @@ impl Game<'_> {
                 },
             );
             plate::draw(batch, atlas, Plate::Notice, [px, py, pw, STRIP]);
-            let tx = (px + (pw - width(&prompt.title)) / 2.0).floor();
-            batch.text(
-                atlas,
-                &prompt.title,
-                tx,
-                py + 6.0,
-                rgba(255, 255, 255, 255),
-                true,
-            );
+            let tx = (px + (pw - width(&title)) / 2.0).floor();
+            batch.text(atlas, &title, tx, py + 6.0, rgba(255, 255, 255, 255), true);
             let mut x = (px + (pw - line) / 2.0).floor();
             let y = py + 20.0;
-            for (button, gw, what) in glyphs {
-                pad_glyph::draw(batch, atlas, button, style, x, y);
-                x += gw + 4.0;
-                batch.text(atlas, what, x, y, rgba(220, 220, 220, 255), false);
-                x += width(what) + gap(what);
+            for row in &rows {
+                // `x` is where the glyph draws; its art, and the row, start a pixel left.
+                hint::draw_hint(batch, atlas, row, &hint::PROMPT, x - 1.0, y);
+                x += advance(atlas, row) + after(row);
             }
         }
         // A notice nobody answers: at the top, under a joining controller's strip, for as long
@@ -201,6 +244,7 @@ impl<'a> Split<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horizon_client::hud_kit::fit::ELLIPSIS;
     use horizon_client::hud_kit::room::Keep;
     use horizon_client::hud_overlays::boss_bars_bottom;
 
@@ -208,6 +252,37 @@ mod tests {
     fn with_bars(n: usize) -> Room {
         let bottom = boss_bars_bottom(300, n) as f32;
         Room::new(500.0, 300.0).with(Keep::BossBars, [159.0, 0.0, 182.0, bottom])
+    }
+
+    fn choices() -> Vec<(MenuJob, String)> {
+        vec![
+            (MenuJob::Confirm, "Join as a new player".into()),
+            (MenuJob::Extra, "Play as P1 instead".into()),
+            (MenuJob::Back, "Not now".into()),
+        ]
+    }
+
+    #[test]
+    fn a_prompts_answers_fit_a_narrow_view_and_keep_their_glyphs() {
+        let atlas = HudAtlas::build(std::path::Path::new("/nonexistent")).unwrap();
+        let places = Glyphs::default();
+        let whole = answers(&atlas, &choices(), places, f32::INFINITY);
+        let wide = line_width(&atlas, &whole);
+        // Room enough: every answer whole.
+        assert_eq!(answers(&atlas, &choices(), places, wide), whole);
+        // A narrow view: room for each answer's glyph and about "Not..." of its words.
+        let captions: f32 = whole.iter().map(|r| atlas.font.width(&r.caption)).sum();
+        let max = wide - captions + 3.0 * atlas.font.width("Not...");
+        let cut = answers(&atlas, &choices(), places, max);
+        assert!(
+            line_width(&atlas, &cut) <= max,
+            "{} in {max}",
+            line_width(&atlas, &cut)
+        );
+        for (row, (job, what)) in cut.iter().zip(choices()) {
+            assert_eq!(row.glyphs, [Glyph::menu(job, places)]);
+            assert!(row.caption.ends_with(ELLIPSIS) && row.caption.len() < what.len());
+        }
     }
 
     #[test]

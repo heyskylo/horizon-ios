@@ -3,6 +3,54 @@
 use super::*;
 
 impl Game<'_> {
+    /// A run that a person's stray key, click or mouse move would spoil: a screenshot sequence, a
+    /// `HORIZON_TICK_SCRIPT` scenario or a `record-replay`. While one runs, the keyboard, mouse
+    /// and pad at this computer don't reach the game (`locks_out`, `poll_pads`), the window's
+    /// focus stays as the run found it (`held_focus`) and its pointer grab stays inside the game
+    /// (`internal_grab`).
+    pub(super) fn scripted_run(&self) -> bool {
+        self.screenshot_sequence.is_some() || self.tick_script.playing() || self.repro.replaying()
+    }
+}
+
+/// A key, a modifier, a click, the wheel, the pointer or the input method. Resize and close are
+/// not, so a person can still close the window. A modifier change counts: `reconcile` would
+/// release a Shift or Ctrl the run holds.
+fn is_input(event: &WindowEvent) -> bool {
+    matches!(
+        event,
+        WindowEvent::KeyboardInput { .. }
+            | WindowEvent::ModifiersChanged(_)
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::CursorMoved { .. }
+            | WindowEvent::Ime(_)
+    )
+}
+
+/// A person's input during a scripted run is dropped. What the run itself sends (the control
+/// socket, a replay, the game's own) still plays.
+fn locks_out(origin: input_trace::InputOrigin, scripted: bool, event: &WindowEvent) -> bool {
+    scripted && origin == input_trace::InputOrigin::User && is_input(event)
+}
+
+/// A person clicking into the window or away from it during a scripted run. A replay's look and
+/// clicks act by the focus and the pointer grab, which that would change mid-run: the run keeps
+/// the focus it started with, and the last change applies once it ends (`settle_after_run`).
+fn held_focus(
+    origin: input_trace::InputOrigin,
+    scripted: bool,
+    event: &WindowEvent,
+) -> Option<bool> {
+    match event {
+        WindowEvent::Focused(focused) if scripted && origin == input_trace::InputOrigin::User => {
+            Some(*focused)
+        }
+        _ => None,
+    }
+}
+
+impl Game<'_> {
     /// winit's `window_event`. The control socket and the pad menu call it too, with the
     /// input they make up.
     pub(super) fn handle_window_event(
@@ -19,6 +67,13 @@ impl Game<'_> {
             None => self.options.headless,
         };
         if !ours {
+            return;
+        }
+        if locks_out(origin, self.scripted_run(), &event) {
+            return;
+        }
+        if let Some(focused) = held_focus(origin, self.scripted_run(), &event) {
+            self.focus_after_run = Some(focused);
             return;
         }
         follow_keymap(&mut event);
@@ -52,9 +107,21 @@ impl Game<'_> {
                 state: ElementState::Pressed,
                 ..
             }
-        ) && !self.pad.menu.synthetic
+        ) && !self.input_made_pointer_event()
         {
-            self.pad.keyboard_took_over = true;
+            self.input_keyboard_used();
+        }
+        // A key or a mouse button pressed while the pad holds the radial menu open closes it,
+        // and goes on to do what it does. Moving the mouse does neither (`device_event`).
+        let pressed = match &event {
+            WindowEvent::KeyboardInput { event, .. } => {
+                event.state == ElementState::Pressed && !event.repeat
+            }
+            WindowEvent::MouseInput { state, .. } => *state == ElementState::Pressed,
+            _ => false,
+        };
+        if pressed && !self.pad.menu.synthetic {
+            self.pad_radial_cancel();
         }
         if let WindowEvent::MouseInput { state, button, .. } = &event {
             if *state == ElementState::Pressed {
@@ -89,6 +156,13 @@ impl Game<'_> {
 
     /// The loop ended: close the pads' output, save the world, write the perf report.
     pub(super) fn shut_down(&mut self) {
+        // Closing without an error before HDR output showed a frame (the window minimized, say)
+        // isn't HDR output taking the game down: the next start mustn't hold it back.
+        if self.error.is_none()
+            && let Some(renderer) = &mut self.renderer
+        {
+            renderer.drop_hdr_marker();
+        }
         self.end_screenshot_sequence(Err("cancelled: the game is closing".into()));
         self.pad_close_output();
         if let Err(e) = self.save_for_exit() {
@@ -159,9 +233,12 @@ impl Game<'_> {
             return;
         }
         horizon_client::spans::time("pads", || self.poll_pads(event_loop));
+        self.settle_after_run(event_loop);
         self.pause_if_inactive();
-        if self.options.frames.is_some() && self.started.elapsed() > self.options.timeout {
-            self.error = Some("frame-limited run timed out".into());
+        if let Some(limit) = self.options.time_limit()
+            && self.started.elapsed() > limit
+        {
+            self.error = Some(format!("run timed out after {} s", limit.as_secs()).into());
             event_loop.exit();
             return;
         }
@@ -209,21 +286,26 @@ impl ApplicationHandler for Game<'_> {
         let fullscreen = self.settings.fullscreen || self.options.fullscreen;
         let size = self.options.window_size.map(f64::from);
         self.fullscreen = horizon_client::window::FullscreenState::new(fullscreen);
-        let attributes = horizon_client::window::with_horizon_icon(
-            Window::default_attributes().with_title("Horizon"),
-        );
+        let attributes =
+            horizon_client::window::with_icon(Window::default_attributes().with_title("Horizon"));
         // Wayland names the window by its app id, which the horizon.desktop entry matches.
         #[cfg(target_os = "linux")]
         let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
             attributes, "horizon", "horizon",
         );
+        // A game an agent started opens without the focus, as splitscreen's windows do: the
+        // person keeps their keyboard and pointer until they click it (`unclaimed_window`).
+        // X11 activates it anyway, and says so with a `Focused`.
+        let agent_started = self.options.control.is_some();
+        self.unclaimed_window = agent_started && !self.options.offscreen;
         // `--offscreen` renders into a texture: its window would only show white.
         let window_step = startup::step("window.create");
         let window = match event_loop.create_window(
             attributes
                 .with_inner_size(winit::dpi::LogicalSize::new(size[0], size[1]))
                 .with_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)))
-                .with_visible(!self.options.offscreen),
+                .with_visible(!self.options.offscreen)
+                .with_active(!agent_started),
         ) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -254,6 +336,7 @@ impl ApplicationHandler for Game<'_> {
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         let key = if self.window.as_ref().is_some_and(|w| w.id() == id)
+            && !self.scripted_run()
             && let WindowEvent::KeyboardInput {
                 event,
                 is_synthetic: false,
@@ -273,6 +356,7 @@ impl ApplicationHandler for Game<'_> {
         // A composited view renders offscreen but its keyboard/mouse owner still
         // controls a visible native window. A headless offscreen run never does.
         if self.pending_save.is_none()
+            && !self.scripted_run()
             && self.captured
             && self.focused
             && self.keyboard_mouse
@@ -280,6 +364,13 @@ impl ApplicationHandler for Game<'_> {
             && self.screen == Screen::Playing
             && let DeviceEvent::MouseMotion { delta: (x, y) } = event
         {
+            // While the pad holds the radial menu open the mouse does nothing, as the right stick
+            // doesn't turn the view: it neither cancels the menu nor takes control back, nor
+            // turns the view. A thumb is on the opener, so the motion is a bumped desk.
+            if self.pad_radial_captures() {
+                return;
+            }
+            // Moving the mouse hands control back from the pad.
             if x != 0.0 || y != 0.0 {
                 self.pad_yield_input(event_loop);
             }
@@ -300,5 +391,78 @@ impl ApplicationHandler for Game<'_> {
     /// window turns it into a window close, so Minecraft.stop saves the world.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.shut_down();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use input_trace::InputOrigin;
+    use winit::dpi::{PhysicalPosition, PhysicalSize};
+    use winit::event::{Ime, Modifiers, TouchPhase};
+    use winit::keyboard::ModifiersState;
+
+    // A key's `KeyEvent` can't be made outside winit; these are the person's other inputs.
+    fn inputs() -> Vec<WindowEvent> {
+        let device_id = DeviceId::dummy();
+        vec![
+            WindowEvent::MouseInput {
+                device_id,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            WindowEvent::MouseWheel {
+                device_id,
+                delta: MouseScrollDelta::LineDelta(0.0, 1.0),
+                phase: TouchPhase::Moved,
+            },
+            WindowEvent::CursorMoved {
+                device_id,
+                position: PhysicalPosition::new(10.0, 20.0),
+            },
+            WindowEvent::ModifiersChanged(Modifiers::from(ModifiersState::empty())),
+            WindowEvent::Ime(Ime::Commit("a".into())),
+        ]
+    }
+
+    #[test]
+    fn a_person_is_locked_out_of_a_scripted_run_only() {
+        for event in inputs() {
+            assert!(locks_out(InputOrigin::User, true, &event), "{event:?}");
+            assert!(!locks_out(InputOrigin::User, false, &event), "{event:?}");
+        }
+    }
+
+    #[test]
+    fn what_the_run_sends_still_plays() {
+        for event in inputs() {
+            assert!(!locks_out(InputOrigin::Agent, true, &event), "{event:?}");
+            assert!(!locks_out(InputOrigin::Game, true, &event), "{event:?}");
+        }
+    }
+
+    #[test]
+    fn a_person_can_still_close_the_window() {
+        for event in [
+            WindowEvent::CloseRequested,
+            WindowEvent::Resized(PhysicalSize::new(854, 480)),
+        ] {
+            assert!(!locks_out(InputOrigin::User, true, &event), "{event:?}");
+            assert_eq!(
+                held_focus(InputOrigin::User, true, &event),
+                None,
+                "{event:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_persons_focus_change_waits_for_the_run_to_end() {
+        for focused in [true, false] {
+            let event = WindowEvent::Focused(focused);
+            assert_eq!(held_focus(InputOrigin::User, true, &event), Some(focused));
+            assert_eq!(held_focus(InputOrigin::User, false, &event), None);
+            assert!(!locks_out(InputOrigin::User, true, &event));
+        }
     }
 }

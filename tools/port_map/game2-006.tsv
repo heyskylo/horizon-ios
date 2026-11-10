@@ -27,11 +27,11 @@ Projectile.readAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs
 Projectile.restoreFrom	missing		no projectile `restoreFrom`: the owner is not carried over a dimension change
 Projectile.isOutsideOwnerCollisionRange	inline	crates/horizon-client/src/projectiles.rs::Projectile::tick	gap: minor: left_owner tests the owner's box inflated 1.0 at the position only; vanilla sweeps along the motion and checks the owner's passengers too
 Projectile.getMovementToShoot	port	crates/horizon-client/src/projectiles.rs::Projectile::shoot	direction plus triangle spread 0.0172275 times uncertainty, scaled by power
-Projectile.onAboveBubbleColumn	port	crates/horizon-client/src/arrows.rs::Ticker::bubble_column	gap: minor: arrows only; thrown ender pearls get their push in creatures.rs tick_projectiles and other projectiles get none
-Projectile.onInsideBubbleColumn	port	crates/horizon-client/src/arrows.rs::Ticker::bubble_column	gap: minor: arrows only; thrown ender pearls get their push in creatures.rs tick_projectiles and other projectiles get none
+Projectile.onAboveBubbleColumn	port	crates/horizon-client/src/projectiles.rs::Projectile::bubble_column_push	unclamped 0.1 up (0.03 down over magma) at the top of a column; arrows in arrows.rs::Ticker::bubble_column
+Projectile.onInsideBubbleColumn	port	crates/horizon-client/src/projectiles.rs::Projectile::bubble_column_push	unclamped 0.06 up (0.03 down) inside a column; arrows in arrows.rs::Ticker::bubble_column
 Projectile.canBreakBlockInAdventureMode	port	crates/horizon-client/src/game/creatures.rs::Game::projectile_breaks_block	gap: minor: the shooter's gamemode and kind decide it; a stack's `can_break` predicate is not consulted
 Projectile.spawnProjectileFromRotation	port	crates/horizon-client/src/projectiles.rs::Projectile::shoot_from_rotation	gap: minor: the aim and inherited velocity only; the add-to-world step is the caller's
-Projectile.spawnProjectile	inline	crates/horizon-client/src/game/creatures.rs::Game::throw_item	each shooter adds its own projectile (throw_item, shoot_crossbow, shoot_projectile_item, the bow in game.rs); throw_item is the player throw path
+Projectile.spawnProjectile	inline	crates/horizon-client/src/game/creatures.rs::Game::throw_item	each shooter adds its own projectile (throw_item, shoot_crossbow, shoot_projectile_item, the bow in game/use_hand.rs::release_bow); throw_item is the player throw path
 Projectile.applyOnProjectileSpawned	port	crates/horizon-client/src/game/enchant_effects.rs::Game::ignite_spawned_arrow	gap: minor: Flame ignite only; Piercing and Punch go through Projectile::set_bonus
 Projectile.hitTargetOrDeflectSelf	port	crates/horizon-client/src/game/creatures.rs::Game::tick_projectiles	gap: minor: deflection is checked for breezes only; the onHit dispatch is creatures.rs projectile_hit
 Projectile.onRedirectProjectile	port	crates/horizon-client/src/game/deflect.rs::Game::deflect	gap: minor: the player's attack turns the projectile; a projectile hitting another redirectable one is not modelled
@@ -50,7 +50,7 @@ ShulkerBullet.onHitBlock	port	crates/horizon-client/src/game/creatures.rs::Game:
 ShulkerBullet.destroy	inline	crates/horizon-client/src/game/creatures.rs::Game::tick_projectiles	the bullet is dropped from the flight list on any hit; the game event is not sent
 ShulkerBullet.hurtServer	port	crates/horizon-client/src/game/deflect.rs::Game::hit_shulker_bullet	
 ThrowableProjectile.applyInertia	port	crates/horizon-client/src/projectiles.rs::Projectile::tick	default arm: gravity, then drag 0.8 in water and 0.99 in air; gap: minor: no bubble particles in water
-ThrowableProjectile.handleFirstTickBubbleColumn	missing		a thrown item spawned inside a bubble column is not pushed on its first tick: `game/creatures.rs` has bubble-column particles and the pearl's own column hooks, nothing for a throwable's first tick
+ThrowableProjectile.handleFirstTickBubbleColumn	port	crates/horizon-client/src/projectiles.rs::Projectile::first_tick_bubble_column	the column blocks in the box on the first tick, before the tick's gravity and inertia; `Projectile::tick` runs it for a server too, where it used to be `tick_remote`'s alone
 AbstractArrow.<init>	port	crates/horizon-client/src/arrows.rs::ArrowState::new	arrow defaults: pickup, pickup item, shake, pierce; the owner and drawn ammo come from set_owner and set_item
 AbstractArrow.defineSynchedData	skip:java		flags, pierce level and in-ground sync fields; Horizon keeps them on ArrowState and Projectile
 AbstractArrow.lerpMotion	skip:other		client interpolation of a server motion packet; Horizon's remote arrows take the server position each update
@@ -77,15 +77,15 @@ ThrownTrident.defineSynchedData	skip:java		loyalty and foil synced fields; Horiz
 ThrownTrident.isAcceptibleReturnOwner	port	crates/horizon-client/src/game/trident.rs::Game::tick_tridents	the loyalty return needs the owner's eye position; gap: minor: no separate alive or spectator check
 ThrownTrident.findHitEntities	port	crates/horizon-client/src/arrows.rs::Ticker::step_move_and_hit	one entity hit per trident, none once it has dealt damage
 ThrownTrident.hitBlockEnchantmentEffects	port	crates/horizon-client/src/game/trident.rs::Game::channel_rod_hit	gap: minor: only Channeling's hit_block effect (lightning on a rod in a storm) is modelled
-ThrownTrident.tryPickup	port	crates/horizon-client/src/arrows.rs::ArrowState::player_touch	gap: minor: no owner check on a returned trident; any player in reach takes it when it is no-physics
-ThrownTrident.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::arrow_from_nbt	gap: minor: DealtDamage is not read back; the loyalty level comes from the release
+ThrownTrident.tryPickup	port	crates/horizon-client/src/game/trident.rs::Game::trident_taken	all three pickup modes and the no-physics owner's return; gap: inventory overflow drops instead of refusing pickup
+ThrownTrident.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::trident_from_nbt	pickup, Owner, LeftOwner, HasBeenShot and DealtDamage survive load; ThrownTrident::from_nbt reads loyalty from the saved stack
 ThrownTrident.getLoyaltyFromItem	port	crates/horizon-client/src/game/trident.rs::Game::release_trident	loyalty level read from the thrown stack when the trident is released
 ThrownTrident.tickDespawn	inline	crates/horizon-client/src/arrows.rs::Ticker::tick	gap: minor: the 1200-tick life limit applies to every trident; the loyalty exemption is not checked
 AbstractHurtingProjectile.shouldRenderAtSqrDistance	skip:ui		distance culling for the fireball model; Horizon culls with its own range check
 AbstractHurtingProjectile.canHitEntity	missing		same as `ShulkerBullet.canHitEntity`: the fireball's target search has no no-physics filter
 WitherSkull.getBlockExplosionResistance	port	crates/horizon-client/src/game/explosion.rs::blast_resistance	a dangerous skull's blast caps a breakable block's resistance at 0.8; `#wither_immune` blocks keep theirs
 WitherSkull.onHit	port	crates/horizon-client/src/game/wither.rs::Game::wither_skull_hit	skull hit damage, wither effect, then the blast at the impact point
-AbstractWindCharge.makeBoundingBox	port	crates/horizon-client/src/projectiles.rs::ProjectileKind::size	gap: minor: gives the width only; the box sits 0.15 below the position in vanilla
+AbstractWindCharge.makeBoundingBox	port	crates/horizon-client/src/projectiles.rs::Projectile::bounds	the square box of `ProjectileKind::size`, 0.15F below the position
 AbstractWindCharge.canHitEntity	missing		the wind charge's target list is `creatures.rs::wind_charge_hitboxes`, which collects the other live, unstuck wind charges as hittable boxes: nothing there drops a wind charge or an end crystal, so the filter `canHitEntity` makes is not applied
 AbstractWindCharge.onHitBlock	port	crates/horizon-client/src/game/wind.rs::Game::wind_charge_hit	a burst a quarter block out along the hit face
 WindCharge.deflect	port	crates/horizon-client/src/game/wind.rs::reverse	gap: minor: turns the charge at half speed; the noDeflectTicks delay is not modelled

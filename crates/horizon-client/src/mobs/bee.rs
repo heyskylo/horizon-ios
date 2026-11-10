@@ -581,8 +581,14 @@ impl BecomeAngryTarget {
             NearestTarget::player(true)
                 .interval(10)
                 .gate(can_target)
-                // NeutralMob.isAngryAt: the persistent anger target.
-                .when(|m, _| get(m).is_some_and(|b| b.angry_at == Some(Who::Player))),
+                // NeutralMob.isAngryAt: the persistent anger target, or
+                // every player under the `universal_anger` rule.
+                .when(|m, w| {
+                    get(m).is_some_and(|b| {
+                        b.angry_at == Some(Who::Player)
+                            || (w.universal_anger && b.angry_at.is_none() && angry(m, w))
+                    })
+                }),
         )
     }
 }
@@ -1212,8 +1218,13 @@ impl Goal for Wander {
 pub fn stable_destination(w: &MobWorld, p: [i32; 3]) -> bool {
     !w.facts.is_air(w.world.block(p[0], p[1] - 1, p[2]))
 }
-/// `Bee.addAdditionalSaveData` (and NeutralMob's `anger_end_time`).
-pub fn to_nbt(m: &Mob, map: &mut horizon_world::nbt::Compound) {
+/// `Bee.addAdditionalSaveData` (and NeutralMob's `anger_end_time` and
+/// `angry_at`).
+pub fn to_nbt(
+    m: &Mob,
+    map: &mut horizon_world::nbt::Compound,
+    uuid_of: &mut impl FnMut(u32) -> Option<[i32; 4]>,
+) {
     use horizon_world::nbt::Tag;
     let b = get(m).cloned().unwrap_or_default();
     for (key, pos) in [("hive_pos", b.hive), ("flower_pos", b.flower)] {
@@ -1235,6 +1246,20 @@ pub fn to_nbt(m: &Mob, map: &mut horizon_world::nbt::Compound) {
     map.insert("CannotEnterHiveTicks".into(), Tag::Int(b.stay_out_of_hive));
     map.insert("CropsGrownSincePollination".into(), Tag::Int(b.crops_grown));
     map.insert("anger_end_time".into(), Tag::Long(b.anger_end));
+    // `NeutralMob.addPersistentAngerSaveData`: `storeNullable`, nothing when
+    // the bee has no target. A mob target read from the save but not in the
+    // level (`Who::Mob(0)`) keeps the loaded UUID.
+    match b.angry_at {
+        Some(Who::Mob(0)) => {}
+        target => match target.and_then(|who| crate::entity_nbt::who_uuid(who, uuid_of)) {
+            Some(uuid) => {
+                map.insert("angry_at".into(), Tag::IntArray(uuid.to_vec()));
+            }
+            None => {
+                map.remove(&"angry_at".into());
+            }
+        },
+    }
 }
 /// `Bee.readAdditionalSaveData`.
 pub fn from_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
@@ -1254,6 +1279,13 @@ pub fn from_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
         Some(Tag::Long(v)) => *v,
         _ => -1,
     };
+    // `EntityReference.read`: the player's UUID is the player, any other one a
+    // mob the level may not have loaded (`Who::Mob(0)`).
+    let angry_at = match crate::save::uuid_from_tag(tag.get("angry_at")) {
+        Some(uuid) if uuid == crate::entity_nbt::player_uuid() => Some(Who::Player),
+        Some(_) => Some(Who::Mob(0)),
+        None => None,
+    };
     let b = st(m);
     b.ticks_without_nectar = int("TicksSincePollination").unwrap_or(0);
     b.stay_out_of_hive = int("CannotEnterHiveTicks").unwrap_or(0);
@@ -1261,6 +1293,7 @@ pub fn from_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
     b.hive = pos("hive_pos");
     b.flower = pos("flower_pos");
     b.anger_end = anger_end;
+    b.angry_at = angry_at;
 }
 
 #[cfg(test)]
@@ -1379,5 +1412,73 @@ mod tests {
                 }
             )));
         });
+    }
+
+    /// `NeutralMob.isAngryAtAllPlayers`: with `universal_anger` on and no
+    /// persistent anger target left, a bee still angry at the player targets
+    /// them; with the rule off it targets no one.
+    #[test]
+    fn universal_anger_lets_an_angry_bee_pick_the_player() {
+        with_test_world(&[], |w, _| {
+            for rule in [false, true] {
+                let mut w = w.clone();
+                w.player = Some(crate::mobs::world::test_player(Vec3::new(1.0, 0.0, 0.0)));
+                w.universal_anger = rule;
+                let mut m = bee();
+                let b = super::st(&mut m);
+                b.angry_at = None;
+                b.anger_end = w.game_time + 400;
+                m.ai.goals.add(1, super::BecomeAngryTarget::new());
+                let mut random = LegacyRandom::new(1);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &w,
+                    lr: &mut random,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut m.ai.goals);
+                for _ in 0..200 {
+                    goals.tick(&mut m, &mut cx);
+                }
+                let targeted = m.ai.target == Some(Who::Player);
+                m.ai.goals = goals;
+                assert_eq!(targeted, rule, "universal_anger {rule}");
+            }
+        });
+    }
+
+    /// `NeutralMob.addPersistentAngerSaveData` and
+    /// `readPersistentAngerSaveData`: `anger_end_time` and `angry_at`, the
+    /// reference to the player the bee is angry at (`Bee` keeps the anger
+    /// itself). `mob_to_nbt`/`mob_from_nbt` are the pair `Game::mob_tree_nbt`
+    /// and `Game::load_mob` go through. Horizon modelled the target in
+    /// `Bee.angry_at` and wrote only the timer, so a bee that had stung a
+    /// player came back with its anger still counting but no one to attack.
+    #[test]
+    fn a_bees_anger_target_survives_a_save() {
+        use crate::entity_nbt::{mob_from_nbt, mob_to_nbt, player_uuid};
+        use horizon_world::nbt::Tag;
+        let mut m = bee();
+        {
+            let b = super::st(&mut m);
+            b.anger_end = 500;
+            b.angry_at = Some(Who::Player);
+        }
+        let saved = mob_to_nbt(&m, [1, 2, 3, 4], None, None, |_| None);
+        assert_eq!(
+            saved.get("angry_at"),
+            Some(&Tag::IntArray(player_uuid().to_vec())),
+            "the save names the player"
+        );
+        let types = std::collections::HashMap::from([(m.kind.id.clone(), m.kind.clone())]);
+        let back = mob_from_nbt(&saved, &types, 2, None).unwrap();
+        let b = super::get(&back).unwrap();
+        assert_eq!(b.angry_at, Some(Who::Player), "the reloaded target");
+        assert_eq!(b.anger_end, 500, "the reloaded timer");
+        // `storeNullable`: a calm bee writes no `angry_at`, even over a
+        // compound that still names one.
+        let calm = bee();
+        let saved = mob_to_nbt(&calm, [1, 2, 3, 4], Some(&saved), None, |_| None);
+        assert_eq!(saved.get("angry_at"), None, "no target, no key");
     }
 }

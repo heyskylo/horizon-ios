@@ -23,6 +23,8 @@ pub(super) enum Orientation {
     Flat,
     /// `movement_aligned`: stands along its velocity, facing the camera around it.
     Movement,
+    /// `none`: fixed in the world's axes (its +Z facing south).
+    Fixed,
 }
 
 impl Orientation {
@@ -31,6 +33,7 @@ impl Orientation {
             "look_at_y" => Self::AroundY,
             "look_up" => Self::Flat,
             "movement_aligned" => Self::Movement,
+            "none" => Self::Fixed,
             _ => Self::Camera,
         }
     }
@@ -50,6 +53,7 @@ pub(super) fn orient(
         Orientation::Camera => rolled(camera),
         Orientation::AroundY => rolled(Quat::from_rotation_y((-center.x).atan2(-center.z))),
         Orientation::Flat => rolled(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+        Orientation::Fixed => rolled(Quat::IDENTITY),
         Orientation::Movement => {
             let up = velocity.normalize_or_zero();
             let right = up.cross((-center).normalize_or_zero()).normalize_or_zero();
@@ -59,6 +63,24 @@ pub(super) fn orient(
             Quat::from_mat3(&Mat3::from_cols(right, up, right.cross(up)))
         }
     }
+}
+
+/// The alpha a particle keeps at `life` (0 to 1 of its lifetime) with `fade_in` and `fade_out`
+/// fractions of it spent fading: each ramp eases in and out (smoothstep), as Polytone's are
+/// measured to (a linear ramp leaves young rain drops twice as bright).
+fn fade(life: f32, fade_in: f32, fade_out: f32) -> f32 {
+    let ease = |x: f32| {
+        let x = x.clamp(0.0, 1.0);
+        x * x * (3.0 - 2.0 * x)
+    };
+    let mut alpha = 1.0;
+    if fade_in > 0.0 {
+        alpha *= ease(life / fade_in);
+    }
+    if fade_out > 0.0 {
+        alpha *= ease((1.0 - life) / fade_out);
+    }
+    alpha
 }
 
 /// One GPU particle spawn.
@@ -239,12 +261,7 @@ impl Store {
             // Fading in and out, and the colour and size toward their ends.
             let [fade_in, fade_out] = gpu.fade.map(|f| f as f32);
             let mut alpha = r.rgba[3];
-            if fade_in > 0.0 {
-                alpha *= (life / fade_in).min(1.0);
-            }
-            if fade_out > 0.0 {
-                alpha *= ((1.0 - life) / fade_out).min(1.0);
-            }
+            alpha *= fade(life, fade_in, fade_out);
             let mut rgb = [r.rgba[0], r.rgba[1], r.rgba[2]];
             if let Some(end) = gpu.color_end {
                 let channel = |shift: u32| ((end >> shift) & 0xff) as f32 / 255.0;
@@ -366,6 +383,20 @@ mod tests {
         let friction = 0.9;
         let (_, v) = motion(&gpu(0.1, friction), [0.0; 3], [0.0; 3], 1000.0);
         assert!((v[1] + 0.1 / -f64::ln(friction)).abs() < 1e-9);
+    }
+
+    /// Measured in Java on a line of particles whose age grows with x: a quarter of the way
+    /// through its fade-in a particle has about a sixth of its alpha, not a quarter; half at half.
+    #[test]
+    fn fades_ease_in_and_out() {
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-4;
+        assert!(close(fade(0.0, 0.4, 0.2), 0.0));
+        assert!(close(fade(0.1, 0.4, 0.2), 0.15625));
+        assert!(close(fade(0.2, 0.4, 0.2), 0.5));
+        assert!(close(fade(0.5, 0.4, 0.2), 1.0));
+        assert!(close(fade(0.9, 0.4, 0.2), 0.5));
+        assert!(close(fade(1.0, 0.4, 0.2), 0.0));
+        assert!(close(fade(0.3, 0.0, 0.0), 1.0));
     }
 
     #[test]

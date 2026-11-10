@@ -456,6 +456,7 @@ dependencies = [
  "getrandom 0.3.4",
  "hmac",
  "horizon-mods",
+ "horizon-release-sign",
  "http-body-util",
  "rusqlite",
  "serde",
@@ -481,6 +482,14 @@ dependencies = [
  "toml",
  "wasmparser",
  "zip",
+]
+
+[[package]]
+name = "horizon-release-sign"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "ring",
 ]
 
 [[package]]

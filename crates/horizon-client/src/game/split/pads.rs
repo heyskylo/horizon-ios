@@ -5,7 +5,7 @@ use super::hud::tr;
 use super::*;
 use crate::game::pad::{PadEvent, PadId};
 use horizon_client::controller_notice::{Notice, NoticeId, Priority};
-use horizon_client::gamepad::{Button, PadState};
+use horizon_client::gamepad::{Button, MenuJob, PadState};
 
 /// How long a controller's offer to join stays up.
 const OFFER: Duration = Duration::from_secs(10);
@@ -130,6 +130,12 @@ impl Split<'_> {
         }
     }
 
+    /// The furthest a player's pad leant its sticks since the last frame: nothing for a pad just
+    /// joined whose buttons are still being let go.
+    fn pad_peaks(&self, pad: Option<PadId>) -> [[f32; 2]; 2] {
+        pad.filter(|id| !self.fresh.contains(id))
+            .map_or([[0.0; 2]; 2], |id| self.pads.peaks(id))
+    }
     /// The pad's state for its player: nothing while the press that gave it is still held.
     fn pad_state(&mut self, pad: Option<PadId>) -> PadState {
         let Some(id) = pad else {
@@ -282,14 +288,16 @@ impl Split<'_> {
             self.pads.report_status(&mut self.host.pad, owner);
         }
         let state = self.pad_state(owner);
-        self.host.pad.feed_from(owner, state);
+        let peaks = self.pad_peaks(owner);
+        self.host.pad.feed_from(owner, state, peaks);
         for i in 0..self.guests.len() {
             let pad = self.guests[i].pad;
             if self.guests[i].game.control.is_some() {
                 self.pads.report_status(&mut self.guests[i].game.pad, pad);
             }
             let state = self.pad_state(pad);
-            self.guests[i].game.pad.feed_from(pad, state);
+            let peaks = self.pad_peaks(pad);
+            self.guests[i].game.pad.feed_from(pad, state, peaks);
         }
         joins
     }
@@ -425,15 +433,18 @@ impl Split<'_> {
             [(id, _)] => tr("join.one", &[&self.pads.name(*id)]),
             offers => tr("join.many", &[&offers.len()]),
         };
-        let mut choices = vec![(Button::South, tr("join.yes", &[]))];
+        let mut choices = vec![(MenuJob::Confirm, tr("join.yes", &[]))];
         if self.p1_pad.owner.is_none() && self.host.settings.controller.enabled {
-            choices.push((Button::North, tr("join.as_p1", &[])));
+            choices.push((MenuJob::Extra, tr("join.as_p1", &[])));
         }
-        choices.push((Button::East, tr("join.no", &[])));
+        choices.push((MenuJob::Back, tr("join.no", &[])));
+        // Answered on the asking controller: the first one's family when several ask.
+        let family = self.offers.first().map(|(id, _)| self.pads.style(*id));
         self.prompt_join(Some(Prompt {
             ask: Ask::Join,
             title,
             choices,
+            family,
         }));
     }
 }

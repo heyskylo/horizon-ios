@@ -22,6 +22,9 @@ use horizon_world::{
     registry::{BlockRegistry, BlockStateId},
 };
 use std::{collections::HashMap, sync::Arc};
+mod projectile_fields;
+use projectile_fields::{load_projectile_entity_fields, put_projectile_entity_fields};
+mod saved_attributes;
 
 /// Saved data carried by `ConversionType.convertCommon` outside the modelled
 /// mob fields. The converted entity has its own identity and type-specific data;
@@ -59,13 +62,44 @@ pub fn loaded_motion(tag: &Tag) -> Vec3 {
 pub fn rotation(tag: &Tag) -> [f32; 2] {
     read_doubles::<2>(tag.get("Rotation")).map_or([0.0; 2], |r| [r[0] as f32, r[1] as f32])
 }
-/// `NumericTag.byteValue`'s nonzero test for entity NBT, defaulting to false.
+/// `TagValueInput.getBooleanOr`: a numeric tag's byteValue is nonzero, with a false default.
 pub fn flag(tag: &Tag, key: &str) -> bool {
+    flag_or(tag, key, false)
+}
+/// `getBooleanOr(key, default)`: any numeric tag's nonzero test, else `default`.
+pub fn flag_or(tag: &Tag, key: &str, default: bool) -> bool {
     // NBT floats floor before int narrowing; the final byte keeps the low bits.
     tag.get(key)
         .and_then(int_value)
-        .is_some_and(|value| value as i8 != 0)
+        .map_or(default, |value| value as i8 != 0)
 }
+
+/// `Entity.saveWithoutId`: write the movement flags and the flags retained
+/// from `Entity.load` as booleans. Only OnGround and Invulnerable write false.
+pub fn write_saved_flags(tag: &mut Tag, on_ground: bool, no_gravity: bool) {
+    let invulnerable = flag(tag, "Invulnerable");
+    let optional = [
+        ("NoGravity", no_gravity),
+        ("CustomNameVisible", flag(tag, "CustomNameVisible")),
+        ("Silent", flag(tag, "Silent")),
+        ("Glowing", flag(tag, "Glowing")),
+        ("HasVisualFire", flag(tag, "HasVisualFire")),
+    ];
+    let Tag::Compound(map) = tag else {
+        return;
+    };
+    map.insert("OnGround".into(), Tag::Byte(i8::from(on_ground)));
+    map.insert("Invulnerable".into(), Tag::Byte(i8::from(invulnerable)));
+    for (key, value) in optional {
+        let key = key.into();
+        if value {
+            map.insert(key, Tag::Byte(1));
+        } else {
+            map.remove(&key);
+        }
+    }
+}
+
 /// `Entity.saveWithoutId` fields every entity has, over the loaded compound.
 struct Base<'a> {
     id: &'a str,
@@ -114,6 +148,8 @@ impl Base<'_> {
                 map.entry(key.into()).or_insert(value);
             }
         }
+        let no_gravity = flag(&tag, "NoGravity");
+        write_saved_flags(&mut tag, self.on_ground, no_gravity);
         tag
     }
     /// Preserve Entity data without flags owned by Mob's save writer.
@@ -194,19 +230,10 @@ fn is_animal(id: &str) -> bool {
             | "zombie_nautilus"
     )
 }
-/// The `NeutralMob`s whose anger is `Extra::anger`: they write and read
-/// `anger_end_time` and `angry_at`. The bee keeps its own anger, and a
-/// piglin's is a brain memory, not `NeutralMob`'s.
-fn persistent_anger(s: crate::mobs::Species) -> bool {
-    use crate::mobs::Species as S;
-    matches!(
-        s,
-        S::Wolf | S::IronGolem | S::PolarBear | S::Enderman | S::ZombifiedPiglin
-    )
-}
+use crate::mobs::persistent_anger;
 /// The single player's UUID (`offline_uuid("Player")`): the entity the
 /// neutral mobs are angry at.
-fn player_uuid() -> [i32; 4] {
+pub(crate) fn player_uuid() -> [i32; 4] {
     let u = horizon_protocol::crypto::offline_uuid("Player");
     [
         (u >> 96) as u32 as i32,
@@ -585,14 +612,9 @@ pub fn mob_to_nbt(
         ("Air", Tag::Short(m.air as i16)),
         ("Health", Tag::Float(m.health.max(0.0).to_bits())),
         ("AbsorptionAmount", Tag::Float(m.absorption.to_bits())),
-        (
-            "HurtTime",
-            Tag::Short(m.hurt_time.clamp(0, i32::from(i16::MAX)) as i16),
-        ),
-        (
-            "DeathTime",
-            Tag::Short(m.death_time.clamp(0, i32::from(i16::MAX)) as i16),
-        ),
+        // LivingEntity.addAdditionalSaveData: (short) casts, nothing clamped.
+        ("HurtTime", Tag::Short(m.hurt_time as i16)),
+        ("DeathTime", Tag::Short(m.death_time as i16)),
         // Mob.addAdditionalSaveData writes the current virtual getter, not raw input.
         ("CanPickUpLoot", Tag::Byte(i8::from(m.can_pick_up_loot()))),
         ("PersistenceRequired", Tag::Byte(i8::from(m.persistent))),
@@ -640,17 +662,8 @@ pub fn mob_to_nbt(
         put(
             &mut tag,
             "anger_end_time",
-            Tag::Long(
-                if (m.species() == crate::mobs::Species::Enderman && m.no_ai)
-                    || m.extra.anger_end > 0
-                {
-                    // NeutralMob saves the actual absolute value, including zero
-                    // and past values, while this Enderman's AI is disabled.
-                    m.extra.anger_end
-                } else {
-                    -1
-                },
-            ),
+            // The absolute value as it is, also zero or one already past.
+            Tag::Long(m.extra.anger_end),
         );
         // `angry_at` only while there is an anger target: the UUID of the one
         // the level has (`uuid_of`). A mob target read from the save that is
@@ -753,9 +766,10 @@ pub fn mob_to_nbt(
         "Invulnerable".into(),
         Tag::Byte(i8::from(m.invulnerable_flag)),
     );
-    // Entity.saveWithoutId: the hurt immunity left, only while there is some.
-    if m.invulnerable > 0 {
-        map.insert("invulnerable_time".into(), Tag::Int(m.invulnerable));
+    // Entity.saveWithoutId: `invulnerableTime`, only while there is some (the
+    // hurt cooldown is not saved).
+    if m.invulnerable_time > 0 {
+        map.insert("invulnerable_time".into(), Tag::Int(m.invulnerable_time));
     } else {
         map.remove(&horizon_world::nbt::JavaString::from("invulnerable_time"));
     }
@@ -787,7 +801,6 @@ pub fn mob_to_nbt(
     );
     for (key, value) in [
         ("AbsorptionAmount", Tag::Float(0)),
-        ("current_impulse_context_reset_grace_time", Tag::Int(0)),
         (
             "Brain",
             Tag::compound([("memories", Tag::Compound(Compound::new()))]),
@@ -795,6 +808,10 @@ pub fn mob_to_nbt(
     ] {
         map.entry(key.into()).or_insert(value);
     }
+    map.insert(
+        "current_impulse_context_reset_grace_time".into(),
+        Tag::Int(m.impulse_grace_time),
+    );
     // What the mob's class saves: a content mod's living type saves as its
     // template does (the `id` written above stays its own).
     let id = m.kind.class_id();
@@ -970,9 +987,11 @@ pub fn mob_to_nbt(
             }
         }
         "minecraft:piglin" | "minecraft:piglin_brute" | "minecraft:hoglin" => {
-            // Only Piglin.addAdditionalSaveData writes CannotHunt.
+            // Only Piglin.addAdditionalSaveData writes CannotHunt, always.
             if id == "minecraft:piglin_brute" {
                 map.remove(&"CannotHunt".into());
+            } else if id == "minecraft:piglin" {
+                map.entry("CannotHunt".into()).or_insert(Tag::Byte(0));
             }
             map.insert(
                 "IsImmuneToZombification".into(),
@@ -986,7 +1005,7 @@ pub fn mob_to_nbt(
                 );
             }
             if id == "minecraft:piglin" {
-                write_guarded_piglin_anger(m, map);
+                crate::mobs::piglin::write_guarded_anger(m, map);
                 // InventoryCarrier.writeInventoryToTag.
                 map.insert(
                     "Inventory".into(),
@@ -1056,15 +1075,17 @@ pub fn mob_to_nbt(
             } else {
                 map.insert("equipment".into(), Tag::compound(equipment));
             }
-            let modelled = [
-                ("minecraft:max_health", f64::from(m.attrs.max_health)),
-                ("minecraft:movement_speed", m.attrs.speed),
-                ("minecraft:jump_strength", m.extra.vector[0]),
-            ];
             // AttributeMap.pack writes the instances that exist: the ones the
-            // entity was loaded with, or all three randomized by finalizeSpawn.
-            let attributes = match map.get(&"attributes".into()) {
-                Some(Tag::List(list)) => list
+            // entity was loaded with. When the tag had no attributes list,
+            // instances are not synthesized (SummonCommand without finalizeSpawn
+            // saves attributes: []).
+            if let Some(Tag::List(list)) = map.get(&"attributes".into()) {
+                let modelled = [
+                    ("minecraft:max_health", f64::from(m.attrs.max_health)),
+                    ("minecraft:movement_speed", m.attrs.speed),
+                    ("minecraft:jump_strength", m.extra.vector[0]),
+                ];
+                let attributes = list
                     .iter()
                     .map(|a| {
                         let id = text(a.get("id"));
@@ -1078,15 +1099,9 @@ pub fn mob_to_nbt(
                             _ => a.clone(),
                         }
                     })
-                    .collect(),
-                _ => modelled
-                    .iter()
-                    .map(|(id, v)| {
-                        Tag::compound([("id", string(id)), ("base", Tag::Double(v.to_bits()))])
-                    })
-                    .collect(),
-            };
-            map.insert("attributes".into(), Tag::List(attributes));
+                    .collect();
+                map.insert("attributes".into(), Tag::List(attributes));
+            }
         }
         "minecraft:pig" | "minecraft:strider" => {
             let mut equipment = match map.get(&"equipment".into()) {
@@ -1119,7 +1134,6 @@ pub fn mob_to_nbt(
         }
         "minecraft:zombie_villager" => {
             map.insert("VillagerData".into(), villager_data(m));
-            map.insert("VillagerDataFinalized".into(), Tag::Byte(1));
             let xp = m.extra.trade.as_deref().map_or(0, |t| t.xp);
             map.insert("Xp".into(), Tag::Int(xp));
             put_offers(map, m);
@@ -1242,6 +1256,14 @@ pub fn mob_to_nbt(
                     Tag::compound([("value", Tag::Int(m.extra.ints[2]))]),
                 ));
             }
+            // ITEM_PICKUP_COOLDOWN_TICKS (`Codec.INT`), which a throw sets to 60,
+            // while it runs.
+            if m.extra.ints[3] > 0 {
+                memories.push((
+                    "minecraft:item_pickup_cooldown_ticks",
+                    Tag::compound([("value", Tag::Int(m.extra.ints[3]))]),
+                ));
+            }
             // Always written, so a forgotten note block does not come back
             // from the compound the allay was loaded with.
             map.insert(
@@ -1275,7 +1297,7 @@ pub fn mob_to_nbt(
             crate::mobs::nautilus::to_nbt(m, map);
         }
         "minecraft:sulfur_cube" => crate::mobs::sulfur_cube::to_nbt(m, map),
-        "minecraft:bee" => crate::mobs::bee::to_nbt(m, map),
+        "minecraft:bee" => crate::mobs::bee::to_nbt(m, map, &mut uuid_of),
         "minecraft:sniffer" => crate::mobs::sniffer::to_nbt(m, map),
         "minecraft:wither" => {
             map.insert("Invul".into(), Tag::Int(m.extra.counter));
@@ -1286,6 +1308,10 @@ pub fn mob_to_nbt(
                 "PlayerCreated".into(),
                 Tag::Byte(i8::from(m.extra.player_created)),
             );
+        }
+        // SnowGolem.addAdditionalSaveData: whether it still wears its pumpkin.
+        "minecraft:snow_golem" => {
+            map.insert("Pumpkin".into(), Tag::Byte(i8::from(!m.extra.sheared)));
         }
         // `Warden.addAdditionalSaveData`: the anger - one `{uuid, anger}` pair
         // per suspect - and the vibration listener, and nothing else. A warden
@@ -1315,14 +1341,7 @@ pub fn mob_to_nbt(
             map.insert("StunTick".into(), Tag::Int(m.extra.counter2));
             map.insert("RoarTick".into(), Tag::Int(m.extra.anim_ticks));
         }
-        "minecraft:vex" => {
-            if let Some(h) = m.extra.home {
-                map.insert("bound_pos".into(), Tag::IntArray(h.to_vec()));
-            }
-            if m.extra.egg_time > 0 {
-                map.insert("life_ticks".into(), Tag::Int(m.extra.egg_time));
-            }
-        }
+        "minecraft:vex" => crate::mobs::vex::write_nbt(m, map, &mut uuid_of),
         "minecraft:endermite" => {
             map.insert("Lifetime".into(), Tag::Int(m.extra.counter));
         }
@@ -1390,12 +1409,14 @@ pub fn mob_to_nbt(
         // Zombie and Skeleton.addAdditionalSaveData (a husk keeps Zombie's):
         // `ConversionTracker`'s conversion and affliction times, -1 when it is
         // not converting or not afflicted.
+        // The tracker ticks for these, so the live counters win over the loaded
+        // values: one that left the water or the snow saves -1.
         "minecraft:zombie" | "minecraft:husk" => {
             for (key, value) in [
                 ("DrownedConversionTime", conversion_time(m)),
                 ("InWaterTime", m.extra.counter),
             ] {
-                map.entry(key.into()).or_insert(Tag::Int(value));
+                map.insert(key.into(), Tag::Int(value));
             }
         }
         "minecraft:skeleton" => {
@@ -1403,7 +1424,7 @@ pub fn mob_to_nbt(
                 ("StrayConversionTime", conversion_time(m)),
                 ("FreezingTime", m.extra.counter),
             ] {
-                map.entry(key.into()).or_insert(Tag::Int(value));
+                map.insert(key.into(), Tag::Int(value));
             }
         }
         // Drowned.convertsInWater is false, so its tracker never ticks: vanilla
@@ -1439,6 +1460,13 @@ pub fn mob_to_nbt(
         }
         _ => {}
     }
+    if m.species() == S::Frog {
+        crate::mobs::brain::write_frog(m, map);
+    }
+    // Bogged.addAdditionalSaveData: whether its mushrooms were sheared.
+    if m.species() == S::Bogged {
+        map.insert("sheared".into(), Tag::Byte(i8::from(m.extra.sheared)));
+    }
     // Zombie.addAdditionalSaveData: CanBreakDoors.
     if crate::mobs::doors::is_zombie(m.species()) {
         map.insert(
@@ -1450,6 +1478,16 @@ pub fn mob_to_nbt(
         if !m.fluids.eye_in_water {
             map.insert("InWaterTime".into(), Tag::Int(-1));
         }
+        // ZombieVillager and ZombifiedPiglin save Zombie's tracker too; Horizon
+        // never starts their water conversion, so its time is -1.
+        if matches!(m.species(), S::ZombieVillager | S::ZombifiedPiglin) {
+            map.entry("DrownedConversionTime".into())
+                .or_insert(Tag::Int(-1));
+        }
+    }
+    // Skeleton supplies its cached isInPowderSnow to the same isAfflicted check.
+    if m.species() == S::Skeleton && !m.in_powder_snow {
+        map.insert("FreezingTime".into(), Tag::Int(-1));
     }
     if matches!(
         id,
@@ -1478,42 +1516,37 @@ pub fn mob_to_nbt(
         put_attributes(map, m, a);
     }
     put_sulfur_attributes(map, m);
-    // The attribute their load makes, which AttributeMap.pack then saves:
-    // Zombie and Piglin.setBaby (even for an adult) the speed, Rabbit.setVariant
-    // the attack damage.
+    // The instances their own construction and load make (finalize::made_at_load),
+    // which AttributeMap.pack saves although the loaded tag had none.
     use crate::mobs::finalize::Attr;
-    // Every other living entity's first tick makes the movement_speed instance
-    // (LivingEntity.removeFrost reads it through getAttribute); before it, the
-    // mob has only the instances it was loaded with (the kept list above).
-    let speed_at_load =
-        crate::mobs::doors::is_zombie(species) || species == crate::mobs::Species::Piglin;
-    let mut made = Vec::new();
-    if speed_at_load || m.age > 0 {
-        made.push(Attr::MovementSpeed);
-    }
-    if species == crate::mobs::Species::Rabbit {
-        made.push(Attr::AttackDamage);
-    }
+    let made = crate::mobs::finalize::made_at_load(m);
     // AttributeMap.pack writes the list even when no instance exists.
     map.entry("attributes".into())
         .or_insert_with(|| Tag::List(Vec::new()));
     for attr in made {
-        let base = crate::mobs::finalize::base_value(m, attr);
+        let base = crate::mobs::finalize::made_base(m, attr);
         let mut list = match map.get(&"attributes".into()) {
             Some(Tag::List(l)) => l.clone(),
             _ => Vec::new(),
         };
         let attr_id = format!("minecraft:{}", attr.name());
-        if !list
-            .iter()
-            .any(|t| text(t.get("id")).as_deref() == Some(attr_id.as_str()))
+        if let Some(existing) = list
+            .iter_mut()
+            .find(|t| text(t.get("id")).as_deref() == Some(attr_id.as_str()))
         {
+            // The model owns a wolf's health base.
+            if (species, attr) == (S::Wolf, Attr::MaxHealth)
+                && let Tag::Compound(c) = existing
+            {
+                c.insert("base".into(), Tag::Double(base.to_bits()));
+            }
+        } else {
             list.push(Tag::compound([
                 ("id", string(&attr_id)),
                 ("base", Tag::Double(base.to_bits())),
             ]));
-            map.insert("attributes".into(), Tag::List(list));
         }
+        map.insert("attributes".into(), Tag::List(list));
     }
     // Mob.addAdditionalSaveData: the chances that are not the default.
     if let Some(chances) = &m.extra.drop_chances {
@@ -1726,6 +1759,7 @@ fn put_attributes(map: &mut Compound, m: &Mob, a: &crate::mobs::finalize::Attrib
             })
             .collect();
         if modifiers.is_empty() && !a.bases.iter().any(|(b, _)| *b == attr) {
+            saved_attributes::forget_stale_modifiers(&mut list, attr);
             continue;
         }
         let id = format!("minecraft:{}", attr.name());
@@ -1810,42 +1844,6 @@ fn put_sulfur_attributes(map: &mut Compound, m: &Mob) {
     }
 }
 /// `Brain.Packed`: the memories finalizeSpawn set, over the saved ones.
-pub fn put_brain(map: &mut Compound, m: &Mob, dimension: &str) {
-    if m.extra.memories.is_empty() {
-        return;
-    }
-    let mut memories = match map.get(&"Brain".into()).and_then(|b| b.get("memories")) {
-        Some(Tag::Compound(c)) => c.clone(),
-        _ => Compound::new(),
-    };
-    for &(name, value, ttl) in &m.extra.memories {
-        let value = match name {
-            "hunted_recently" => Tag::Byte(value as i8),
-            // `Unit` memories save an empty compound.
-            "is_pregnant" => Tag::Compound(Compound::new()),
-            "home" => match m.extra.home {
-                Some(p) => Tag::compound([
-                    ("dimension", string(dimension)),
-                    ("pos", Tag::IntArray(p.to_vec())),
-                ]),
-                None => continue,
-            },
-            _ => Tag::Int(value as i32),
-        };
-        let mut memory = vec![("value", value)];
-        if ttl != i64::MAX {
-            memory.push(("ttl", Tag::Long(ttl)));
-        }
-        memories.insert(
-            format!("minecraft:{name}").as_str().into(),
-            Tag::compound(memory),
-        );
-    }
-    map.insert(
-        "Brain".into(),
-        Tag::compound([("memories", Tag::Compound(memories))]),
-    );
-}
 /// `CustomName`: a text component saved as a string or a `{text: ..}` compound.
 fn custom_name(tag: &Tag) -> Option<String> {
     match tag.get("CustomName")? {
@@ -1858,22 +1856,6 @@ fn custom_name(tag: &Tag) -> Option<String> {
     }
 }
 pub use horizon_client_core::component::name_text;
-/// Mob.finalizeSpawn's follow range bonus in the saved attributes.
-pub(crate) fn spawn_bonus(tag: &Tag) -> Option<f64> {
-    let Some(Tag::List(attrs)) = tag.get("attributes") else {
-        return None;
-    };
-    let range = attrs
-        .iter()
-        .find(|a| text(a.get("id")).as_deref() == Some("minecraft:follow_range"))?;
-    let Some(Tag::List(modifiers)) = range.get("modifiers") else {
-        return None;
-    };
-    let bonus = modifiers
-        .iter()
-        .find(|x| text(x.get("id")).as_deref() == Some("minecraft:random_spawn_bonus"))?;
-    float(bonus.get("amount"))
-}
 /// `Mob.readAdditionalSaveData`: negative radii retain the live homePosition.
 /// Used after the command adapter restores runtime AI, as well as fresh load.
 pub fn read_mob_home(m: &mut Mob, tag: &Tag) {
@@ -1921,10 +1903,22 @@ pub fn mob_from_nbt(
     id: u32,
     registry: Option<&BlockRegistry>,
 ) -> Option<Mob> {
+    let position = position(tag)?;
+    let random = crate::mobs::entity_random(id, position);
+    mob_from_nbt_with_random(tag, types, id, registry, random)
+}
+/// `mob_from_nbt` for a mob with its own random given (`Mob::with_random`).
+pub fn mob_from_nbt_with_random(
+    tag: &Tag,
+    types: &HashMap<String, Arc<MobType>>,
+    id: u32,
+    registry: Option<&BlockRegistry>,
+    random: horizon_core::random::LegacyRandom,
+) -> Option<Mob> {
     let kind = types.get(&self::kind(tag)?)?.clone();
     let position = position(tag)?;
     let [yaw, pitch] = rotation(tag);
-    let mut m = Mob::new(id, kind, position, yaw);
+    let mut m = Mob::with_random(id, kind, position, yaw, random);
     m.velocity = motion(tag);
     m.head_pitch = pitch;
     // LivingEntity.readAdditionalSaveData: `setSharedFlag(7, getBooleanOr(FallFlying, false))`.
@@ -1936,10 +1930,9 @@ pub fn mob_from_nbt(
     // the health, the max health when there is none.
     if let Some(Tag::List(attrs)) = tag.get("attributes") {
         for a in attrs {
-            let (Some(id), Some(Tag::Double(bits))) = (text(a.get("id")), a.get("base")) else {
+            let (Some(id), Some(v)) = (text(a.get("id")), float(a.get("base"))) else {
                 continue;
             };
-            let v = f64::from_bits(*bits);
             // A mount's rolled health and speed stay attribute bases, which
             // the server syncs (its hearts over the rider's hotbar).
             let equine = crate::mobs::equine::is_equine(m.species());
@@ -2012,11 +2005,7 @@ pub fn mob_from_nbt(
             }
         }
     }
-    if let Some(bonus) = spawn_bonus(tag) {
-        use crate::mobs::finalize::{Attr, Op, add_modifier};
-        let id = "minecraft:random_spawn_bonus";
-        add_modifier(&mut m, Attr::FollowRange, id, bonus, Op::AddMultipliedBase);
-    }
+    saved_attributes::read_attribute_modifiers(&mut m, tag);
     m.health = float(tag.get("Health")).map_or(m.attrs.max_health, |h| h as f32);
     m.absorption = float(tag.get("AbsorptionAmount"))
         .map_or(0.0, |h| h as f32)
@@ -2066,6 +2055,8 @@ pub fn mob_from_nbt(
         m.extra.set_main_hand(None);
     }
     m.death_time = number(tag.get("DeathTime")).unwrap_or(0) as i32;
+    m.impulse_grace_time =
+        number(tag.get("current_impulse_context_reset_grace_time")).unwrap_or(0) as i32;
     // Mob.readAdditionalSaveData overrides what the constructor set (copper
     // golems and elder guardians start persistent).
     m.persistent = flag(tag, "PersistenceRequired");
@@ -2124,7 +2115,15 @@ pub fn mob_from_nbt(
             ))
         };
     }
-    m.extra.pick_up_loot = flag(tag, "CanPickUpLoot");
+    // AbstractPiglin.readAdditionalSaveData: getBooleanOr("CanPickUpLoot", true).
+    let piglin = matches!(
+        m.species(),
+        crate::mobs::Species::Piglin | crate::mobs::Species::PiglinBrute
+    );
+    m.extra.pick_up_loot = tag
+        .get("CanPickUpLoot")
+        .and_then(int_value)
+        .map_or(piglin, |value| value as i8 != 0);
     m.custom_name = custom_name(tag);
     m.custom_name_text = tag.get("CustomName").map(name_text);
     m.extra.left_handed = flag(tag, "LeftHanded");
@@ -2197,7 +2196,7 @@ pub fn mob_from_nbt(
     m.silent = flag(tag, "Silent");
     m.invulnerable_flag = flag(tag, "Invulnerable");
     // Entity.load: `getIntOr("invulnerable_time", 0)`.
-    m.invulnerable = number(tag.get("invulnerable_time")).unwrap_or(0) as i32;
+    m.invulnerable_time = number(tag.get("invulnerable_time")).unwrap_or(0) as i32;
     if m.species() == crate::mobs::Species::Bat {
         // Bat.readAdditionalSaveData: BatFlags bit 0, resting.
         m.extra.flag = number(tag.get("BatFlags")).unwrap_or(0) & 1 != 0;
@@ -2233,6 +2232,9 @@ pub fn mob_from_nbt(
     ) {
         m.extra.flag2 = flag(tag, "IsImmuneToZombification");
         m.extra.counter2 = number(tag.get("TimeInOverworld")).unwrap_or(0) as i32;
+        if m.species() == crate::mobs::Species::Piglin {
+            crate::mobs::piglin::read_guarded_anger(&mut m, tag);
+        }
         if m.species() == crate::mobs::Species::Hoglin {
             m.extra.cannot_be_hunted = flag(tag, "CannotBeHunted");
         }
@@ -2289,16 +2291,20 @@ pub fn mob_from_nbt(
             .map(Into::into);
         if let Some(Tag::List(attrs)) = tag.get("attributes") {
             for a in attrs {
-                let (Some(id), Some(Tag::Double(bits))) = (text(a.get("id")), a.get("base")) else {
+                let (Some(id), Some(v)) = (text(a.get("id")), float(a.get("base"))) else {
                     continue;
                 };
                 if id == "minecraft:jump_strength" {
-                    m.extra.vector[0] = f64::from_bits(*bits);
+                    m.extra.vector[0] = v;
                 }
             }
         }
         if m.extra.vector[0] <= 0.0 {
-            m.extra.vector[0] = 0.7;
+            m.extra.vector[0] = if crate::mobs::equine::is_chested(m.species()) {
+                0.5
+            } else {
+                0.7
+            };
         }
     }
     if crate::mobs::finalize::saves_variant_name(m.species())
@@ -2482,6 +2488,8 @@ pub fn mob_from_nbt(
         };
         m.extra.ints[2] =
             number(memory("minecraft:liked_noteblock_cooldown_ticks")).unwrap_or(0) as i32;
+        m.extra.ints[3] =
+            number(memory("minecraft:item_pickup_cooldown_ticks")).unwrap_or(0) as i32;
         if let Some(st) = m.extra.allay.as_mut()
             && let Some(noteblock) = memory("minecraft:liked_noteblock")
             && let Some(Tag::IntArray(p)) = noteblock.get("pos")
@@ -2598,6 +2606,9 @@ pub fn mob_from_nbt(
         );
         if let Some(t) = number(tag.get("scute_time")) {
             m.extra.egg_time = t as i32;
+        } else {
+            // Armadillo(): scuteTime = pickNextScuteDropTime().
+            m.extra.egg_time = crate::mobs::ai::next_scute_time(&mut m);
         }
     }
     if m.species() == crate::mobs::Species::Ravager {
@@ -2609,12 +2620,11 @@ pub fn mob_from_nbt(
         m.extra.counter = number(tag.get("Lifetime")).unwrap_or(0) as i32;
     }
     if m.species() == crate::mobs::Species::Vex {
-        if let Some(Tag::IntArray(v)) = tag.get("bound_pos")
-            && v.len() == 3
-        {
-            m.extra.home = Some([v[0], v[1], v[2]]);
-        }
-        m.extra.egg_time = number(tag.get("life_ticks")).map_or(-1, |v| v as i32);
+        crate::mobs::vex::read_nbt(&mut m, tag);
+    }
+    // Bogged.readAdditionalSaveData: unsheared when absent.
+    if m.species() == crate::mobs::Species::Bogged {
+        m.extra.sheared = flag(tag, "sheared");
     }
     // Sheep.readAdditionalSaveData: white and unsheared when absent.
     if m.species() == crate::mobs::Species::Sheep {
@@ -2631,6 +2641,13 @@ pub fn mob_from_nbt(
     // IronGolem.readAdditionalSaveData: not player created when absent.
     if m.species() == crate::mobs::Species::IronGolem {
         m.extra.player_created = flag(tag, "PlayerCreated");
+    }
+    // SnowGolem.readAdditionalSaveData: getBooleanOr("Pumpkin", true).
+    if m.species() == crate::mobs::Species::SnowGolem {
+        m.extra.sheared = !tag
+            .get("Pumpkin")
+            .and_then(int_value)
+            .is_none_or(|value| value as i8 != 0);
     }
     // Pufferfish.readAdditionalSaveData: `getIntOr("PuffState", 0)`, at most 2.
     if m.species() == crate::mobs::Species::Pufferfish {
@@ -2652,9 +2669,9 @@ pub fn mob_from_nbt(
         m.extra.counter = number(tag.get("still_timeout")).unwrap_or(0) as i32;
     }
     if m.species() == crate::mobs::Species::Shulker {
-        m.extra.variant3 = number(tag.get("AttachFace")).unwrap_or(0).clamp(0, 5) as u8;
-        m.extra.counter = number(tag.get("Peek")).unwrap_or(0).clamp(0, 100) as i32;
-        m.extra.color = number(tag.get("Color")).map_or(16, |c| c.clamp(0, 16) as u8);
+        m.extra.variant3 = (number(tag.get("AttachFace")).unwrap_or(0) % 6).unsigned_abs() as u8;
+        m.extra.counter = number(tag.get("Peek")).map_or(0, |v| v as i8 as i32);
+        m.extra.color = number(tag.get("Color")).map_or(16, |v| v as i8 as u8);
         m.anim.v[0] = m.extra.counter as f32 * 0.01;
         m.anim.vo[0] = m.anim.v[0];
         // Shulker.setPos: square on its block.
@@ -2684,10 +2701,10 @@ pub fn mob_from_nbt(
         crate::mobs::phantom::set_size(&mut m, number(tag.get("size")).unwrap_or(0) as i32);
         m.extra.home = home_block_pos(tag.get("anchor_pos"));
     }
-    // Zombie, Piglin and Zoglin.readAdditionalSaveData: IsBaby (the baby
-    // zombies of trial spawners).
-    if !crate::mobs::finalize::ageable(m.species()) && flag(tag, "IsBaby") {
-        crate::mobs::finalize::set_baby(&mut m, true);
+    // Zombie, Piglin and Zoglin.readAdditionalSaveData: setBaby(IsBaby), after the
+    // saved modifiers, so it also removes a saved permanent `minecraft:baby`.
+    if !crate::mobs::finalize::ageable(m.species()) {
+        crate::mobs::finalize::set_baby(&mut m, flag(tag, "IsBaby"));
     }
     // Zombie.readAdditionalSaveData: setCanBreakDoors.
     if crate::mobs::doors::is_zombie(m.species()) {
@@ -2733,13 +2750,9 @@ pub fn mob_from_nbt(
         m.extra.left_handed = false;
         m.no_ai = false;
     }
-    // A mob saved mid-death finishes dying; one saved dead is dropped.
-    if m.health <= 0.0 && m.death_time == 0 {
-        return None;
-    }
-    // DeathTime only counts while dead.
-    if m.health > 0.0 {
-        m.death_time = 0;
+    // setHealth clamps a negative health to 0; a dead mob keeps its body (tickDeath).
+    if m.health < 0.0 {
+        m.health = 0.0;
     }
     Some(m)
 }
@@ -2772,7 +2785,7 @@ fn item_entity_to_nbt_saved(e: &ItemEntity, uuid: [i32; 4], raw: Option<&Tag>, i
         motion: e.velocity,
         rotation: e.rotation,
         on_ground: e.on_ground,
-        fall_distance: 0.0,
+        fall_distance: e.fall_distance,
     };
     let mut tag = base.non_mob_tag(raw);
     for (key, value) in [
@@ -2808,10 +2821,17 @@ fn item_entity_to_nbt_saved(e: &ItemEntity, uuid: [i32; 4], raw: Option<&Tag>, i
 /// `PrimedTnt.readAdditionalSaveData`: `explosion_power`, 4 by default and
 /// clamped to 0..128.
 pub fn tnt_power(tag: &Tag) -> f32 {
-    match tag.get("explosion_power") {
-        Some(Tag::Float(bits)) => f32::from_bits(*bits).clamp(0.0, 128.0),
+    // `getFloatOr` accepts any numeric tag, not only a float.
+    let power = match tag.get("explosion_power") {
+        Some(Tag::Byte(v)) => f32::from(*v),
+        Some(Tag::Short(v)) => f32::from(*v),
+        Some(Tag::Int(v)) => *v as f32,
+        Some(Tag::Long(v)) => *v as f32,
+        Some(Tag::Float(bits)) => f32::from_bits(*bits),
+        Some(Tag::Double(bits)) => f64::from_bits(*bits) as f32,
         _ => 4.0,
-    }
+    };
+    power.clamp(0.0, 128.0)
 }
 
 /// `PrimedTnt.addAdditionalSaveData`: its `fuse` and, when it is not the
@@ -2941,6 +2961,8 @@ pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemE
         on_ground: flag(tag, "OnGround"),
         vertical_collision: false,
         horizontal_collision: false,
+        // Entity.load: getDoubleOr, any number widened.
+        fall_distance: float(tag.get("fall_distance")).unwrap_or(0.0),
         age: number(tag.get("Age")).unwrap_or(0) as i32,
         pickup_delay: number(tag.get("PickupDelay")).unwrap_or(0),
         bob_offset,
@@ -2948,12 +2970,15 @@ pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemE
         needs_sync: false,
         stuck: Vec3::ZERO,
         was_touching_water: false,
+        // The caller gives it the own random that drew its UUID and bobOffs.
+        random: horizon_core::random::LegacyRandom::new(0),
     })
 }
 
 /// `OminousItemSpawner.addAdditionalSaveData`: its item (left out when
 /// empty) and `spawn_item_after_ticks`. Its tick count is the entity's
 /// `tickCount`, which isn't saved: a reloaded spawner counts from 0 again.
+/// It never moves, so the `Motion` it was loaded with is what it saves.
 pub fn ominous_item_spawner_to_nbt(
     item: &crate::items::ItemStack,
     position: Vec3,
@@ -2965,7 +2990,7 @@ pub fn ominous_item_spawner_to_nbt(
         id: "minecraft:ominous_item_spawner",
         uuid,
         position,
-        motion: Vec3::ZERO,
+        motion: raw.map_or(Vec3::ZERO, loaded_motion),
         rotation: [0.0, 0.0],
         on_ground: false,
         fall_distance: 0.0,
@@ -3014,7 +3039,7 @@ pub fn orb_to_nbt(o: &ExperienceOrb, uuid: [i32; 4]) -> Tag {
     for (key, value) in [
         ("Health", Tag::Short(o.health as i16)),
         ("Age", Tag::Short(o.age.min(i16::MAX as u32) as i16)),
-        ("Value", Tag::Short(o.value.min(i16::MAX as u32) as i16)),
+        ("Value", Tag::Short(o.value as i16)),
         ("Count", Tag::Int(o.count.min(i32::MAX as u32) as i32)),
     ] {
         put(&mut tag, key, value);
@@ -3039,7 +3064,8 @@ pub fn orbs_from_nbt(tag: &Tag) -> Vec<ExperienceOrb> {
         position,
         previous: position,
         velocity: motion(tag),
-        value: number(tag.get("Value")).unwrap_or(1).max(1) as u32,
+        // `getShortOr("Value", 0)`, unclamped.
+        value: tag.get("Value").and_then(int_value).unwrap_or(0) as i16 as i32,
         age: number(tag.get("Age")).unwrap_or(0).max(0) as u32,
         on_ground: flag(tag, "OnGround"),
         count,
@@ -3081,7 +3107,7 @@ pub fn arrow_to_nbt(
         position: p.position,
         motion: p.velocity,
         rotation: [p.yaw, p.pitch],
-        on_ground: false,
+        on_ground: p.on_ground,
         fall_distance: a.fall_distance,
     };
     let mut tag = base.tag(raw);
@@ -3168,6 +3194,7 @@ pub fn arrow_from_nbt(
     p.left_owner = flag(tag, "LeftOwner");
     p.owner_uuid = owner;
     p.no_gravity = flag(tag, "NoGravity");
+    p.on_ground = flag(tag, "OnGround");
     let a = p.arrow.as_mut()?;
     a.life = number(tag.get("life")).unwrap_or(0) as i16 as i32;
     a.shake = (number(tag.get("shake")).unwrap_or(0) as i8 as u8).into();
@@ -3212,6 +3239,7 @@ pub fn fireball_to_nbt(
     let power = match p.kind {
         ProjectileKind::LargeFireball { power } => Some(power),
         ProjectileKind::SmallFireball
+        | ProjectileKind::DragonFireball
         | ProjectileKind::WindCharge
         | ProjectileKind::BreezeWindCharge
         | ProjectileKind::WitherSkull { .. } => None,
@@ -3223,8 +3251,8 @@ pub fn fireball_to_nbt(
         position: p.position,
         motion: p.velocity,
         rotation: [p.yaw, p.pitch],
-        on_ground: false,
-        fall_distance: 0.0,
+        on_ground: p.on_ground,
+        fall_distance: p.fall_distance,
     };
     let mut tag = base.tag(raw);
     put(
@@ -3233,12 +3261,8 @@ pub fn fireball_to_nbt(
         Tag::Double(p.acceleration.to_bits()),
     );
     put_projectile(&mut tag, p, owner);
-    // AbstractHurtingProjectile.tick: shouldBurn is true for both fireballs, so
-    // once ticked they igniteForSeconds(1) every tick. WitherSkull.shouldBurn is
-    // false, so a skull never saves a fire.
-    if p.age > 0 && p.kind.is_item_fireball() {
-        let fire = number(tag.get("Fire")).unwrap_or(0).max(20);
-        put(&mut tag, "Fire", Tag::Short(fire as i16));
+    if p.is_fireball() {
+        put_projectile_entity_fields(&mut tag, p);
     }
     if let Some(power) = power {
         put(&mut tag, "ExplosionPower", Tag::Byte(power as i8));
@@ -3323,6 +3347,7 @@ pub fn saved_with_chunk(p: &Projectile) -> bool {
     match &p.kind {
         ProjectileKind::LargeFireball { .. }
         | ProjectileKind::SmallFireball
+        | ProjectileKind::DragonFireball
         | ProjectileKind::WindCharge
         | ProjectileKind::BreezeWindCharge
         | ProjectileKind::WitherSkull { .. }
@@ -3356,11 +3381,12 @@ pub fn throwable_to_nbt(
         position: p.position,
         motion: p.velocity,
         rotation: [p.yaw, p.pitch],
-        on_ground: false,
-        fall_distance: 0.0,
+        on_ground: p.on_ground,
+        fall_distance: p.fall_distance,
     };
     let mut tag = base.tag(raw);
     put_projectile(&mut tag, p, owner);
+    put_projectile_entity_fields(&mut tag, p);
     // Entity.saveWithoutId writes NoGravity only when set.
     if p.no_gravity {
         put(&mut tag, "NoGravity", Tag::Byte(1));
@@ -3397,6 +3423,8 @@ pub fn throwable_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Project
     p.has_been_shot = flag(tag, "HasBeenShot");
     p.owner_uuid = owner;
     p.no_gravity = flag(tag, "NoGravity");
+    load_projectile_entity_fields(&mut p, tag);
+    p.on_ground = flag(tag, "OnGround");
     Some(p)
 }
 
@@ -3442,6 +3470,7 @@ pub fn spit_or_bullet_from_nbt(
     p.has_been_shot = flag(tag, "HasBeenShot");
     p.owner_uuid = owner;
     p.no_gravity = flag(tag, "NoGravity");
+    p.on_ground = flag(tag, "OnGround");
     Some(p)
 }
 
@@ -3466,7 +3495,7 @@ pub fn spit_or_bullet_to_nbt(
         position: p.position,
         motion: p.velocity,
         rotation: [p.yaw, p.pitch],
-        on_ground: false,
+        on_ground: p.on_ground,
         fall_distance: 0.0,
     };
     let mut tag = base.tag(raw);
@@ -3517,6 +3546,7 @@ pub fn fireball_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Projecti
             power: number(tag.get("ExplosionPower")).unwrap_or(1) as i32,
         },
         "minecraft:small_fireball" => ProjectileKind::SmallFireball,
+        "minecraft:dragon_fireball" => ProjectileKind::DragonFireball,
         "minecraft:wind_charge" => ProjectileKind::WindCharge,
         "minecraft:breeze_wind_charge" => ProjectileKind::BreezeWindCharge,
         // WitherSkull.readAdditionalSaveData: an absent `dangerous` is a black skull.
@@ -3534,6 +3564,11 @@ pub fn fireball_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Projecti
     p.has_been_shot = flag(tag, "HasBeenShot");
     p.owner_uuid = owner;
     p.no_gravity = flag(tag, "NoGravity");
+    if p.is_fireball() {
+        load_projectile_entity_fields(&mut p, tag);
+    }
+    p.on_ground = flag(tag, "OnGround");
+    p.fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
     p.acceleration = float(tag.get("acceleration_power")).unwrap_or(0.1);
     if let Some(item) = tag.get("Item").and_then(item_from_nbt) {
         p.set_item(item);
@@ -3553,6 +3588,13 @@ pub struct RocketNbt {
     pub angled: bool,
     pub owner: Option<Who>,
     pub left_owner: bool,
+    pub on_ground: bool,
+    /// `Entity.load`'s Rotation.
+    pub rotation: [f32; 2],
+    /// `Projectile.hasBeenShot`: false until its first tick posts `projectile_shoot`.
+    pub has_been_shot: bool,
+    /// `Entity.isSilent`: no launch sound.
+    pub silent: bool,
 }
 pub fn firework_rocket_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<RocketNbt> {
     let owner = uuid_from_tag(tag.get("Owner"));
@@ -3565,6 +3607,10 @@ pub fn firework_rocket_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<R
         angled: flag(tag, "ShotAtAngle"),
         owner: (player.is_some() && owner == player).then_some(Who::Player),
         left_owner: flag(tag, "LeftOwner"),
+        on_ground: flag(tag, "OnGround"),
+        rotation: rotation(tag),
+        has_been_shot: flag(tag, "HasBeenShot"),
+        silent: flag(tag, "Silent"),
     })
 }
 
@@ -3580,6 +3626,9 @@ pub struct RocketSave<'a> {
     pub angled: bool,
     pub owner: Option<[i32; 4]>,
     pub left_owner: bool,
+    /// `Entity.onGround`, from the rocket's last `Entity.move`.
+    pub on_ground: bool,
+    pub has_been_shot: bool,
 }
 pub fn firework_rocket_to_nbt(r: &RocketSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
     let mut tag = Base {
@@ -3588,7 +3637,7 @@ pub fn firework_rocket_to_nbt(r: &RocketSave, uuid: [i32; 4], raw: Option<&Tag>)
         position: r.position,
         motion: r.motion,
         rotation: r.rotation,
-        on_ground: false,
+        on_ground: r.on_ground,
         fall_distance: 0.0,
     }
     .tag(raw);
@@ -3597,7 +3646,7 @@ pub fn firework_rocket_to_nbt(r: &RocketSave, uuid: [i32; 4], raw: Option<&Tag>)
         ("LifeTime", Tag::Int(r.lifetime)),
         ("FireworksItem", item_to_nbt(r.item)),
         ("ShotAtAngle", Tag::Byte(i8::from(r.angled))),
-        ("HasBeenShot", Tag::Byte(1)),
+        ("HasBeenShot", Tag::Byte(i8::from(r.has_been_shot))),
     ] {
         put(&mut tag, key, value);
     }
@@ -3610,98 +3659,10 @@ pub fn firework_rocket_to_nbt(r: &RocketSave, uuid: [i32; 4], raw: Option<&Tag>)
     tag
 }
 
-/// A thrown trident as `AbstractArrow` + `ThrownTrident` save it.
-pub struct TridentSave<'a> {
-    pub position: Vec3,
-    pub motion: Vec3,
-    pub yaw: f32,
-    pub pitch: f32,
-    pub in_ground: bool,
-    pub life: i32,
-    pub shake: u32,
-    pub dealt_damage: bool,
-    pub creative_only: bool,
-    pub no_gravity: bool,
-    pub fire_ticks: i32,
-    pub item: &'a crate::items::ItemStack,
-}
-pub fn trident_to_nbt(t: &TridentSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
-    let mut tag = Base {
-        id: "minecraft:trident",
-        uuid,
-        position: t.position,
-        motion: t.motion,
-        rotation: [t.yaw, t.pitch],
-        on_ground: false,
-        fall_distance: 0.0,
-    }
-    .tag(raw);
-    // Projectile.addAdditionalSaveData: LeftOwner once set. A trident keeps no
-    // owner, and an ownerless projectile has left it on its first tick.
-    if let Tag::Compound(map) = &mut tag {
-        map.entry("LeftOwner".into()).or_insert(Tag::Byte(1));
-    }
-    for (key, value) in [
-        ("life", Tag::Short(t.life as i16)),
-        ("shake", Tag::Byte(t.shake as i8)),
-        ("inGround", Tag::Byte(i8::from(t.in_ground))),
-        // AbstractArrow.Pickup: 0 disallowed, 1 allowed, 2 creative only.
-        ("pickup", Tag::Byte(if t.creative_only { 2 } else { 1 })),
-        ("damage", Tag::Double(2.0_f64.to_bits())),
-        ("HasBeenShot", Tag::Byte(1)),
-        ("crit", Tag::Byte(0)),
-        ("PierceLevel", Tag::Byte(0)),
-        ("SoundEvent", string("minecraft:item.trident.hit_ground")),
-        ("item", item_to_nbt(t.item)),
-        ("DealtDamage", Tag::Byte(i8::from(t.dealt_damage))),
-        ("Fire", Tag::Short(t.fire_ticks as i16)),
-    ] {
-        put(&mut tag, key, value);
-    }
-    // Entity.saveWithoutId writes NoGravity only when set.
-    if t.no_gravity {
-        put(&mut tag, "NoGravity", Tag::Byte(1));
-    } else if let Tag::Compound(map) = &mut tag {
-        map.remove(&"NoGravity".into());
-    }
-    tag
-}
-/// (position, motion, yaw, pitch, in ground, life, shake, dealt damage,
-/// creative only, the trident item)
-pub struct TridentNbt {
-    pub position: Vec3,
-    pub motion: Vec3,
-    pub yaw: f32,
-    pub pitch: f32,
-    pub in_ground: bool,
-    pub life: i32,
-    pub shake: u32,
-    pub dealt_damage: bool,
-    pub creative_only: bool,
-    pub no_gravity: bool,
-    pub fire_ticks: i32,
-    pub item: crate::items::ItemStack,
-}
-pub fn trident_from_nbt(tag: &Tag) -> Option<TridentNbt> {
-    let [yaw, pitch] = rotation(tag);
-    Some(TridentNbt {
-        position: position(tag)?,
-        motion: motion(tag),
-        yaw,
-        pitch,
-        in_ground: flag(tag, "inGround"),
-        life: number(tag.get("life")).unwrap_or(0) as i32,
-        shake: number(tag.get("shake")).unwrap_or(0).max(0) as u32,
-        dealt_damage: flag(tag, "DealtDamage"),
-        creative_only: number(tag.get("pickup")) == Some(2),
-        no_gravity: flag(tag, "NoGravity"),
-        fire_ticks: number(tag.get("Fire")).unwrap_or(0) as i32,
-        item: tag
-            .get("item")
-            .and_then(item_from_nbt)
-            .unwrap_or_else(|| crate::items::ItemStack::new("minecraft:trident", 1)),
-    })
-}
+mod trident;
+pub use trident::{TRIDENT_HIT_GROUND, TridentNbt, TridentSave, trident_from_nbt, trident_to_nbt};
+mod hanging;
+pub use hanging::*;
 
 /// `FallingBlockEntity`: BlockState, Time, DropItem, HurtEntities.
 #[allow(clippy::too_many_arguments)]
@@ -3713,6 +3674,7 @@ pub fn falling_block_to_nbt(
     drop_item: bool,
     damage: crate::falling_block::Damage,
     fall_distance: f64,
+    on_ground: bool,
     rotation: [f32; 2],
     uuid: [i32; 4],
 ) -> Tag {
@@ -3722,7 +3684,7 @@ pub fn falling_block_to_nbt(
         position,
         motion,
         rotation,
-        on_ground: false,
+        on_ground,
         fall_distance,
     };
     let mut tag = base.tag(None);
@@ -3772,60 +3734,18 @@ pub fn falling_block_flags(tag: &Tag) -> (bool, bool) {
     )
 }
 
-/// Painting.addAdditionalSaveData: `facing`, `variant` and `block_pos`.
-pub fn painting_to_nbt(p: &Painting, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
-    let (lo, hi) = p.bounds();
-    let base = Base {
-        id: "minecraft:painting",
-        uuid,
-        position: Vec3::new(
-            (lo[0] + hi[0]) / 2.0,
-            (lo[1] + hi[1]) / 2.0,
-            (lo[2] + hi[2]) / 2.0,
-        ),
-        motion: Vec3::ZERO,
-        rotation: [f32::from(p.facing) * 90.0, 0.0],
-        on_ground: false,
-        fall_distance: 0.0,
-    };
-    let mut tag = base.tag(raw);
-    put(&mut tag, "facing", Tag::Byte(p.facing as i8));
-    put(&mut tag, "variant", string(&p.variant));
-    put(&mut tag, "block_pos", Tag::IntArray(p.pos.to_vec()));
-    tag
-}
-/// `BlockAttachedEntity.readAdditionalSaveData`: `block_pos` when saved; a
-/// summoned one has none, and `setPos` puts its block at the block holding
-/// the summon position.
-fn attached_block_pos(tag: &Tag) -> Option<[i32; 3]> {
-    match tag.get("block_pos") {
-        Some(Tag::IntArray(v)) if v.len() == 3 => Some([v[0], v[1], v[2]]),
-        _ => {
-            let at = position(tag)?;
-            Some([
-                at.x.floor() as i32,
-                at.y.floor() as i32,
-                at.z.floor() as i32,
-            ])
-        }
-    }
-}
-/// The block position, facing and variant of a saved painting.
-pub fn painting_from_nbt(tag: &Tag) -> Option<([i32; 3], u8, String)> {
-    let pos = attached_block_pos(tag)?;
-    let facing = (number(tag.get("facing")).unwrap_or(0) & 3) as u8;
-    Some((pos, facing, text(tag.get("variant"))?))
-}
-/// Cushion.addAdditionalSaveData: the block it sits on and its colour.
+/// `Cushion.addAdditionalSaveData`: the block it sits on and its colour.
 pub fn cushion_to_nbt(c: &Cushion, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
+    // A block-attached cushion does not update these: they stay as loaded.
+    let (on_ground, fall_distance) = raw.map_or((false, 0.0), ground_from_nbt);
     let base = Base {
         id: "minecraft:cushion",
         uuid,
         position: c.position,
         motion: Vec3::ZERO,
         rotation: [c.yaw, 0.0],
-        on_ground: false,
-        fall_distance: 0.0,
+        on_ground,
+        fall_distance,
     };
     let mut tag = base.tag(raw);
     put(&mut tag, "block_pos", Tag::IntArray(c.pos.to_vec()));
@@ -3867,95 +3787,8 @@ pub fn cushion_from_nbt(tag: &Tag, id: u32) -> Option<Cushion> {
 }
 
 #[cfg(test)]
-mod cushion_tests {
-    use super::*;
-
-    #[test]
-    fn cushion_save_preserves_color_anchor_rotation_and_unknown_data() {
-        let cushion = Cushion {
-            id: 7,
-            position: Vec3::new(-1.5, 64.5, 3.5),
-            pos: [-2, 64, 3],
-            yaw: 270.0,
-            color: 14,
-            check_interval: 55,
-            custom_name: None,
-        };
-        let raw = Tag::compound([("CustomName", string("Seat"))]);
-        let tag = cushion_to_nbt(&cushion, [1, 2, 3, 4], Some(&raw));
-        assert_eq!(text(tag.get("CustomName")).as_deref(), Some("Seat"));
-        let loaded = cushion_from_nbt(&tag, 8).unwrap();
-        assert_eq!(loaded.id, 8);
-        assert_eq!(loaded.position, cushion.position);
-        assert_eq!(loaded.pos, cushion.pos);
-        assert_eq!(loaded.yaw, cushion.yaw);
-        assert_eq!(loaded.color_name(), "red");
-        assert_eq!(loaded.check_interval, 0);
-        assert_eq!(loaded.bounds(), cushion.bounds());
-    }
-}
-/// ItemFrame.addAdditionalSaveData.
-pub fn item_frame_to_nbt(f: &ItemFrame, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
-    let (lo, hi) = f.bounds();
-    let base = Base {
-        id: f.kind(),
-        uuid,
-        position: Vec3::new(
-            (lo[0] + hi[0]) / 2.0,
-            (lo[1] + hi[1]) / 2.0,
-            (lo[2] + hi[2]) / 2.0,
-        ),
-        motion: Vec3::ZERO,
-        rotation: [0.0, 0.0],
-        on_ground: false,
-        fall_distance: 0.0,
-    };
-    let mut tag = base.tag(raw);
-    // `Entity.saveWithoutId`: `CustomName` before the frame's own fields.
-    if let Some(name) = &f.custom_name {
-        put(&mut tag, "CustomName", name.clone());
-    } else if let Tag::Compound(map) = &mut tag {
-        map.remove(&"CustomName".into());
-    }
-    put(&mut tag, "Facing", Tag::Byte(f.facing as i8));
-    put(&mut tag, "block_pos", Tag::IntArray(f.pos.to_vec()));
-    put(&mut tag, "ItemRotation", Tag::Byte(f.rotation as i8));
-    put(
-        &mut tag,
-        "ItemDropChance",
-        Tag::Float(f.drop_chance.to_bits()),
-    );
-    put(&mut tag, "Invisible", Tag::Byte(i8::from(f.invisible)));
-    put(&mut tag, "Fixed", Tag::Byte(i8::from(f.fixed)));
-    if let Tag::Compound(map) = &mut tag {
-        map.remove(&horizon_world::nbt::JavaString::from("Item"));
-    }
-    if let Some(item) = &f.item {
-        put(&mut tag, "Item", item_to_nbt(item));
-    }
-    tag
-}
-/// `ItemFrame.readAdditionalSaveData`: an absent Facing defaults to Direction.DOWN.
-pub fn item_frame_from_nbt(tag: &Tag, id: u32) -> Option<ItemFrame> {
-    let pos = attached_block_pos(tag)?;
-    Some(ItemFrame {
-        id,
-        pos,
-        facing: number(tag.get("Facing")).unwrap_or(0).clamp(0, 5) as u8,
-        glow: kind(tag).as_deref() == Some("minecraft:glow_item_frame"),
-        item: tag
-            .get("Item")
-            .and_then(item_from_nbt)
-            .map(|s| crate::items::ItemStack { count: 1, ..s }),
-        rotation: (number(tag.get("ItemRotation")).unwrap_or(0) & 7) as u8,
-        drop_chance: float(tag.get("ItemDropChance")).map_or(1.0, |v| v as f32),
-        fixed: flag(tag, "Fixed"),
-        invisible: flag(tag, "Invisible"),
-        check_interval: 0,
-        custom_name: tag.get("CustomName").cloned(),
-        random: crate::random_source::entity(),
-    })
-}
+#[path = "cushion_tests.rs"]
+mod cushion_tests;
 /// ArmorStand.addAdditionalSaveData with LivingEntity's `equipment`.
 pub fn armor_stand_to_nbt(a: &ArmorStand, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
     let base = Base {
@@ -4104,11 +3937,14 @@ pub fn armor_stand_from_nbt(tag: &Tag, id: u32) -> Option<ArmorStand> {
 /// `AbstractBoat.addAdditionalSaveData` / `ContainerEntity.addChestVehicleSaveData`:
 /// only chest boats own container fields; a pending table replaces `Items`.
 /// Ordinary slots use `ContainerHelper.saveAllItems` through the existing item encoder.
+/// `ground` is the live `OnGround` and `fall_distance` (`Entity.saveWithoutId`).
+#[allow(clippy::too_many_arguments)]
 pub fn boat_to_nbt(
     id: &str,
     position: Vec3,
     motion: Vec3,
     rotation: [f32; 2],
+    ground: (bool, f64),
     uuid: [i32; 4],
     raw: Option<&Tag>,
     items: Option<&[Option<crate::items::ItemStack>]>,
@@ -4119,8 +3955,8 @@ pub fn boat_to_nbt(
         position,
         motion,
         rotation,
-        on_ground: false,
-        fall_distance: 0.0,
+        on_ground: ground.0,
+        fall_distance: ground.1,
     }
     .non_mob_tag(raw);
     if let Tag::Compound(map) = &mut tag {
@@ -4142,12 +3978,14 @@ pub fn boat_to_nbt(
     }
     tag
 }
-/// A vehicle's base entity tag (boats and minecarts).
+/// A vehicle's base entity tag (minecarts, the dragon and end crystals), with
+/// the live `OnGround` and `fall_distance` in `ground`.
 pub fn vehicle_to_nbt(
     id: &str,
     position: Vec3,
     motion: Vec3,
     rotation: [f32; 2],
+    ground: (bool, f64),
     uuid: [i32; 4],
     raw: Option<&Tag>,
 ) -> Tag {
@@ -4157,13 +3995,22 @@ pub fn vehicle_to_nbt(
         position,
         motion,
         rotation,
-        on_ground: false,
-        fall_distance: 0.0,
+        on_ground: ground.0,
+        fall_distance: ground.1,
     }
     .tag(raw)
 }
 pub fn boat_from_nbt(tag: &Tag) -> Option<(Vec3, Vec3, f32)> {
     Some((position(tag)?, motion(tag), rotation(tag)[0]))
+}
+/// `Entity.load`'s `OnGround` (`getBooleanOr`: `byteValue() != 0`) and
+/// `fall_distance` (`getDoubleOr`: any number's `doubleValue`), defaulting to
+/// false and 0.
+pub fn ground_from_nbt(tag: &Tag) -> (bool, f64) {
+    (
+        flag(tag, "OnGround"),
+        float(tag.get("fall_distance")).unwrap_or(0.0),
+    )
 }
 
 /// `VillagerData`: type, profession and level.
@@ -4376,6 +4223,17 @@ mod tnt_power_tests {
         assert_eq!(tnt_power(&with(Some(10.0))), 10.0);
         assert_eq!(tnt_power(&with(Some(200.0))), 128.0);
         assert_eq!(tnt_power(&with(Some(-3.0))), 0.0);
+        // Any numeric tag type counts, as with `getFloatOr`.
+        let numeric = |tag: Tag| {
+            let mut map = std::collections::BTreeMap::new();
+            map.insert("explosion_power".into(), tag);
+            Tag::Compound(map)
+        };
+        assert_eq!(tnt_power(&numeric(Tag::Int(50))), 50.0);
+        assert_eq!(tnt_power(&numeric(Tag::Byte(7))), 7.0);
+        assert_eq!(tnt_power(&numeric(Tag::Short(9))), 9.0);
+        assert_eq!(tnt_power(&numeric(Tag::Long(500))), 128.0);
+        assert_eq!(tnt_power(&numeric(Tag::Double(12.5f64.to_bits()))), 12.5);
         // And it round-trips through the save, which writes it only when it is
         // not the default.
         let saved = tnt_to_nbt(
@@ -4464,6 +4322,40 @@ mod tnt_power_tests {
     /// `EntityReference.store(owner, output, "owner")`: the igniter's UUID as
     /// an int array, read back by `EntityReference.read`; an owner the save
     /// could not name keeps the loaded one from the raw compound.
+    /// A dragon fireball saved with no raw compound: its own id, UUID,
+    /// motion, power and owner, no fireball item or explosion power, and no
+    /// fire (`DragonFireball.shouldBurn` is false); it loads back as itself.
+    #[test]
+    fn a_dragon_fireball_saves_and_loads_as_itself_without_raw_data() {
+        let mut p = Projectile::new(
+            ProjectileKind::DragonFireball,
+            Vec3::new(1.5, 70.0, -2.5),
+            None,
+        );
+        p.velocity = Vec3::new(0.1, 0.0, 0.0);
+        p.acceleration = 0.1;
+        p.age = 3;
+        let tag = fireball_to_nbt(&p, [1, 2, 3, 4], Some([5, 6, 7, 8]), None).unwrap();
+        assert_eq!(kind(&tag).as_deref(), Some("minecraft:dragon_fireball"));
+        assert_eq!(uuid(&tag), Some([1, 2, 3, 4]));
+        assert_eq!(uuid_from_tag(tag.get("Owner")), Some([5, 6, 7, 8]));
+        assert_eq!(float(tag.get("acceleration_power")), Some(0.1));
+        for absent in ["ExplosionPower", "Item"] {
+            assert!(tag.get(absent).is_none(), "{absent}");
+        }
+        // Entity.saveWithoutId always writes Fire; a fireball that does not
+        // burn is never ignited (an item fireball saves at least 20).
+        assert!(
+            number(tag.get("Fire")).unwrap_or(0) <= 0,
+            "{:?}",
+            tag.get("Fire")
+        );
+        let back = fireball_from_nbt(&tag, None).unwrap();
+        assert_eq!(back.kind, ProjectileKind::DragonFireball);
+        assert_eq!(back.velocity, p.velocity);
+        assert_eq!(back.owner_uuid, Some([5, 6, 7, 8]));
+        assert!(saved_with_chunk(&back));
+    }
     #[test]
     fn the_owner_round_trips_as_a_uuid() {
         let save = |owner, raw: Option<&Tag>| {
@@ -4492,74 +4384,7 @@ mod tnt_power_tests {
 }
 
 #[cfg(test)]
-mod spell_ticks_nbt_tests {
-    use super::*;
-    use crate::mobs::Species;
-
-    fn caster(species: Species, name: &str) -> Mob {
-        let mut kind = crate::mobs::sensor_scan_tests::kind();
-        let ty = Arc::make_mut(&mut kind);
-        ty.species = species;
-        ty.id = format!("minecraft:{name}");
-        Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0)
-    }
-
-    /// `SpellcasterIllager.readAdditionalSaveData`: bind loaded values to the
-    /// counter already used by casting goals and customServerAiStep.
-    #[test]
-    fn spell_ticks_load_into_the_live_counter() {
-        for (species, name) in [
-            (Species::Evoker, "evoker"),
-            (Species::Illusioner, "illusioner"),
-        ] {
-            let m = caster(species, name);
-            let types = HashMap::from([(m.kind.id.clone(), m.kind.clone())]);
-            for value in [None, Some(30), Some(0), Some(-2)] {
-                let mut raw = Tag::compound([
-                    ("id", string(&m.kind.id)),
-                    ("Pos", doubles(&[0.5, 64.0, 0.5])),
-                ]);
-                if let Some(value) = value {
-                    put(&mut raw, "SpellTicks", Tag::Int(value));
-                }
-                let loaded = mob_from_nbt(&raw, &types, 2, None).unwrap();
-                assert_eq!(
-                    loaded.extra.counter,
-                    value.unwrap_or(0),
-                    "{name}: {value:?}"
-                );
-                let saved = mob_to_nbt(&loaded, [1, 2, 3, 4], None, None, |_| None);
-                assert_eq!(saved.get("SpellTicks"), Some(&Tag::Int(value.unwrap_or(0))));
-            }
-        }
-    }
-
-    /// `SpellcasterIllager.addAdditionalSaveData`: live state wins even when
-    /// no raw input exists or the original raw counter has become stale.
-    #[test]
-    fn spell_ticks_save_the_mutated_model_without_a_raw_fallback() {
-        for (species, name) in [
-            (Species::Evoker, "evoker"),
-            (Species::Illusioner, "illusioner"),
-        ] {
-            let mut m = caster(species, name);
-            let raw = Tag::compound([
-                ("SpellTicks", Tag::Int(30)),
-                ("audit:unrelated", Tag::Int(7)),
-            ]);
-            for value in [29, 27, 20, 0, -2] {
-                m.extra.counter = value;
-                for raw in [None, Some(&raw)] {
-                    let saved = mob_to_nbt(&m, [1, 2, 3, 4], raw, None, |_| None);
-                    assert_eq!(saved.get("SpellTicks"), Some(&Tag::Int(value)), "{name}");
-                    if raw.is_some() {
-                        assert_eq!(saved.get("audit:unrelated"), Some(&Tag::Int(7)));
-                    }
-                }
-            }
-        }
-    }
-}
+mod spell_ticks_nbt_tests;
 
 #[cfg(test)]
 mod tests {
@@ -5088,7 +4913,7 @@ mod tests {
         let item = ItemStack::new("minecraft:firework_rocket", 1);
         let tag = firework_rocket_to_nbt(
             &RocketSave {
-                rotation: [0.0, 0.0],
+                rotation: [90.0, 10.0],
                 position: Vec3::new(1.5, 70.0, -3.25),
                 motion: Vec3::new(0.0, 0.5, 0.0),
                 life: 7,
@@ -5097,13 +4922,19 @@ mod tests {
                 angled: true,
                 owner: None,
                 left_owner: false,
+                on_ground: true,
+                has_been_shot: false,
             },
             [1, 2, 3, 4],
             None,
         );
         let r = firework_rocket_from_nbt(&tag, None).unwrap();
-        assert_eq!((r.life, r.lifetime, r.angled), (7, 31, true));
+        assert_eq!(
+            (r.life, r.lifetime, r.angled, r.on_ground, r.has_been_shot),
+            (7, 31, true, true, false)
+        );
         assert_eq!(r.position, Vec3::new(1.5, 70.0, -3.25));
+        assert_eq!(r.rotation, [90.0, 10.0]);
         let trident = ItemStack::new("minecraft:trident", 1);
         let tag = trident_to_nbt(
             &TridentSave {
@@ -5115,9 +4946,14 @@ mod tests {
                 life: 9,
                 shake: 3,
                 dealt_damage: true,
-                creative_only: true,
+                pickup: Pickup::CreativeOnly,
+                left_owner: true,
+                has_been_shot: true,
+                owner: Some([5, 6, 7, 8]),
                 no_gravity: true,
+                on_ground: true,
                 fire_ticks: 0,
+                sound_event: TRIDENT_HIT_GROUND,
                 item: &trident,
             },
             [1, 2, 3, 4],
@@ -5127,8 +4963,13 @@ mod tests {
         // `Entity.saveWithoutId` writes NoGravity only when set.
         assert!(t.no_gravity);
         assert!(matches!(tag.get("NoGravity"), Some(Tag::Byte(1))));
+        // Entity.load/saveWithoutId: OnGround as it was.
+        assert!(t.on_ground);
+        assert_eq!(tag.get("OnGround"), Some(&Tag::Byte(1)));
         assert_eq!((t.in_ground, t.life, t.shake), (true, 9, 3));
-        assert_eq!((t.dealt_damage, t.creative_only), (true, true));
+        assert_eq!((t.dealt_damage, t.pickup), (true, Pickup::CreativeOnly));
+        assert!(t.left_owner && t.has_been_shot);
+        assert_eq!(t.owner, Some([5, 6, 7, 8]));
         assert_eq!((t.yaw, t.pitch), (10.0, 20.0));
     }
 
@@ -5293,6 +5134,7 @@ mod tests {
             false,
             crate::falling_block::Damage::default(),
             distance,
+            false,
             [0.0, 0.0],
             [96, 0, 0, 1],
         );
@@ -5352,6 +5194,7 @@ mod tests {
             false,
             damage,
             19.75,
+            true,
             [0.0, 0.0],
             [1, 2, 3, 4],
         );
@@ -5654,33 +5497,25 @@ mod tests {
     #[test]
     fn item_entities_round_trip() {
         let e = ItemEntity {
-            rotation: [0.0, 0.0],
-            join: Default::default(),
-            no_gravity: false,
             health: 2,
             fire_ticks: 73,
             thrower: Some([5, 6, 7, 8]),
-            target: None,
-            id: 7,
-            stack: ItemStack {
-                item: Arc::from("minecraft:diamond_pickaxe"),
-                count: 1,
-                damage: 5,
-                extra: None,
-            },
-            position: Vec3::new(100.5, 64.0, -31.5),
             previous: Vec3::ZERO,
-            velocity: Vec3::new(0.0, -0.04, 0.0),
             on_ground: true,
-            vertical_collision: false,
-            horizontal_collision: false,
             age: 120,
             pickup_delay: 10,
-            ticks: 0,
-            bob_offset: 0.0,
-            needs_sync: false,
-            stuck: Vec3::ZERO,
-            was_touching_water: false,
+            ..ItemEntity::new(
+                7,
+                ItemStack {
+                    item: Arc::from("minecraft:diamond_pickaxe"),
+                    count: 1,
+                    damage: 5,
+                    extra: None,
+                },
+                Vec3::new(100.5, 64.0, -31.5),
+                Vec3::new(0.0, -0.04, 0.0),
+                0.0,
+            )
         };
         let tag = item_entity_to_nbt(&e, [1, 2, 3, 4], None);
         assert_eq!(kind(&tag).as_deref(), Some("minecraft:item"));
@@ -5823,6 +5658,7 @@ mod tests {
                             boat.0,
                             boat.1,
                             [boat.2, 0.0],
+                            (false, 0.0),
                             uuid,
                             source,
                             (id == "minecraft:oak_chest_boat").then_some(&[]),
@@ -6023,6 +5859,7 @@ mod tests {
             Vec3::ZERO,
             Vec3::ZERO,
             [90.0, 10.0],
+            (false, 0.0),
             [1; 4],
             None,
         );
@@ -6073,7 +5910,14 @@ mod tests {
         assert_eq!(attributes(&armor_stand_from_nbt(&saved, 1).unwrap()), speed);
     }
     #[test]
-    fn ghast_and_trident_save_their_always_present_keys() {
+    fn summoned_trident_defaults_are_not_pickable_or_already_shot() {
+        let raw = Tag::compound([
+            ("Pos", doubles(&[0.0, 0.0, 0.0])),
+            ("LeftOwner", Tag::Byte(0)),
+        ]);
+        let loaded = trident_from_nbt(&raw).unwrap();
+        assert_eq!(loaded.pickup, Pickup::Disallowed);
+        assert!(!loaded.left_owner && !loaded.has_been_shot);
         let trident = ItemStack::new("minecraft:trident", 1);
         let tag = trident_to_nbt(
             &TridentSave {
@@ -6085,15 +5929,22 @@ mod tests {
                 life: 0,
                 shake: 0,
                 dealt_damage: false,
-                creative_only: false,
+                pickup: loaded.pickup,
+                left_owner: loaded.left_owner,
+                has_been_shot: loaded.has_been_shot,
+                owner: loaded.owner,
                 no_gravity: false,
+                on_ground: false,
                 fire_ticks: 0,
+                sound_event: TRIDENT_HIT_GROUND,
                 item: &trident,
             },
             [0; 4],
-            None,
+            Some(&raw),
         );
-        assert_eq!(tag.get("LeftOwner"), Some(&Tag::Byte(1)));
+        assert!(tag.get("LeftOwner").is_none());
+        assert_eq!(tag.get("HasBeenShot"), Some(&Tag::Byte(0)));
+        assert_eq!(tag.get("pickup"), Some(&Tag::Byte(0)));
     }
     #[test]
     fn orbs_keep_their_count() {
@@ -6118,42 +5969,6 @@ mod tests {
         assert_eq!(back.len(), 1);
         assert_eq!(back[0].value, 7);
         assert_eq!(back[0].count, 3);
-    }
-}
-
-/// `Brain.Packed`: the guarded-block live ANGRY_AT entry. The existing
-/// anger counter supplies its remaining long TTL, not an absolute timestamp.
-fn write_guarded_piglin_anger(m: &Mob, map: &mut Compound) {
-    let Some(actor) = m.extra.piglin.guarded_angry_at else {
-        return;
-    };
-    let brain = map
-        .entry("Brain".into())
-        .or_insert_with(|| Tag::Compound(Compound::new()));
-    if !matches!(brain, Tag::Compound(_)) {
-        *brain = Tag::Compound(Compound::new());
-    }
-    let Tag::Compound(brain) = brain else { return };
-    let memories = brain
-        .entry("memories".into())
-        .or_insert_with(|| Tag::Compound(Compound::new()));
-    if !matches!(memories, Tag::Compound(_)) {
-        *memories = Tag::Compound(Compound::new());
-    }
-    let Tag::Compound(memories) = memories else {
-        return;
-    };
-    if let Some(uuid) = actor.filter(|_| m.extra.anger > 0) {
-        // ExpirableValue.codec: the UUID value and optional remaining Long TTL.
-        memories.insert(
-            "minecraft:angry_at".into(),
-            Tag::compound([
-                ("value", Tag::IntArray(uuid.to_vec())),
-                ("ttl", Tag::Long(i64::from(m.extra.anger))),
-            ]),
-        );
-    } else {
-        memories.remove(&"minecraft:angry_at".into());
     }
 }
 
@@ -6943,6 +6758,45 @@ mod sheep_nbt_tests {
         assert_eq!((back.extra.color, back.extra.sheared), (14, true));
     }
 
+    #[test]
+    fn a_snow_golem_keeps_its_pumpkin_state() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let data = crate::mobs::MobTypes::load(&root).unwrap();
+        let types: HashMap<String, Arc<MobType>> = data
+            .types
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
+            .collect();
+        let saved = |pumpkin: Option<i8>| {
+            let mut tag = Tag::compound([
+                ("id", string("minecraft:snow_golem")),
+                ("Pos", doubles(&[0.5, 64.0, 0.5])),
+            ]);
+            if let Some(value) = pumpkin {
+                put(&mut tag, "Pumpkin", Tag::Byte(value));
+            }
+            tag
+        };
+        // SnowGolem.readAdditionalSaveData: getBooleanOr("Pumpkin", true).
+        for (pumpkin, sheared) in [(None, false), (Some(1), false), (Some(0), true)] {
+            let m = mob_from_nbt(&saved(pumpkin), &types, 2, None).unwrap();
+            assert_eq!(m.extra.sheared, sheared, "{pumpkin:?}");
+            // addAdditionalSaveData always writes it, over the loaded value.
+            let tag = mob_to_nbt(&m, [1, 2, 3, 4], Some(&saved(pumpkin)), None, |_| None);
+            assert_eq!(number(tag.get("Pumpkin")), Some(i64::from(!sheared)));
+        }
+        // Sheared in game: the save and the next load keep it off.
+        let mut m = mob_from_nbt(&saved(None), &types, 3, None).unwrap();
+        m.extra.sheared = true;
+        let tag = mob_to_nbt(&m, [1, 2, 3, 4], None, None, |_| None);
+        assert!(mob_from_nbt(&tag, &types, 4, None).unwrap().extra.sheared);
+    }
+
     /// `Hoglin.readAdditionalSaveData` and `addAdditionalSaveData`:
     /// `CannotBeHunted` (a bastion's hoglins) stays with the hoglin and is always
     /// written, and such a hoglin is no piglin's prey (`Hoglin.canBeHunted`).
@@ -7581,7 +7435,13 @@ mod sheep_nbt_tests {
         assert_eq!(number(tag.get("InWaterTime")), Some(600));
         assert_eq!(number(tag.get("DrownedConversionTime")), Some(299));
         assert_eq!((back.extra.counter, back.extra.counter2), (600, 300));
+        // A skeleton outside powder snow is not afflicted: -1 whatever the
+        // counter holds, as with a fresh or NoAI one.
+        let (_, tag) = round_trip(&new("minecraft:skeleton"));
+        assert_eq!(number(tag.get("FreezingTime")), Some(-1));
+        assert_eq!(number(tag.get("StrayConversionTime")), Some(-1));
         let mut skeleton = new("minecraft:skeleton");
+        skeleton.in_powder_snow = true;
         skeleton.extra.counter = 70;
         let (back, tag) = round_trip(&skeleton);
         assert_eq!(number(tag.get("FreezingTime")), Some(70));
@@ -7604,6 +7464,53 @@ mod sheep_nbt_tests {
             assert_eq!(number(tag.get(conversion)), Some(-1));
             assert_eq!((back.extra.counter, back.extra.counter2), (-1, 0));
         }
+        // Zombie villagers and zombified piglins keep Zombie's tracker tags.
+        for kind in ["minecraft:zombie_villager", "minecraft:zombified_piglin"] {
+            let (_, tag) = round_trip(&new(kind));
+            assert_eq!(number(tag.get("DrownedConversionTime")), Some(-1), "{kind}");
+            assert_eq!(number(tag.get("InWaterTime")), Some(-1), "{kind}");
+        }
+        // A ticking one that left the snow or the water saves -1 over the times
+        // it was loaded with (ConversionTracker.tick: setConverting(false)).
+        for (kind, conversion, affliction) in [
+            ("minecraft:skeleton", "StrayConversionTime", "FreezingTime"),
+            ("minecraft:zombie", "DrownedConversionTime", "InWaterTime"),
+        ] {
+            let loaded = Tag::compound([
+                ("id", string(kind)),
+                ("Pos", doubles(&[0.5, 64.0, 0.5])),
+                (conversion, Tag::Int(200)),
+                (affliction, Tag::Int(5)),
+            ]);
+            let mut m = new(kind);
+            (m.extra.counter, m.extra.counter2) = (-1, 0);
+            let tag = mob_to_nbt(&m, [1, 2, 3, 4], Some(&loaded), Some(&registry), |_| None);
+            assert_eq!(number(tag.get(conversion)), Some(-1), "{kind}");
+            assert_eq!(number(tag.get(affliction)), Some(-1), "{kind}");
+        }
+        // AbstractPiglin: a piglin or brute saved without CanPickUpLoot picks up
+        // loot. Piglin always writes CannotHunt, the brute never does.
+        for (kind, hunt) in [
+            ("minecraft:piglin", Some(0)),
+            ("minecraft:piglin_brute", None),
+        ] {
+            let back = mob_from_nbt(&empty(kind), &types, 5, None).unwrap();
+            assert!(back.can_pick_up_loot(), "{kind}");
+            let tag = mob_to_nbt(&back, [1, 2, 3, 4], None, Some(&registry), |_| None);
+            assert_eq!(number(tag.get("CannotHunt")), hunt, "{kind}");
+        }
+        let mut saved = empty("minecraft:piglin");
+        put(&mut saved, "CanPickUpLoot", Tag::Byte(0));
+        let back = mob_from_nbt(&saved, &types, 6, None).unwrap();
+        assert!(!back.can_pick_up_loot());
+        // Bogged: whether it was sheared comes back, and a fresh one saves false.
+        let (_, tag) = round_trip(&new("minecraft:bogged"));
+        assert_eq!(number(tag.get("sheared")), Some(0));
+        let mut bogged = new("minecraft:bogged");
+        bogged.extra.sheared = true;
+        let (back, tag) = round_trip(&bogged);
+        assert_eq!(number(tag.get("sheared")), Some(1));
+        assert!(back.extra.sheared);
         // A saved conversion time starts one: `startConversion`.
         let saved = Tag::compound([
             ("id", string("minecraft:zombie")),
@@ -8104,8 +8011,14 @@ mod fireball_nbt_tests {
         ]);
         assert_eq!(
             painting_from_nbt(&painting),
-            Some(([28, 80, 6], 3, "minecraft:kebab".to_string()))
+            Some(([28, 80, 6], 3, Some("minecraft:kebab".to_string())))
         );
+        // No variant saved (a bare summon): the position and facing still load.
+        let mut bare = painting.clone();
+        if let Tag::Compound(m) = &mut bare {
+            m.remove(&"variant".into());
+        }
+        assert_eq!(painting_from_nbt(&bare), Some(([28, 80, 6], 3, None)));
         let frame = Tag::compound([
             ("id", Tag::String("minecraft:item_frame".into())),
             ("Pos", doubles(&[-0.5, 80.0, 6.5])),
@@ -9032,52 +8945,8 @@ mod shulker_bullet_nbt_tests {
 }
 
 #[cfg(test)]
-mod spectral_duration_nbt_tests {
-    use super::*;
-
-    #[test]
-    fn spectral_duration_uses_live_identity_and_preserves_saved_values() {
-        let mut model = Projectile::new(
-            ProjectileKind::Arrow {
-                base_damage: 2.0,
-                critical: false,
-                effect: None,
-            },
-            Vec3::new(0.5, 200.0, 0.5),
-            None,
-        );
-        model.arrow.as_mut().unwrap().spectral = true;
-        let saved = arrow_to_nbt(&model, [7, 8, 9, 10], None, None, None).unwrap();
-        assert_eq!(kind(&saved).as_deref(), Some("minecraft:spectral_arrow"));
-        assert_eq!(saved.get("Duration"), Some(&Tag::Int(200)));
-        for supplied in [None, Some(77), Some(0), Some(-1), Some(200), Some(i32::MAX)] {
-            let mut source = Tag::compound([
-                ("id", string("minecraft:spectral_arrow")),
-                ("Pos", doubles(&[0.5, 200.0, 0.5])),
-                ("Motion", doubles(&[0.0; 3])),
-            ]);
-            if let Some(value) = supplied {
-                put(&mut source, "Duration", Tag::Int(value));
-            }
-            let (loaded, _) = arrow_from_nbt(&source, None, |_| None).unwrap();
-            assert!(loaded.arrow.as_ref().unwrap().spectral);
-            let saved = arrow_to_nbt(&loaded, [7, 8, 9, 10], None, None, None).unwrap();
-            assert_eq!(
-                saved.get("Duration"),
-                Some(&Tag::Int(supplied.unwrap_or(200)))
-            );
-        }
-        model.arrow.as_mut().unwrap().spectral = false;
-        for raw in [
-            None,
-            Some(Tag::compound([("id", string("minecraft:spectral_arrow"))])),
-        ] {
-            let saved = arrow_to_nbt(&model, [7, 8, 9, 10], None, None, raw.as_ref()).unwrap();
-            assert_eq!(kind(&saved).as_deref(), Some("minecraft:arrow"));
-            assert!(saved.get("Duration").is_none());
-        }
-    }
-}
+#[path = "spectral_duration_nbt_tests.rs"]
+mod spectral_duration_nbt_tests;
 
 #[cfg(test)]
 mod mod_thrown_nbt_tests {
@@ -9470,6 +9339,59 @@ mod piglin_live_anger_memory_tests {
                     }
                 }
             }
+        }
+    }
+
+    /// `Piglin.readAdditionalSaveData` reads the brain's `ANGRY_AT` memory
+    /// back: the actor's UUID and the ticks left (`ExpirableValue`'s TTL).
+    /// Horizon wrote the memory but never read it, so a piglin that a player
+    /// had angered came back calm after its chunk reloaded.
+    #[test]
+    fn a_saved_guarded_anger_loads_its_uuid_and_ticks() {
+        // A whole saved piglin: its id, a position and the brain's memory.
+        let saved = |memory: Tag| {
+            Tag::compound([
+                ("id", Tag::String("minecraft:piglin".into())),
+                (
+                    "Pos",
+                    Tag::List(vec![
+                        Tag::Double(0.0f64.to_bits()),
+                        Tag::Double(64.0f64.to_bits()),
+                        Tag::Double(0.0f64.to_bits()),
+                    ]),
+                ),
+                (
+                    "Brain",
+                    Tag::compound([("memories", Tag::compound([("minecraft:angry_at", memory)]))]),
+                ),
+            ])
+        };
+        let template = mob();
+        let types = [(template.kind.id.clone(), template.kind.clone())].into();
+        let uuid = Tag::IntArray(vec![90, 91, 92, 93]);
+        let ticking = saved(Tag::compound([
+            ("value", uuid.clone()),
+            ("ttl", Tag::Long(99)),
+        ]));
+        let loaded = mob_from_nbt(&ticking, &types, 2, None).unwrap();
+        assert_eq!(loaded.extra.anger, 99);
+        assert_eq!(
+            loaded.extra.piglin.guarded_angry_at,
+            Some(Some([90, 91, 92, 93]))
+        );
+        // `ExpirableValue` leaves the TTL out when it never expires, and a
+        // long past the counter's range holds as long as it can: the counter
+        // keeps the longest it can while the goal ticks it down.
+        for memory in [
+            Tag::compound([("value", uuid.clone())]),
+            Tag::compound([("value", uuid.clone()), ("ttl", Tag::Long(1 << 40))]),
+        ] {
+            let loaded = mob_from_nbt(&saved(memory), &types, 3, None).unwrap();
+            assert_eq!(loaded.extra.anger, i32::MAX);
+            assert_eq!(
+                loaded.extra.piglin.guarded_angry_at,
+                Some(Some([90, 91, 92, 93]))
+            );
         }
     }
 
@@ -10349,6 +10271,46 @@ mod equine_temper_preservation_tests {
                 mob_to_nbt(&decoded, [0; 4], None, None, |_| None).get("Temper"),
                 Some(&Tag::Int(0))
             );
+        }
+    }
+
+    #[test]
+    fn equine_and_ravager_attributes_parity() {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        Arc::make_mut(&mut kind).species = Species::Donkey;
+        let types = [("minecraft:donkey".into(), kind.clone())].into();
+        let donkey = mob_from_nbt(
+            &Tag::compound([
+                ("id", string("minecraft:donkey")),
+                ("Pos", doubles(&[0.0, 0.0, 0.0])),
+            ]),
+            &types,
+            1,
+            None,
+        )
+        .unwrap();
+        assert_eq!(donkey.extra.vector[0], 0.5);
+        assert_eq!(
+            mob_to_nbt(&donkey, [0; 4], None, None, |_| None).get("attributes"),
+            Some(&Tag::List(vec![]))
+        );
+        Arc::make_mut(&mut kind).species = Species::Ravager;
+        let types = [("minecraft:ravager".into(), kind)].into();
+        // Before its first aiStep a roaring ravager has no movement_speed
+        // instance; a saved base (mid-ramp after a roar) loads back as is.
+        let speed = Tag::List(vec![Tag::compound([
+            ("id", string("minecraft:movement_speed")),
+            ("base", Tag::Double(0.10317f64.to_bits())),
+        ])]);
+        for (key, value, saved) in [
+            ("RoarTick", Tag::Int(10), Tag::List(vec![])),
+            ("attributes", speed.clone(), speed),
+        ] {
+            let pos = ("Pos", doubles(&[0.0, 0.0, 0.0]));
+            let tag = Tag::compound([("id", string("minecraft:ravager")), pos, (key, value)]);
+            let ravager = mob_from_nbt(&tag, &types, 2, None).unwrap();
+            let nbt = mob_to_nbt(&ravager, [0; 4], None, None, |_| None);
+            assert_eq!(nbt.get("attributes"), Some(&saved));
         }
     }
 }
