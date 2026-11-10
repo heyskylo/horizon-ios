@@ -2,6 +2,7 @@
 //! chunk-generation spawning (`NaturalSpawner`), mob events (attacks,
 //! breeding, conversions, drops), projectiles, player interactions
 //! (feeding, shearing, milking, spawn eggs, throwing) and rendering.
+mod bred_draws;
 mod mob_geometry;
 mod projectile_world;
 mod pufferfish_player;
@@ -3059,7 +3060,7 @@ impl Game<'_> {
                         // `CrossbowItem.createProjectile`: a rocket, from 0.15 under the eyes.
                         let mut at = arrow.position;
                         at.y -= f64::from(0.15f32) - 0.1;
-                        self.launch_angled_rocket(at, arrow.velocity, &ammo, arrow.owner);
+                        self.launch_angled_rocket(at, &ammo, arrow.owner, |_| arrow.velocity);
                     } else {
                         Self::arrow_from_ammo(&ammo, &mut arrow);
                         self.launch_mob_projectile(arrow);
@@ -3869,18 +3870,18 @@ impl Game<'_> {
             q.extra.in_love = 0;
         }
         let q = self.mobs.iter().find(|m| m.id == partner).cloned();
-        // Animal.finalizeSpawnChildFromBreeding: entity event 18 for the parent.
-        self.mob_event_particles(parent, 18);
+        // Animal.finalizeSpawnChildFromBreeding's heart burst, not a turtle's.
+        if p.species() != Species::Turtle {
+            self.mob_event_particles(parent, 18);
+        }
         // Sniffer.spawnChildFromBreeding: an egg instead of a baby.
         if p.species() == Species::Sniffer {
             self.lay_sniffer_egg(&p);
             return;
         }
-        // TurtleBreedGoal.breed: the goal gave the mother her egg; only the
-        // experience is left, and only with mob loot on.
+        // TurtleBreedGoal.breed and Frog.spawnChildFromBreeding: only experience.
         if matches!(p.species(), Species::Turtle | Species::Frog) {
-            // One `new ExperienceOrb` of 1 to 7 from the mother's random (not
-            // split up as `ExperienceOrb.award` does).
+            // One `new ExperienceOrb` of 1 to 7 from the mother's random.
             if self.ui.rules.bool("mob_drops")
                 && let Some(m) = self.mobs.iter_mut().find(|m| m.id == parent)
             {
@@ -3889,9 +3890,7 @@ impl Game<'_> {
             }
             return;
         }
-        // (Mooshroom draws its own coin in getOffspringVariant.)
-        let coin = p.species() != Species::Mooshroom
-            && self.world.random.next_int_bound(2).unwrap_or(0) == 0;
+        let coin = self.bred_coat_coin(parent, p.species());
         // Axolotl.getBreedOffspring: useRareVariant (one in 1200) makes it blue,
         // else either parent's variant. The draws come from the mother's random.
         let axolotl = if p.species() == Species::Axolotl {
@@ -3943,7 +3942,7 @@ impl Game<'_> {
             // No Mob.finalizeSpawn either: no follow range bonus, right-handed.
             spawning::bred_offspring(child);
             // getBreedOffspring creates the baby without finalizeSpawn: it keeps
-            // the default (`classic`) sound variant.
+            // the default (`classic`) sound variant (a wolf picks its own below).
             child.extra.sound_variant = None;
             // Fox.getBreedOffspring runs no finalizeSpawn: nothing in the
             // baby fox's mouth.
@@ -4058,6 +4057,7 @@ impl Game<'_> {
                         c.extra.color = mixed;
                     }
                 }
+                self.pick_bred_wolf_voice(parent, id);
                 self.breeding_orb(parent, [p.position.x, p.position.y, p.position.z]);
                 return;
             }

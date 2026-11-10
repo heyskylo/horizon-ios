@@ -3,7 +3,7 @@
 //! pixels, 1024 characters, 100 pages), signing it into a written book,
 //! reading written books, and lecterns (placing a book, turning its pages
 //! with a redstone pulse, the comparator output and taking the book).
-use super::{Game, lan::LanHost, screen_info};
+use super::{Game, chat::PLAYER_NAME, lan::LanHost, screen_info};
 use horizon_client::{
     containers::{BlockEntity, Lectern},
     first_person::Hand,
@@ -19,6 +19,7 @@ use horizon_client::{
 use horizon_core::position::BlockPos;
 use horizon_protocol::packets::play::{self, Clientbound as C, Serverbound as S};
 use horizon_world::level::flags as level_flags;
+use horizon_world::nbt::Tag;
 use winit::{
     event::{ElementState, KeyEvent},
     keyboard::{KeyCode, PhysicalKey},
@@ -214,6 +215,15 @@ impl Game<'_> {
             "minecraft:written_book" => true,
             _ => return false,
         };
+        // `ServerPlayer.openItemGui` resolves a written book for the player
+        // opening it before the screen reads it.
+        let held;
+        let stack = if written && self.resolve_held_book() {
+            held = self.held().cloned();
+            held.as_ref().unwrap_or(stack)
+        } else {
+            stack
+        };
         if self.lan_acting.is_some() {
             if written {
                 let hand = i32::from(self.hand == Hand::Off);
@@ -227,6 +237,56 @@ impl Game<'_> {
         self.award_stat("used", &stack.item, 1);
         self.swing_arm();
         true
+    }
+    /// `ServerPlayer.openItemGui` -> `WrittenBookContent.resolveForItem`: the
+    /// selectors and scores of the written book in the acting hand become
+    /// their text for the player opening it, and the book is marked resolved
+    /// (so it is never resolved again). True when the pages were rewritten.
+    fn resolve_held_book(&mut self) -> bool {
+        let Some(mut book) = self
+            .held()
+            .and_then(|s| s.data())
+            .and_then(|d| d.written.clone())
+        else {
+            return false;
+        };
+        if book.resolved {
+            return false;
+        }
+        let string = |v: &Tag| match v {
+            Tag::String(s) => Some(s.to_string_lossy()),
+            _ => None,
+        };
+        let changed = book.resolve(|tag| {
+            let Tag::Compound(c) = tag else { return None };
+            if let Some(Tag::String(selector)) = c.get(&"selector".into()) {
+                let selector = selector.to_string_lossy();
+                return Some(self.resolve_selector_text(&selector));
+            }
+            let score = c.get(&"score".into())?;
+            let name = score.get("name").and_then(string).unwrap_or_default();
+            let objective = score.get("objective").and_then(string).unwrap_or_default();
+            let name = if name == "*" {
+                PLAYER_NAME
+            } else {
+                name.as_str()
+            };
+            Some(
+                self.score
+                    .board
+                    .score(name, &objective)
+                    .map_or_else(String::new, |s| s.value.to_string()),
+            )
+        });
+        if let Some(stack) = self.held_mut() {
+            stack.data_mut().written = Some(book);
+        }
+        // A guest's copy of the book lives in its mirrored inventory: the
+        // host sends the resolved slot back with the rest of the inventory.
+        if self.lan_acting.is_some() {
+            self.guest_inventory_resend = true;
+        }
+        changed
     }
     /// The screen a book in hand opens: `BookEditScreen` for a book and
     /// quill, `BookViewScreen` for a written book.
@@ -350,6 +410,7 @@ impl Game<'_> {
                 generation: 0,
                 pages,
                 page_tags: Vec::new(),
+                resolved: false,
             });
             *stack = written;
         } else {
@@ -809,17 +870,17 @@ impl Game<'_> {
     }
     /// `LecternBlock.setHasBook`: the property with the block change event.
     fn set_lectern_has_book(&mut self, key: (i32, i32, i32), has_book: bool, who: Option<Who>) {
-        let before = self.world.block(key.0, key.1, key.2);
+        // `LecternBlock.resetBookState`: `setBlockAndUpdate` writes the state and
+        // the `block_change` post follows unconditionally, not only when the
+        // state differs.
         self.set_lectern_property(key, "has_book", has_book);
         let after = self.world.block(key.0, key.1, key.2);
-        if after != before {
-            self.post_block_game_event(
-                "minecraft:block_change",
-                [key.0, key.1, key.2],
-                who,
-                Some(after),
-            );
-        }
+        self.post_block_game_event(
+            "minecraft:block_change",
+            [key.0, key.1, key.2],
+            who,
+            Some(after),
+        );
     }
     fn set_lectern_property(&mut self, key: (i32, i32, i32), name: &str, value: bool) {
         let state = self.world.block(key.0, key.1, key.2);
@@ -1609,15 +1670,17 @@ impl Game<'_> {
                         &tr("gui.done", "Done"),
                     );
                 }
-                // HoveredTextEffects.TOOLTIP_AND_CURSOR: the hovered words'
-                // show_text hover event, as the chat shows it.
-                if let Some(hover) = pages
-                    .get(*page)
-                    .and_then(|t| self.book_style_at(t, left))
-                    .and_then(|s| s.hover)
-                {
-                    let lines = self.wrapped_rows(&hover, (w as i32 / 2).max(200));
-                    self.draw_tooltip_lines(batch, &lines, mx, my);
+                // HoveredTextEffects.TOOLTIP_AND_CURSOR: a clickable word
+                // asks for the hand, and a show_text hover shows its tooltip,
+                // as the chat does.
+                if let Some(style) = pages.get(*page).and_then(|t| self.book_style_at(t, left)) {
+                    if let Some(cursor) = link_cursor(&style) {
+                        horizon_client::widgets::request_cursor(cursor);
+                    }
+                    if let Some(hover) = style.hover {
+                        let lines = self.wrapped_rows(&hover, (w as i32 / 2).max(200));
+                        self.draw_tooltip_lines(batch, &lines, mx, my);
+                    }
                 }
             }
         }
@@ -1660,6 +1723,16 @@ pub(super) fn lectern_signal(world: &horizon_client::world::World, pos: BlockPos
         })),
         _ => None,
     }
+}
+
+/// `HoveredTextEffects.TOOLTIP_AND_CURSOR`: only a word with a click event asks
+/// for the pointing hand over a book's page; a hover event alone shows its
+/// tooltip.
+fn link_cursor(style: &horizon_client::text::Style) -> Option<horizon_client::widgets::Cursor> {
+    style
+        .click
+        .is_some()
+        .then_some(horizon_client::widgets::Cursor::PointingHand)
 }
 
 #[cfg(test)]
@@ -1851,6 +1924,60 @@ mod lectern_signal_tests {
         assert_eq!(signal(&mut game, Some(written), 1), 15, "last page");
     }
 }
+impl BookScreen {
+    /// `BookViewScreen.isPauseScreen`: the class inherits `Screen`'s true, so
+    /// a book read in hand stops a single-player world. `LecternScreen`
+    /// overrides it false, so the same pages read on a lectern leave the
+    /// world ticking (its menu is an `AbstractContainerScreen`, which does
+    /// not pause either).
+    pub(super) fn pauses_world(&self) -> bool {
+        !matches!(
+            self,
+            Self::View {
+                lectern: Some(_),
+                ..
+            }
+        )
+    }
+}
+
+#[cfg(test)]
+mod pause_tests {
+    use super::BookScreen;
+    use horizon_client::{text::Text, ui};
+
+    fn view(lectern: Option<(i32, i32, i32)>) -> BookScreen {
+        BookScreen::View {
+            pages: Vec::<Text>::new(),
+            page: 0,
+            lectern,
+        }
+    }
+
+    #[test]
+    fn a_lecterns_book_does_not_pause_the_world() {
+        // BookViewScreen keeps Screen.isPauseScreen's true; LecternScreen
+        // overrides it false although both read the same pages.
+        assert!(view(None).pauses_world());
+        assert!(!view(Some((10, 64, -3))).pauses_world());
+    }
+
+    #[test]
+    fn a_book_being_edited_or_signed_pauses() {
+        // BookEditScreen and BookSignScreen do not override isPauseScreen.
+        let edit = |signing| BookScreen::Edit {
+            slot: 0,
+            pages: Vec::new(),
+            page: 0,
+            signing,
+            title: String::new(),
+            title_edit: ui::EditBox::new(0.0, 0.0, 0.0, 0.0),
+            page_edit: ui::EditBox::new(0.0, 0.0, 0.0, 0.0),
+        };
+        assert!(edit(false).pauses_world());
+        assert!(edit(true).pauses_world());
+    }
+}
 
 #[cfg(test)]
 mod lectern_reach_tests {
@@ -1998,5 +2125,27 @@ mod tests {
                 e.borrow()
             );
         });
+    }
+}
+
+mod link_cursor_tests {
+    use super::link_cursor;
+    use horizon_client::text::{ClickEvent, Style, Text};
+    use horizon_client::widgets::Cursor;
+
+    /// `HoveredTextEffects.TOOLTIP_AND_CURSOR`: a clickable word asks for the
+    /// pointing hand; a hover event alone only shows its tooltip.
+    #[test]
+    fn only_a_clickable_book_word_asks_for_the_hand() {
+        let link = Style {
+            click: Some(ClickEvent::OpenUrl("https://example.com".into())),
+            ..Style::default()
+        };
+        let hover_only = Style {
+            hover: Some(Box::new(Text::literal("tip"))),
+            ..Style::default()
+        };
+        assert_eq!(link_cursor(&link), Some(Cursor::PointingHand));
+        assert_eq!(link_cursor(&hover_only), None);
     }
 }
