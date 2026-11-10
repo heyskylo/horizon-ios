@@ -1289,8 +1289,9 @@ mod tests {
         let consumable_bytes = r.data;
 
         // Not the honey bottle's own sound, so a fallback to the prototype shows.
-        let sounds =
-            horizon_protocol::registry::Ids::from_names(vec!["minecraft:entity.generic.drink".into()]);
+        let sounds = horizon_protocol::registry::Ids::from_names(vec![
+            "minecraft:entity.generic.drink".into(),
+        ]);
         let mob_effects =
             horizon_protocol::registry::Ids::from_names(vec!["minecraft:poison".into()]);
         let item_ids =
