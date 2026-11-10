@@ -260,6 +260,17 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     }
     hurt_touching_golems(m, w, events);
 }
+/// `AbstractCubeMob.tick` runs without AI too (only `serverAiStep` is
+/// skipped): the squish, the landing splash and `wasOnGround`. Contact damage
+/// inside `ai_step` is already gated on NoAI.
+pub fn no_ai_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+    if matches!(
+        m.species(),
+        Species::Slime | Species::MagmaCube | Species::SulfurCube
+    ) {
+        ai_step(m, w, events);
+    }
+}
 /// `AbstractCubeMob.getAttackDamage`: the attack damage attribute, plus 2 for
 /// a magma cube (`MagmaCube.getAttackDamage`).
 fn attack_damage(m: &Mob) -> f32 {
@@ -636,5 +647,33 @@ mod keep_jumping_tests {
             Some([false, true]),
             "a cube riding anything must not start CubeMobKeepOnJumpingGoal"
         );
+    }
+
+    /// `AbstractCubeMob.tick` is not gated by NoAI (only `serverAiStep` is):
+    /// a standing NoAI cube still records `wasOnGround`.
+    #[test]
+    fn a_no_ai_cube_updates_was_on_ground() {
+        let mut result = None;
+        let ran = with_test_world(&[], |w, types| {
+            for name in ["minecraft:slime", "minecraft:magma_cube"] {
+                let mut m = Mob::new(
+                    1,
+                    Arc::new(types.types[name].clone()),
+                    Vec3::new(0.5, 64.0, 0.5),
+                    0.0,
+                );
+                m.no_ai = true;
+                m.on_ground = true;
+                m.extra.flag2 = false;
+                let mut lr = LegacyRandom::new(0);
+                let mut events = Vec::new();
+                super::super::ai::tick(&mut m, w, &mut lr, &mut events);
+                result = Some(m.extra.flag2);
+                assert!(result.unwrap(), "{name}: wasOnGround stays false");
+            }
+        });
+        if ran {
+            assert_eq!(result, Some(true));
+        }
     }
 }
