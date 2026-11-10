@@ -174,6 +174,35 @@ const SYMBOLS: [Row; 5] = [
 const LETTERS_LINES: [Row; 5] = [LETTERS[0], LETTERS[1], LETTERS[2], LETTERS[3], BOTTOM_LINES];
 const SYMBOLS_LINES: [Row; 5] = [SYMBOLS[0], SYMBOLS[1], SYMBOLS[2], SYMBOLS[3], BOTTOM_LINES];
 
+/// The panel's padding around the keys and the hints, the gap between them, and a hint line's
+/// height in its text size, all in dp (a line box is 1.45 sizes; the pack's font can be a
+/// little taller).
+const PANEL_PAD: f32 = 12.0;
+const HINT_GAP: f32 = 8.0;
+const HINT_LINE: f32 = 1.6;
+/// Between two hints on a line.
+const HINT_SEP: &str = "   ";
+
+/// `items` on as few lines as fit `width` (as `measure` measures a line), in order; an item wider
+/// than `width` gets a line of its own.
+fn wrap_hints(
+    items: impl IntoIterator<Item = String>,
+    width: f32,
+    measure: impl Fn(&str) -> f32,
+) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for item in items {
+        match lines.last_mut() {
+            Some(line) if measure(&format!("{line}{HINT_SEP}{item}")) <= width => {
+                line.push_str(HINT_SEP);
+                line.push_str(&item);
+            }
+            _ => lines.push(item),
+        }
+    }
+    lines
+}
+
 /// The right stick, up (+) or down (-), past this picks the suggestion before or after; it picks
 /// again once back under [`STICK_REST`].
 const STICK_PICK: f32 = 0.6;
@@ -351,6 +380,32 @@ impl Keyboard {
         }
     }
 
+    /// The hint line under the keys ("A Type   X Delete ..."), wrapped onto as many lines as it
+    /// needs to stay within `width`: the panel grows to hold them.
+    fn hint_lines(&self, ui: &Ui, glyphs: Glyphs, width: f32) -> Vec<String> {
+        let complete = self
+            .suggests
+            .then(|| (MenuJob::GroupNext, tr("horizon.osk.complete", "Complete")));
+        let hints = [
+            Some((MenuJob::Confirm, tr("horizon.osk.type", "Type"))),
+            Some((MenuJob::Alternate, tr("horizon.osk.delete", "Delete"))),
+            Some((MenuJob::Extra, tr("horizon.osk.space", "Space"))),
+            Some((MenuJob::GroupPrev, tr("horizon.osk.shift", "Shift"))),
+            complete,
+            Some((MenuJob::PageNext, tr("horizon.osk.symbols", "Symbols"))),
+            Some((MenuJob::Start, tr("gui.done", "Done"))),
+            Some((MenuJob::Back, tr("horizon.osk.close", "Close"))),
+        ];
+        // This font draws no glyph art: each button by its print, "A Type".
+        let items = hints
+            .into_iter()
+            .flatten()
+            .map(|(job, what)| HintRow::new([Glyph::menu(job, glyphs)], what).text());
+        wrap_hints(items, width, |line| {
+            ui.measure(Face::Regular, ui_theme::small(), line)
+        })
+    }
+
     /// Draw the keyboard across the bottom of the screen, or the top when
     /// the field it types into is in the lower half.
     pub fn draw(&self, ui: &mut Ui, at_top: bool, glyphs: Glyphs) {
@@ -359,21 +414,24 @@ impl Keyboard {
         const KEY_H: f32 = 38.0;
         const LABEL_PAD: f32 = 4.0;
         let width = 10.0 * UNIT + 9.0 * GAP;
-        let height = 5.0 * KEY_H + 4.0 * GAP + 24.0 + 30.0;
+        let hints = self.hint_lines(ui, glyphs, width);
+        let line_h = HINT_LINE * ui_theme::small();
+        let keys_h = 5.0 * KEY_H + 4.0 * GAP;
+        let height = PANEL_PAD + keys_h + HINT_GAP + hints.len() as f32 * line_h + PANEL_PAD;
         let x0 = ((ui.w - width) / 2.0).round();
         let y0 = if at_top { 16.0 } else { ui.h - height - 16.0 };
         ui.rounded(
-            x0 - 12.0,
-            y0 - 12.0,
-            width + 24.0,
+            x0 - PANEL_PAD,
+            y0 - PANEL_PAD,
+            width + 2.0 * PANEL_PAD,
             height,
             ui_theme::radius_plate(),
             color::with_alpha(color::bg(), 0.94),
         );
         ui.border(
-            x0 - 12.0,
-            y0 - 12.0,
-            width + 24.0,
+            x0 - PANEL_PAD,
+            y0 - PANEL_PAD,
+            width + 2.0 * PANEL_PAD,
             height,
             ui_theme::radius_plate(),
             color::border(),
@@ -422,33 +480,17 @@ impl Keyboard {
                 );
             }
         }
-        let complete = self
-            .suggests
-            .then(|| (MenuJob::GroupNext, tr("horizon.osk.complete", "Complete")));
-        let hints = [
-            Some((MenuJob::Confirm, tr("horizon.osk.type", "Type"))),
-            Some((MenuJob::Alternate, tr("horizon.osk.delete", "Delete"))),
-            Some((MenuJob::Extra, tr("horizon.osk.space", "Space"))),
-            Some((MenuJob::GroupPrev, tr("horizon.osk.shift", "Shift"))),
-            complete,
-            Some((MenuJob::PageNext, tr("horizon.osk.symbols", "Symbols"))),
-            Some((MenuJob::Start, tr("gui.done", "Done"))),
-            Some((MenuJob::Back, tr("horizon.osk.close", "Close"))),
-        ];
-        // This font draws no glyph art: each button by its print, "A Type".
-        let line: Vec<String> = hints
-            .into_iter()
-            .flatten()
-            .map(|(job, what)| HintRow::new([Glyph::menu(job, glyphs)], what).text())
-            .collect();
-        ui.text_centered(
-            Face::Regular,
-            ui_theme::small(),
-            x0 + width / 2.0,
-            y0 + 5.0 * (KEY_H + GAP) + 2.0,
-            color::muted(),
-            &line.join("   "),
-        );
+        let top = y0 + keys_h + HINT_GAP;
+        for (i, line) in hints.iter().enumerate() {
+            ui.text_centered(
+                Face::Regular,
+                ui_theme::small(),
+                x0 + width / 2.0,
+                top + i as f32 * line_h,
+                color::muted(),
+                line,
+            );
+        }
     }
 }
 
@@ -526,6 +568,20 @@ mod tests {
         // The symbols grid keeps it.
         k.button(Button::RightBumper);
         assert_eq!(k.press(), Some(Output::Enter));
+    }
+
+    #[test]
+    fn hints_wrap_to_the_panel_in_order() {
+        // One unit per character: "A Type" is 6 wide, the separator 3.
+        let items = || ["A Type", "X Delete", "Y Space", "B Close"].map(String::from);
+        let measure = |s: &str| s.chars().count() as f32;
+        assert_eq!(wrap_hints(items(), 100.0, measure), ["A Type   X Delete   Y Space   B Close"]);
+        assert_eq!(
+            wrap_hints(items(), 20.0, measure),
+            ["A Type   X Delete", "Y Space   B Close"]
+        );
+        // Narrower than one hint: each on its own line, none lost.
+        assert_eq!(wrap_hints(items(), 3.0, measure).len(), 4);
     }
 
     #[test]
