@@ -2,7 +2,7 @@
 //! come from the program that rendered (the game knows its adapter, the launcher its window).
 
 #[cfg(not(target_arch = "wasm32"))]
-use horizon_telemetry::system::command_output as output;
+use horizon_system::command_output as output;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -86,13 +86,13 @@ impl Hardware {
     /// [`Hardware::detect`] with the kind of drive `game_dir` is on.
     pub fn detect_in(game_dir: &std::path::Path) -> Hardware {
         Hardware {
-            storage: horizon_telemetry::system::storage(game_dir).map(str::to_owned),
+            storage: horizon_system::storage(game_dir).map(str::to_owned),
             ..Hardware::detect()
         }
     }
 }
 
-/// What the telemetry probes read (`horizon_telemetry::system`).
+/// What `horizon_system::Machine` reads.
 #[cfg(not(target_arch = "wasm32"))]
 struct Probes {
     cores: Option<u16>,
@@ -103,13 +103,13 @@ struct Probes {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn probes() -> Probes {
-    let s = horizon_telemetry::payload::System::detect();
+    let s = horizon_system::Machine::detect();
     let some = |n: u32| (n > 0).then_some(n);
     Probes {
         cores: (s.cores > 0).then_some(s.cores),
         base: some(s.cpu_base_mhz),
         boost: some(s.cpu_boost_mhz),
-        form: (!s.form.is_empty()).then_some(s.form),
+        form: (!s.form.is_empty()).then(|| s.form.to_owned()),
     }
 }
 
@@ -137,7 +137,7 @@ pub fn load_average() -> Option<f64> {
 /// `ac` or `battery`; `None` where it can't be read (and on machines without a battery on Linux).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn power_source() -> Option<&'static str> {
-    horizon_telemetry::system::power()
+    horizon_system::power()
 }
 
 /// Resident memory of a process, in bytes (macOS, Linux).
@@ -216,7 +216,7 @@ fn os_version() -> Option<String> {
 fn cpu() -> Option<String> {
     let info = std::fs::read_to_string("/proc/cpuinfo").ok()?;
     // x86 names the CPU per core; arm64 only gives the core's implementer and part.
-    horizon_telemetry::system::linux_cpu_name(&info)
+    horizon_system::linux_cpu_name(&info)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -241,13 +241,13 @@ fn key_value<'a>(text: &'a str, key: &str, sep: char) -> Option<&'a str> {
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(target_os = "windows")]
 fn os_version() -> Option<String> {
-    horizon_telemetry::system::windows_version()
+    horizon_system::windows_version()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(target_os = "windows")]
 fn cpu() -> Option<String> {
-    horizon_telemetry::system::windows_cpu()
+    horizon_system::windows_cpu()
 }
 
 #[cfg(not(target_arch = "wasm32"))]

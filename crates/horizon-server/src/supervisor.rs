@@ -639,7 +639,7 @@ fn sample(shared: Arc<Shared>) {
                     continue;
                 };
                 let now = Instant::now();
-                let cpu = horizon_bench::cpu_seconds(pid);
+                let cpu = horizon_platform::bench::cpu_seconds(pid);
                 let cpu_percent = match (previous, cpu) {
                     (Some((p, at, before)), Some(cpu)) if p == pid => {
                         Some((cpu - before) / now.duration_since(at).as_secs_f64() * 100.0)
@@ -660,7 +660,7 @@ fn sample(shared: Arc<Shared>) {
                         control = None;
                         None
                     });
-                let rss = horizon_bench::rss_bytes(pid);
+                let rss = horizon_platform::bench::rss_bytes(pid);
                 shared.record(json!({
                     "t": std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
