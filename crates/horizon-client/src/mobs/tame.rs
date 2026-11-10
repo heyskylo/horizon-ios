@@ -601,6 +601,10 @@ fn wants_to_attack(m: &Mob, w: &MobWorld, who: Who) -> bool {
     let Some(s) = w.seen(id) else {
         return false;
     };
+    // `TargetingConditions.test` starts with `canBeSeenByAnyone`.
+    if !s.alive {
+        return false;
+    }
     match s.species {
         Species::Creeper | Species::Ghast => false,
         Species::Wolf => !s.tame || s.owner != m.extra.owner,
@@ -2154,6 +2158,65 @@ mod tests {
             outcomes,
             vec![true, false],
             "a survival player's bone makes it beg; a spectator's does not"
+        );
+    }
+    /// `OwnerHurtByTargetGoal.canUse` runs the owner's attacker through
+    /// `TargetingConditions.forCombat()`, whose `test` starts with
+    /// `canBeSeenByAnyone`: a dead attacker is not avenged.
+    #[test]
+    fn a_pet_does_not_avenge_its_owner_on_a_dead_attacker() {
+        use crate::mobs::goals::Cx;
+        use crate::mobs::world::{test_player, with_test_world};
+        use horizon_core::random::LegacyRandom;
+        let mut outcomes = Vec::new();
+        if !with_test_world(&[], |w, _| {
+            for alive in [true, false] {
+                let mut world = w.clone();
+                let p = test_player(Vec3::new(1.5, 64.0, 0.5));
+                world.player = Some(p.clone());
+                let mut wolf_kind = (*kind()).clone();
+                wolf_kind.species = Species::Wolf;
+                let mut wolf = Mob::new(1, Arc::new(wolf_kind), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                wolf.extra.tame = true;
+                wolf.extra.owner = Some(p.uuid);
+                let mut attacker_kind = (*kind()).clone();
+                attacker_kind.species = Species::Zombie;
+                let mut attacker =
+                    Mob::new(2, Arc::new(attacker_kind), Vec3::new(2.5, 64.0, 0.5), 0.0);
+                if !alive {
+                    attacker.health = 0.0;
+                }
+                let seen = [attacker.seen(None)];
+                let world = crate::mobs::MobWorld {
+                    others: &seen,
+                    ..world
+                };
+                let mut p = p;
+                p.hurt_by = Some((Who::Mob(2), 5));
+                let world = crate::mobs::MobWorld {
+                    player: Some(p),
+                    ..world
+                };
+                wolf.ai.targets.add(1, OwnerHurtBy { timestamp: 0 });
+                let mut lr = LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &world,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut wolf.ai.targets);
+                goals.tick(&mut wolf, &mut cx);
+                outcomes.push(goals.is_running("OwnerHurtBy"));
+                wolf.ai.targets = goals;
+            }
+        }) {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            vec![true, false],
+            "an alive attacker is avenged; a dead one is not"
         );
     }
 }
