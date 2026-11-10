@@ -2016,7 +2016,7 @@ pub fn mob_from_nbt_with_random(
     if crate::mobs::equine::is_equine(m.species()) {
         m.health = m.health.min(m.attrs.max_health);
     }
-    m.hurt_time = number(tag.get("HurtTime")).unwrap_or(0) as i32;
+    m.hurt_time = i32::from(number(tag.get("HurtTime")).unwrap_or(0) as i16);
     // What it holds (equipment.mainhand / offhand), when saved.
     if let Some(eq) = tag.get("equipment") {
         m.extra
@@ -2054,7 +2054,7 @@ pub fn mob_from_nbt_with_random(
         // vanilla); a loaded mob holds only what its file lists.
         m.extra.set_main_hand(None);
     }
-    m.death_time = number(tag.get("DeathTime")).unwrap_or(0) as i32;
+    m.death_time = i32::from(number(tag.get("DeathTime")).unwrap_or(0) as i16);
     m.impulse_grace_time =
         number(tag.get("current_impulse_context_reset_grace_time")).unwrap_or(0) as i32;
     // Mob.readAdditionalSaveData overrides what the constructor set (copper
@@ -4618,6 +4618,27 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// `LivingEntity.readAdditionalSaveData` reads `HurtTime` and `DeathTime`
+    /// with `getShortOr`: an int tag is narrowed (`(short)(value & 65535)`),
+    /// so 40000 is -25536 and never counts down.
+    #[test]
+    fn a_mob_narrows_its_hurt_and_death_time_to_a_short() {
+        let kind = crate::mobs::sensor_scan_tests::kind();
+        let types = [(kind.id.to_string(), kind.clone())].into();
+        let load = |hurt: Tag, death: Tag| {
+            let raw = Tag::compound([
+                ("id", string(&kind.id)),
+                ("Pos", doubles(&[4.5, 220.0, 4.5])),
+                ("HurtTime", hurt),
+                ("DeathTime", death),
+            ]);
+            let m = mob_from_nbt(&raw, &types, 1, None).unwrap();
+            (m.hurt_time, m.death_time)
+        };
+        assert_eq!(load(Tag::Int(40000), Tag::Int(65546)), (-25536, 10));
+        assert_eq!(load(Tag::Short(7), Tag::Short(19)), (7, 19));
     }
 
     /// A mount keeps its body armour and a helmet (say
