@@ -3,12 +3,17 @@
 //! and command item NBT use fills every field. Both sides use it: a client for
 //! what its server sends, a server for a creative client's
 //! `SetCreativeModeSlot`. The other direction is `lan::guest::stack_to_network`.
-use crate::items::ItemStack;
+use crate::items::{ConsumeEffect, ItemStack};
 use horizon_protocol::buf::{Codec, Reader};
 use horizon_protocol::item::{Component, Profile, Stack, Template, component};
 use horizon_protocol::registry::{Builtin, Dynamic};
-use horizon_world::nbt::Tag;
+use horizon_world::{
+    consumable::{Consumable, UseAnimation},
+    nbt::Tag,
+};
 use std::sync::Arc;
+
+pub type ItemConsumable = Consumable<String, ConsumeEffect>;
 
 /// A stack from the wire: its item by the built-in registry's id, its
 /// components by the synced registries' (enchantments, trims).
@@ -189,6 +194,131 @@ pub fn equippable(stack: &ItemStack, items: &crate::items::Items) -> Option<Equi
     out
 }
 
+/// `stack.get(DataComponents.CONSUMABLE)`: the item's own, replaced or removed
+/// by the saved components (a command's, a save's), then by the server's patch.
+pub fn consumable(stack: &ItemStack, items: &crate::items::Items) -> Option<ItemConsumable> {
+    let mut out = items.get(&stack.item).and_then(|i| i.consumable.clone());
+    let Some(data) = stack.data() else {
+        return out;
+    };
+    if data.other("!minecraft:consumable").is_some() {
+        out = None;
+    } else if let Some(tag) = data.other("minecraft:consumable")
+        && let Some(c) = decode_consumable_tag(tag)
+    {
+        out = Some(c);
+    }
+    let Some((added, removed)) = data
+        .wire
+        .patch()
+        .and_then(|p| horizon_protocol::item::WirePatch::decode(p).ok())
+    else {
+        return out;
+    };
+    if removed.contains(&component::CONSUMABLE) {
+        out = None;
+    }
+    for (kind, c) in &added {
+        if let (component::CONSUMABLE, Component::Raw(bytes)) = (*kind, c)
+            && let Some(mut c) = decode_consumable_bytes(bytes)
+        {
+            if c.sound.is_empty() {
+                if let Some(proto) = items.get(&stack.item).and_then(|i| i.consumable.as_ref()) {
+                    c.sound = proto.sound.clone();
+                } else {
+                    c.sound = "minecraft:entity.generic.eat".to_owned();
+                }
+            }
+            out = Some(c);
+        }
+    }
+    out
+}
+
+/// Decodes the `minecraft:consumable` component from its saved/NBT tag form.
+pub fn decode_consumable_tag(tag: &Tag) -> Option<ItemConsumable> {
+    let json = crate::item_render::tag_json(tag);
+    let seconds = json["consume_seconds"].as_f64().map_or(1.6, |s| s as f32);
+    let animation = crate::first_person::consumable_animation(&json);
+    let sound = json["sound"]
+        .as_str()
+        .or_else(|| json["sound"]["sound_id"].as_str())
+        .unwrap_or("minecraft:entity.generic.eat")
+        .to_owned();
+    let particles = tag
+        .get("has_consume_particles")
+        .and_then(crate::item_data::component_bool)
+        .or_else(|| json["has_consume_particles"].as_bool())
+        .unwrap_or(true);
+    let mut effects = Vec::new();
+    if let Some(arr) = json["on_consume_effects"].as_array() {
+        for eff in arr {
+            if let Some(parsed) = horizon_items::items::parse_consume_effect(eff) {
+                effects.push(parsed);
+            }
+        }
+    }
+    Some(Consumable {
+        seconds,
+        animation,
+        sound,
+        particles,
+        effects,
+    })
+}
+
+/// Decodes the `minecraft:consumable` component from wire bytes.
+pub fn decode_consumable_bytes(bytes: &[u8]) -> Option<ItemConsumable> {
+    decode_consumable_bytes_with(bytes, None)
+}
+
+pub fn decode_consumable_bytes_with(
+    bytes: &[u8],
+    builtin: Option<&Builtin>,
+) -> Option<ItemConsumable> {
+    let mut r = Reader::new(bytes);
+    let seconds = r.f32().ok()?;
+    let animation_id = r.varint().ok()?;
+    let animation = match animation_id {
+        2 => UseAnimation::Drink,
+        _ => UseAnimation::Eat,
+    };
+    let sound_holder = r.varint().ok()?;
+    let sound = match sound_holder {
+        0 => {
+            let s = r.string(32767).ok()?.to_owned();
+            if r.bool().ok()? {
+                let _ = r.f32().ok();
+            }
+            s
+        }
+        n => builtin
+            .and_then(|b| b.get("minecraft:sound_event"))
+            .and_then(|ids| ids.name(n.checked_sub(1)?))
+            .map_or_else(String::new, str::to_owned),
+    };
+    let particles = r.bool().unwrap_or(true);
+    let default_builtin = Builtin::default();
+    let b = builtin.unwrap_or(&default_builtin);
+    let n = r.count(r.remaining()).unwrap_or(0);
+    let mut effects = Vec::with_capacity(n.min(64));
+    for _ in 0..n {
+        if let Some(tag) = consume_effect_tag(&mut r, b, 0) {
+            let json = crate::item_render::tag_json(&tag);
+            if let Some(parsed) = horizon_items::items::parse_consume_effect(&json) {
+                effects.push(parsed);
+            }
+        }
+    }
+    Some(Consumable {
+        seconds,
+        animation,
+        sound,
+        particles,
+        effects,
+    })
+}
+
 /// The `equippable` component `item`'s prototype has.
 pub fn item_equippable(item: &str, items: &crate::items::Items) -> Option<Equippable> {
     let info = items.get(item)?;
@@ -363,6 +493,12 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
                     ]),
                 };
                 Tag::compound([("material", material), ("pattern", pattern)])
+            }
+            Component::Raw(bytes) if *kind == component::CONSUMABLE => {
+                let Some(tag) = consumable_tag(bytes, builtin) else {
+                    continue;
+                };
+                tag
             }
             // Read past, not decoded: the item keeps its prototype's value.
             Component::Raw(_) => continue,
@@ -733,6 +869,35 @@ fn death_protection_tag(bytes: &[u8], builtin: &Builtin) -> Option<Tag> {
     }))
 }
 
+/// `Consumable.STREAM_CODEC` (component 45) as `Consumable.CODEC` saves it.
+fn consumable_tag(bytes: &[u8], builtin: &Builtin) -> Option<Tag> {
+    let mut r = Reader::new(bytes);
+    let seconds = r.f32().ok()?;
+    let animation_id = r.varint().ok()?;
+    let animation = match animation_id {
+        2 => "drink",
+        _ => "eat",
+    };
+    let sound = sound_tag(&mut r, builtin)?;
+    let particles = r.bool().ok()?;
+    let n = r.count(r.remaining()).ok()?;
+    let mut effects = Vec::with_capacity(n.min(64));
+    for _ in 0..n {
+        effects.push(consume_effect_tag(&mut r, builtin, 0)?);
+    }
+    (r.remaining() == 0).then_some(())?;
+    let mut fields = vec![
+        ("consume_seconds", Tag::Float(seconds.to_bits())),
+        ("animation", Tag::String(animation.into())),
+        ("sound", sound),
+        ("has_consume_particles", Tag::Byte(i8::from(particles))),
+    ];
+    if !effects.is_empty() {
+        fields.push(("on_consume_effects", Tag::List(effects)));
+    }
+    Some(Tag::compound(fields))
+}
+
 /// One `ConsumeEffect.STREAM_CODEC` as `ConsumeEffect.CODEC` saves it: a `type`
 /// then that type's fields, with a field at its default left out.
 fn consume_effect_tag(r: &mut Reader, builtin: &Builtin, depth: u32) -> Option<Tag> {
@@ -1014,6 +1179,137 @@ mod tests {
             Tag::Compound(Default::default()),
         )];
         assert_eq!(glider_and_slot(&stack, true, Some("chest".into())).1, None);
+    }
+
+    /// A command's stick (`/give @s stick[consumable={}]`) gains consumable behaviour.
+    #[test]
+    fn saved_components_make_any_item_consumable() {
+        let items = crate::items::Items::for_tests(Default::default());
+        let mut stack = ItemStack::new("minecraft:stick", 1);
+        assert!(consumable(&stack, &items).is_none());
+
+        // /give @s stick[consumable={}]
+        stack.data_mut().other = vec![(
+            "minecraft:consumable".into(),
+            Tag::Compound(Default::default()),
+        )];
+        let c = consumable(&stack, &items).expect("stick has consumable component");
+        assert_eq!(c.seconds, 1.6);
+        assert_eq!(c.ticks(), 32);
+        assert_eq!(c.animation, UseAnimation::Eat);
+        assert_eq!(c.sound, "minecraft:entity.generic.eat");
+        assert!(c.particles);
+
+        // /give @s stick[consumable={consume_seconds:3.0f,animation:"drink",sound:"minecraft:entity.generic.drink"}]
+        stack.data_mut().other = vec![(
+            "minecraft:consumable".into(),
+            Tag::compound([
+                ("consume_seconds", Tag::Float(3.0f32.to_bits())),
+                ("animation", Tag::String("drink".into())),
+                (
+                    "sound",
+                    Tag::String("minecraft:entity.generic.drink".into()),
+                ),
+                ("has_consume_particles", Tag::Byte(0)),
+            ]),
+        )];
+        let c = consumable(&stack, &items).expect("custom drink stick");
+        assert_eq!(c.seconds, 3.0);
+        assert_eq!(c.ticks(), 60);
+        assert_eq!(c.animation, UseAnimation::Drink);
+        assert_eq!(c.sound, "minecraft:entity.generic.drink");
+        assert!(!c.particles);
+
+        // removal !minecraft:consumable
+        stack.data_mut().other = vec![(
+            "!minecraft:consumable".into(),
+            Tag::Compound(Default::default()),
+        )];
+        assert!(consumable(&stack, &items).is_none());
+    }
+
+    /// A server's component patch adding or removing consumable.
+    #[test]
+    fn server_patch_makes_any_item_consumable() {
+        let items = crate::items::Items::for_tests(Default::default());
+        let with_patch = |patch: &[u8]| {
+            let mut stack = ItemStack::new("minecraft:stick", 1);
+            stack.data_mut().wire =
+                crate::item_data::Wire::new(stack.clone(), Arc::from(patch.to_vec()));
+            stack
+        };
+
+        let mut r = horizon_protocol::buf::Writer::new();
+        r.f32(2.0);
+        r.varint(2); // Drink
+        r.varint(0); // Direct sound
+        r.string("minecraft:custom_drink");
+        r.bool(false); // No fixed sound range
+        r.bool(true); // particles
+        r.varint(0); // 0 effects
+        let consumable_bytes = r.data;
+
+        let mut adds = vec![
+            1, // 1 added
+            0, // 0 removed
+            component::CONSUMABLE as u8,
+        ];
+        adds.push(consumable_bytes.len() as u8);
+        adds.extend(consumable_bytes);
+
+        let stack = with_patch(&adds);
+        let c = consumable(&stack, &items).expect("wire patch consumable");
+        assert_eq!(c.seconds, 2.0);
+        assert_eq!(c.animation, UseAnimation::Drink);
+        assert_eq!(c.sound, "minecraft:custom_drink");
+        assert!(c.particles);
+
+        // Removal
+        let removes = [0, 1, component::CONSUMABLE as u8];
+        let stack_removed = with_patch(&removes);
+        assert!(consumable(&stack_removed, &items).is_none());
+
+        // Wire patch with on_consume_effects and registered sound holder
+        let mut r = horizon_protocol::buf::Writer::new();
+        r.f32(1.6);
+        r.varint(2); // Drink
+        r.varint(1); // Registered sound holder (id 0 + 1)
+        r.bool(true); // particles
+        r.varint(1); // 1 effect
+        r.varint(2); // ClearAllEffects (type 2)
+        let consumable_bytes = r.data;
+
+        let mut sounds = horizon_protocol::registry::Ids::default();
+        sounds.names = vec!["minecraft:item.honey_bottle.drink".into()];
+        let mut item_ids = horizon_protocol::registry::Ids::default();
+        item_ids.names = vec!["minecraft:honey_bottle".into()];
+        let mut comp_ids = horizon_protocol::registry::Ids::default();
+        comp_ids.names = vec![String::new(); component::CONSUMABLE as usize + 1];
+        comp_ids.names[component::CONSUMABLE as usize] = "minecraft:consumable".into();
+        let mut registries = std::collections::HashMap::new();
+        registries.insert("minecraft:sound_event".into(), sounds);
+        registries.insert("minecraft:item".into(), item_ids);
+        registries.insert("minecraft:data_component_type".into(), comp_ids);
+        let builtin = Builtin { registries };
+
+        let decoded = decode_consumable_bytes_with(&consumable_bytes, Some(&builtin))
+            .expect("decoded with builtin");
+        assert_eq!(decoded.animation, UseAnimation::Drink);
+        assert_eq!(decoded.sound, "minecraft:item.honey_bottle.drink");
+        assert_eq!(decoded.effects, vec![ConsumeEffect::ClearAllEffects]);
+
+        // Creative client / network stack via from_network & components_tag
+        let mut s = horizon_protocol::item::Stack::new(0, 1);
+        s.added.push((
+            component::CONSUMABLE,
+            horizon_protocol::item::Component::Raw(consumable_bytes),
+        ));
+        let synced = horizon_protocol::registry::Dynamic::default();
+        let net_stack = from_network(&s, &builtin, &synced);
+        let net_c = consumable(&net_stack, &items).expect("network stack consumable");
+        assert_eq!(net_c.animation, UseAnimation::Drink);
+        assert_eq!(net_c.sound, "minecraft:item.honey_bottle.drink");
+        assert_eq!(net_c.effects, vec![ConsumeEffect::ClearAllEffects]);
     }
 
     #[test]
