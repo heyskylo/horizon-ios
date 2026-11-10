@@ -7286,7 +7286,9 @@ def orb_fall_distance():
              ('lava', 7, 4, y0 + 5, 'Value:3,Motion:[0d,-0.25d,0d],fall_distance:6d'),
              ('vine', 8, 8, y0 + 14, 'Value:4,Motion:[0d,-1.5d,0d],fall_distance:5d'),
              ('novine', 11, 8, y0 + 14, 'Value:5,Motion:[0d,-1.5d,0d],fall_distance:5d'),
-             ('still', 14, 8, y0 + 4, 'Value:6,NoGravity:1b,fall_distance:4d')]
+             ('still', 14, 8, y0 + 4, 'Value:6,NoGravity:1b,fall_distance:4d'),
+             # Summoned inside lava: Entity.isInLava is false on its first tick, so no halving yet.
+             ('inlava', 7, 4, y0 + 1, 'Value:7,fall_distance:4d')]
     # Water and lava stand in a stone well, so they have no flow to push with.
     for x, fluid in ((3, 'water'), (7, 'lava')):
         ops.append(cmd(f'/fill {x0 + x - 1} {y0} {z0 + 3} {x0 + x + 1} {y0 + 2} {z0 + 5} stone', expect_result=27))

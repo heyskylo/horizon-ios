@@ -160,7 +160,8 @@ impl ItemEntity {
 impl ExperienceOrb {
     /// `Entity.updateFluidInteraction`: refreshes fluid immersion over the
     /// orb's box and pushes its velocity by any water or lava current; water
-    /// resets its fall, and `Entity.baseTick` halves it in lava. Answers
+    /// resets its fall, and `Entity.baseTick` halves it in lava (`isInLava`
+    /// is false on the orb's first tick, `Entity.firstTick`). Answers
     /// `isEyeInFluid(FluidTags.WATER)` for the eye the scan reads, `0.425`
     /// above the orb's feet, and `isInWater`.
     pub fn update_fluids(&mut self, world: &World, fluids: &FluidResources) -> (bool, bool) {
@@ -175,7 +176,8 @@ impl ExperienceOrb {
         if water > 0.0 {
             self.fall_distance = 0.0;
         }
-        if lava > 0.0 {
+        // `tick_among` counts this tick first: `tickCount` is 1 on the first.
+        if lava > 0.0 && self.ticks > 1 {
             self.fall_distance *= 0.5;
         }
         (eye, water > 0.0)
