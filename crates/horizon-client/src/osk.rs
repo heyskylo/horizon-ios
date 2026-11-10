@@ -184,8 +184,8 @@ const HINT_LINE: f32 = 1.6;
 const HINT_SEP: &str = "   ";
 
 /// `items` on as few lines as fit `width` (as `measure` measures a line), in order. An item wider
-/// than `width` breaks at its spaces onto lines of its own; a word wider than `width` alone keeps
-/// a line, which the drawing shrinks to fit.
+/// than `width` breaks at its spaces onto lines of its own, its button's print kept with the
+/// first word ("B Close"); a line still wider than `width` (one long word) is drawn smaller.
 fn wrap_hints(
     items: impl IntoIterator<Item = String>,
     width: f32,
@@ -195,7 +195,15 @@ fn wrap_hints(
     for item in items {
         if measure(&item) > width {
             let mut line = String::new();
-            for word in item.split(' ').filter(|w| !w.is_empty()) {
+            let mut words = item.split(' ').filter(|w| !w.is_empty());
+            // The button's print never stands alone on a line.
+            let first = match (words.next(), words.next()) {
+                (Some(glyph), Some(word)) => vec![format!("{glyph} {word}")],
+                (Some(glyph), None) => vec![glyph.to_owned()],
+                _ => Vec::new(),
+            };
+            for word in first.into_iter().chain(words.map(str::to_owned)) {
+                let word = word.as_str();
                 if !line.is_empty() && measure(&format!("{line} {word}")) > width {
                     lines.push(std::mem::take(&mut line));
                 }
@@ -601,10 +609,10 @@ mod tests {
             wrap_hints(items(), 20.0, measure),
             ["A Type   X Delete", "Y Space   B Close"]
         );
-        // Narrower than every hint: each breaks at its space, a word a line, none lost.
+        // Narrower than every hint: each on its own line, its print kept with its word, none lost.
         assert_eq!(
             wrap_hints(items(), 3.0, measure),
-            ["A", "Type", "X", "Delete", "Y", "Space", "B", "Close"]
+            ["A Type", "X Delete", "Y Space", "B Close"]
         );
     }
 
@@ -616,11 +624,11 @@ mod tests {
             wrap_hints(items, 10.0, measure),
             ["A Type", "RT Fill in", "the next", "one", "B Close"]
         );
-        // One word wider than the panel keeps a line of its own (drawn smaller), nothing lost.
-        let items = ["A Type", "X Unaussprechlich"].map(String::from);
+        // One word wider than the panel stays with its button's print, on a line drawn smaller.
+        let items = ["A Type", "X Unaussprechlich gross"].map(String::from);
         assert_eq!(
             wrap_hints(items, 10.0, measure),
-            ["A Type", "X", "Unaussprechlich"]
+            ["A Type", "X Unaussprechlich", "gross"]
         );
     }
 
