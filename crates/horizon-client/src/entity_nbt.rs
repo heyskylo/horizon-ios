@@ -2935,21 +2935,21 @@ pub fn entity_base_tag(
     .tag(raw)
 }
 
-/// `ItemEntity.readAdditionalSaveData`: Health uses NumericTag's short conversion;
+/// `ItemEntity.readAdditionalSaveData`: `getShortOr` (floored, then narrowed) for three;
 /// Owner and Thrower use the numeric UUID codec.
 pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemEntity> {
     let stack = item_from_nbt(tag.get("Item")?)?;
     let position = position(tag)?;
+    let short = |key, default| match tag.get(key) {
+        Some(Tag::Float(v)) => f32::from_bits(*v).floor() as i32 as i16,
+        Some(Tag::Double(v)) => f64::from_bits(*v).floor() as i32 as i16,
+        other => number(other).unwrap_or(default) as i16,
+    };
     Some(ItemEntity {
         rotation: rotation(tag),
         join: Default::default(),
         no_gravity: flag(tag, "NoGravity"),
-        // getShortOr floors floating values to int before short narrowing.
-        health: i32::from(match tag.get("Health") {
-            Some(Tag::Float(v)) => f32::from_bits(*v).floor() as i32 as i16,
-            Some(Tag::Double(v)) => f64::from_bits(*v).floor() as i32 as i16,
-            other => number(other).unwrap_or(5) as i16,
-        }),
+        health: i32::from(short("Health", 5)),
         fire_ticks: number(tag.get("Fire")).unwrap_or(0) as i32,
         id,
         stack,
@@ -2963,8 +2963,8 @@ pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemE
         horizontal_collision: false,
         // Entity.load: getDoubleOr, any number widened.
         fall_distance: float(tag.get("fall_distance")).unwrap_or(0.0),
-        age: i32::from(number(tag.get("Age")).unwrap_or(0) as i16),
-        pickup_delay: i64::from(number(tag.get("PickupDelay")).unwrap_or(0) as i16),
+        age: i32::from(short("Age", 0)),
+        pickup_delay: i64::from(short("PickupDelay", 0)),
         bob_offset,
         ticks: 0,
         needs_sync: false,
@@ -4405,6 +4405,8 @@ mod tests {
         // What vanilla writes itself reads back as it was.
         assert_eq!(load("Age:-32768s,PickupDelay:32767s"), (-32768, 32767));
         assert_eq!(load("Age:5999s,PickupDelay:10s"), (5999, 10));
+        // A float or double floors first (`Mth.floor`), as `Health` does.
+        assert_eq!(load("Age:-0.5f,PickupDelay:9.9d"), (-1, 9));
     }
 
     // Added after the actual old Game proof: live mutation and a fresh absent
