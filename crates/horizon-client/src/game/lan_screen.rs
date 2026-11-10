@@ -157,8 +157,13 @@ impl WorldOptions {
     /// the cursor is over it. The box is drawn even with LAN off, so the tooltip
     /// shows there too; a remote world has no such box.
     fn port_tooltip(port: &EditBox, cursor: (f32, f32), remote: bool) -> Option<Text> {
-        (!remote && ui::hovered(cursor, port.x, port.y, port.width, port.height))
-            .then(|| Text::translate("lanServer.port", &[]))
+        if remote || !ui::hovered(cursor, port.x, port.y, port.width, port.height) {
+            return None;
+        }
+        Some(match port_error(&port.value) {
+            Some(key) => Text::translate(key, &[Text::literal("1024"), Text::literal("65535")]),
+            None => Text::translate("lanServer.port", &[]),
+        })
     }
     fn snapshot(&self) -> Snapshot {
         Snapshot {
@@ -550,6 +555,18 @@ impl Restrictions {
     }
 }
 
+/// `WorldOptionsScreen.tryParsePort`'s invalid value: not a number in
+/// `PORT_LOWER_BOUND..=PORT_HIGHER_BOUND`. A number another process holds
+/// (`HttpUtil.isPortAvailable`) is not checked: the port map records that gap.
+fn port_error(value: &str) -> Option<&'static str> {
+    if value.is_empty() {
+        return None;
+    }
+    match value.parse::<u32>() {
+        Ok(port) if (1024..=65535).contains(&port) => None,
+        _ => Some("lanServer.port.invalid"),
+    }
+}
 impl Game<'_> {
     pub(super) fn remote_world_options_permission(&mut self, permission: bool) {
         if let Some(o) = self.world_options.as_mut() {
