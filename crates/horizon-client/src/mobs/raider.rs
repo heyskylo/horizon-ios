@@ -762,6 +762,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn companions_and_shout_range_match_the_full_scan() {
+        use crate::mobs::{
+            Seen, seen_grid::SeenGrid, sensor_scan_tests::kind, world::with_test_world,
+        };
+        use std::sync::Arc;
+        let mut pillager = (*kind()).clone();
+        pillager.id = "minecraft:pillager".into();
+        pillager.species = Species::Pillager;
+        let (pillager, cow) = (Arc::new(pillager), kind());
+        // Raiders and cows on a 3-block lattice, some within 8 and 16 blocks, some beyond.
+        let mobs: Vec<Mob> = (0..300u32)
+            .map(|i| {
+                let at = Vec3::new(f64::from(i % 20) * 3.0, 64.0, f64::from(i / 20) * 3.0);
+                let mob_kind = if i % 3 == 0 { cow.clone() } else { pillager.clone() };
+                Mob::new(i + 1, mob_kind, at, 0.0)
+            })
+            .collect();
+        let seen: Vec<Seen> = mobs.iter().map(|m| m.seen(None)).collect();
+        let grid = SeenGrid::new(seen.iter().map(|s| s.bounds));
+        with_test_world(&seen, |w, _| {
+            let indexed = MobWorld {
+                others_grid: Some(&grid),
+                ..w.clone()
+            };
+            let mut found = 0;
+            for m in mobs.iter().filter(|m| is_raider(m.species())) {
+                let scan = companions(m, w);
+                assert_eq!(companions(m, &indexed), scan);
+                assert_eq!(shout_range(m, &indexed), shout_range(m, w));
+                found += scan.len();
+            }
+            assert!(found > 0);
+        });
+    }
+    #[test]
     fn raiders_and_leaders() {
         assert!(is_raider(Species::Ravager) && is_raider(Species::Witch));
         assert!(!is_raider(Species::Zombie));

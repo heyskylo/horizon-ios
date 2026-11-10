@@ -1787,6 +1787,49 @@ mod tests {
     use horizon_core::geometry::Vec3;
     use std::sync::Arc;
 
+    /// The cat bed check answers the same through the grid as by a full scan.
+    #[test]
+    fn cat_bed_check_matches_the_full_scan() {
+        use crate::mobs::{Seen, seen_grid::SeenGrid, world::with_test_world};
+        let mut cat = kind();
+        let k = Arc::make_mut(&mut cat);
+        k.id = "minecraft:cat".into();
+        k.species = Species::Cat;
+        // Cats on a 1.5-block lattice; every fourth one lies down.
+        let mobs: Vec<Mob> = (0..200u32)
+            .map(|i| {
+                let at = Vec3::new(f64::from(i % 20) * 1.5, 64.0, f64::from(i / 20) * 1.5);
+                let mut m = Mob::new(i + 1, cat.clone(), at, 0.0);
+                m.extra.flag = i % 4 == 0;
+                m
+            })
+            .collect();
+        let seen: Vec<Seen> = mobs.iter().map(|m| m.seen(None)).collect();
+        let grid = SeenGrid::new(seen.iter().map(|s| s.bounds));
+        with_test_world(&seen, |w, _| {
+            let indexed = MobWorld {
+                others_grid: Some(&grid),
+                ..w.clone()
+            };
+            let (mut hits, mut misses) = (0, 0);
+            for bed in [[0, 64, 0], [5, 64, 5], [12, 64, 9], [28, 64, 20]] {
+                let relax = CatRelaxOnOwner {
+                    goal: Some(bed),
+                    on_bed_ticks: 0,
+                };
+                for me in &mobs {
+                    let scan = relax.occupied(me, w);
+                    assert_eq!(relax.occupied(me, &indexed), scan);
+                    if scan {
+                        hits += 1;
+                    } else {
+                        misses += 1;
+                    }
+                }
+            }
+            assert!(hits > 0 && misses > 0);
+        });
+    }
     /// Wolf.tick: a shake starting posts ENTITY_ACTION with its sound, on the server only.
     #[test]
     fn a_shake_posts_entity_action_on_the_server() {
