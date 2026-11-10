@@ -18,7 +18,10 @@ use horizon_client::perf_net::Link;
 use horizon_client::server_perf::{self, TickDetail, WorldCounts};
 use horizon_client::spans::{self, Span};
 use horizon_client::command::{Arg, Dispatcher, PROFILER_GPU, Registries};
-use horizon_client::text::{ClickEvent, DARK_GRAY, GOLD, GRAY, RED, Style, Text};
+use horizon_client::hud::MARK_SPRITE;
+use horizon_client::text::{
+    ClickEvent, DARK_GRAY, GOLD, GRAY, InlineObject, RED, Style, Text, WHITE,
+};
 use horizon_perf_format::{
     files,
     v1::{BenchResult, StopReason, Trigger},
@@ -345,10 +348,19 @@ fn profiler_words(literals: &[String], name: Option<&str>) -> Vec<String> {
     words
 }
 
-/// Spark's chat shape: a dim `[⚡]` tag, then the line in gray.
+/// Spark's chat shape: a dim tag round Horizon's mark, then the line in gray.
 fn profiler_line(body: Text, color: u32) -> Text {
+    let mark = Style {
+        color: Some(WHITE),
+        inline_object: Some(InlineObject::Atlas {
+            atlas: "minecraft:gui".into(),
+            sprite: MARK_SPRITE.into(),
+            fallback: "H".into(),
+        }),
+        ..Style::default()
+    };
     Text::colored("[", DARK_GRAY)
-        .append(Text::colored("⚡", GOLD))
+        .append(Text::styled("\u{fffc}", mark))
         .append(Text::colored("] ", DARK_GRAY))
         .append(body.with_style(&Style::color(color)))
 }
