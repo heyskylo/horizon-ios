@@ -54,7 +54,7 @@ impl Default for Config {
             sampler: sampler::Config::default(),
             threads: Vec::new(),
             ticks_over_ms: 50.0,
-            block_s: 5.0,
+            block_s: 1.0,
             names: Names::default(),
         }
     }

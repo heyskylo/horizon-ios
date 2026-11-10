@@ -397,7 +397,7 @@ Notes on fields:
   `weights.state` carry them; a root node has `thread_root = 1 + thread index`. An inlined call is a chain of nodes, and
   `weights.node` is the innermost. `slow_over_ms` is the duration from which a tick counts as slow; read it there, because
   `Start.options.ticks_over_ms` is left unset. Nodes are unique per (parent, function): addresses of one function under one
-  caller share a node. Time blocks are `block_s` long (5 s, or window / 32 when longer than 160 s); the last block takes whatever follows it.
+  caller share a node. Time blocks are `block_s` long (1 s, at most 1800 of them: 30 minutes); the last block takes whatever follows it. A time range in a query selects every block it overlaps and the reply's `selection.from`/`to` say the blocks it used.
 - Q2 as built (sample queries read `samples`; `meta`'s `Sections.samples` counts it):
   - Functions are merged by normalized name (`horizon_perf::names`), so every monomorphization and address of one function is one row; ids are `f:` over that name, `p:` over the thread and the normalized frames.
   - Weights are `count × kind.period`; "per tick" divides by the thread's units in the selection (`block_units` over the window's blocks; slow units are scaled by the window's share, with a warning).
@@ -409,7 +409,7 @@ Notes on fields:
   bottom-up views cheap.
 - `addr` is the module-relative address, kept so that a later split-debug-file design can symbolize offline (the
   H 4b note). With `symbols = NONE`, names are `crate+0xOFF`.
-- `block` is the time block. It multiplies keys by at most 32, and aggregation stays bounded by `MAX_KEYS = 1<<18`
+- `block` is the time block. It multiplies keys by at most the blocks the session spans (one a second, up to 1800), and aggregation stays bounded by `MAX_KEYS = 1<<18`
   (`agg.rs:8-10`). When the table is full, further samples are dropped and counted in `dropped_samples`.
 - `SpanBlock` replaces `perf-*.json`'s per-tick spans for statistics (§6.6). `SpanSummary.worst` keeps 16 ticks with
   full trees; today there are 10 ticks with 8 spans each (`report.rs:25`, `:159-171`).

@@ -423,6 +423,10 @@ const CASES: &[(&str, &[&str])] = &[
         &["query", "ticks", "--side", "client", "{client}"],
     ),
     ("tick", &["query", "tick", "k:101", "{hand}"]),
+    (
+        "hot_window",
+        &["query", "hot", "--from", "6", "--to", "8", "{samples}"],
+    ),
     ("tick_incomplete", &["query", "tick", "100", "{hand}"]),
     ("tick_missing", &["query", "tick", "k:55", "{hand}"]),
     ("tick_bad_id", &["query", "tick", "x", "{hand}"]),

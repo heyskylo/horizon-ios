@@ -13,7 +13,7 @@ const BUCKETS: usize = 96;
 const WORST: usize = 10;
 const PSEUDO: u64 = 1 << 63;
 /// Time blocks a session is cut into; later samples fall in the last one.
-pub const MAX_TIME_BLOCKS: usize = 32;
+pub const MAX_TIME_BLOCKS: usize = 1800;
 
 /// What a sample measures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -31,7 +31,7 @@ pub struct Key {
     pub node: u32,
     pub state: State,
     pub slow: bool,
-    pub time_block: u8,
+    pub time_block: u16,
     pub span: u16,
     pub entity: u16,
     pub block: u16,
@@ -132,7 +132,7 @@ pub struct Aggregate {
     pub ticks: HashMap<u16, TickStats>,
     /// Ticks or frames that ended in each time block, per thread.
     pub block_ticks: HashMap<u16, Vec<u32>>,
-    time_block: u8,
+    time_block: u16,
     pending: HashMap<u16, Pending>,
     slow_ns: u64,
     /// Samples whose stack was cut short at `MAX_NODES`.
@@ -168,7 +168,7 @@ impl Aggregate {
 
     /// Makes `block` (clamped to the last one) the time block of everything added from now on.
     pub fn set_time_block(&mut self, block: usize) {
-        self.time_block = block.min(MAX_TIME_BLOCKS - 1) as u8;
+        self.time_block = block.min(MAX_TIME_BLOCKS - 1) as u16;
     }
 
     /// Time blocks that received a sample or a tick.

@@ -26,9 +26,9 @@ impl Run<'_> {
         value / self.units.count.max(1) as f64
     }
 
-    /// The window the query asked for; None when it covered the whole capture.
+    /// The window the weights cover, widened to whole time blocks; None when the query covered the whole capture.
     pub fn window(&self) -> Option<Window> {
-        (self.pick.window != Window::ALL).then_some(self.pick.window)
+        (self.pick.window != Window::ALL).then(|| self.samples.snapped(self.pick.window))
     }
 
     pub fn sampled(&self, samples: u64) -> Sampled {
@@ -191,6 +191,37 @@ fn scope(run: &mut Run, id: &str) -> Result<Scope, QueryError> {
         )));
     };
     let s = &run.samples;
+/// What the samples of the time blocks overlapping `[from, to]` say about the main thread: its top functions and the window the blocks cover.
+pub(super) fn hot_around(
+    view: &View,
+    side: Side,
+    from: f64,
+    to: f64,
+    slow: bool,
+    limit: usize,
+) -> Option<(Vec<HotRow>, Window)> {
+    let samples = Samples::new(view, side)?;
+    let thread = samples.thread(None).ok()?;
+    let window = Window { from, to };
+    let pick = Pick {
+        thread: Some(thread),
+        select: Select::Cpu,
+        slow,
+        contexts: None,
+        window,
+    };
+    let units = samples.units(thread, slow, window);
+    let covered = samples.snapped(window);
+    let run = Run {
+        samples,
+        pick,
+        thread,
+        units,
+    };
+    let (rows, _) = hot_rows(&run, HotBy::SelfTime, None, limit);
+    Some((rows, covered))
+}
+
     let by_context = |key: ContextKey| {
         let mut wanted = BTreeMap::new();
         wanted.insert(key, vec![parsed.key.clone()]);
