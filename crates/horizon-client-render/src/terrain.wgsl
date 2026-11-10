@@ -965,13 +965,13 @@ const PI: f32 = 3.14159265;
 fn disc_distance(d: vec3<f32>, y: f32) -> vec2<f32> {
     if d.y * y <= 0.0 { return vec2(-1.0); }
     let p = d * (y / d.y);
-    let h = length(p.xz);
-    let phi = atan2(p.z, p.x);
-    let sector = PI / 4.0;
-    let delta = phi - (floor(phi / sector) * sector + sector * 0.5);
-    let edge = 512.0 * cos(sector * 0.5) / cos(delta);
-    if h > edge { return vec2(-1.0); }
-    let s = h / edge;
+    // The regular octagon's edge parameter, directly from its half planes.
+    // max(|x| + tan(pi/8)*|z|, |z| + tan(pi/8)*|x|) / radius
+    // equals length(p.xz) / edge without atan2, floor or cos per pixel.
+    let a = abs(p.xz);
+    let diagonal = 0.41421356237309503;
+    let s = max(a.x + diagonal * a.y, a.y + diagonal * a.x) / 512.0;
+    if s > 1.0 { return vec2(-1.0); }
     let ay = abs(y);
     let rim = sqrt(512.0 * 512.0 + y * y);
     return vec2(ay + s * (rim - ay), ay + s * (512.0 - ay));

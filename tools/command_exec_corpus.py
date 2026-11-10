@@ -1906,6 +1906,49 @@ def dispensed_spawn_egg_persistence():
                        f'/forceload remove {x} {z} {x + 15} {z + 15}')
 
 
+def dispensed_bucket_mobs():
+    """`MobBucketItem.spawn` loads the bucket's entity data into the mob (`loadFromBucketTag`:
+    a sulfur cube's lowercase `age`, absent meaning 0, and a tadpole's `Age`) and calls
+    `setFromBucket(true)`, never `setPersistenceRequired`: a sulfur cube saves `from_bucket:1b`
+    and `PersistenceRequired:0b`, keeping the size 2 its finalizeSpawn gave it even as a baby. A
+    tadpole's `fromBucket()` is always true, so `requiresCustomPersistence` keeps every tadpole
+    far from the player, a summoned one too, and saves `PersistenceRequired:0b`."""
+    x, z, y = 5376, 5120, 300
+    # (dispenser x, bucket, its entity data, mob)
+    buckets = [(x + 2, 'sulfur_cube_bucket', '{age:-24000,NoAI:1b}', 'sulfur_cube'),
+               (x + 6, 'sulfur_cube_bucket', '{NoAI:1b}', 'sulfur_cube'),
+               (x + 10, 'tadpole_bucket', '{Age:100,AgeLocked:1b,NoAI:1b}', 'tadpole')]
+    ops = [*setup(f'/forceload add {x} {z} {x + 15} {z + 15}'),
+           {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4]]},
+           *setup(f'/fill {x} {y - 1} {z} {x + 15} {y - 1} {z + 15} minecraft:stone')]
+    for bx, bucket, data, _ in buckets:
+        ops += [cmd(f'/setblock {bx} {y} {z + 4} minecraft:dispenser[facing=south]'
+                    f'{{Items:[{{Slot:0b,id:"minecraft:{bucket}",count:1,'
+                    f'components:{{"minecraft:bucket_entity_data":{data}}}}}]}}', expect_result=1),
+                cmd(f'/setblock {bx} {y + 1} {z + 4} minecraft:redstone_block', expect_result=1)]
+    ops += [cmd(f'/summon minecraft:tadpole {x + 14}.5 {y} {z + 10}.5 {{NoAI:1b,Tags:["summoned_tadpole"]}}',
+                expect_result=1),
+            {'op': 'tick', 'n': 6}]
+    for bx, _, data, kind in buckets:
+        box = f'type=minecraft:{kind},x={bx - 1},y={y - 2},z={z + 4},dx=3,dy=4,dz=3,limit=1'
+        mob = f'@e[{box}]'
+        ops += [cmd(f'/execute if entity {mob}', expect_result=1),
+                cmd(f'/data get entity {mob} PersistenceRequired', expect_result=0)]
+        if kind == 'sulfur_cube':
+            ops += [cmd(f'/data get entity {mob} from_bucket', expect_result=1),
+                    cmd(f'/data get entity {mob} Size', expect_result=1),
+                    cmd(f'/execute {"unless" if "age" in data else "if"} entity @e[{box},nbt={{Age:0}}]', expect_result=1)]
+        else:
+            ops += [cmd(f'/data get entity {mob} FromBucket', expect_result=1),
+                    cmd(f'/data get entity {mob} Age')]
+    tadpole = '@e[type=minecraft:tadpole,tag=summoned_tadpole,limit=1]'
+    ops += [cmd(f'/execute if entity {tadpole}', expect_result=1),
+            cmd(f'/data get entity {tadpole} PersistenceRequired', expect_result=0)]
+    return ops + setup(f'/kill @e[type=!minecraft:player,x={x},y={y - 8},z={z},dx=16,dy=24,dz=16]',
+                       f'/fill {x} {y - 1} {z} {x + 15} {y + 1} {z + 15} minecraft:air',
+                       f'/forceload remove {x} {z} {x + 15} {z + 15}')
+
+
 
 
 def summoned_fangs_lifetime():
@@ -2016,6 +2059,37 @@ def entity_landing_sensors():
             y = 203 if no_gravity else 200
             ops += [cmd(f'/execute if entity {target[:-1]},nbt={{Pos:[6.5d,{y}d,10.5d]}}]', expect_result=1),
                     cmd('/data get block 9 200 10 last_vibration_frequency', expect_result=0 if no_gravity else 2)]
+    # #14440: primed TNT and a falling block land through Entity.move too, so checkFallDamage posts
+    # HIT_GROUND after a fall.
+    for kind, nbt in (('tnt', 'fuse:80'), ('falling_block', 'BlockState:{Name:"minecraft:sand"},Time:1')):
+        target = f'@e[tag=landing_{kind},limit=1]'
+        ops += setup('/setblock 9 200 10 air strict', '/kill @e[tag=landing_actor]', '/tick step 25')
+        ops += [{'op': 'tick', 'n': 25}]
+        ops += setup('/fill 0 200 0 31 206 31 air', '/fill 0 199 0 31 199 31 stone', '/tp @s 6.5 200 28.5',
+                     '/setblock 9 200 10 sculk_sensor strict', '/tick step 2')
+        ops += [{'op': 'tick', 'n': 2}]
+        ops += [cmd('/execute if block 9 200 10 sculk_sensor[sculk_sensor_phase=inactive,power=0]', expect_result=1)]
+        ops += setup(f'/summon {kind} 6.5 203 10.5 {{Tags:["landing_actor","landing_{kind}"],{nbt}}}')
+        for _ in range(20):
+            ops += setup('/tick step 1')
+            ops += [{'op': 'tick', 'n': 1}]
+            ops += [cmd(f'/execute if entity {target[:-1]},nbt={{OnGround:1b}}]'),
+                    cmd('/execute if block 9 200 10 sculk_sensor[sculk_sensor_phase=active]')]
+        ops += [cmd('/data get block 9 200 10 last_vibration_frequency')]
+    # A piston's push is Entity.move too: a falling block it pushes onto the ground lands in that
+    # step (fallOn, HIT_GROUND, the fall forgotten), not on its own next tick.
+    ops += setup('/kill @e[tag=landing_actor]', '/fill 0 200 0 31 206 31 air',
+                 '/setblock 6 202 10 piston[facing=down]',
+                 '/summon falling_block 6.5 200.3 10.5 {Tags:["landing_actor","landing_pushed"],'
+                 'BlockState:{Name:"minecraft:sand"},NoGravity:1b,fall_distance:3d,Time:1}',
+                 '/setblock 6 203 10 redstone_block')
+    for _ in range(4):
+        ops += setup('/tick step 1')
+        ops += [{'op': 'tick', 'n': 1}]
+        ops += [cmd('/data get entity @e[tag=landing_pushed,limit=1] fall_distance'),
+                cmd('/data get entity @e[tag=landing_pushed,limit=1] Pos[1]'),
+                cmd('/execute if entity @e[tag=landing_pushed,nbt={OnGround:1b}]')]
+    ops += setup('/fill 0 200 0 31 206 31 air', '/tp @s 6.5 200 7.5')
     return ops + setup('/setblock 9 200 10 air strict', '/kill @e[tag=landing_actor]',
                        '/scoreboard objectives remove landing_probe',
                        '/tick unfreeze', '/gamerule random_tick_speed 3')
@@ -7011,6 +7085,27 @@ def command_block_last_output():
     return ops + setup(f'/fill {x0} {y0} {z0} {x0 + 15} {y0 + 1} {z0 + 15} air',
                        '/scoreboard objectives remove cb_out', f'/forceload remove {x0} {z0}')
 
+def glide_fall_accumulation():
+    """#13868: `LivingEntity.updateFallFlying` starts with `checkFallDistanceAccumulation`: a glide whose vertical speed
+    is above -0.5 keeps at most 1 of its fall; a dive keeps it all."""
+    # Entities tick once the forced chunk's 2-column neighbourhood is loaded (ChunkMap.prepareEntityTickingChunk).
+    x0, y0, z0 = 4096 - 288, 280, 3584
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks',
+            'chunks': [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]},
+           cmd('/tick freeze', False)]
+    subjects = [('pufferfish', 'fall_distance:20.0d'), ('zombie', 'fall_distance:5.5d,NoAI:1b'),
+                ('zombie', 'fall_distance:5.5d,NoAI:1b,Motion:[0.0d,-0.8d,0.0d]'),
+                ('zombie', 'fall_distance:0.75d,NoAI:1b')]
+    for n, (kind, fields) in enumerate(subjects, 1):
+        ops.append(cmd(f'/summon {kind} {x0 + 3 * n}.5 {y0} {z0 + 8}.5 '
+                       f'{{UUID:[I;14400,0,{n},1],FallFlying:1b,PersistenceRequired:1b,{fields}}}', expect_result=1))
+    ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 1}, cmd('/tick freeze', False)]
+    for n in range(1, len(subjects) + 1):
+        for key in ('fall_distance', 'FallFlying'):
+            ops.append(cmd(f'/data get entity 00003840-0000-0000-0000-{n:04x}00000001 {key}'))
+    return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
+                       f'/forceload remove {x0} {z0}')
+
 def loaded_ticket_removal(blocks=False):
     """Entity-ticking command visibility after forced tickets leave; FULL is separate."""
     targets = [(d, x, z) for d in range(2, 7)
@@ -7339,7 +7434,8 @@ def vehicle_fall_clip():
     falls through one block of water and ends the move below it, out of the water's own reset.
     """
     x0, y0, z0 = 3648, 260, 3648
-    chunk = [[x0 >> 4, z0 >> 4]]
+    # Entities tick once the forced chunk's 2-column neighbourhood is loaded (ChunkMap.prepareEntityTickingChunk).
+    chunk = [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]
     ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
            cmd('/tick freeze', False),
            cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', expect_result=256)]
@@ -7420,7 +7516,8 @@ def boat_float_height():
     coarse, and are read for 10 ticks.
     """
     x0, y0, z0 = 3776, 279, 3776
-    chunk = [[x0 >> 4, z0 >> 4]]
+    # Entities tick once the forced chunk's 2-column neighbourhood is loaded (ChunkMap.prepareEntityTickingChunk).
+    chunk = [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]
     ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
            cmd('/tick freeze', False)]
     # (x, water blocks to set, boat y, motion y)
@@ -7442,6 +7539,30 @@ def boat_float_height():
     return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16]',
                        f'/fill {x0} {y0 - 4} {z0} {x0 + 15} {y0 + 4} {z0 + 15} air',
                        f'/forceload remove {x0} {z0}')
+
+
+def dispensed_item_escape():
+    """#14537: `DefaultDispenseItemBehavior.spawnItem` builds the item with `new ItemEntity(level, x, y, z, stack)`,
+    whose constructor draws its default motion (two `nextDouble`s) from the item's own random before `spawnItem`
+    sets the thrown one. A down-facing dispenser over stone drops the item inside the floor, and
+    `moveTowardsClosestSpace`'s escape speed is the next draw from that random."""
+    # Entities tick once the forced chunk's 2-column neighbourhood is loaded (ChunkMap.prepareEntityTickingChunk).
+    x0, y0, z0 = 4096 - 64, 300, 3584
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks',
+            'chunks': [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]},
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', False),
+           {'op': 'sync_randoms', 'uniquifier': 332, 'entity_id': 10_000_000, 'level_seed': 332},
+           cmd(f'/setblock {x0 + 7} {y0} {z0 + 7} dispenser[facing=down]'
+               '{Items:[{Slot:0b,id:"minecraft:stone",count:2}]}', expect_result=1),
+           {'op': 'crafter_tick', 'pos': [x0 + 7, y0, z0 + 7]}]
+    item = f'@e[type=item,x={x0 + 7}.5,y={y0},z={z0 + 7}.5,distance=..6,sort=nearest,limit=1]'
+    for tick in range(4):
+        if tick:
+            ops.append({'op': 'tick', 'n': 1})
+        for key in ('Pos[0]', 'Pos[1]', 'Pos[2]', 'Motion[0]', 'Motion[1]', 'Motion[2]'):
+            ops.append(cmd(f'/data get entity {item} {key}'))
+    return ops + setup(f'/kill @e[type=item,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0} {z0 + 15} air', f'/forceload remove {x0} {z0}')
 
 
 def groups():
@@ -7619,6 +7740,7 @@ def groups():
         ('ravager NoAI counters', ravager_noai_counters()),
         ('aquatic FromBucket', aquatic_from_bucket()),
         ('dispensed spawn egg persistence', dispensed_spawn_egg_persistence()),
+        ('dispensed bucket mobs', dispensed_bucket_mobs()),
         ('villager command names', villager_command_names()),
         ('item lifetime counters', item_lifetime_counters()),
         ('seed sync proof', seed_sync_proof(cmd, setup)),
@@ -7636,7 +7758,9 @@ def groups():
         ('piston mob bounce', piston_mob_bounce()),
         ('primed tnt box', primed_tnt_box()),
         ('primed tnt fall', primed_tnt_fall()),
+        ('dispensed item escape', dispensed_item_escape()),
         ('command block last output', command_block_last_output()),
+        ('glide fall accumulation', glide_fall_accumulation()),
         ('living short timers', living_short_timers()),
         ('projectile fall distance', projectile_fall_distance()),
         ('thrown projectile rotation', thrown_projectile_rotation()),

@@ -43,7 +43,7 @@ fn spawn_tick(engine: &mut ParticleEngine, rng: &mut Lcg, types: &[Emitter], roc
             twinkle: false,
         };
         let at = [-5.5 + rng.next() * 12.0, f64::from(FLOOR_Y + 20), 20.5];
-        engine.fireworks(at, [0.0, 0.1, 0.0], vec![explosion], engine.camera);
+        engine.fireworks(at, [0.0, 0.1, 0.0], vec![explosion], engine.camera, true);
     }
     for &(ty, count, center, delta, speed) in types {
         let options = ParticleOptions::simple(ty);
