@@ -26,8 +26,9 @@ pub struct Tab {
     /// The page of tabs it is on: vanilla's are 0, mods' after, as NeoForge
     /// pages them.
     pub page: u32,
-    /// A Polytone creative tab modifier's `name`: its text and colour, over the tab's own.
-    pub name: Option<(String, Option<u32>)>,
+    /// A Polytone creative tab modifier's `name`: its text (a translation key when
+    /// the flag is set) and colour, over the tab's own.
+    pub name: Option<(String, Option<u32>, bool)>,
 }
 impl Tab {
     /// The tab without its stacks.
@@ -103,25 +104,28 @@ pub struct Creative {
     /// The packs' Polytone creative tab modifiers, applied by `rebuild`.
     pack: Vec<crate::polytone_creative_tabs::TabModifier>,
 }
-/// A text component's plain text and its colour (a name, or `#rrggbb`).
-fn component_text(json: &Value) -> (String, Option<u32>) {
+/// A text component's text, its colour (a name, or `#rrggbb`) and whether the
+/// text is a `translate` key, to be resolved when drawn.
+fn component_text(json: &Value) -> (String, Option<u32>, bool) {
     match json {
-        Value::String(s) => (s.clone(), None),
+        Value::String(s) => (s.clone(), None, false),
         Value::Object(o) => {
+            let translate = o.get("translate").and_then(Value::as_str);
             let text = o
                 .get("text")
-                .or_else(|| o.get("translate"))
                 .and_then(Value::as_str)
+                .or(translate)
                 .unwrap_or("")
                 .to_owned();
+            let translate = o.get("text").is_none() && translate.is_some();
             let color = o.get("color").and_then(Value::as_str).and_then(|c| {
                 c.strip_prefix('#')
                     .and_then(|hex| u32::from_str_radix(hex, 16).ok())
                     .or_else(|| crate::text::named_color(c))
             });
-            (text, color)
+            (text, color, translate)
         }
-        _ => (String::new(), None),
+        _ => (String::new(), None, false),
     }
 }
 /// The grid's stacks for one tab, search text and language.

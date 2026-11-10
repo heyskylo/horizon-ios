@@ -28,8 +28,12 @@ impl Game<'_> {
     /// `itemGroup.<mod>.<name>`, else its `title` as a lang key (a mod's own
     /// `itemGroup.<mod>`), else `title` as English text.
     pub(super) fn creative_tab_title(&self, tab: &horizon_client::creative::Tab) -> String {
-        if let Some((name, _)) = &tab.name {
-            return name.clone();
+        if let Some((name, _, translate)) = &tab.name {
+            return if *translate {
+                self.translate(name, name)
+            } else {
+                name.clone()
+            };
         }
         match horizon_client::creative::item_group_key(&tab.id) {
             Some(key) => self.translate(key, &tab.title),
