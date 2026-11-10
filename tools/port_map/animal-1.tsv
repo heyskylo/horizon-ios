@@ -5,6 +5,7 @@ AgeableWaterCreature.checkSurfaceAgeableWaterCreatureSpawnRules	port	crates/hori
 Animal.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	Animal fields: modeled InLove and optional LoveCause, removing stale raw when absent; inherited Ageable writer separate; UUID admission gaps retained
 Animal.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	InLove through NumericTag.intValue; existing LoveCause UUID loading retained
 Animal.canMate	port	crates/horizon-client/src/mobs/animal_brain.rs::can_mate_with	brain breeding; the Breed goal in goals.rs does the same for goal-driven animals
+Animal.mobInteract	port	crates/horizon-client/src/mobs/ai.rs::takes_food	the food branches: an adult at age 0 that canFallInLove, else canAgeUp (isBaby && !isAgeLocked), both then playEatingSound; the sit/stand fall-through is in game/creatures.rs::interact_mob
 Animal.handleEntityEvent	port	crates/horizon-client-render/src/particles.rs::entity_event_burst	event 18 love hearts
 Animal.getDismountLocationForPassenger	port	crates/horizon-client/src/game/mounts.rs::Game::dismount_mount	gap: tries both sides by the mob's yaw, then on top; not DismountHelper's offsets and pose boxes
 Allay.createAttributes	skip:data		attributes come from entity-types.json
