@@ -10391,6 +10391,8 @@ impl Game<'_> {
                         let held = self.captured;
                         if self.control.is_none() {
                             self.keys.clear();
+                            self.modifiers = winit::keyboard::ModifiersState::empty();
+                            self.debug_keys.reset();
                             // Latched sneak/sprint live in `toggles`, not in the
                             // physical keys: put them back so a short alt-tab
                             // (no pause screen) does not drop them. Only a mapping
@@ -10398,21 +10400,18 @@ impl Game<'_> {
                             // no state to keep, and an unfocused window never gets
                             // its key release, so leaving it down would keep the
                             // player sneaking or sprinting until the key is tapped.
-                            for (slot, needs_toggle) in [
+                            let toggles = [
                                 self.settings.toggle_crouch,
                                 self.settings.toggle_sprint,
                                 self.settings.toggle_attack,
                                 self.settings.toggle_use,
-                            ]
-                            .into_iter()
-                            .enumerate()
-                            {
+                            ];
+                            for (slot, needs_toggle) in toggles.into_iter().enumerate() {
                                 self.toggles.0[slot].set_down(false, needs_toggle);
                             }
                             self.sync_toggle(0);
                             self.sync_toggle(1);
-                            self.left = false;
-                            self.right = false;
+                            (self.left, self.right) = (false, false);
                             self.capture(false);
                         }
                         self.regrab_on_refocus = held;
