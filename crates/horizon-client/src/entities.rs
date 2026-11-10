@@ -1376,6 +1376,17 @@ pub struct ExperienceOrb {
     /// `ExperienceOrb.followingPlayer`: the followed player's entity id, kept
     /// until they are gone or further than 8 blocks. Never saved.
     pub following: Option<u32>,
+    /// `Entity.fallDistance` (`fall_distance` in its save).
+    pub fall_distance: f64,
+}
+/// An orb's `Entity.move` this tick, for the fall bookkeeping its caller
+/// finishes (the long-move cast, `checkFallDamage`'s HIT_GROUND).
+#[derive(Clone, Copy, Debug)]
+pub struct OrbMove {
+    pub from: Vec3,
+    pub moved: Vec3,
+    /// `Entity.isInWater` from this tick's fluid step.
+    pub in_water: bool,
 }
 impl ExperienceOrb {
     /// `ExperienceOrb.hurtServer`: the damage comes off the health as an
@@ -1501,7 +1512,7 @@ impl ExperienceOrb {
         fluids: &crate::motion::FluidResources,
         on_sound: &mut dyn FnMut([f64; 3], f32),
     ) -> bool {
-        self.tick_among(
+        let (stays, _) = self.tick_among(
             world,
             facts,
             collision,
@@ -1512,10 +1523,12 @@ impl ExperienceOrb {
             fluids,
             on_sound,
             &[],
-        )
+        );
+        stays
     }
     /// [`Self::tick`], its move also stopped by `entities`: the boxes of the
     /// entities that `canBeCollidedWith` it (`EntityGetter.getEntityCollisions`).
+    /// Also gives the move it made, whose fall bookkeeping the caller finishes.
     #[allow(clippy::too_many_arguments)]
     pub fn tick_among(
         &mut self,
@@ -1529,12 +1542,12 @@ impl ExperienceOrb {
         fluids: &crate::motion::FluidResources,
         on_sound: &mut dyn FnMut([f64; 3], f32),
         entities: &[Aabb],
-    ) -> bool {
+    ) -> (bool, OrbMove) {
         self.ticks += 1;
         self.previous = self.position;
         // `Entity.baseTick`'s fluid step, whose `updateFluidOnEyes` answer the
         // water branch below reads: the orb's eye, not its feet, decides.
-        let eye_in_water = self.update_fluids(world, fluids);
+        let (eye_in_water, in_water) = self.update_fluids(world, fluids);
         let block = world.block(
             self.position.x.floor() as i32,
             self.position.y.floor() as i32,
@@ -1601,6 +1614,7 @@ impl ExperienceOrb {
         let moved = scene
             .resolve_in_border_with(bounds, wanted, 0.0, self.on_ground, border, entities)
             .unwrap_or(Vec3::ZERO);
+        let from = self.position;
         self.position = Vec3::new(
             self.position.x + moved.x,
             self.position.y + moved.y,
@@ -1648,7 +1662,12 @@ impl ExperienceOrb {
             self.velocity.y = -wanted.y * 0.4;
         }
         self.age += 1;
-        !discarded && self.age < 6000
+        let step = OrbMove {
+            from,
+            moved,
+            in_water,
+        };
+        (!discarded && self.age < 6000, step)
     }
     /// `LavaFluid.entityInside` -> `Entity.lavaHurt`: four damage on the
     /// server, through the orb's existing hurt/discard policy, playing the generic
@@ -3433,6 +3452,7 @@ mod world_border_tests {
                 None,
             );
             let mut orb = ExperienceOrb {
+                fall_distance: 0.0,
                 rotation: [0.0, 0.0],
                 join: Default::default(),
                 no_gravity: false,
@@ -4843,6 +4863,7 @@ mod orb_underwater_tests {
             .iter()
             .map(|(v, _)| {
                 let mut orb = ExperienceOrb {
+                    fall_distance: 0.0,
                     rotation: [0.0, 0.0],
                     join: Default::default(),
                     no_gravity: false,
@@ -4877,6 +4898,7 @@ mod render_light_tests {
 
     fn orb(y: f64) -> ExperienceOrb {
         ExperienceOrb {
+            fall_distance: 0.0,
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -5078,6 +5100,7 @@ mod orb_lava_tests {
 
     fn sample_orb(at: Vec3, health: i32) -> ExperienceOrb {
         ExperienceOrb {
+            fall_distance: 0.0,
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,

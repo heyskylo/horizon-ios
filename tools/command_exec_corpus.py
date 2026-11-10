@@ -7267,6 +7267,54 @@ def mob_fall_clip():
                        f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 30} {z0 + 15} air',
                        f'/forceload remove {x0} {z0}')
 
+def orb_fall_distance():
+    """#14440: an experience orb's fall (`Entity.fallDistance`). `Entity.move` casts a move of a block or
+    more over fall-resetting blocks and water, then `checkFallDamage` adds the drop outside water and on
+    the ground calls `fallOn`, posts HIT_GROUND and resets it; `Entity.updateFluidInteraction` resets it
+    in water and `Entity.baseTick` halves it in lava. `saveWithoutId` and `load` keep it. Orbs of other
+    values sit apart, far from any player; frozen, then read tick by tick.
+    """
+    x0, y0, z0 = 4672, 250, 4672
+    # Entities tick once every chunk within 2 columns is loaded (ChunkMap.prepareEntityTickingChunk).
+    chunk = [[(x0 >> 4) + dx, (z0 >> 4) + dz] for dx in range(-2, 3) for dz in range(-2, 3)]
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
+           cmd('/tick freeze', False),
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', expect_result=256)]
+    # (name, x, z, start y, NBT); each in its own column.
+    cases = [('drop', 1, 8, y0 + 4, 'Value:1,Motion:[0d,-0.5d,0d],fall_distance:1d'),
+             ('water', 3, 4, y0 + 5, 'Value:2,Motion:[0d,-0.25d,0d],fall_distance:3d'),
+             ('lava', 7, 4, y0 + 5, 'Value:3,Motion:[0d,-0.25d,0d],fall_distance:6d'),
+             ('vine', 8, 8, y0 + 14, 'Value:4,Motion:[0d,-1.5d,0d],fall_distance:5d'),
+             ('novine', 11, 8, y0 + 14, 'Value:5,Motion:[0d,-1.5d,0d],fall_distance:5d'),
+             ('still', 14, 8, y0 + 4, 'Value:6,NoGravity:1b,fall_distance:4d')]
+    # Water and lava stand in a stone well, so they have no flow to push with.
+    for x, fluid in ((3, 'water'), (7, 'lava')):
+        ops.append(cmd(f'/fill {x0 + x - 1} {y0} {z0 + 3} {x0 + x + 1} {y0 + 2} {z0 + 5} stone', expect_result=27))
+        ops.append(cmd(f'/fill {x0 + x} {y0} {z0 + 4} {x0 + x} {y0 + 2} {z0 + 4} {fluid}', expect_result=3))
+    for x in (8, 11):
+        ops.append(cmd(f'/fill {x0 + x - 1} {y0} {z0 + 8} {x0 + x - 1} {y0 + 14} {z0 + 8} stone', expect_result=15))
+    ops.append(cmd(f'/setblock {x0 + 8} {y0 + 7} {z0 + 8} vine[west=true]', expect_result=1))
+    for n, (name, x, z, y, nbt) in enumerate(cases, 1):
+        ops.append(cmd(f'/summon experience_orb {x0 + x}.5 {y} {z0 + z}.5 {{UUID:[I;18000,0,{n},1],{nbt}}}',
+                       expect_result=1))
+
+    def reads():
+        for n, _ in enumerate(cases, 1):
+            for key in ('fall_distance', 'OnGround', 'Pos[1]'):
+                ops.append(cmd(f'/data get entity 00004650-0000-0000-0000-{n:04x}00000001 {key}'))
+
+    reads()
+    for _ in range(12):
+        ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 1}, cmd('/tick freeze', False)]
+        reads()
+    # A loaded fall_distance replaces the one it had.
+    ops.append(cmd('/data merge entity 00004650-0000-0000-0000-000600000001 {fall_distance:9d}', expect_result=1))
+    ops.append(cmd('/data get entity 00004650-0000-0000-0000-000600000001 fall_distance'))
+    return ops + setup('/tick unfreeze', f'/kill @e[type=experience_orb,x={x0},y={y0 - 8},z={z0},dx=16,dy=48,dz=16]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 20} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
 
 def boat_float_height():
     """#13022: `AbstractBoat.checkInWater` and `isUnderwater` sum a block's y and its water height
@@ -7597,6 +7645,7 @@ def groups():
         ('teleport lands', teleport_lands()),
         ('rocket data merge', rocket_data_merge()),
         ('mob fall clip', mob_fall_clip()),
+        ('orb fall distance', orb_fall_distance()),
         ('vehicle ground and fall', vehicle_ground_and_fall()),
         ('vehicle saved ground and fall', vehicle_saved_ground_and_fall()),
         ('ravager saved movement speed', ravager_saved_movement_speed()),
