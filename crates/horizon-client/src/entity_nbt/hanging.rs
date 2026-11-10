@@ -70,7 +70,7 @@ pub fn item_frame_to_nbt(f: &ItemFrame, uuid: [i32; 4], raw: Option<&Tag>) -> Ta
     }
     put(&mut tag, "Facing", Tag::Byte(f.facing as i8));
     put(&mut tag, "block_pos", Tag::IntArray(f.pos.to_vec()));
-    put(&mut tag, "ItemRotation", Tag::Byte(f.rotation as i8));
+    put(&mut tag, "ItemRotation", Tag::Byte(f.rotation));
     put(
         &mut tag,
         "ItemDropChance",
@@ -98,7 +98,7 @@ pub fn item_frame_from_nbt(tag: &Tag, id: u32) -> Option<ItemFrame> {
             .get("Item")
             .and_then(item_from_nbt)
             .map(|s| crate::items::ItemStack { count: 1, ..s }),
-        rotation: (number(tag.get("ItemRotation")).unwrap_or(0) & 7) as u8,
+        rotation: (number(tag.get("ItemRotation")).unwrap_or(0) % 8) as i8,
         drop_chance: float(tag.get("ItemDropChance")).map_or(1.0, |v| v as f32),
         fixed: flag(tag, "Fixed"),
         invisible: flag(tag, "Invisible"),
