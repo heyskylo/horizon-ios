@@ -628,4 +628,14 @@ mod anchor_save_tests {
         let saved = mob_to_nbt(&loose, [0; 4], Some(&stale), None, |_| None);
         assert_eq!(saved.get("anchor_pos"), None, "no anchor, no key");
     }
+
+    #[test]
+    fn a_phantoms_look_control_keeps_the_flight_pitch() {
+        let types = phantom_types();
+        let mut m = mob_from_nbt(&saved_phantom(None), &types, 3, None).unwrap();
+        // `PhantomLookControl.tick` is empty, unlike `LookControl.tick`.
+        m.head_pitch = -22.0;
+        m.look_control_tick();
+        assert_eq!(m.head_pitch, -22.0);
+    }
 }
