@@ -425,6 +425,10 @@ impl Game<'_> {
             let full = count == b.max_passengers();
             let delta = b.delta_rotation;
             let boat_box = b.bounds();
+            let ridden = horizon_client::motion::RiddenBoat {
+                under_water: b.under_water(),
+                max_y: boat_box.max_position().y,
+            };
             let seats: Vec<_> = mobs
                 .iter()
                 .enumerate()
@@ -457,6 +461,7 @@ impl Game<'_> {
             for (j, offset, at, previous, facing) in seats {
                 let m = &mut self.mobs[j];
                 m.seated(id, offset, boat_box);
+                m.fluids.boat = Some((id, ridden));
                 m.position = at;
                 m.previous = previous;
                 m.velocity = Vec3::ZERO;
