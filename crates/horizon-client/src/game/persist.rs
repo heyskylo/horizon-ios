@@ -915,6 +915,7 @@ impl Game<'_> {
             b.no_gravity = entity_nbt::flag(&tag, "NoGravity");
             b.on_ground = entity_nbt::flag(&tag, "OnGround");
             b.fire_ticks = super::boats::saved_fire(&tag);
+            b.ticks_frozen = super::boats::saved_ticks_frozen(&tag);
             b.pitch = entity_nbt::rotation(&tag)[1];
             // Entity.load: OnGround and fall_distance, as saved.
             (b.on_ground, b.fall_distance) = entity_nbt::ground_from_nbt(&tag);
