@@ -109,3 +109,44 @@ pub(crate) fn intern_sound(s: &std::sync::Arc<str>) -> &'static str {
     leaked
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    /// `SulfurCube.playStepSound`: a cube carrying a block in its body returns
+    /// before the block's sound, so it walks silently, while an empty cube takes
+    /// the block's step at 15% like any other mob.
+    #[test]
+    fn a_loaded_sulfur_cube_walks_silently() {
+        let ran = crate::mobs::world::with_built_test_world(
+            &[],
+            |world, registry| {
+                let stone = registry.default_state("minecraft:stone").unwrap();
+                world
+                    .chunks
+                    .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+                for x in 0..=4 {
+                    for z in 0..=4 {
+                        world.set(x, 63, z, stone).unwrap();
+                    }
+                }
+            },
+            |w, types| {
+                let stepped = |body: Option<&str>| {
+                    let kind = Arc::new(types.types["minecraft:sulfur_cube"].clone());
+                    let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+                    m.extra.body = body.map(Into::into);
+                    let state = w.world.block(0, 63, 0);
+                    step_sound(&m, w, [0, 63, 0], state)
+                };
+                assert_eq!(stepped(Some("minecraft:stone")), None, "loaded");
+                let empty = stepped(None);
+                assert!(empty.is_some(), "an empty cube takes the block's step");
+                assert_eq!(empty.unwrap().1, 0.15, "the block's 15%");
+            },
+        );
+        let _ = ran;
+    }
+}
