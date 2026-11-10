@@ -914,6 +914,11 @@ impl Game<'_> {
             let frames = renderer.take_timed_frames();
             self.profile.perf.gpu_frames(t, cpu_ms, &frames);
         }
+        let connection = self
+            .remote
+            .as_ref()
+            .and_then(|r| r.session.counters.lock().unwrap().clone());
+        self.profile.perf.set_connection(connection);
         let (wanted, renderer) = (self.profile.gpu, self.renderer.as_ref());
         self.profile.perf.frame_with_gpu(
             t,

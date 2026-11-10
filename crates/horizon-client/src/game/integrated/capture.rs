@@ -141,6 +141,15 @@ impl Game<'_> {
             .server
             .take()
             .unwrap_or_else(|| ServerSide::new(slow_ms));
+        if !side.perf.capturing() && side.perf.finishing() {
+            let done: Vec<Done> = side
+                .perf
+                .take_saved(true)
+                .into_iter()
+                .filter_map(|saved| server_saved(&mut side, saved))
+                .collect();
+            self.perf_captures_done(done);
+        }
         let began = self.begin_server_capture(&mut side, target);
         if began.is_err() {
             live.set(Phase::Failed);
