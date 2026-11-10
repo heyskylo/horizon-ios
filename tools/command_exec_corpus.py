@@ -7541,6 +7541,30 @@ def boat_float_height():
                        f'/forceload remove {x0} {z0}')
 
 
+def dispensed_item_escape():
+    """#14537: `DefaultDispenseItemBehavior.spawnItem` builds the item with `new ItemEntity(level, x, y, z, stack)`,
+    whose constructor draws its default motion (two `nextDouble`s) from the item's own random before `spawnItem`
+    sets the thrown one. A down-facing dispenser over stone drops the item inside the floor, and
+    `moveTowardsClosestSpace`'s escape speed is the next draw from that random."""
+    # Entities tick once the forced chunk's 2-column neighbourhood is loaded (ChunkMap.prepareEntityTickingChunk).
+    x0, y0, z0 = 4096 - 64, 300, 3584
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks',
+            'chunks': [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]},
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', False),
+           {'op': 'sync_randoms', 'uniquifier': 332, 'entity_id': 10_000_000, 'level_seed': 332},
+           cmd(f'/setblock {x0 + 7} {y0} {z0 + 7} dispenser[facing=down]'
+               '{Items:[{Slot:0b,id:"minecraft:stone",count:2}]}', expect_result=1),
+           {'op': 'crafter_tick', 'pos': [x0 + 7, y0, z0 + 7]}]
+    item = f'@e[type=item,x={x0 + 7}.5,y={y0},z={z0 + 7}.5,distance=..6,sort=nearest,limit=1]'
+    for tick in range(4):
+        if tick:
+            ops.append({'op': 'tick', 'n': 1})
+        for key in ('Pos[0]', 'Pos[1]', 'Pos[2]', 'Motion[0]', 'Motion[1]', 'Motion[2]'):
+            ops.append(cmd(f'/data get entity {item} {key}'))
+    return ops + setup(f'/kill @e[type=item,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0} {z0 + 15} air', f'/forceload remove {x0} {z0}')
+
+
 def groups():
     try:
         from .spectral_duration_corpus import cases as spectral_saved_duration
@@ -7734,6 +7758,7 @@ def groups():
         ('piston mob bounce', piston_mob_bounce()),
         ('primed tnt box', primed_tnt_box()),
         ('primed tnt fall', primed_tnt_fall()),
+        ('dispensed item escape', dispensed_item_escape()),
         ('command block last output', command_block_last_output()),
         ('glide fall accumulation', glide_fall_accumulation()),
         ('living short timers', living_short_timers()),
