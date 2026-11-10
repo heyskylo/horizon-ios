@@ -869,8 +869,8 @@ impl Projectile {
             return;
         }
         let horizontal = (v.x * v.x + v.z * v.z).sqrt();
-        let y_rot = (v.z.atan2(v.x) * 180.0 / std::f64::consts::PI) as f32 + 90.0;
-        let x_rot = (horizontal.atan2(v.y) * 180.0 / std::f64::consts::PI) as f32 - 90.0;
+        let y_rot = horizon_core::geometry::trig::atan2_degrees(v.z, v.x) + 90.0;
+        let x_rot = horizon_core::geometry::trig::atan2_degrees(horizontal, v.y) - 90.0;
         // Shift the old angles by whole turns so the lerp takes the shortest
         // way; the shifted old angles are what rendering interpolates from.
         while x_rot - self.previous_pitch < -180.0 {
@@ -2458,8 +2458,8 @@ mod tests {
         for _ in 0..3 {
             p.tick(&Wall(vec![]));
         }
-        assert!((p.yaw - 8.996_265).abs() < 0.05, "yaw {}", p.yaw);
-        assert!((p.pitch + 18.704_494).abs() < 0.05, "pitch {}", p.pitch);
+        assert!((p.yaw - 8.996_265).abs() < 4e-6, "yaw {}", p.yaw);
+        assert!((p.pitch + 18.704_494).abs() < 4e-6, "pitch {}", p.pitch);
     }
     #[test]
     fn a_fireball_turns_the_short_way_across_the_wrap_boundary() {
