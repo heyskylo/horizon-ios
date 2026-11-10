@@ -2950,7 +2950,7 @@ pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemE
         join: Default::default(),
         no_gravity: flag(tag, "NoGravity"),
         health: i32::from(short("Health", 5)),
-        fire_ticks: number(tag.get("Fire")).unwrap_or(0) as i32,
+        fire_ticks: i32::from(short("Fire", 0)),
         id,
         stack,
         thrower: item_uuid_from_tag(tag.get("Thrower")),
@@ -4412,6 +4412,19 @@ mod tests {
         // and the ints that narrow onto them.
         assert_eq!(load("Age:-32768,PickupDelay:32767"), (-32768, 32767));
         assert_eq!(load("Age:32768,PickupDelay:98303"), (-32768, 32767));
+        // `Entity.load` reads the item's `Fire` with `getShortOr` as well.
+        let fire = |fields: &str| {
+            let snbt =
+                format!("{{Pos:[0d,0d,0d],Item:{{id:\"minecraft:stone\",count:1}},{fields}}}");
+            let tag = horizon_world::nbt::parse_snbt(&snbt).unwrap().0;
+            super::item_entity_from_nbt(&tag, 1, 0.0)
+                .unwrap()
+                .fire_ticks
+        };
+        assert_eq!(
+            [fire("Fire:40000"), fire("Fire:60s"), fire("Age:1s")],
+            [-25536, 60, 0]
+        );
         // They save as the shorts vanilla writes.
         let tag = horizon_world::nbt::parse_snbt(
             "{Pos:[0d,0d,0d],Item:{id:\"minecraft:stone\",count:1},Age:32768,PickupDelay:98303}",
