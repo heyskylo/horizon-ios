@@ -1,277 +1,159 @@
 # Friends overlay Part 2
 
-> Status: proposed implementation spec. This note is based on `upstream/main` at
-> `1453e0e614af4b2d04dd0d228a94162b5d459910` (2026-11-10). It is not a replacement
-> for the approved Play with Friends migration spec, issue [#14167](https://github.com/horizon-rust/horizon/issues/14167).
+> Proposed spec, not approved. Updated after a direct local Minecraft 26.3 source review on
+> 2026-11-11. Original docs branch base: `1453e0e614af4b2d04dd0d228a94162b5d459910`;
+> latest inspected upstream reference: `1405044d0996d37f850f5ab0dec02bab43d4945f`.
+> No implementation, game launch or visual acceptance is implied by this document.
 
-Minecraft 26.3 has two different Friends features which must not be conflated:
+This work is the **vanilla account Friends overlay**: account friends, incoming/outgoing
+requests, presence and notifications. **Play with Friends** is Horizon's separate invite-code
+host/share feature. Its approved migration spec [#14167](https://github.com/horizon-rust/horizon/issues/14167)
+is not approval for this overlay.
 
-- **Play with Friends** is the Horizon host/share feature. Its move out of the engine is
-  specified by #14167 and is being delivered by #14334, #14380, #14405, #14411 and #14419.
-- **The Friends overlay** is the account social screen: friends, incoming requests, outgoing
-  requests, presence, profile actions and friend notifications. This note specifies that
-  feature's Part 2 implementation.
+PR [#14224](https://github.com/horizon-rust/horizon/pull/14224) contains the old combined
+implementation (about 4,090 insertions across 21 files). Keep it intact as historical work, not
+as the base for new implementation PRs. This proposal does not close, rewrite or supersede that
+PR by itself. Do not copy its 2,215-line overlay module into one new PR.
 
-The old implementation assembled both concepts in `game/friends.rs` and the old
-`Screen::Friends` path. That coupling is the reason the existing overlay PR #14224 is too
-large to review as one change. The overlay work below must be built on the new page and host
-seams instead of rebasing that PR as a unit.
+The actionable PR list, estimates, module boundaries and acceptance cases are in
+[the source-grounded split checklist](friends-overlay-part2-split.md). That checklist replaces
+the earlier single, open-ended "list and request behaviour" PR scope.
 
-## Goals
+## Ownership and entry decisions
 
-The finished Part 2 overlay will match the observable Minecraft 26.3 behaviour for:
+Vanilla social service, screens, faces and toast behaviour belong to the **engine**
+([layers](../layers.md#engine)), not to `horizon-friends` or `horizon-official`. They must work
+without registering Horizon's host/share extension. Vanilla `gui.friends.*` and `options.*`
+keys are not the Horizon-only `horizon.friends.*` language files being moved by #14430/#14433.
+No engine dependency on a Horizon crate or new `allowed` exception is introduced.
 
-- the Friends and Requests tabs, including loading, empty, error and privacy/account states;
-- adding a friend, accepting/declining incoming requests, cancelling outgoing requests and
-  removing an existing friend;
-- keyboard focus, tab navigation, Ctrl+number/Ctrl+Tab shortcuts, scrolling, clipping,
-  tooltips, narration and the confirmation screens used by the vanilla flow;
-- background list polling and action-result handling while the overlay is closed;
-- friend and system notification timing, ordering, slot occupancy, F1 hiding and the
-  Notification Time option;
-- friend faces in list rows and notifications, including the default skin before a download
-  completes and after a renderer/atlas recovery.
+The local vanilla references show that both `TitleScreen.init` and
+`PauseScreen.createPauseMenu` call `CommonButtons.friends`, then
+`OnlineOptionsScreen.confirmFriendsListEnabled`, then `FriendsOverlayScreen(parent)`.
+However, #14167's migration uses those existing Horizon icon slots for Play with Friends and
+Join a Friend. **Maintainers must agree how to preserve the vanilla account entry while keeping
+those extension entries accessible.** This is a UI integration decision, not a reason to move
+the account overlay into the Horizon layer.
 
-The screen remains a vanilla-looking overlay. It must not become an options-shell page merely
-because the common `pages` renderer is used elsewhere. `Place::PauseFriends` belongs to the
-Play with Friends host/share page in #14167; it is **not** the account Friends overlay and this
-spec must not register the overlay there or replace that page. The overlay keeps its own
-vanilla entry/action and centered 220-pixel panel, tabs, list clipping and the appropriate
-background. Its exact pause/title registration seam must be agreed with maintainers against the
-landed pages API before the UI integration PR; the title-screen icon that opens Join a Friend is
-not repurposed by this spec.
+Until that decision and the relevant migration steps land:
 
-## Non-goals and hard boundaries
+- Do not replace the host/share `Place::PauseFriends` page with the account overlay.
+- Do not silently invent a fifth vanilla pause icon, duplicate an entry, or displace the title
+  Join a Friend page. A new extension location requires maintainer agreement.
+- Do not implement the account tab/list UI as generic options-page rows; the current main
+  `Page`/`Row` API is not a tabbed, scrollable overlay/focus contract.
+- Do not edit host/share state or commands in `game/friends.rs`/`game/control.rs`.
+- Treat #14334 -> #14380 -> #14405 -> #14411/#14419 and title-side #14439/#14452/#14470 as
+  integration dependencies, not as already merged capabilities. Requery before implementation.
 
-This spec does **not**:
+Backend, widget and rendering preparations can be designed separately. Their PRs still require
+approval of this spec; no public partially implemented account overlay is enabled along the way.
 
-- move or redesign the Play with Friends host side;
-- implement `ShareView`, `Hooks::share`, `Hooks::lan_closed`, `Hooks::control`, the
-  `horizon-friends` host move, or the title Join a Friend page;
-- delete `Screen::Friends`, delete `game/friends/screen.rs`, or change the host-side portions
-  of `game/friends.rs` before #14167's page and crate migration has landed;
-- add a second social HTTP client or duplicate the service/cache already in
-  `crates/horizon-client-render/src/social.rs`;
-- make a live account, screenshot, or local compilation claim in the absence of the required
-  environment and evidence;
-- carry the 4,090-line/21-file diff from #14224 into a new PR.
+## Observable contract from the local 26.3 sources
 
-# Dependencies and sequencing
+Paths below are relative to the decompiled `net/minecraft/client/` root. They are references,
+not copied source. Line numbers identify this reviewed local snapshot and may shift on a fresh
+decompilation.
 
-The implementation starts only after the relevant upstream seams are available on the base of
-the PR:
+| Area | Required behaviour | Reference |
+| --- | --- | --- |
+| Buttons | Active for non-demo, non-offline-developer mode; this is not simply "has an unexpired session". Account `friendsEnabled()` and list-enabled state are separate gates. | `gui/screens/TitleScreen.java:123-140`; `gui/screens/PauseScreen.java:126-131`; `Minecraft.java:2267-2269` |
+| Notification badge | Refresh incoming-request count; no badge when the list is disabled. Use notification/1..5, and more for >=6; draw only when active. | `gui/components/FriendsButton.java:25-60`; `TitleScreen.java:78-85`; `PauseScreen.java:249-271` |
+| Global shortcut | Reuse the rebindable Friends action. Toggle from title, pause, no screen, or the current overlay; reject unrelated or input-captured screens and the debug-modifier path. Closing restores the actual parent, including no screen. | `Minecraft.java:2271-2285,2299-2315`; `gui/screens/Screen.java:186-203` |
+| Entry consent | When disabled, Turn On sends true/true; only a successful settings result updates local flags and opens the overlay. Turn Off returns to the actual previous screen. Do not substitute the options-toggle code path. | `gui/screens/options/OnlineOptionsScreen.java:53-85,121-149` |
+| Lifecycle | Add/remove list listener; clear background focus; init/resize the parent; restore it on outside click or Escape. Try updating presence while the overlay ticks. | `gui/screens/friends/FriendsOverlayScreen.java:65-107,115-143,169-191` |
+| Layout | 220-wide content, 110x20 tabs 7 pixels above it, maximum content height h-80, 8-pixel background border. Draw parent with no hover, then blur, then overlay. Height follows the active content layout, not an always-full-height panel. | `FriendsOverlayScreen.java:88-154,223-226` |
+| List state | LOADING/error apply to both tabs. Populate on successful list refresh; sort friends by presence then. Later presence updates change text, not order. A fresh populate may reorder even if the IDs stayed the same. | `FriendsOverlayScreen.java:193-242,248-284`; `FriendsTab.applyPresenceUpdate` |
+| Action lifecycle | Track pending removals by UUID across repopulation; disable both tabs while an action runs, refresh after completion, and distinguish ordinary result failure from exceptional-future failure. | `FriendsOverlayScreen.java:260-276,295-355`; `PlayerSocialManager.runAction/handleResult` |
+| Polling/deltas | Default interval 60 seconds, background x5, worker checks each second. If previous state was not SUCCESS, re-establish a silent baseline, including after an error. Deltas compare FriendDto values, not only IDs. | `gui/screens/social/RemoteFriendListUpdateHandler.java:81-85,152-198,227-234` |
+| Notification gate | World notification preference suppresses friend-toast display, not advancing known lists. Specific action failures use one system token; overlay exceptional failures have a separate generic-error path. | `RemoteFriendListUpdateHandler.java:152-198`; `gui/screens/social/PlayerSocialManager.java:160-194`; `FriendsOverlayScreen.java:349-355` |
+| Toast lifecycle | One client-owned lifecycle across screens. Update visible entries, release slots, then assign waiting entries; waiting entries do not age. Five contiguous 32-pixel occupancy slots; 600ms slide, 5 fully-visible seconds scaled by Notification Time; F1 hides drawing only. | `gui/components/toasts/ToastManager.java:38-113`; `FriendToast.update`; `ToastManager.ToastInstance` |
+| Toast coordinates/sound | Occupancy is ceil(height/32), but Toast.yPos uses firstSlotIndex * toast.height(). First visible toast changing visibility in each update receives in/out sound eligibility; custom getSoundEvent uses a separate dedup path. No friend-specific sound priority is implied. | `gui/components/toasts/Toast.java:35-48`; `ToastManager.java:38-77` |
+| System token | addOrUpdate searches visible and waiting entries. reset marks text changed and restarts lastChanged at the next update, not the slide. | `gui/components/toasts/SystemToast.java:67-75,97-100,123-130` |
+| Face fallback | Resolve asynchronously; before completion or when unavailable, use the partial profile/default skin and draw head plus hat. | `gui/components/PlayerFaceExtractor`; `renderer/PlayerSkinRenderCache.getOrDefault` |
 
-1. **#14334** supplies the host-side `ShareView` and close event. It is independent of the
-   social overlay, but it changes `game/friends.rs`, so overlay PRs must not edit the same host
-   code while this step is in flight.
-2. **#14380 then #14405** supply `Place::PauseFriends` and the transition from the old screen
-   enum to the page/added-page path. The overlay's pause entry is blocked until this chain is
-   merged. Do not preserve the old Play with Friends icon as a second Friends overlay entry.
-3. **#14411/#14419** move control and host code out of the engine. Overlay work must use the
-   resulting registration points and must not restore a `horizon-client -> horizon-friends`
-   dependency.
-4. **#14430/#14433** define the platform/crate language-file seam. Overlay-visible keys belong
-   to the owning crate once that seam is available; no language-specific Rust branches and no
-   hardcoded user-facing strings are allowed.
-5. **#14439 and pages v2 (#14452 and its follow-ups)** determine the title-screen icon and
-   text-field/page contract. The title integration is therefore a later PR, not part of the
-   first pause overlay PR.
+### Policies that must not be presented as vanilla
 
-The order below is the recommended review order. Each PR is based on the previous merged
-step (or on the exact dependency SHA named in its body), never on the abandoned #14224 head.
+- Vanilla ToastManager's waiting deque has no demonstrated 64-entry limit. The old Rust
+  64-event/64-toast bounds are implementation policies, not vanilla rules. The old event
+  pop-front path can discard action failures, contradicting the previous spec's promise.
+  No lossy bound is approved here; any proposed resource bound must describe its visible
+  effects and be reviewed explicitly.
+- The 32 dedicated face slots, split into 24 row and 8 notification slots, are an old Rust
+  atlas strategy, not vanilla's skin-cache capacity. Default rendering and non-interference
+  are requirements; the exact capacity/allocation design is reviewable separately.
+- UUID-only sort-cache invalidation is not the populate/presence distinction above.
+- A shared occupancy bitmap among separate toast queues is not proof of global ordering,
+  token lookup or sound arbitration. Do not call that a complete ToastManager port.
+- HTTP 304, empty-body, ETag and cooldown semantics require the matching authlib 10.0.77
+  service source/bytecode. This round read the client handler, not that service implementation;
+  retain existing semantics and do not claim fresh HTTP-cache parity evidence.
 
-# PR 1: social backend and event contract
+## Implementation structure and size gates
 
-**Target size:** approximately 250–450 changed lines, including focused tests.
+Prefer small, cohesive files under `crates/horizon-client/src/friends_overlay/`:
+`mod.rs`, `model.rs`, `layout.rs`, `shell.rs`, `add.rs`, `entries.rs`, `requests.rs`,
+`links.rs`, `focus.rs` and `faces.rs`. These are proposed responsibility boundaries, not a
+requirement to create every file. Keep social data in `horizon-client-render/src/social.rs`;
+use a sibling toast module for account notifications rather than embedding it in screen state.
 
-**Purpose:** make the existing social service observable by a later UI without coupling it to
-an individual screen.
+The split checklist names explicit backend/notification/face steps and **eight UI work
+packages**, then separate pause/title/global-shortcut integrations. No "remaining core UI"
+catch-all PR is allowed. Each package must name its production consumer, dependencies and
+non-goals. Preparatory stacked steps may be internally exercised without enabling the public
+entry, but must build and be reviewable; no dead-code allowances or advertised partial parity.
 
-**Allowed scope:**
+Budgets are estimates from old implementation responsibilities, not measured candidate diffs.
+Before opening each PR measure additions, deletions, non-test code and hook/glue changes on its
+actual base. New code plus integration must remain around 500 lines; if not, return to the spec
+with a narrower independently reviewable behaviour. File partitioning alone is not a split.
 
-- `crates/horizon-client-render/src/social.rs` and its existing focused tests;
-- small public API or fixture changes required to test the service contract.
+`title.rs`, `game.rs` and `hud.rs` must not grow when already over 3000 lines. Where no small
+existing seam exists, first propose a **separate pure-move PR** with before/after equivalence;
+never hide a relocation inside a parity fix. Keep `hud.rs`'s legitimate NUL bytes intact using
+Read-before-edit and an anchored binary patch under `.local` if it is eventually modified.
 
-**Behaviour:**
+Do not put vanilla behaviour behind the Horizon host/share feature or move vanilla translation
+keys into `horizon-friends`. No new machine translations or "reviewed" language flags.
 
-- The updater continues while the overlay is closed; foreground mode changes only the polling
-  interval, not whether the worker exists.
-- The first successful list response establishes a baseline and emits no friend-added or
-  request event. Later successful responses emit bounded `received`, `sent`, `accepted` and
-  `added` events by comparing the cached lists.
-- 304 responses, empty responses, failed responses and malformed responses retain the last
-  valid lists and do not invent events.
-- A successful action schedules the same forced refresh as vanilla. A failed action exposes a
-  result for the UI and requests a refresh where vanilla does; it must not clear user input
-  before success.
-- Presence changes update status data but do not reorder an already populated list. Resorting
-  happens when the friend-id list is populated again.
-- The event queue is bounded. Overflow drops the oldest friend event, never a system/action
-  failure token.
+## Validation and evidence
 
-**Not in this PR:** widgets, toast drawing, faces, title/pause integration, or any host/share
-state. The PR must be reviewable as a service/data-contract change and must not import UI types
-into `social.rs`.
+Use the current manifests to choose test targets. On the inspected main,
+`horizon-client/src/lib.rs` declares gameplay and `main.rs` is a thin executable. Therefore
+`cargo test -p horizon-client --bin horizon-client ...` matching zero tests does not validate
+pause routing. Verify a nonzero match count for the actual library/module filter.
 
-**Proof:** social unit tests cover the baseline, 304/empty/failure retention, each list
-transition, bounded overflow, action failure and presence ordering. Run formatting, the
-affected crate check and clippy with warnings denied.
+For each implementation PR:
 
-# PR 2: persistent friend notifications
+- Run formatting, affected-package checks, clippy with warnings denied, focused behavioural
+  tests and the current `tools/pr_ready.py --base upstream/main` procedure. Disclose `--quick`
+  or missing vanilla artifacts, raw failures and exact source/base SHA. Do not change existing
+  tests or declare platform failures baseline failures without a clean-baseline run.
+- Use WSL/Linux for Unix-dependent tests if needed, with a separate Linux target directory.
+  No visible game window or fast executable is built merely to prepare this checklist.
+- Test state transitions with independent expected outcomes. Temporary probes stay under
+  `.local`; preserve existing tests. Before publishing code, resolve any required permanent
+  harness additions against the user's temporary-test submission preference, not by omitting
+  coverage silently.
+- Real screenshots at comparable viewport/GUI scale are required for visible changes. Draw
+  coordinates, source review and blank offscreen images are not visual acceptance. Live-account
+  operations remain unverified until tested in the appropriate environment.
+- `friends_integration` currently tests Play with Friends LAN/code/direct/relay behaviour,
+  including host and guest. It is an overlap regression guard, **not** an account Friends
+  service/UI/toast/face parity oracle. The checklist gives separate acceptance cases; any
+  automated account-social oracle or fixture must be scoped and identified explicitly.
 
-**Target size:** approximately 350–500 changed lines. If the existing toast slot integration
-cannot stay below the limit, split the slot allocator into a preceding tooling/data PR rather
-than widening this one.
+Source-review evidence is not runtime proof. The local port-ledger query returned "No ledger
+yet"; no ledger check or bytecode oracle pass is claimed. Decompiled source, jars, hashes/logs
+and temporary scripts stay outside the tracked tree.
 
-**Purpose:** implement friend notifications as client-owned state, so closing or changing the
-Friends overlay does not destroy a notification.
+## Maintainer decisions and publication
 
-**Allowed scope:**
+Before public UI integration, resolve: the vanilla account icon vs #14167 extension entries;
+the minimal engine integration seam; any required pure-move prerequisites; and permanent
+regression coverage. Generic pages v2 availability does not by itself resolve these questions.
 
-- the existing client toast module and its focused tests;
-- the client lifecycle/render seams that update and draw the client-owned queue;
-- a small adapter from the PR 1 event contract to the queue.
-
-**Behaviour:**
-
-- System failures use the vanilla system-notification token and merge/update that token rather
-  than creating unlimited copies. Friend events do not merge with one another.
-- Waiting notifications do not age while all five vanilla 32-pixel slots are occupied. A toast
-  receives a contiguous slot range before its 600 ms slide and five-second display timer start.
-- Notification Time scales the display duration. F1 hides drawing but continues updating and
-  expiring notifications. Existing achievement/tutorial/resource-pack/narrator/title
-  occupancy is respected at the integration seam.
-- The queue survives overlay close, pause/title transitions and entering a world. The first
-  visibility transition is the only transition eligible for the vanilla toast sound; no new
-  sound is invented by the Rust adapter.
-- System text wraps at the vanilla width and its height is computed from the actual line count.
-  Friend text uses the friend toast background and keeps the face inset even while the face is
-  still loading.
-
-**Not in this PR:** social HTTP changes beyond the adapter, list widgets, atlas allocation or
-host-side `game/friends.rs` changes. The queue's public surface should accept already translated
-text and an optional profile id, so it can later be registered by the official Horizon crate.
-
-**Proof:** focused tests cover slot exhaustion/release, system-token reset, queue persistence,
-F1, Notification Time and multi-line height. A real rendered check is required before calling
-this player-visible PR accepted; code inspection or a blank/offscreen frame is not visual proof.
-
-# PR 3: friend-face atlas and fallback
-
-**Target size:** approximately 250–450 changed lines, including focused tests.
-
-**Purpose:** give friend rows and friend notifications a private, recoverable face cache without
-interfering with world-list or Realms face slots.
-
-**Allowed scope:**
-
-- the HUD atlas/face-loading seam and its focused tests;
-- the face callback used by the client-owned friend toast queue and the overlay rows.
-
-**Behaviour:**
-
-- Friend faces use dedicated `horizon/friend-icon0` through `horizon/friend-icon31` slots.
-  Row faces and notification faces have separate bounded ranges; over-capacity ids use the
-  UUID-derived default skin for that frame instead of evicting another feature's texture.
-- Atlas/resource rebuild clears friend residency and causes a safe re-upload on the next draw.
-  A missing or unresolved skin draws the vanilla default player head and hat layers, not a black
-  rectangle or a transparent hole.
-- The resolver uses the current service/profile result and never hardcodes a stale URI. Face
-  failures are visual fallbacks, not social-list failures.
-
-**Not in this PR:** service polling, list sorting, title/pause entry, or toast timing. Keep the
-NUL-bearing `hud.rs` safe: any binary edit must be a reviewed `rb`/`wb` patch with an anchor-count
-assertion, and the helper must remain under `.local`.
-
-**Proof:** focused tests cover row/notification range isolation, atlas rebuild recovery,
-default-skin selection and over-capacity fallback. A rendered check must show a loading/default
-face and a recovered face in both a row and a notification when the real resource environment is
-available.
-
-# PR 4: overlay UI integration
-
-This is the only player-facing screen PR family. It is intentionally split again if the page
-adapter plus the screen logic would exceed the project’s roughly 500-line rule.
-
-## PR 4a: page shell and pause entry
-
-**Target size:** at most approximately 500 changed lines.
-
-After #14380/#14405 land, integrate the **account Friends overlay** through the entry/action
-seam that maintainers approve for it. Do not register it at `Place::PauseFriends`: that place
-belongs to the separate Play with Friends host/share page in #14167. Preserve the 26.3 overlay
-surface and keep the account overlay's state separate from host/share state in `Game`. The
-adapter owns only the approved entry identity, overlay lifecycle and input/draw forwarding; it
-must not add `share`, `copy invite code`, `stop sharing` or other host-side actions.
-
-## PR 4b: list and request behaviour
-
-**Target size:** at most approximately 500 changed lines per PR; split the following into a
-second UI PR if needed.
-
-Move the overlay's independent state machine into the page/overlay module without touching the
-Play with Friends host implementation:
-
-- Friends and Requests tabs, loading/error/empty states and account/privacy confirmation;
-- add/edit field, caret blink/scroll-to, send loading and failure retention;
-- friend, incoming and outgoing entry actions with clipped hit testing;
-- remove/accept/reject/cancel confirmation screens;
-- focus path, Tab/Shift+Tab, arrows, Ctrl+number/Ctrl+Tab, Enter/Space, scrolling and tooltips;
-- RTL-safe profile rows, profile-name copy and footer link activation;
-- transfer notices to PR 2's client-owned queue before the page is destroyed.
-
-The implementation may be a new `friends_overlay.rs` module, but it must not copy the old
-4,090-line branch wholesale. Each PR body lists the exact files and the vanilla classes/methods
-followed, and says which behavior is deliberately deferred.
-
-**Not in the pause UI PRs:** title-screen Join a Friend, title icon resolver, Play with Friends
-host/share, `horizon-ctl friends`, language-file platform design, or a second toast manager.
-The title integration follows pages v2 and the approved #14167 step 4 work.
-
-# Vanilla references and implementation evidence
-
-Every implementation PR names the 26.3 classes and methods it follows, rather than citing an
-older port. The relevant references include:
-
-- `FriendsOverlayScreen`, `FriendsTab`, `PendingTab`, `AddFriendWidget`,
-  `AbstractFriendsEntryContainerWidget`, `TabNavigationBar`, `PopupScreen`,
-  `FriendsListConfirmScreen` and `Screen` for layout, input and lifecycle;
-- `RemoteFriendListUpdateHandler`, `PlayerSocialManager.runAction/handleResult` and
-  `MinecraftServicesFriendsService` for polling, cache and action results;
-- `ToastManager`, `ToastInstance`, `SystemToast`, `FriendToast` and
-  `PlayerFaceExtractor`/`PlayerSkinRenderCache.getOrDefault` for notification and face rules.
-
-The source used for parity is the installed Minecraft 26.3 decompilation, not a previous Horizon
-port. Decompiled files and game resources remain outside the repository under `.local`.
-
-# Verification gate
-
-Every implementation PR must report the exact source SHA, dirty state, command, target and exit
-code. The minimum checks are:
-
-```text
-cargo fmt --all -- --check
-cargo check -p <affected package(s)> --all-targets
-cargo clippy -p <affected package(s)> --all-targets -- -D warnings
-python3 tools/pr_ready.py --base upstream/main --quick
-```
-
-The social/service PR also runs its focused unit tests. The overlay and toast PRs require real
-rendered/in-game screenshots at a comparable GUI scale; widget coordinates, compilation and a
-blank offscreen frame are not visual acceptance. With maintainer resources and runners available,
-run the affected vanilla harness (`python3 tools/parity.py friends_integration`) and report when
-it is unavailable rather than marking it passed. No visible game window is started by automated
-checks in this worktree.
-
-Known follow-up gaps are tracked explicitly rather than silently folded into these PRs:
-scrollbar dragging, horizontal scrolling of overlong status text, the complete narration matrix,
-`friend_removed` and toast enter/exit sound parity, unification with the final global
-`ToastManager`, and any live-account/relay behavior that cannot be exercised locally.
-
-# Review and publication rule
-
-This document is a proposed design note for maintainer review. Until it is accepted, do not open
-implementation PRs for the overlay, do not close or rewrite #14224, and do not force-push its
-branch. Once accepted, each implementation PR links this note (or its approved issue) and stays
-within one numbered scope above. The old #14224 branch is historical behavior evidence only; it is
-not an integration base.
+This proposal and the split checklist need maintainer approval. Do not open the implementation
+series merely because docs CI passed or `run-parity` was added. Do not close #14224, replace its
+history, push the isolated merge result, or change another contributor's branch as part of
+preparing the plan. Every later PR links the accepted spec and its exact work-package ID.
