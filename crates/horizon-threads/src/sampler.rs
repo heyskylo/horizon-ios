@@ -16,7 +16,7 @@ use crate::unwind::{self, MAX_FRAMES, StackBounds};
 mod eh;
 mod linux;
 
-pub(crate) use eh::{Loaded, loaded_modules};
+pub(crate) use eh::{Loaded, StackUnwinder, loaded_modules};
 use linux as os;
 
 pub const DEFAULT_HZ: u32 = 250;
@@ -93,6 +93,12 @@ pub fn set_chunk(x: i32, z: i32) {
     CTX.with(|c| (c.chunk.0.store(x, Relaxed), c.chunk.1.store(z, Relaxed)));
 }
 
+/// The name the calling thread opted in to sampling under, if it did.
+pub(crate) fn sampled_name() -> Option<&'static str> {
+    // SAFETY: LOCAL points at the state this thread's GUARD keeps alive, and is cleared before the guard drops.
+    unsafe { LOCAL.with(Cell::get).as_ref() }.map(|s| s.name)
+}
+
 pub fn span() -> u16 {
     CTX.with(|c| c.span.load(Relaxed))
 }
@@ -110,12 +116,12 @@ pub fn context() -> Context {
 
 /// The interrupted registers; `lr` is the link register on aarch64 and 0 elsewhere.
 #[derive(Clone, Copy, Debug, Default)]
-struct Regs {
-    pc: usize,
-    fp: usize,
-    sp: usize,
+pub(crate) struct Regs {
+    pub(crate) pc: usize,
+    pub(crate) fp: usize,
+    pub(crate) sp: usize,
     #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
-    lr: usize,
+    pub(crate) lr: usize,
 }
 
 const TAG_PAD: u8 = 0;

@@ -23,6 +23,10 @@ pub enum State {
     Running,
     /// A wall sample of a thread that was not.
     Waiting,
+    /// Sampled heap bytes allocated during the session.
+    Alloc,
+    /// Sampled heap bytes still allocated when the session stopped.
+    Live,
 }
 
 /// One counter's identity: the stack and the context fields the report groups by.
@@ -117,12 +121,13 @@ impl TickStats {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Pending {
     samples: Vec<(Key, u64)>,
 }
 
 /// Everything a session recorded, bounded: see `MAX_NODES` and `MAX_KEYS`.
+#[derive(Clone)]
 pub struct Aggregate {
     parents: Vec<u32>,
     frames: Vec<Frame>,
@@ -270,19 +275,7 @@ impl Aggregate {
         if state != State::Cpu {
             node = self.child(node, Frame::Wall(state)).unwrap_or(node);
         }
-        let mut cut = false;
-        // Return addresses point after the call; one byte back stays inside the caller's call instruction.
-        for (i, &addr) in stack.iter().enumerate().rev() {
-            let lookup = if i == 0 { addr } else { addr - 1 } as u64;
-            match self.child(node, Frame::Addr(lookup)) {
-                Some(next) => node = next,
-                None => {
-                    cut = true;
-                    break;
-                }
-            }
-        }
-        self.truncated += u64::from(cut);
+        let node = self.stack_from(node, stack);
         Key {
             node,
             state,
@@ -296,11 +289,51 @@ impl Aggregate {
         }
     }
 
+    /// The node of `stack` (innermost first) under the thread `thread`'s root, in the current time block.
+    pub fn stack_key(&mut self, thread: u16, state: State, ctx: &Context, stack: &[usize]) -> Key {
+        let root = self.child(0, Frame::Thread(thread)).unwrap_or(0);
+        Key {
+            node: self.stack_from(root, stack),
+            state,
+            slow: false,
+            time_block: self.time_block,
+            span: ctx.span,
+            entity: ctx.entity_type,
+            block: ctx.block,
+            dim: ctx.dim,
+            chunk: ctx.chunk,
+        }
+    }
+
+    fn stack_from(&mut self, mut node: u32, stack: &[usize]) -> u32 {
+        let mut cut = false;
+        // Return addresses point after the call; one byte back stays inside the caller's call instruction.
+        for (i, &addr) in stack.iter().enumerate().rev() {
+            let lookup = if i == 0 { addr } else { addr - 1 } as u64;
+            match self.child(node, Frame::Addr(lookup)) {
+                Some(next) => node = next,
+                None => {
+                    cut = true;
+                    break;
+                }
+            }
+        }
+        self.truncated += u64::from(cut);
+        node
+    }
+
     fn count(&mut self, key: Key) {
+        self.add_weight(key, 1);
+    }
+
+    /// Adds `n` to `key`'s counter; false when the key was lost at `MAX_KEYS`.
+    pub fn add_weight(&mut self, key: Key, n: u64) -> bool {
         if self.counts.len() >= MAX_KEYS && !self.counts.contains_key(&key) {
             self.lost += 1;
+            false
         } else {
-            *self.counts.entry(key).or_default() += 1;
+            *self.counts.entry(key).or_default() += n;
+            true
         }
     }
 

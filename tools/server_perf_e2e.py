@@ -43,8 +43,8 @@ def perf(bins, *args):
     return done.stdout
 
 
-def rows(bins, op, capture):
-    reply = json.loads(perf(bins, 'query', op, capture))
+def rows(bins, op, capture, *flags):
+    reply = json.loads(perf(bins, 'query', op, capture, *flags))
     if not reply.get('ok'):
         raise Failed(f'query {op}: {reply.get("error")}')
     return reply['rows']
@@ -111,9 +111,12 @@ def check(bins, scratch, out):
     world = rows(bins, 'world', path)
     if sum(row['entities'] for row in world) < 1:
         raise Failed(f'the world rows count no entity: {world}')
+    live = rows(bins, 'hot', path, '--select', 'live')
+    if not live or sum(row['self'] for row in live) <= 0:
+        raise Failed(f'the capture holds no live heap samples: {live}')
     perf(bins, 'summary', path)
     print(f'read back: {len(spans)} spans, {total["players"]} players, {total["out_bytes"]} bytes out, '
-          f'{sum(row["chunks"] for row in world)} chunks')
+          f'{sum(row["chunks"] for row in world)} chunks, {len(live)} functions holding sampled heap')
 
 
 def main():

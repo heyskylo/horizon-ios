@@ -1,4 +1,4 @@
-//! Cost of counting, 10M 64 B alloc+free pairs on 1 and 8 threads: `cargo run --release -p horizon-threads --example alloc_count_bench`
+//! Cost of counting and of the idle heap sampler, 10M 64 B alloc+free pairs on 1 and 8 threads: `cargo run --release -p horizon-threads --example alloc_count_bench`
 use horizon_threads::alloc_count::CountingAllocator;
 use std::{
     alloc::{GlobalAlloc, Layout},
@@ -37,5 +37,20 @@ fn main() {
             "{threads} thread(s): mimalloc {plain:.2} ns/pair, counting {counted:.2} ns/pair, +{:.2} ns",
             counted - plain
         );
+        #[cfg(target_os = "linux")]
+        {
+            let (mut plain, mut sampling) = (f64::MAX, f64::MAX);
+            for _ in 0..5 {
+                plain = plain.min(pairs(&mimalloc::MiMalloc, threads));
+                sampling = sampling.min(pairs(
+                    &horizon_threads::heap_sample::SamplingAllocator,
+                    threads,
+                ));
+            }
+            println!(
+                "{threads} thread(s): mimalloc {plain:.2} ns/pair, heap sampler off {sampling:.2} ns/pair, {:+.2}%",
+                (sampling / plain - 1.0) * 100.0
+            );
+        }
     }
 }

@@ -357,7 +357,7 @@ message Workers { Side side = 1; repeated WorkerKind kinds = 2; }  // kind, jobs
 
 message SampleProfile {
   Side side = 1;
-  repeated SampleKind kinds = 2;           // cpu (ms), wall (ms), alloc (bytes), with period
+  repeated SampleKind kinds = 2;           // cpu (ms), wall (ms), alloc and live (bytes), with period
   repeated SampledThread threads = 3;      // name, units, slow_units, unit
   float block_s = 4;
   repeated BlockUnits block_units = 5;     // ticks or frames per block, per thread
@@ -384,7 +384,7 @@ message Stop {
 Notes on fields:
 
 - `Stop.overhead`: `spans_ms_per_tick`, `spans_share`, `sampler_share_of_thread`, `writer_core_share`,
-  `dropped_samples`, `dropped_messages`, `timeline_stopped_t`.
+  `dropped_samples`, `dropped_messages`, `timeline_stopped_t`, `heap_samples`, `heap_sample_ns`.
 - `Start.settings`, `game_rules` and `horizon_options` are typed allowlists, never a dump of a file or of the
   environment (§4).
 - `Start.build.symbols` tells the summary why inlined frames merged.
@@ -1023,7 +1023,7 @@ What leaves the game: there are no `profile-summary`, `-query`, `-diff`, `-list`
 | `server_bench.py --horizon-report` / `--console-at` (branches) | `--profile[=ARGS]` | `--horizon-report` as an alias for one release |
 | `tools/bench_stats.py` (branch) | `horizon-bench`'s Rust tests for `ab`; `horizon-perf diff` for two captures | dropped |
 | spec D `memory-diff A.json B.json` (spec) | `horizon-perf query memory --diff` | not built |
-| spec D `.hzap` + `tools/alloc_profile.py` (spec) | allocation samples in `samples` (kind `alloc`) | not built |
+| spec D `.hzap` + `tools/alloc_profile.py` (spec) | allocation samples in `samples` (kinds `alloc` and `live`, `crates/horizon-threads/src/heap_sample.rs`) | |
 | `pacing_bench.py` regex on `slow frame` lines | `horizon-perf query ticks --side client --worst N` on its capture, frames over the threshold only | |
 
 Docs: `docs/hosting.md:358-379` (report, trace, slow ticks), `docs/graphics.md:134-136`, `docs/benchmark.md:79-82`,
@@ -1043,7 +1043,7 @@ prints it, and adds a warning when a budget is exceeded.
 | Spans aggregate | during a capture; always on dedicated servers (it feeds the slow ring) | ≤ 1% of MSPT | "usually well under 1%" (`docs/hosting.md`), calibrated per machine (`report.rs:282-293`) |
 | CPU samples, 250 Hz | during a capture | < 1% of the sampled thread; writer < 0.5% of a core | ~0.05% + 0.13% of a core (measured during the sampler work) |
 | Wall samples | `--wall` | < 1% of the sampled thread | same handler |
-| Allocation samples | `alloc-census` builds, `--memory` | < 3% of an allocation-heavy thread | not built yet (H 4b) |
+| Heap samples (`alloc`, `live`) | with the CPU samples, one session per process; every 512 KiB on average (`HORIZON_HEAP_SAMPLE_KIB`, 0 turns it off) | < 3% of MSPT; off: one relaxed load per alloc and per free | 200 walking bots: 1.2% of the tick thread's CPU, most of it `.eh_frame` unwinding (~40-70 µs a sample without frame pointers); captures +22-35%. Off: +0.5 ns per alloc+free pair (`alloc_count_bench`, ~9% of a 5 ns pair) |
 | Context stores | always (plain stores) | < 2 ns each | `store_cost` test, ignored (`perf/sampler-viewer:crates/horizon-threads/src/work/tests.rs:149`) |
 | Alloc counters | `alloc-count` builds | +1-2 ns per allocation | `docs/memory.md` on `perf/alloc-count` |
 | Counters | always | one relaxed atomic per `add` | |

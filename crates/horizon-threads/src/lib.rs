@@ -6,6 +6,8 @@ pub mod alloc_count;
 #[cfg(target_os = "windows")]
 pub mod boot_paint;
 pub mod heap_census;
+#[cfg(target_os = "linux")]
+pub mod heap_sample;
 pub mod jobs;
 pub mod process_memory;
 #[cfg(target_os = "linux")]
@@ -476,17 +478,21 @@ pub fn catch_stop_signals() {}
 /// World generation, meshing and the tick allocate and free small blocks on
 /// every worker at once; the system heaps serialise them (Windows' heap was
 /// 16% of a chunk's generation time), mimalloc keeps a heap per thread.
+/// On Linux it samples allocations while a capture runs (`heap_sample`).
+#[cfg(target_os = "linux")]
+pub type Allocator = heap_sample::SamplingAllocator;
+#[cfg(not(target_os = "linux"))]
 pub type Allocator = mimalloc::MiMalloc;
 /// The game's mimalloc allocator.
-pub const ALLOCATOR: Allocator = mimalloc::MiMalloc;
+pub const ALLOCATOR: Allocator = Allocator {};
 
-/// The game's global allocator: the census, else counting mimalloc, else mimalloc.
+/// The game's global allocator: the census, else counting mimalloc, else [`Allocator`].
 #[cfg(feature = "alloc-census")]
 pub type GameAllocator = heap_census::CensusAllocator;
 #[cfg(all(feature = "alloc-count", not(feature = "alloc-census")))]
 pub type GameAllocator = alloc_count::CountingAllocator;
 #[cfg(not(feature = "alloc-count"))]
-pub type GameAllocator = mimalloc::MiMalloc;
+pub type GameAllocator = Allocator;
 /// The value of [`GameAllocator`].
 pub const GAME_ALLOCATOR: GameAllocator = GameAllocator {};
 

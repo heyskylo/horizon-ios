@@ -136,11 +136,21 @@ impl StackUnwinder {
     /// Unwinds `regs` over `stack`, a copy of the thread's memory from `regs.sp` up, into `out`; returns the frames written.
     pub fn unwind(&mut self, regs: &Regs, stack: &[u8], out: &mut [usize]) -> usize {
         let sp = regs.sp as u64;
-        let mut read = |addr: u64| -> Result<u64, ()> {
+        let read = |addr: u64| -> Result<u64, ()> {
             let at = usize::try_from(addr.checked_sub(sp).ok_or(())?).map_err(|_| ())?;
             let word = stack.get(at..at.checked_add(8).ok_or(())?).ok_or(())?;
             Ok(u64::from_ne_bytes(word.try_into().map_err(|_| ())?))
         };
+        self.unwind_with(regs, read, out)
+    }
+
+    /// Unwinds `regs` reading stack words through `read`; returns the frames written to `out`.
+    pub fn unwind_with(
+        &mut self,
+        regs: &Regs,
+        mut read: impl FnMut(u64) -> Result<u64, ()>,
+        out: &mut [usize],
+    ) -> usize {
         let mut frames =
             self.unwinder
                 .iter_frames(regs.pc as u64, native(regs), &mut self.cache, &mut read);
