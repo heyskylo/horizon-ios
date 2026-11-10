@@ -228,7 +228,7 @@ impl Game<'_> {
             eye[2].floor() as i32,
         );
         let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
-        let shown = self.hands_to_render();
+        let shown = self.hands_shown();
         let used_hand = self.used_hand();
         let spinning = self
             .player
