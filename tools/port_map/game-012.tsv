@@ -138,3 +138,4 @@ HappyGhast.getLeashOffset	port	crates/horizon-client/src/mobs/leash.rs::leash_of
 HappyGhastAi.initCoreActivity	port	crates/horizon-client/src/mobs/animal_brain.rs::ghastling_package	swim, flying panic 2.0, look sink, move sink and the tempt cooldown countdown
 HappyGhastAi.initIdleActivity	port	crates/horizon-client/src/mobs/animal_brain.rs::ghastling_package	tempt with look in the eyes, follow a player, follow an adult, then fly stroll or walk to the look target
 Frog.canBeABaby	port	crates/horizon-client/src/mobs/species.rs::can_be_a_baby	the false arm: a frog with a negative Age is an adult
+Fox.FoxBehaviorGoal.alertable	port	crates/horizon-client/src/mobs/fox.rs::alertable	range scaled by visibility, floor 2
