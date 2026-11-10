@@ -737,6 +737,9 @@ impl Game<'_> {
             return;
         };
         let creative = self.creative;
+        // A server's table in a server session: its data packs' enchantments
+        // are ones the world's own table doesn't have.
+        let enchantments = std::sync::Arc::clone(self.enchantments());
         let data = self.stations();
         let items = self.items();
         match s.kind {
@@ -745,7 +748,7 @@ impl Game<'_> {
             Kind::Enchanting if self.remote.is_some() => {
                 let enchantable = s.inputs[0]
                     .as_ref()
-                    .is_some_and(|i| stations::is_enchantable(&data.enchantments, i));
+                    .is_some_and(|i| stations::is_enchantable(&enchantments, i));
                 if !enchantable {
                     s.offers = Default::default();
                 }
@@ -753,7 +756,7 @@ impl Game<'_> {
             Kind::Enchanting => {
                 s.bookcases = self.count_bookshelves(s.pos);
                 s.offers = stations::enchant_offers(
-                    &data.enchantments,
+                    &enchantments,
                     items,
                     self.level.xp_seed,
                     s.bookcases,
@@ -767,7 +770,7 @@ impl Game<'_> {
                     .map(|i| stations::hover_name(&self.pack.names, i))
                     .unwrap_or_default();
                 s.anvil = stations::anvil_result(
-                    &data.enchantments,
+                    &enchantments,
                     items,
                     s.inputs[0].as_ref(),
                     s.inputs[1].as_ref(),
@@ -786,7 +789,7 @@ impl Game<'_> {
             }
             Kind::Grindstone => {
                 s.result = stations::grindstone_result(
-                    &data.enchantments,
+                    &enchantments,
                     items,
                     s.inputs[0].as_ref(),
                     s.inputs[1].as_ref(),
@@ -794,7 +797,7 @@ impl Game<'_> {
             }
             Kind::Smithing => {
                 s.result = data.recipes.smithing_result(
-                    &data.enchantments,
+                    &enchantments,
                     s.inputs[0].as_ref(),
                     s.inputs[1].as_ref(),
                     s.inputs[2].as_ref(),
@@ -3190,3 +3193,5 @@ mod brewing_tick;
 
 #[cfg(test)]
 mod brewing_changed_tests;
+#[cfg(test)]
+mod remote_anvil_tests;
