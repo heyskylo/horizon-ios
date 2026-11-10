@@ -144,6 +144,13 @@ mod tests {
     #[test]
     #[ignore = "needs prepared resources and scratch homes/cwd"]
     fn deferred_states_match_those_built_in_place() {
+        crate::mod_api::in_own_process(
+            "game::lan::mob_states::tests::deferred_states_match_those_built_in_place",
+            deferred_states_match_those_built_in_place_in_own_process,
+        );
+    }
+
+    fn deferred_states_match_those_built_in_place_in_own_process() {
         let mut game = super::super::super::native_machines::tests::server_game();
         game.build_registries();
         game.set_allow_commands(true);
@@ -161,7 +168,16 @@ mod tests {
         ] {
             assert!(game.run_command(command), "{command}");
         }
-        assert!(game.mobs.len() >= 7);
+        let examples = game.mobs.clone();
+        game.mobs = (0..MIN_MOBS * 2 + 37)
+            .map(|i| {
+                let mut mob = examples[i % examples.len()].clone();
+                mob.id = 10_000 + i as u32;
+                mob.removed = i % 11 == 0;
+                mob
+            })
+            .collect::<Vec<_>>()
+            .into();
         game.lan_host(
             super::super::LanSettings {
                 port: 0,
@@ -186,17 +202,85 @@ mod tests {
         )
         .unwrap();
         let mut lan = game.lan.take().unwrap();
+        // The shared tables must retain pack-selected effect colors, not just
+        // vanilla's registry color. This process owns the global pack palette.
+        horizon_client::brewing::set_pack_colors(vec![("speed".into(), 0xAA12_3456)]);
         let players = Default::default();
         let mut runs = Vec::new();
-        for defer in [false, true] {
-            DEFER.with(|d| d.set(Some(defer)));
-            let mut states = States::default();
-            game.lan_entities(&players, &mut lan.hub, &mut states, false, 0, None);
-            runs.push(states.as_slice().to_vec());
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                DEFER.with(|d| d.set(None));
+            }
         }
-        DEFER.with(|d| d.set(None));
-        assert!(runs[0].iter().filter(|e| !e.meta.is_empty()).count() >= 7);
-        assert!(runs[0].iter().any(|e| !e.attributes.is_empty()));
-        assert_eq!(runs[0], runs[1]);
+        let _reset = Reset;
+        for after in [0, 10_012] {
+            runs.clear();
+            for defer in [false, true, false] {
+                DEFER.with(|d| d.set(Some(defer)));
+                let mut states = States::default();
+                game.lan_entities(&players, &mut lan.hub, &mut states, false, after, None);
+                runs.push(states.as_slice().to_vec());
+            }
+            let expected_ids: Vec<_> = game
+                .mobs
+                .iter()
+                .filter(|m| !m.removed && m.id > after)
+                .map(|m| m.id as i32)
+                .collect();
+            assert_eq!(
+                runs[0].iter().map(|e| e.id).collect::<Vec<_>>(),
+                expected_ids
+            );
+            assert!(runs[0].iter().filter(|e| !e.meta.is_empty()).count() >= MIN_MOBS);
+            assert!(runs[0].iter().any(|e| !e.attributes.is_empty()));
+            let colored: Vec<_> = runs[0]
+                .iter()
+                .filter(|e| e.kind == "minecraft:piglin")
+                .collect();
+            assert!(!colored.is_empty());
+            for e in colored {
+                let particles = e.meta.iter().find(|e| e.0 == 10).unwrap();
+                let Value::Particles(particles) = &particles.2 else {
+                    panic!("effect particle metadata");
+                };
+                assert_eq!(particles.len(), 1);
+                assert_eq!(
+                    particles[0].data,
+                    Some(horizon_protocol::entity_data::ParticleData::Color(
+                        0xFF12_3456_u32 as i32
+                    ))
+                );
+            }
+            assert_eq!(runs[0], runs[1], "deferred, after {after}");
+            assert_eq!(runs[0], runs[2], "switch off, after {after}");
+
+            // With deferral off the caller can read the metadata immediately,
+            // before fill, and fill must not replace the vectors it already owns.
+            let m = game
+                .mobs
+                .iter()
+                .find(|m| !m.removed && m.id > after)
+                .unwrap();
+            let mut states = States::default();
+            let e = states.add(m.id as i32, 0, &m.kind.id);
+            let mut later = Later::new(game.world.game_time);
+            later.state((0, 0), m, None, lan.hub.sync_data(), game.attr_sources(), e);
+            assert_eq!(e.meta, runs[0][0].meta);
+            assert_eq!(e.defaults, runs[0][0].defaults);
+            assert_eq!(e.attributes, runs[0][0].attributes);
+            let pointers = (e.meta.as_ptr(), e.defaults.as_ptr(), e.attributes.as_ptr());
+            later.fill(
+                &game.mobs,
+                lan.hub.sync_data(),
+                game.attr_sources(),
+                &mut states,
+            );
+            let e = &states.as_slice()[0];
+            assert_eq!(
+                pointers,
+                (e.meta.as_ptr(), e.defaults.as_ptr(), e.attributes.as_ptr())
+            );
+        }
     }
 }
