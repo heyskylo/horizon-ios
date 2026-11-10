@@ -166,7 +166,8 @@ impl Game<'_> {
         // The bubble columns it went through push it too
         // (`Projectile.onInsideBubbleColumn` / `onAboveBubbleColumn`): every
         // projectile, arrows and llama spit included, whatever its own tick
-        // applies. A stuck arrow isn't pushed, as in its own tick.
+        // applies. A stuck arrow isn't pushed (`AbstractArrow`'s overrides
+        // return when `isInGround`), as in its own tick.
         let stuck_arrow = self.creatures.projectiles[i]
             .arrow
             .as_ref()
@@ -191,8 +192,12 @@ impl Game<'_> {
                 .map(|c| (c.drag, c.surface))
             });
             let tops = std::mem::take(&mut p.bubble_surfaces);
-            for [x, y, z] in tops {
-                self.bubble_column_particles(BlockPos::new(x, y, z));
+            // `sendBubbleColumnParticles` is the server's: a server's client,
+            // which pushes too, leaves them to the packets.
+            if self.remote.is_none() {
+                for [x, y, z] in tops {
+                    self.bubble_column_particles(BlockPos::new(x, y, z));
+                }
             }
         }
     }
