@@ -44,7 +44,7 @@ MerchantScreen.init	skip:ui		trade buttons are laid out in draw_merchant and hit
 MerchantScreen.extractLabels	inline	crates/horizon-client/src/game/trading.rs::Game::draw_merchant	title with the trader level, Trades and Inventory labels
 MerchantScreen.extractBackground	inline	crates/horizon-client/src/game/trading.rs::Game::draw_merchant	villager background and the out-of-stock sprite
 MerchantScreen.extractProgressBar	inline	crates/horizon-client/src/game/trading.rs::Game::draw_merchant	experience bar, with the pending trade's XP
-MerchantScreen.extractScroller	inline	crates/horizon-client/src/game/trading.rs::Game::draw_merchant	gap: minor: no pointing or resize cursor over the scroller
+MerchantScreen.extractScroller	port	crates/horizon-client/src/game/trading.rs::Game::draw_merchant	the thumb's sprite and its cursor (a hand, the vertical resize while dragged); the disabled sprite below 8 offers
 MerchantScreen.extractContents	inline	crates/horizon-client/src/game/trading.rs::Game::draw_merchant	the seven offer rows from the scroll offset
 MerchantScreen.extractButtonArrows	inline	crates/horizon-client/src/game/trading.rs::Game::draw_merchant	trade arrow, and the out-of-stock arrow
 MerchantScreen.extractAndDecorateCostA	inline	crates/horizon-client/src/game/trading.rs::Game::draw_merchant	discount: base count struck through, new count drawn (merchant.rs cost_a)
