@@ -68,6 +68,11 @@ impl Game<'_> {
             self.with_level(|b, level, ticks| {
                 b.set_block(level, ticks, p, new, level_flags::UPDATE_CLIENTS)
             });
+            // `JukeboxBlockEntity.notifyItemChangedInJukebox`: the disc coming
+            // or going is a block change the sculk sensors hear.
+            if self.world.block(pos[0], pos[1], pos[2]) != state {
+                self.post_block_game_event("minecraft:block_change", pos, None, Some(new));
+            }
         }
     }
     /// `JukeboxBlock.setPlacedBy`: a jukebox placed from an item whose
