@@ -92,6 +92,7 @@ fn a_mods_fireworks_burst_and_bang_on_the_client_only() {
             facts: game.res.facts(),
             collision: game.collision,
             player: None,
+            cached_chunk: std::cell::Cell::new(None),
         };
         game.particles.tick(&level);
     };

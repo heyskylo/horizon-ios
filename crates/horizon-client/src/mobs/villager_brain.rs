@@ -928,12 +928,12 @@ fn chunk_pois(
         return;
     };
     let kind = |state: u32| poi_of_state(w, horizon_world::registry::BlockStateId(state));
-    let min = w.world.bottom_y();
-    for s in (y0 - min) >> 4..=(y1 - min) >> 4 {
-        let section = &chunk.sections[s as usize];
-        for &(i, poi) in w.world.pois.get((qx, s, qz), section, kind).iter() {
+    let (min, mut lists) = (w.world.bottom_y(), Vec::new());
+    w.world.pois.column(chunk, min, (y0, y1), kind, &mut lists);
+    for (base, pois) in &lists {
+        for &(i, poi) in pois.iter() {
             let i = i32::from(i);
-            let y = min + s * 16 + (i >> 8);
+            let y = base + (i >> 8);
             if (y0..=y1).contains(&y) {
                 visit(poi, [qx * 16 + (i & 15), y, qz * 16 + (i >> 4 & 15)]);
             }
@@ -3384,7 +3384,7 @@ fn same_path(a: Option<&Path>, b: Option<&Path>) -> bool {
 }
 /// `Swim`: deeper than the jump threshold, or in lava.
 fn swim_condition(m: &Mob) -> bool {
-    m.fluids.water > m.fluid_jump_threshold() || m.fluids.in_lava
+    m.floats()
 }
 fn panic_condition(m: &Mob) -> bool {
     mem_ref(m).is_some_and(|mm| mm.hurt_by.present() || mm.nearest_hostile.present())

@@ -13,7 +13,7 @@ why it can't join. `--baseline` first runs the same checks over plain LAN.
 The router is never asked to open a port (HORIZON_FRIENDS_UPNP=0) and STUN
 is off: nothing leaves the machine.
 
-    python3 tools/test_friends.py --client target/fast/horizon-client --relay target/fast/horizon-relay
+    python3 tools/test_friends.py --client target/fast/horizon-official --relay target/fast/horizon-relay
 
 The host runs on its integrated server thread (the window is a client of it).
 

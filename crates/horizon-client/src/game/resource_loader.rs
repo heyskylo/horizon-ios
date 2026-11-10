@@ -306,8 +306,6 @@ pub(super) fn run_loading(
         App::Loading(loading) => leave_fullscreen_after(&result, &mut loading.settings),
     }
     result?;
-    #[cfg(feature = "discord")]
-    horizon_client::discord_presence::stop();
     match app {
         App::Ready(mut split) => {
             write_report(&split.host)?;
