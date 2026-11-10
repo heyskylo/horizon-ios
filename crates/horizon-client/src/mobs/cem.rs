@@ -6,6 +6,10 @@
 //! horses too), and the few of [`FALLBACKS`], following their chains (`cat_baby_collar` to
 //! `cat_collar` to `cat`).
 //!
+//! An armour model (`zombie_outer_armor`, `zombie_inner_armor`) reshapes the layers 26.3 draws a
+//! humanoid's equipment on: the outer one its helmet, chestplate and boots, the inner one its
+//! leggings.
+//!
 //! Built when the packs load; a mob's draw only swaps the layer's part tree. Without CEM files
 //! nothing is built and every model stays vanilla's, and a file no layer uses isn't parsed.
 //!
@@ -89,15 +93,16 @@ impl CemModels {
         // broken; within one name, EMF's file before OptiFine's.
         let mut plan: HashMap<String, Vec<(usize, &str)>> = HashMap::new();
         for name in &names {
-            let key = layer_key(name);
-            if !vanilla.contains_key(key.as_str()) {
-                continue;
-            }
-            let chain = std::iter::successors(Some(name.clone()), |n| falls_back_to(n));
-            let candidates = plan.entry(key).or_default();
-            for (depth, target) in chain.take(FALLBACK_STEPS + 1).enumerate() {
-                if let Some((file, _)) = files.get_key_value(&target) {
-                    candidates.push((depth, file.as_str()));
+            let chain = || std::iter::successors(Some(name.clone()), |n| falls_back_to(n));
+            for key in layer_keys(name) {
+                if !vanilla.contains_key(key.as_str()) {
+                    continue;
+                }
+                let candidates = plan.entry(key).or_default();
+                for (depth, target) in chain().take(FALLBACK_STEPS + 1).enumerate() {
+                    if let Some((file, _)) = files.get_key_value(&target) {
+                        candidates.push((depth, file.as_str()));
+                    }
                 }
             }
         }
@@ -135,7 +140,8 @@ impl CemModels {
             let mut layer = CemLayer::build(part, jem, name, &rules);
             // A fallback onto another layer (the cat's collar from `cat`) takes the geometry
             // only: the layer keeps its own texture.
-            if layer_suffix(&key) != layer_suffix(&layer_key(name)) {
+            let own = layer_keys(name);
+            if !own.iter().any(|k| layer_suffix(k) == layer_suffix(&key)) {
                 layer.texture = None;
             }
             layers.insert(key, layer);
@@ -344,6 +350,27 @@ const LAYERS: &[(&str, &str)] = &[
     ("zombie_horse_armor", "undead_horse_armor#main"),
 ];
 
+/// The layers a CEM model name reshapes: one, or an armour model's several.
+///
+/// CEM's armour models name the two boxes vanilla used to draw a humanoid's armour on: the outer
+/// one, and the inner one that is the thinner leggings. 26.3 draws the helmet, chestplate and
+/// boots on a layer each and the leggings on a fourth, so the outer model reshapes three layers
+/// and the inner one the leggings of the same mob's model. A mob with no such layers, or a name
+/// that is not one of the two, keeps its single layer.
+fn layer_keys(name: &str) -> Vec<String> {
+    let (base, layers): (&str, &[&str]) = if let Some(base) = name.strip_suffix("_outer_armor") {
+        (base, &["helmet", "chestplate", "boots"])
+    } else if let Some(base) = name.strip_suffix("_inner_armor") {
+        (base, &["leggings"])
+    } else {
+        return vec![layer_key(name)];
+    };
+    layers
+        .iter()
+        .map(|layer| format!("{base}#{layer}"))
+        .collect()
+}
+
 /// The model layer a CEM model name reshapes.
 fn layer_key(name: &str) -> String {
     // `<model>_baby[_<layer>]`: the adult's layer on the baby model.
@@ -527,9 +554,12 @@ fn vanilla_part(model: &str, part: &str) -> String {
         // (the fin animation in aquatic.rs).
         ("puffer_fish_big" | "puffer_fish_medium", "fin_right") => Some("right_blue_fin".into()),
         ("puffer_fish_big" | "puffer_fish_medium", "fin_left") => Some("left_blue_fin".into()),
-        // RabbitModel's hind feet (rabbit.rs).
-        ("rabbit", "left_foot") => Some("left_hind_foot".into()),
-        ("rabbit", "right_foot") => Some("right_hind_foot".into()),
+        // 26.3's rabbit: the haunch is the box a CEM file's foot replaces, on a hind leg that
+        // holds the thigh (rabbit.rs).
+        ("rabbit", "left_foot") => Some("left_haunch".into()),
+        ("rabbit", "right_foot") => Some("right_haunch".into()),
+        ("rabbit", "left_thigh") => Some("left_hind_leg".into()),
+        ("rabbit", "right_thigh") => Some("right_hind_leg".into()),
         (_, "fin_right") => Some("right_fin".into()),
         (_, "fin_left") => Some("left_fin".into()),
         (_, "fin_bottom") => Some("bottom_fin".into()),
@@ -752,6 +782,26 @@ mod tests {
             baby_names("sheep_wool").collect::<Vec<_>>(),
             ["sheep_baby_wool", "sheep_wool_baby"]
         );
+        // An armour model reshapes the per-slot layers; the babies' have their own.
+        assert_eq!(
+            layer_keys("zombie_outer_armor"),
+            ["zombie#helmet", "zombie#chestplate", "zombie#boots"]
+        );
+        assert_eq!(layer_keys("zombie_inner_armor"), ["zombie#leggings"]);
+        assert_eq!(
+            layer_keys("zombie_baby_outer_armor"),
+            [
+                "zombie_baby#helmet",
+                "zombie_baby#chestplate",
+                "zombie_baby#boots"
+            ]
+        );
+        // A name that is not one of the two keeps a layer of its own.
+        assert_eq!(layer_keys("zombie_outer"), ["zombie_outer#main"]);
+        assert_eq!(
+            layer_keys("zombie_horse_armor"),
+            ["undead_horse_armor#main"]
+        );
     }
 
     #[test]
@@ -773,7 +823,8 @@ mod tests {
             ("squid", "tentacle0", "tentacle0"),
             ("puffer_fish_medium", "fin_left", "left_blue_fin"),
             ("puffer_fish_small", "fin_right", "right_fin"),
-            ("rabbit", "left_foot", "left_hind_foot"),
+            ("rabbit", "left_foot", "left_haunch"),
+            ("rabbit", "right_thigh", "right_hind_leg"),
         ] {
             assert_eq!(vanilla_part(model, part), vanilla, "{model} {part}");
         }
@@ -931,6 +982,35 @@ mod tests {
         let models = models("baby", &files, &["zombie#main", "zombie_baby#main"], &tree);
         assert_eq!(attached(&models, "zombie#main", "head"), Some(false));
         assert_eq!(attached(&models, "zombie_baby#main", "head"), Some(true));
+    }
+
+    #[test]
+    fn an_armour_model_reshapes_every_layer_it_covers() {
+        let (outer, inner) = (jem("head", false), jem("head", true));
+        let files = [
+            ("optifine/cem/zombie_outer_armor.jem", outer.as_str()),
+            ("optifine/cem/zombie_inner_armor.jem", inner.as_str()),
+        ];
+        let tree = plane("root", vec![plane("head", vec![])]);
+        let models = models(
+            "armour",
+            &files,
+            &[
+                "zombie#helmet",
+                "zombie#chestplate",
+                "zombie#boots",
+                "zombie#leggings",
+                "zombie_baby#helmet",
+            ],
+            &tree,
+        );
+        // One `.jem` for the outer armour reshapes the helmet, the chestplate and the boots,
+        // the inner one the leggings only, and the baby takes the adult's outer armour.
+        assert_eq!(attached(&models, "zombie#helmet", "head"), Some(false));
+        assert_eq!(attached(&models, "zombie#chestplate", "head"), Some(false));
+        assert_eq!(attached(&models, "zombie#boots", "head"), Some(false));
+        assert_eq!(attached(&models, "zombie#leggings", "head"), Some(true));
+        assert_eq!(attached(&models, "zombie_baby#helmet", "head"), Some(false));
     }
 
     #[test]
@@ -1277,13 +1357,19 @@ mod tests {
                 continue;
             };
             let adult_key = format!("{adult}#{layer}");
+            let armour = [
+                format!("{adult}_outer_armor"),
+                format!("{adult}_inner_armor"),
+            ];
             let reached = LAYERS
                 .iter()
                 .map(|(name, _)| *name)
                 .chain([adult])
-                .filter(|name| layer_key(name) == adult_key)
+                .chain(armour.iter().map(String::as_str))
+                .chain(FALLBACKS.iter().map(|(name, _)| *name))
+                .filter(|name| layer_keys(name).iter().any(|k| k == &adult_key))
                 .flat_map(baby_names)
-                .any(|baby| layer_key(&baby) == *key);
+                .any(|baby| layer_keys(&baby).iter().any(|k| k.as_str() == *key));
             if !reached {
                 missing.push(format!("{key}: no baby model name maps to it"));
             }
