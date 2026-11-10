@@ -92,7 +92,7 @@ def check(bins, scratch, out):
             bots.wait(timeout=120)
         server.stop()
     bytes_ = gzip.decompress(path.read_bytes())
-    for secret in (WORLD, SEED, MOTD, PLAYER, MOB, SIGN, ADDRESS):
+    for secret in (WORLD, SEED, MOTD, MOB, SIGN, ADDRESS):
         if secret.encode() in bytes_:
             raise Failed(f'the capture holds {secret!r}')
     print(f'{path.name}: none of the fixture strings is in the {len(bytes_)} inflated bytes')
@@ -105,6 +105,9 @@ def check(bins, scratch, out):
     total = net[0]
     if total['players'] != 2 or total['out_bytes'] <= 0:
         raise Failed(f'the network rows do not show the two players: {net}')
+    names = sorted(row.get('name', '') for row in net[1:])
+    if names != [f'{PLAYER}0', f'{PLAYER}1']:
+        raise Failed(f'the network rows do not name the players: {names}')
     world = rows(bins, 'world', path)
     if sum(row['entities'] for row in world) < 1:
         raise Failed(f'the world rows count no entity: {world}')

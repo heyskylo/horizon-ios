@@ -601,7 +601,7 @@ horizon-ctl profile mark NAME
    runs at a time; a second request gets `AlreadyRunning`.
 4. **Log.** The server logs who profiled and when, at start and stop:
    `Horizon: Steve started a server profile (60 s, samples on)` and `Horizon: Steve's server profile saved to
-   reports/profile-20261107-143204Z.hzperf`. Player names belong in the server log; they never enter the capture.
+   reports/profile-20261107-143204Z.hzperf`. The capture names each connection's player too (§4.3).
 5. **Server copy.** The server writes its side as any server capture, into its own `reports/` (with retention).
 6. **Transfer.** At stop, the server sends the finished file's gzip bytes to the admin's client on `horizon:perf` in
    chunks of 32 KiB, rate-limited to 256 KiB/s and lower under bandwidth pressure. Gameplay packets go first, so the
@@ -623,7 +623,7 @@ and versions, function and file base names, and `Mark.name`.
 
 | Never | How |
 |---|---|
-| Player names, UUIDs, account ids, skins | `net` uses join-order indices; `world` counts types only; remote profiling logs the name on the server, not in the file |
+| UUIDs, account ids, skins | `net` names each connection by player name, client brand and view distance, nothing else; `world` counts types only |
 | IP addresses, server address, LAN/relay codes, MOTD | not in any message |
 | World seed, world name, level folder name | not in any message; `settings` is an allowlist without `level-seed`/`level-name` |
 | Entity custom names, sign/book/chat/command text | contexts hold registry ids (entity type, block type), never component data |
@@ -632,17 +632,17 @@ and versions, function and file base names, and `Mark.name`.
 | Block coordinates | only chunk coordinates |
 
 Included on purpose: chunk coordinates per dimension, entity and block type names, mod ids and versions. This is spec
-H's decision ("they are what a server owner needs to find the lag"). The web UI's first screen and the summary's footer
+H's decision ("they are what a server owner needs to find the lag"). Player names are included too: a server owner has to know which connection floods or lags. The web UI's first screen and the summary's footer
 say so in one line.
 
 Test (pieces S1b and R1): a fixture dedicated server has named players, a seed, a world name, a custom-named mob, a
 sign and a connected player's IP. It writes a capture; the test inflates it and asserts that none of those strings
-occurs in the bytes.
+occurs in the bytes, except the players' names, which `net` must hold.
 
 For S1b that is two checks. `a_capture_of_a_server_with_names_text_and_a_seed_holds_none_of_them` (in `report.rs`) has no
-connected player and is `#[ignore]`d: it needs `HORIZON_TEST_RESOURCES`, so run it with `--ignored`. Players' names and
-IP addresses are covered by `tools/server_perf_e2e.py`, which joins bots named `SteveSecret` from `127.0.0.1` to a fixture
-server (build with `cargo build --profile fast -p horizon-client -p horizon-bots -p horizon-perf`, then run
+connected player and is `#[ignore]`d: it needs `HORIZON_TEST_RESOURCES`, so run it with `--ignored`. IP addresses are
+covered by `tools/server_perf_e2e.py`, which joins bots named `SteveSecret` from `127.0.0.1` to a fixture server and checks
+the capture names them in `net` (build with `cargo build --profile fast -p horizon-client -p horizon-bots -p horizon-perf`, then run
 `python3 tools/server_perf_e2e.py --bin-dir target/fast`). It is not in CI yet: run it by hand before merging a change to what a capture holds.
 
 Uploads (§7.3) change nothing in the file: what a shared capture holds is exactly what the local one holds. Sharing is
