@@ -1594,15 +1594,17 @@ impl Game<'_> {
                         &tr("gui.done", "Done"),
                     );
                 }
-                // HoveredTextEffects.TOOLTIP_AND_CURSOR: the hovered words'
-                // show_text hover event, as the chat shows it.
-                if let Some(hover) = pages
-                    .get(*page)
-                    .and_then(|t| self.book_style_at(t, left))
-                    .and_then(|s| s.hover)
-                {
-                    let lines = self.wrapped_rows(&hover, (w as i32 / 2).max(200));
-                    self.draw_tooltip_lines(batch, &lines, mx, my);
+                // HoveredTextEffects.TOOLTIP_AND_CURSOR: a clickable word
+                // asks for the hand, and a show_text hover shows its tooltip,
+                // as the chat does.
+                if let Some(style) = pages.get(*page).and_then(|t| self.book_style_at(t, left)) {
+                    if let Some(cursor) = link_cursor(&style) {
+                        horizon_client::widgets::request_cursor(cursor);
+                    }
+                    if let Some(hover) = style.hover {
+                        let lines = self.wrapped_rows(&hover, (w as i32 / 2).max(200));
+                        self.draw_tooltip_lines(batch, &lines, mx, my);
+                    }
                 }
             }
         }
@@ -1645,6 +1647,16 @@ pub(super) fn lectern_signal(world: &horizon_client::world::World, pos: BlockPos
         })),
         _ => None,
     }
+}
+
+/// `HoveredTextEffects.TOOLTIP_AND_CURSOR`: only a word with a click event asks
+/// for the pointing hand over a book's page; a hover event alone shows its
+/// tooltip.
+fn link_cursor(style: &horizon_client::text::Style) -> Option<horizon_client::widgets::Cursor> {
+    style
+        .click
+        .is_some()
+        .then_some(horizon_client::widgets::Cursor::PointingHand)
 }
 
 #[cfg(test)]
@@ -1927,5 +1939,28 @@ mod sign_tests {
             BookScreen::Edit { title_edit, .. } => title_edit.value.clone(),
             BookScreen::View { .. } => String::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod link_cursor_tests {
+    use super::link_cursor;
+    use horizon_client::text::{ClickEvent, Style, Text};
+    use horizon_client::widgets::Cursor;
+
+    /// `HoveredTextEffects.TOOLTIP_AND_CURSOR`: a clickable word asks for the
+    /// pointing hand; a hover event alone only shows its tooltip.
+    #[test]
+    fn only_a_clickable_book_word_asks_for_the_hand() {
+        let link = Style {
+            click: Some(ClickEvent::OpenUrl("https://example.com".into())),
+            ..Style::default()
+        };
+        let hover_only = Style {
+            hover: Some(Box::new(Text::literal("tip"))),
+            ..Style::default()
+        };
+        assert_eq!(link_cursor(&link), Some(Cursor::PointingHand));
+        assert_eq!(link_cursor(&hover_only), None);
     }
 }
