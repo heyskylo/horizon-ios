@@ -7280,7 +7280,9 @@ def rocket_fall_distance():
              ('vine', 8, 8, y0 + 14, 'ShotAtAngle:1b,Motion:[0d,-1.5d,0d],fall_distance:5d'),
              ('novine', 11, 8, y0 + 14, 'ShotAtAngle:1b,Motion:[0d,-1.5d,0d],fall_distance:5d'),
              ('cobweb', 13, 8, y0 + 4, 'ShotAtAngle:1b,Motion:[0d,-0.5d,0d],fall_distance:2d'),
-             ('rise', 15, 8, y0 + 4, 'fall_distance:4d')]
+             ('rise', 15, 8, y0 + 4, 'fall_distance:4d'),
+             # Summoned inside lava: Entity.isInLava is false on its first tick, so no halving yet.
+             ('inlava', 7, 4, y0 + 1, 'ShotAtAngle:1b,Motion:[0d,0d,0d],fall_distance:4d')]
     # Water and lava stand in a stone well, so they have no flow to push with.
     for x, fluid in ((3, 'water'), (7, 'lava')):
         ops.append(cmd(f'/fill {x0 + x - 1} {y0} {z0 + 3} {x0 + x + 1} {y0 + 2} {z0 + 5} stone', expect_result=27))

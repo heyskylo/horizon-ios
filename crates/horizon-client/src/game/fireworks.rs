@@ -340,7 +340,9 @@ impl Game<'_> {
         }
         if r.on_ground {
             if r.fall_distance > 0.0 {
-                // Block.fallOn does nothing to a rocket.
+                // Block.fallOn (farmland's random draw, honey's slide) is not
+                // run for a rocket yet, nor for the other entities that are
+                // not living.
                 let p = r.position;
                 let state = self.landing_state(p, r.bounds());
                 let at = [p.x, p.y, p.z];
@@ -609,10 +611,11 @@ impl Game<'_> {
                 }
             }
             r.was_touching_water = water > 0.0;
-            r.first_tick = false;
-            if lava > 0.0 {
+            // Entity.isInLava is false on the first tick (firstTick).
+            if lava > 0.0 && !r.first_tick {
                 r.fall_distance *= 0.5;
             }
+            r.first_tick = false;
             let skip = owner.filter(|_| !r.left_owner);
             let mut hit = None;
             if r.attached
