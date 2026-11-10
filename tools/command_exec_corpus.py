@@ -215,10 +215,13 @@ def group_cleanup():
         # walks every chunk column in its x range.
         own = (f'at @s if dimension minecraft:{level} positioned ~-1 {floor} ~-1 '
                'if entity @s[dx=2,dy=4096,dz=2] run')
+        # The End's own dragon (EndDragonFight spawns it when the level loads) is no group's but flies above the
+        # floor at times: vanilla killed it there and Horizon, which had none up there, didn't.
+        kept = 'type=!player,type=!minecraft:ender_dragon' if level == 'the_end' else 'type=!player'
         # Horizon finds an @s of another level only from that level ('in').
         ops += setup(*[f'/execute in minecraft:{level} as @e[type=minecraft:{kind}] {own} '
                        'data merge entity @s {Size:0}' for kind in ('slime', 'magma_cube', 'sulfur_cube')],
-                     *[f'/execute in minecraft:{level} as @e[type=!player] {own} kill @s'] * 2)
+                     *[f'/execute in minecraft:{level} as @e[{kept}] {own} kill @s'] * 2)
     return ops
 
 
@@ -1995,6 +1998,12 @@ def bird_flap_sensors():
             ops += setup('/setblock 9 200 10 sculk_sensor strict')
             ops += [{'op': 'tick', 'n': 2}]
             ops += [cmd('/execute if block 9 200 10 sculk_sensor[sculk_sensor_phase=inactive,power=0]')]
+            # A bird's own random decides when it flaps: seed it here, not from the last sync before this group
+            # (item honey bounce's), which every group in between can move. Entity ids far above those the
+            # world's loaded entities have: Horizon keeps an entity's UUID and tags by its id.
+            case = len([op for op in ops if op['op'] == 'sync_randoms'])
+            ops += [{'op': 'sync_randoms', 'uniquifier': 19870 + case, 'entity_id': 1987000 + 1000 * case,
+                     'level_seed': 1987}]
             ops += setup(f'/summon {species} 6.5 205 10.5 '
                          f'{{Tags:["flap_bird"],NoAI:{no_ai}b,Silent:1b,NoGravity:1b,'
                          'Motion:[0d,-1d,0d],attributes:['

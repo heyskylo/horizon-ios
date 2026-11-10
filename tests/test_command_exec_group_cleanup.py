@@ -56,7 +56,15 @@ class GroupCleanupTests(unittest.TestCase):
                              [re.search(r'type=minecraft:(\w+)', c).group(1) for c in own[:3]])
             self.assertTrue(all(c.endswith('run data merge entity @s {Size:0}') for c in own[:3]))
             # The second kill takes what the first one dropped.
-            self.assertEqual(2, sum(' as @e[type=!player] ' in c and c.endswith(' run kill @s') for c in own[3:]))
+            self.assertEqual(2, sum(' as @e[type=!player' in c and c.endswith(' run kill @s') for c in own[3:]))
+
+    def test_the_ends_own_dragon_is_kept(self):
+        # EndDragonFight spawns it when the End loads: no group's, like the other world-generated entities.
+        for level in corpus.CLEANUP_FLOOR:
+            kills = [op['cmd'] for op in corpus.group_cleanup()
+                     if op['cmd'].startswith(f'/execute in minecraft:{level} ') and op['cmd'].endswith(' kill @s')]
+            with self.subTest(level=level):
+                self.assertEqual(level == 'the_end', all('type=!minecraft:ender_dragon' in c for c in kills))
 
     def test_the_floor_is_above_generated_terrain_and_below_every_group_summon(self):
         # The groups summon at y 100 and up in the overworld and far higher in the other levels.
@@ -84,6 +92,15 @@ class GroupCleanupTests(unittest.TestCase):
                 if kills:
                     self.assertTrue(any(text.endswith('{Size:0}') for text in tail[:kills[0]]),
                                     'kills its cube mobs after its last tick without shrinking them')
+
+    def test_bird_flap_sensors_seeds_each_bird_itself(self):
+        # It used to run on 'item honey bounce''s sync, 36 groups earlier: the cleanup between them moved it.
+        operations = dict(corpus.groups())['bird flap sensors']
+        summons = [i for i, op in enumerate(operations) if op.get('cmd', '').startswith('/summon ')]
+        self.assertEqual(4, len(summons))
+        for i in summons:
+            self.assertEqual('sync_randoms', operations[i - 1]['op'])
+        self.assertEqual(4, len({operations[i - 1]['uniquifier'] for i in summons}))
 
     def test_only_named_groups_read_entities_an_earlier_group_tagged(self):
         from tools.wolf_anger_corpus import groups as wolf_anger_groups
