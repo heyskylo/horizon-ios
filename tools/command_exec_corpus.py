@@ -2251,6 +2251,12 @@ def world_misc():
         cmd('/tp 8.5 230 8.5'),
         cmd('/rotate @s facing 0 230 0'),
         cmd('/rotate @s ~10 ~'),
+        # Relative angles are the command source's rotation plus the offset, not the target's own.
+        cmd('/tp @s 8.5 230 8.5 100 -20'),
+        cmd('/execute rotated 30 10 run rotate @s ~90 ~'),
+        cmd('/data get entity @s Rotation'),
+        cmd('/execute rotated 30 10 run rotate @s 5 ~-5'),
+        cmd('/data get entity @s Rotation'),
         cmd('/tp @s 8.5 230 8.5 0 0'),
         cmd('/locate biome minecraft:plains'),
         cmd('/locate biome #minecraft:is_ocean'),
