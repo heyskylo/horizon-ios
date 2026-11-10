@@ -1,6 +1,8 @@
 from pathlib import Path
 import json
 import os
+import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -236,6 +238,30 @@ class ParityRunnerTests(unittest.TestCase):
                     (here / "x.rs").write_text("changed")
                     state = {"harnesses": {}, "hashes": {}}
                     self.assertTrue(parity.stale("x", state, parity.Hasher(state["hashes"]), "env"))
+
+
+class TraceTests(unittest.TestCase):
+    def test_commands_are_recorded_as_argument_lists(self):
+        """On Windows the audit event carries the command line Popen built; the trace splits it back, so a harness's
+        cargo builds reach the probe prebuild and its probes' sources become dependencies there too."""
+        arguments = [sys.executable, "-c", "pass", "build", "-p", "a b", 'say "hi"', "back\\slash\\", ""]
+        with tempfile.TemporaryDirectory() as tmp:
+            script, trace = Path(tmp) / "harness.py", Path(tmp) / "trace.json"
+            script.write_text(f"import subprocess\nsubprocess.run({arguments!r})\n", encoding="utf-8")
+            subprocess.run([sys.executable, str(Path(parity.__file__)), "--trace", str(trace), str(script)], check=True)
+            commands = json.loads(trace.read_text(encoding="utf-8"))["commands"]
+        self.assertIn(arguments, commands)
+
+    @unittest.skipUnless(os.name == "nt", "Windows command lines")
+    def test_a_windows_command_line_splits_into_its_arguments(self):
+        for arguments in (["cargo", "build", "--profile", "fast"],
+                          ["C:\\Program Files\\x.exe", "a b", 'q"uote', "tail\\", ""]):
+            self.assertEqual(parity.command_line_arguments(subprocess.list2cmdline(arguments)), arguments)
+
+    def test_a_windows_probe_binary_finds_its_dep_info(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "client_probe.d").write_text(f"{tmp}/client_probe: crates/a/src/lib.rs\n", encoding="utf-8")
+            self.assertEqual(parity.dep_info(Path(tmp, "client_probe.exe")), ["crates/a/src/lib.rs"])
 
 
 class DependencyPathTests(unittest.TestCase):
@@ -586,6 +612,37 @@ class SoloTests(unittest.TestCase):
             self.assertEqual(parity.solo_harnesses(config), {"remote_fireworks"})
         solo = parity.host_config().get("solo", {})
         self.assertTrue(solo and set(solo) <= {parity.base_name(name) for name in parity.harnesses()})
+
+
+class ClashTests(unittest.TestCase):
+    """On Windows, harnesses that build one program with different selections don't run at once."""
+    PACKAGES = {("bin", "horizon-client"): "horizon-client", ("bin", "horizon-ctl"): "horizon-client-lib",
+                ("example", "client_probe"): "horizon-client-lib"}
+    SERVER = ["bin", "horizon-client", "fast", ["-p", "horizon-client"], False]
+    BOTH = ["bins", "", "fast", ["-p", "horizon-client", "-p", "horizon-client-lib"], False]
+    PROBE = ["example", "client_probe", "dev", ["-p", "horizon-client-lib"], True]
+
+    def test_a_run_naming_every_bin_builds_those_of_its_packages(self):
+        self.assertEqual(parity.executables([self.BOTH], self.PACKAGES), {
+            ("bin", "horizon-client", "fast"): (("-p", "horizon-client", "-p", "horizon-client-lib"), False),
+            ("bin", "horizon-ctl", "fast"): (("-p", "horizon-client", "-p", "horizon-client-lib"), False)})
+
+    def test_another_selection_of_a_running_harness_program_waits(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(parity, "STATE_DIR", Path(tmp)):
+            local = parity.LocalExecutor(4, 1 << 40, 60)
+        local.builds = {name: parity.executables(built, self.PACKAGES) for name, built in {
+            "server": [self.SERVER], "same": [self.SERVER, self.PROBE], "both": [self.BOTH], "probe": [self.PROBE],
+            "python_only": []}.items()}
+        local.running = {"server": {}}
+        self.assertFalse(local.accepts("both"))  # it would relink horizon-client.exe while "server" runs it
+        self.assertTrue(local.accepts("same"))  # Cargo finds it fresh
+        self.assertTrue(local.accepts("probe"))
+        self.assertTrue(local.accepts("python_only"))
+        self.assertTrue(local.accepts("never_ran"))
+        local.running = {"both~2": {}}
+        self.assertFalse(local.accepts("server"))
+        local.running = {}
+        self.assertTrue(local.accepts("both"))
 
 
 if __name__ == "__main__":
