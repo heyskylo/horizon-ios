@@ -13,7 +13,6 @@ SocialInteractionsPlayerList.removePlayer	skip:service		social list (hidden and 
 SocialInteractionsPlayerList.refreshHasDraftReport	skip:service		social list (hidden and blocked players); Horizon has no Social Interactions screen
 SocialInteractionsScreen.getNarrationMessage	skip:ui		narration text only
 SocialInteractionsScreen.init	port	crates/horizon-client/src/social_screen.rs::draw	tabs, search box, server label, Done; the state is game/social.rs::Social
-SocialInteractionsScreen.mouseClicked	port	crates/horizon-client/src/game/social.rs::Game::social_click	the widgets first (the search box's onClick, social_screen::search_click_at), then the tabs, the rows' buttons and Done
 SocialInteractionsScreen.repositionElements	skip:ui		layout only
 SocialInteractionsScreen.showPage	skip:service		social: All, Hidden and Blocked tabs
 SocialInteractionsScreen.extractBackground	skip:service		social screen background
