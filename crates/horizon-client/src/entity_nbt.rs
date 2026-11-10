@@ -2963,8 +2963,8 @@ pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemE
         horizontal_collision: false,
         // Entity.load: getDoubleOr, any number widened.
         fall_distance: float(tag.get("fall_distance")).unwrap_or(0.0),
-        age: number(tag.get("Age")).unwrap_or(0) as i32,
-        pickup_delay: number(tag.get("PickupDelay")).unwrap_or(0),
+        age: i32::from(number(tag.get("Age")).unwrap_or(0) as i16),
+        pickup_delay: i64::from(number(tag.get("PickupDelay")).unwrap_or(0) as i16),
         bob_offset,
         ticks: 0,
         needs_sync: false,
@@ -4388,6 +4388,25 @@ mod spell_ticks_nbt_tests;
 
 #[cfg(test)]
 mod tests {
+    /// `ItemEntity.readAdditionalSaveData` reads `Age` and `PickupDelay` with
+    /// `getShortOr`: an int tag is narrowed (`IntTag.shortValue`,
+    /// `(short)(value & 65535)`), so 40000 is -25536 and 65536 is 0.
+    #[test]
+    fn an_item_narrows_its_age_and_pickup_delay_to_a_short() {
+        let load = |fields: &str| {
+            let snbt =
+                format!("{{Pos:[0d,0d,0d],Item:{{id:\"minecraft:stone\",count:1}},{fields}}}");
+            let tag = horizon_world::nbt::parse_snbt(&snbt).unwrap().0;
+            let item = super::item_entity_from_nbt(&tag, 1, 0.0).unwrap();
+            (item.age, item.pickup_delay)
+        };
+        assert_eq!(load("Age:40000,PickupDelay:65546"), (-25536, 10));
+        assert_eq!(load("Age:65536,PickupDelay:40000"), (0, -25536));
+        // What vanilla writes itself reads back as it was.
+        assert_eq!(load("Age:-32768s,PickupDelay:32767s"), (-32768, 32767));
+        assert_eq!(load("Age:5999s,PickupDelay:10s"), (5999, 10));
+    }
+
     // Added after the actual old Game proof: live mutation and a fresh absent
     // load cannot inherit a predicate from a contradictory saved compound.
     #[test]
