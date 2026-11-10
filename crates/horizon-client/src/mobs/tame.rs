@@ -601,6 +601,10 @@ fn wants_to_attack(m: &Mob, w: &MobWorld, who: Who) -> bool {
     let Some(s) = w.seen(id) else {
         return false;
     };
+    // `TargetingConditions.test` starts with `canBeSeenByAnyone`.
+    if !s.alive {
+        return false;
+    }
     match s.species {
         Species::Creeper | Species::Ghast => false,
         Species::Wolf => !s.tame || s.owner != m.extra.owner,
