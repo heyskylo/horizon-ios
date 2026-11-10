@@ -26,7 +26,7 @@ impl Game<'_> {
         let pointer = self.captured || self.agent_pointer;
         let grabbed = pointer
             && self.screen == Screen::Playing
-            && (self.player.is_some() || self.studio.freecam.active);
+            && (self.player.is_some() || self.studio.flying());
         let active = self.focused || self.agent_pointer;
         if let Some((xo, yo)) = self
             .mouse
@@ -75,10 +75,7 @@ impl Game<'_> {
             .is_some_and(|t| t.elapsed() > Duration::from_millis(500))
             && self.control.is_none()
             && self.screen == Screen::Playing
-            && !studio_suppresses_focus_pause(
-                self.studio.replay.is_some(),
-                self.studio.freecam.active,
-            )
+            && !studio_suppresses_focus_pause(self.replay.playing(), self.studio.flying())
             && self.player.is_some()
             && !self.options.no_pause
             && self.settings.file.bool("pauseOnLostFocus")
@@ -353,7 +350,7 @@ impl Game<'_> {
     /// click. A screen that is open keeps it free, as releasing the pointer
     /// for that screen did: it is the screen, not the focus, that shows it.
     pub(super) fn regrab_on_refocus(&mut self) {
-        if self.studio.replay.is_some() || self.studio.freecam.active {
+        if self.studio_up() {
             self.regrab_on_refocus = false;
             self.studio.rmb_down = false;
             self.capture(false);

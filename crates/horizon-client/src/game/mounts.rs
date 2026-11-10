@@ -930,6 +930,7 @@ impl Game<'_> {
         let m = &self.mobs[i];
         let hearts = horizon_client::hud_layout::vehicle_max_hearts(m.attrs.max_health);
         let draws = horizon_client::hud_layout::vehicle_health(w, h, hearts, m.health);
+        self.keep_status_rows(&draws, w, h);
         self.gui_layer("minecraft:vehicle_health", batch, |g, batch| {
             horizon_client::hud_layout::paint(batch, &g.gui.atlas, &draws);
         });
