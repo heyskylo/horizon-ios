@@ -183,8 +183,9 @@ const HINT_LINE: f32 = 1.6;
 /// Between two hints on a line.
 const HINT_SEP: &str = "   ";
 
-/// `items` on as few lines as fit `width` (as `measure` measures a line), in order; an item wider
-/// than `width` gets a line of its own.
+/// `items` on as few lines as fit `width` (as `measure` measures a line), in order. An item wider
+/// than `width` breaks at its spaces onto lines of its own; a word wider than `width` alone keeps
+/// a line, which the drawing shrinks to fit.
 fn wrap_hints(
     items: impl IntoIterator<Item = String>,
     width: f32,
@@ -192,6 +193,20 @@ fn wrap_hints(
 ) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for item in items {
+        if measure(&item) > width {
+            let mut line = String::new();
+            for word in item.split(' ').filter(|w| !w.is_empty()) {
+                if !line.is_empty() && measure(&format!("{line} {word}")) > width {
+                    lines.push(std::mem::take(&mut line));
+                }
+                if !line.is_empty() {
+                    line.push(' ');
+                }
+                line.push_str(word);
+            }
+            lines.push(line);
+            continue;
+        }
         match lines.last_mut() {
             Some(line) if measure(&format!("{line}{HINT_SEP}{item}")) <= width => {
                 line.push_str(HINT_SEP);
@@ -482,9 +497,12 @@ impl Keyboard {
         }
         let top = y0 + keys_h + HINT_GAP;
         for (i, line) in hints.iter().enumerate() {
+            // Only a line of one word wider than the panel is still too wide: smaller, to fit.
+            let wide = ui.measure(Face::Regular, ui_theme::small(), line);
+            let size = ui_theme::small() * (width / wide).min(1.0);
             ui.text_centered(
                 Face::Regular,
-                ui_theme::small(),
+                size,
                 x0 + width / 2.0,
                 top + i as f32 * line_h,
                 color::muted(),
@@ -583,8 +601,27 @@ mod tests {
             wrap_hints(items(), 20.0, measure),
             ["A Type   X Delete", "Y Space   B Close"]
         );
-        // Narrower than one hint: each on its own line, none lost.
-        assert_eq!(wrap_hints(items(), 3.0, measure).len(), 4);
+        // Narrower than every hint: each breaks at its space, a word a line, none lost.
+        assert_eq!(
+            wrap_hints(items(), 3.0, measure),
+            ["A", "Type", "X", "Delete", "Y", "Space", "B", "Close"]
+        );
+    }
+
+    #[test]
+    fn a_hint_wider_than_the_panel_breaks_at_its_spaces() {
+        let measure = |s: &str| s.chars().count() as f32;
+        let items = ["A Type", "RT Fill in the next one", "B Close"].map(String::from);
+        assert_eq!(
+            wrap_hints(items, 10.0, measure),
+            ["A Type", "RT Fill in", "the next", "one", "B Close"]
+        );
+        // One word wider than the panel keeps a line of its own (drawn smaller), nothing lost.
+        let items = ["A Type", "X Unaussprechlich"].map(String::from);
+        assert_eq!(
+            wrap_hints(items, 10.0, measure),
+            ["A Type", "X", "Unaussprechlich"]
+        );
     }
 
     #[test]
