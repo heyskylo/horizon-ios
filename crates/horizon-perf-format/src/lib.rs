@@ -12,6 +12,7 @@ mod health;
 mod merge;
 mod slow;
 mod strings;
+mod timing;
 mod writer;
 
 pub use counters::{
@@ -23,6 +24,7 @@ pub use merge::{MergeError, PartMerger};
 pub use prost::Message as ProtoMessage;
 pub use slow::{SLOW_RING_CAPACITY, SLOW_TOP_SPANS, SlowRecord, SlowRing, SlowSpan};
 pub use strings::Interner;
+pub use timing::TimingRecorder;
 
 pub use writer::{
     CHANNEL_CAPACITY, CaptureWriter, FORMAT, Field, FieldSender, RawSend, WRITER_THREAD_NAME,

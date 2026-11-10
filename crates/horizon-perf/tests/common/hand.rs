@@ -349,6 +349,7 @@ pub fn capture(n: &Names) -> Vec<Field> {
         ],
     }));
     f.push(Field::Spans(SpanSummary {
+        timing: None,
         side: SERVER,
         thread: n.id("tick"),
         unit: Unit::Tick as i32,

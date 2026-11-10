@@ -4,7 +4,7 @@ use horizon_perf_format::v1::{
 
 use super::rows::{
     BuildInfo, GameRulesInfo, HorizonOptionsInfo, MachineInfo, MetaRow, ModInfo, OptionsInfo,
-    OverheadInfo, Row, Sections, SettingsInfo, StartInfo, StopInfo,
+    OverheadInfo, Row, Sections, SettingsInfo, StartInfo, StopInfo, TimingRow,
 };
 use super::{Ctx, QueryError, Reply, fine, num, opt_num};
 use crate::wire::{KindName, SideName, Unit};
@@ -20,6 +20,7 @@ pub(super) fn meta(ctx: &Ctx) -> Result<Reply, QueryError> {
             Row::Meta(MetaRow {
                 side: SideName::from(side),
                 seconds: num(view.end(side)),
+                timing: timing(view, side),
                 sections: sections(c, side),
                 start: c.start.iter().find(|s| s.side() == side).map(start_info),
                 stop: c.stop.iter().find(|s| s.side() == side).map(stop_info),
@@ -161,4 +162,33 @@ fn overhead_info(o: &Overhead) -> OverheadInfo {
         dropped_messages: o.dropped_messages,
         timeline_stopped_t: opt_num(o.timeline_stopped_t),
     }
+}
+
+fn timing(view: &crate::view::View<'_>, side: Side) -> Option<TimingRow> {
+    let thread = view.resolve_thread(side, None).ok()?;
+    let summary = view.summary(side, thread)?;
+    let timing = summary.timing.as_ref()?;
+    let valid = |ms: f64| ms.is_finite() && ms > 0.0;
+    if timing.count == 0
+        || timing.count != summary.count
+        || !valid(timing.slowest_1pct_ms)
+        || !valid(timing.slowest_01pct_ms)
+    {
+        return None;
+    }
+    let rate = |ms: f64| {
+        let rate = 1000.0 / ms;
+        num(if side == Side::Server {
+            rate.min(20.0)
+        } else {
+            rate
+        })
+    };
+    Some(TimingRow {
+        count: timing.count,
+        slowest_1pct_ms: num(timing.slowest_1pct_ms),
+        slowest_01pct_ms: num(timing.slowest_01pct_ms),
+        low_1pct: rate(timing.slowest_1pct_ms),
+        low_01pct: rate(timing.slowest_01pct_ms),
+    })
 }

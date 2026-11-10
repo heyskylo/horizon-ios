@@ -162,6 +162,7 @@ pub struct SpanRecorder {
     count: u64,
     wall_total: f64,
     cpu_total: f64,
+    timing: horizon_perf_format::TimingRecorder,
     histogram: [u64; HISTOGRAM_EDGES_MS.len() + 1],
     worst: Vec<Worst>,
     recorded: u64,
@@ -186,6 +187,7 @@ impl SpanRecorder {
             count: 0,
             wall_total: 0.0,
             cpu_total: 0.0,
+            timing: horizon_perf_format::TimingRecorder::default(),
             histogram: [0; HISTOGRAM_EDGES_MS.len() + 1],
             worst: Vec::new(),
             recorded: 0,
@@ -227,6 +229,7 @@ impl SpanRecorder {
         let cpu_ms = cpu_ms.unwrap_or(wall_ms);
         self.units += 1;
         self.count += 1;
+        self.timing.record(wall_ms);
         self.recorded += spans.len() as u64;
         self.wall_total += f64::from(wall_ms);
         self.cpu_total += f64::from(cpu_ms);
@@ -338,6 +341,7 @@ impl SpanRecorder {
                 .collect(),
             wall_ms_total: self.wall_total,
             cpu_ms_total: self.cpu_total,
+            timing: self.timing.finish(),
         };
         (last, summary)
     }

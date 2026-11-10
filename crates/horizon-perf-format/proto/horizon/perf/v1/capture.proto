@@ -444,6 +444,12 @@ message WorstUnit {
   repeated SpanCost spans = 5;
 }
 
+message TimingSummary {
+  uint64 count = 1;
+  double slowest_1pct_ms = 2;
+  double slowest_01pct_ms = 3;
+}
+
 message SpanSummary {
   Side side = 1;
   // String id of the thread name.
@@ -458,6 +464,7 @@ message SpanSummary {
   // The units' own wall and cpu time, summed.
   double wall_ms_total = 8;
   double cpu_ms_total = 9;
+  TimingSummary timing = 10;
 }
 
 // Chunk-worker CPU by job kind.

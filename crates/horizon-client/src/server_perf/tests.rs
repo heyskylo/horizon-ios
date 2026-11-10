@@ -552,6 +552,10 @@ fn the_histogram_and_the_sixteen_worst_ticks_are_kept_with_their_trees() {
     let scratch = Scratch::new("worst");
     let c = span_capture(&scratch);
     let s = &c.spans[0];
+    let timing = s.timing.as_ref().unwrap();
+    assert_eq!(timing.count, 120);
+    assert_eq!(timing.slowest_1pct_ms, 128.5);
+    assert_eq!(timing.slowest_01pct_ms, 129.0);
     let h = s.histogram.as_ref().unwrap();
     assert_eq!(h.edges_ms, HISTOGRAM_EDGES_MS);
     assert_eq!(h.counts.len(), h.edges_ms.len() + 1);

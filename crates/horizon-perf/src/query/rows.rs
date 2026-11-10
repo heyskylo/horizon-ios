@@ -212,11 +212,21 @@ pub struct GpuPartCountsRow {
     pub counts: GpuCountsRow,
 }
 
-/// What one side recorded: the start's facts (when it has a start), the stop (when it has one) and the sections' sizes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TimingRow {
+    pub count: u64,
+    pub slowest_1pct_ms: f64,
+    pub slowest_01pct_ms: f64,
+    pub low_1pct: f64,
+    pub low_01pct: f64,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MetaRow {
     pub side: SideName,
     pub seconds: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<TimingRow>,
     pub sections: Sections,
     #[serde(flatten)]
     pub start: Option<StartInfo>,

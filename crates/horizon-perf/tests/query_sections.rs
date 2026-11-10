@@ -219,6 +219,7 @@ fn meta_lists_each_side_with_its_start_stop_and_section_counts() {
     assert_eq!(start.build.as_ref().unwrap().version, "0.42.1");
     assert_eq!(meta.stop.as_ref().unwrap().reason, StopReasonName::Normal);
     assert_eq!(meta.seconds, 10.0);
+    assert!(meta.timing.is_none());
     assert_eq!(meta.sections.slow, 3);
     assert_eq!(meta.sections.slow_history, 1);
     assert_eq!(meta.sections.span_blocks, 2);
@@ -500,4 +501,77 @@ fn the_envelope_names_the_capture_the_selection_and_the_unit() {
         ]))
     );
     assert_eq!(selection.to, Some(10.0));
+}
+
+#[test]
+fn meta_exposes_capture_wide_tails_with_server_capacity_capped_at_twenty() {
+    let dir = TempDir::new("timing");
+    for (side, kind, expected) in [
+        (SERVER, Kind::Dedicated, 20.0),
+        (common::CLIENT, Kind::Client, 40.0),
+    ] {
+        let fields = vec![
+            start(side, kind),
+            Field::Spans(SpanSummary {
+                side,
+                thread: 1,
+                count: 1000,
+                timing: Some(TimingSummary {
+                    count: 1000,
+                    slowest_1pct_ms: 25.0,
+                    slowest_01pct_ms: 100.0,
+                }),
+                ..Default::default()
+            }),
+            stop(side, 10.0),
+        ];
+        let file = save(&dir, &format!("timing-{side}.hzperf"), &fields);
+        let reply = query(&["meta", &file]);
+        let timing = meta_rows(&reply)[0].timing.as_ref().unwrap();
+        assert_eq!(timing.count, 1000);
+        assert_eq!(timing.low_1pct, expected);
+        assert_eq!(timing.low_01pct, 10.0);
+        assert_eq!(timing.slowest_1pct_ms, 25.0);
+        assert_eq!(timing.slowest_01pct_ms, 100.0);
+    }
+}
+
+#[test]
+fn meta_never_reports_partial_or_invalid_tails_as_capture_wide_lows() {
+    let dir = TempDir::new("invalid-timing");
+    for (index, timing) in [
+        TimingSummary {
+            count: 999,
+            slowest_1pct_ms: 10.0,
+            slowest_01pct_ms: 100.0,
+        },
+        TimingSummary {
+            count: 1000,
+            slowest_1pct_ms: f64::NAN,
+            slowest_01pct_ms: 100.0,
+        },
+        TimingSummary {
+            count: 1000,
+            slowest_1pct_ms: 10.0,
+            slowest_01pct_ms: 0.0,
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let fields = vec![
+            start(SERVER, Kind::Dedicated),
+            Field::Spans(SpanSummary {
+                side: SERVER,
+                thread: 1,
+                count: 1000,
+                timing: Some(timing),
+                ..Default::default()
+            }),
+            stop(SERVER, 10.0),
+        ];
+        let file = save(&dir, &format!("invalid-{index}.hzperf"), &fields);
+        let reply = query(&["meta", &file]);
+        assert!(meta_rows(&reply)[0].timing.is_none());
+    }
 }

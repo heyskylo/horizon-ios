@@ -172,6 +172,7 @@ pub fn capture() -> Vec<Field> {
         })
         .collect();
     body.push(Field::Spans(SpanSummary {
+        timing: None,
         side: SERVER,
         thread: tick,
         unit: Unit::Tick as i32,
