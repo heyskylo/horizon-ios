@@ -82,7 +82,12 @@ fn tick_particles(game: &mut Game<'_>) {
 fn a_silent_rocket_bursts_without_blast_or_twinkle() {
     with_game(|game| {
         let stack = ItemStack::new("minecraft:firework_rocket", 1);
-        let mut launching = game.new_rocket(Vec3::new(6.5, 201.5, 10.5), &stack, false);
+        let mut launching = game.new_rocket(
+            Vec3::new(6.5, 201.5, 10.5),
+            &stack,
+            false,
+            &mut LegacyRandom::new(0),
+        );
         launching.silent = true;
         launching.lifetime = 100;
         game.rockets.push(launching);
@@ -102,11 +107,16 @@ fn a_silent_rocket_bursts_without_blast_or_twinkle() {
             Vec3::new(quiet_at[0], quiet_at[1], quiet_at[2]),
             &stack,
             false,
+            &mut LegacyRandom::new(0),
         );
         quiet.silent = true;
         quiet.explosions = vec![twinkling()];
-        let mut loud =
-            game.new_rocket(Vec3::new(loud_at[0], loud_at[1], loud_at[2]), &stack, false);
+        let mut loud = game.new_rocket(
+            Vec3::new(loud_at[0], loud_at[1], loud_at[2]),
+            &stack,
+            false,
+            &mut LegacyRandom::new(0),
+        );
         loud.explosions = vec![twinkling()];
         game.explode_rocket(&quiet);
         game.explode_rocket(&loud);
@@ -162,12 +172,27 @@ fn stop_events() {
 fn a_detonating_rocket_posts_one_explode_from_its_owner() {
     with_game(|game| {
         let stack = ItemStack::new("minecraft:firework_rocket", 1);
-        let mut burst = game.new_rocket(Vec3::new(8.5, 202.0, 8.5), &stack, false);
+        let mut burst = game.new_rocket(
+            Vec3::new(8.5, 202.0, 8.5),
+            &stack,
+            false,
+            &mut LegacyRandom::new(0),
+        );
         burst.explosions = vec![twinkling()];
         burst.owner = Some(Who::Player);
-        let mut plain = game.new_rocket(Vec3::new(9.5, 202.0, 8.5), &stack, false);
+        let mut plain = game.new_rocket(
+            Vec3::new(9.5, 202.0, 8.5),
+            &stack,
+            false,
+            &mut LegacyRandom::new(0),
+        );
         plain.owner = Some(Who::Player);
-        let mut stray = game.new_rocket(Vec3::new(10.5, 202.0, 8.5), &stack, false);
+        let mut stray = game.new_rocket(
+            Vec3::new(10.5, 202.0, 8.5),
+            &stack,
+            false,
+            &mut LegacyRandom::new(0),
+        );
         stray.explosions = vec![twinkling()];
 
         start_events();
