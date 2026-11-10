@@ -1245,6 +1245,8 @@ API 143 adds data maps (`RegisterDataMapTypesEvent`). `native_data_map_types(typ
 
 `native_living_heal(entity, amount, cancel)` corresponds to NeoForge's `LivingHealEvent` at `LivingEntity.heal`. The amount can be changed and cancellation prevents the heal. It covers player effect, food and peaceful regeneration healing and the wired mob healing paths. Other healing paths and client-side coverage remain unverified. `entity` is the affected player or mob ID. Bundles need `"hooks": 358`.
 
+`native_living_death_message(entity, kind, message)` is asked for the death message a tamed mob (wolf, cat, parrot, nautilus) sends its owner, as vanilla's `TamableAnimal.die` does. It is asked once the message is built and only when it would be sent: the owner is online and `show_death_messages` is on. `message` holds the text: replace it, or set it to `None` to tell the owner nothing; every mod is asked in order. Vanilla's named-mob line (`LivingEntity.die`) is only logged on the server, not sent to players, so it is not hooked. This is a pending hook: it gets its API number when its fragment is stamped (`tools/native-hook-fragments/living_death_message.json`).
+
 `native_living_drown(entity, kind, is_drowning, damage_amount, bubble_count, cancel)` asks on the server when a player or generic-air mob cannot breathe and has no air (NeoForge's `LivingDrownEvent`, `LivingEntity.baseTick`). Mods may change the drowning decision, damage and bubble count, or cancel. Damage at or below zero does not hurt. The normal eight bubbles use the entity event; other positive counts are sent in a particle packet, and nonpositive counts suppress bubbles. Bundles need "hooks": 356.
 
 API 144 adds a player's or mob's breathing, on the single player server thread and on a dedicated server: `native_living_breathe(entity, kind, can_breathe, consume, refill)` every tick for a player and for a mob with the generic air logic (NeoForge's `LivingBreatheEvent`, vanilla's `LivingEntity.baseTick`), with Horizon's answers as the defaults: set `can_breathe` and how much air `consume` takes or `refill` gives (up to 300); at -20 the entity is set to 0 air and takes 2 drowning damage. It is a free function in `horizon_client::breathing`, so it answers and cannot call helpers. Axolotls and `WaterAnimal`s keep their own air logic. Bundles that use it need "hooks": 144.
@@ -3283,6 +3285,13 @@ that tick the other mobs of that level read as gone.
   handles](#entity-and-level-handles)) for any loaded level, as `execute in <dimension> run data merge entity` does,
   with the same refusals (a player, a kind Horizon can't reload yet, data that changes nothing). API
   @API:npc_entity_by_uuid@.
+- **`native_find_entity_by_uuid(uuid)`** is `native_entity_by_uuid` from a `&self` context, so a mod can make many
+  lookups from a read-only hook: the same `(dimension, id, kind)`, for a server's player and for the entities of the
+  level in place. A level not in place is read only by swapping it in, which needs `&mut`, so those stay with
+  `native_entity_by_uuid`. None on a client.
+- **`native_entity_nbt_in(dimension, id)`** is the entity's data as `native_entity_nbt` gives it, in any loaded level
+  (`/execute in <dimension> run data get entity`, without `id`): what a mod reads after finding an entity by UUID in
+  another level. None on a client, for a level not loaded, and for no such entity. API @API:npc_entity_lookup@.
 - **`native_level_markers(dimension)`** lists the `minecraft:marker` entities of a loaded level as `(id, position,
   data)`: the `data` compound is what `/data get entity <marker> data` shows (empty for a marker saved without data).
   It reads only the level's list of kept entities (displays, interactions, markers), not every entity, so it is the
@@ -3426,6 +3435,10 @@ Bundles need "hooks": @API:hurt_entity@.
   are saved with the world's maps (`data/minecraft/maps/<id>.dat`) and sent like vanilla map data to whoever carries
   the map or sees it framed, players who join later included, so the mod never resends them. None and false on a
   client of a server. Bundles need `"hooks": @API:new_map@`.
+- Helpers `native_map_colors(map_id) -> Option<Vec<u8>>` and `native_map_meta(map_id) -> Option<(u8, String, bool)>`: the
+  picture (16384 bytes, row by row, as `native_paint_map` takes it) and the scale, dimension and locked flag of a map the
+  world keeps. A map is read from its loaded copy or its saved file, which is not loaded by the read. None for a map the
+  world never made or saved, and on a client of a server. No hook is needed.
 - Helper `native_open_menu_with_input(uuid, rows, title, items, input) -> Option<i32>`: a server menu (see "Server
   menus") whose slots in the range `input` hold items as a chest's do (Bukkit's custom inventory with storage slots):
   the player puts stacks in and takes them out by vanilla's click rules (pickup, split, shift-click from their

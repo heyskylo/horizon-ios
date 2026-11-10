@@ -749,7 +749,7 @@ impl Game<'_> {
     pub(super) fn hold_fullbright(&mut self) {
         let held = fullbright_held(
             self.remote.as_ref().map(|r| r.save_folder.is_some()),
-            self.studio_replay.is_some(),
+            self.replay.playing(),
         );
         self.settings.fullbright_held = held;
         if let Some(r) = self.renderer.as_mut() {
