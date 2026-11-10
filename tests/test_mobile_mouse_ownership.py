@@ -12,16 +12,18 @@ def program():
     game=(ROOT/'crates/horizon-client/src/game/play_input.rs').read_text()
     touch=(ROOT/'crates/horizon-client/src/game/touch.rs').read_text()
     methods='\n'.join(method(game,n) for n in ['mouse_mapping','mouse_mapping_held_elsewhere'])+'\n'+method(touch,'touch_holds_mouse_mapping')
-    return STUBS+'\nimpl Game{'+methods+'}\n'+CASES
+    return STUBS.replace('TOUCH_SOURCE',str(ROOT/'crates/horizon-client/src/touch.rs'))+'\nimpl Game{'+methods+'}\n'+CASES
 
 
 STUBS=r'''
 #![allow(dead_code)]
 use std::collections::HashSet;
+#[path="TOUCH_SOURCE"]mod actual_touch;
+use actual_touch::Control;
 type Result<T>=std::result::Result<T,()>;
 #[derive(Clone,Copy,PartialEq,Eq,Hash,Debug)]enum MouseButton{Left,Right,Middle}
 #[derive(Clone,Copy,PartialEq)]enum Source{Keyboard,Pad,Touch,Agent}
-#[derive(Default)]struct Touch{holding:Option<MouseButton>,late:Vec<(MouseButton,u64)>}
+#[derive(Default)]struct Touch{fingers:actual_touch::Touches,holding:Option<MouseButton>,late:Vec<(MouseButton,u64)>}
 #[derive(Default)]struct Pad{held:bool}impl Pad{fn holds_action(&self,_:&(),_:&str)->bool{self.held}}
 #[derive(Default)]struct Keys;impl Keys{fn translate_mouse_all(&self,b:MouseButton)->Vec<std::result::Result<i32,MouseButton>>{vec![Err(b)]}fn translate_all(&self,_:i32)->Vec<std::result::Result<i32,MouseButton>>{vec![Err(MouseButton::Right)]}}
 #[derive(Default)]struct Settings{controller:(),keys:Keys}
@@ -37,7 +39,13 @@ fn main(){
  g.pad.held=false;g.mouse_mapping(MouseButton::Right,false,Source::Touch).unwrap();assert_eq!(g.events,[(MouseButton::Right,false)]);g.events.clear();
  g.touch.holding=Some(MouseButton::Right);for source in [Source::Keyboard,Source::Pad,Source::Agent]{g.mouse_mapping(MouseButton::Right,false,source).unwrap();}assert!(g.events.is_empty());
  g.touch.holding=None;g.touch.late.push((MouseButton::Left,1));g.mouse_mapping(MouseButton::Left,false,Source::Keyboard).unwrap();assert!(g.events.is_empty());
- g.touch.late.clear();g.mouse_mapping(MouseButton::Left,false,Source::Keyboard).unwrap();assert_eq!(g.events,[(MouseButton::Left,false)]);
+ g.touch.late.clear();
+ let layout=[(Control::RightClick,[0.,0.,50.,50.])];
+ g.touch.fingers.start(9,(25.,25.),0.,&layout);
+ for source in [Source::Keyboard,Source::Pad,Source::Agent]{g.mouse_mapping(MouseButton::Right,false,source).unwrap();}
+ assert!(g.events.is_empty(),"another input device released the explicit touch mouse button");
+ g.touch.fingers.end(9);
+ g.mouse_mapping(MouseButton::Left,false,Source::Keyboard).unwrap();assert_eq!(g.events,[(MouseButton::Left,false)]);
 }
 '''
 

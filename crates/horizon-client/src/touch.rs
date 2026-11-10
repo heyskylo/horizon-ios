@@ -1,11 +1,10 @@
-//! Touch controls for phones and tablets (Horizon's own), after Minecraft: Pocket Edition's: a D-pad on the
-//! left with sneak in its centre, jump on the right, perspective, chat and pause at the top, and the hotbar
-//! and an inventory button along the bottom. A finger anywhere else turns the view; a short tap uses (or
-//! attacks the entity under the crosshair), and holding still mines.
-//!
-//! This module is the layout and the fingers' state: positions in GUI pixels in, [`Out`]s for the game to act
-//! on out. game/touch.rs feeds it winit's touches and acts on what comes back.
+//! Original touch control layout and per-finger input state. Directional keys,
+//! explicit mouse buttons and an optional joystick share the rectangles used by
+//! drawing and hit tests. Legacy tap/hold outputs remain available to frontends;
+//! the iOS desktop-style frontend uses explicit attack/use buttons instead.
 
+#[path = "touch/desktop.rs"]
+pub mod desktop;
 #[path = "touch/menu.rs"]
 mod menu;
 pub use menu::{MenuAction, MenuGesture, MenuMode};
@@ -17,7 +16,7 @@ pub enum Control {
     Back,
     Left,
     Right,
-    /// The D-pad's centre: sneaking, toggled.
+    /// The D-pad's centre: Shift (hold on the iOS desktop-style frontend).
     Sneak,
     Jump,
     Perspective,
@@ -25,6 +24,16 @@ pub enum Control {
     Pause,
     Inventory,
     Hotbar(u8),
+    LeftClick,
+    RightClick,
+    Joystick,
+    Sprint,
+    MiddleClick,
+    More,
+    Hide,
+    Runtime,
+    Debug,
+    PlayerList,
 }
 
 impl Control {
@@ -52,23 +61,79 @@ const HOTBAR_REACH: f32 = 8.0;
 
 /// Where every button is on a `w` x `h` GUI-pixel screen.
 fn default_layout(w: f32, h: f32) -> Vec<(Control, Rect)> {
-    let s = button_size(h);
-    let small = (s * 0.65).round();
-    // The D-pad's centre cell, high enough that its bottom row clears the screen's edge.
-    let (cx, cy) = (MARGIN + s, h - MARGIN - 2.0 * s - 8.0);
+    // Amethyst's default proportions, expressed in GUI coordinates. Scale the reference
+    // 204.8-point stick with the short edge to keep the overlay usable on phones/tablets.
+    let unit = w.min(h) / 768.0;
+    let s = 69.6 * unit;
+    let stick = 204.8 * unit;
+    let gap = 2.0 * unit;
+    let right = 0.94878495 * w - s;
     let mut v = vec![
-        (Control::Forward, [cx, cy - s, s, s]),
-        (Control::Left, [cx - s, cy, s, s]),
-        (Control::Sneak, [cx, cy, s, s]),
-        (Control::Right, [cx + s, cy, s, s]),
-        (Control::Back, [cx, cy + s, s, s]),
-        (Control::Jump, [w - MARGIN - s, cy, s, s]),
+        (
+            Control::Joystick,
+            [0.02326631 * w, 0.9753418 * h - stick, stick, stick],
+        ),
+        (Control::Sneak, [right, 0.31131014 * h, s, s]),
+        (Control::Jump, [right, 0.31131014 * h + s + gap, s, s]),
+        (Control::Sprint, [right - s - gap, 0.31131014 * h, s, s]),
+        (
+            Control::LeftClick,
+            [0.7756397 * w - s, 0.8224885 * h - s, s, s],
+        ),
+        (
+            Control::RightClick,
+            [0.8756154 * w - s, 0.8178498 * h - s, s, s],
+        ),
+        (
+            Control::MiddleClick,
+            [0.83548373 * w - s, 0.67798775 * h - s, s, s],
+        ),
+        (
+            Control::Perspective,
+            [98.0 * unit, 0.0, 96.0 * unit, 40.0 * unit],
+        ),
+        (Control::Chat, [0.0, 42.0 * unit, 96.0 * unit, 40.0 * unit]),
+        (
+            Control::Pause,
+            [w - 3.0 * 106.8 * unit, 0.0, 104.8 * unit, 39.2 * unit],
+        ),
+        (
+            Control::Inventory,
+            [
+                w - 3.0 * 106.8 * unit - 102.0 * unit,
+                0.0,
+                100.0 * unit,
+                40.0 * unit,
+            ],
+        ),
     ];
-    let top = [Control::Perspective, Control::Chat, Control::Pause];
-    let x0 = (w - 3.0 * small - 8.0) / 2.0;
-    for (i, control) in top.into_iter().enumerate() {
-        v.push((control, [x0 + i as f32 * (small + 4.0), 2.0, small, small]));
-    }
+    v.extend([
+        (Control::More, [0.0, 0.0, 96.0 * unit, 40.0 * unit]),
+        (
+            Control::Debug,
+            [294.0 * unit, 0.0, 96.0 * unit, 40.0 * unit],
+        ),
+        (
+            Control::PlayerList,
+            [196.0 * unit, 0.0, 96.0 * unit, 40.0 * unit],
+        ),
+        (
+            Control::Hide,
+            [w - 69.6 * unit, 0.0, 69.6 * unit, 40.0 * unit],
+        ),
+        (
+            Control::Runtime,
+            [w - 176.4 * unit, 0.0, 104.8 * unit, 39.2 * unit],
+        ),
+    ]);
+    let d = button_size(h);
+    let (cx, cy) = (MARGIN + d, h - MARGIN - 2.0 * d - 16.0);
+    v.extend([
+        (Control::Forward, [cx, cy - d, d, d]),
+        (Control::Back, [cx, cy + d, d, d]),
+        (Control::Left, [cx - d, cy, d, d]),
+        (Control::Right, [cx + d, cy, d, d]),
+    ]);
     // Gui.extractItemHotbar's slots: the bar is 182 wide, centred, 22 high at the bottom.
     let (hx, hy) = ((w / 2.0 - 91.0).floor(), h - 22.0);
     for slot in 0..9u8 {
@@ -82,15 +147,25 @@ fn default_layout(w: f32, h: f32) -> Vec<(Control, Rect)> {
             ],
         ));
     }
-    v.push((
-        Control::Inventory,
-        [hx + 184.0, hy - HOTBAR_REACH, 30.0, 22.0 + HOTBAR_REACH],
-    ));
+    if h > w {
+        for (control, r) in &mut v {
+            if matches!(
+                control,
+                Control::Perspective | Control::Debug | Control::PlayerList
+            ) {
+                r[1] = 42.0 * unit;
+            }
+        }
+        // Keep the native hotbar reachable when the landscape preset is rotated.
+        if let Some((_, r)) = v.iter_mut().find(|(c, _)| *c == Control::Joystick) {
+            r[1] = r[1].min(h - 34.0 - r[3]);
+        }
+    }
     v
 }
 
 /// Stable order shared with the app's layout editor; hotbar slots remain on the HUD.
-const EDITABLE: [Control; 10] = [
+const EDITABLE: [Control; 20] = [
     Control::Forward,
     Control::Back,
     Control::Left,
@@ -101,18 +176,56 @@ const EDITABLE: [Control; 10] = [
     Control::Chat,
     Control::Pause,
     Control::Inventory,
+    Control::LeftClick,
+    Control::RightClick,
+    Control::Joystick,
+    Control::Sprint,
+    Control::MiddleClick,
+    Control::More,
+    Control::Hide,
+    Control::Runtime,
+    Control::Debug,
+    Control::PlayerList,
 ];
 
 /// Apply normalized centres to the same rectangles used by paint and hit tests.
 /// Missing/non-finite coordinates use the original position; valid centres are
 /// clamped by the actual button size, including after resizing or a GUI scale change.
-pub fn layout_with_positions(w: f32, h: f32, positions: &[f32; 20]) -> Vec<(Control, Rect)> {
+pub fn layout_with_positions(w: f32, h: f32, positions: &[f32]) -> Vec<(Control, Rect)> {
     let mut buttons = default_layout(w, h);
+    buttons.retain(|(c, _)| {
+        if joystick_mode() {
+            !c.moves()
+        } else {
+            *c != Control::Joystick
+        }
+    });
+    buttons.sort_by_key(|(c, _)| EDITABLE.iter().position(|v| v == c).unwrap_or(usize::MAX));
     for (control, rect) in &mut buttons {
         let Some(i) = EDITABLE.iter().position(|c| c == control) else {
             continue;
         };
-        let (x, y) = (positions[i * 2], positions[i * 2 + 1]);
+        if let (Some(&width), Some(&height)) =
+            (positions.get(40 + i * 2), positions.get(41 + i * 2))
+            && width.is_finite()
+            && height.is_finite()
+            && width > 0.0
+            && height > 0.0
+        {
+            let centre = (rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0);
+            let height = if *control == Control::Joystick {
+                width
+            } else {
+                height
+            };
+            rect[2] = (width.clamp(0.02, 0.8) * w.min(h)).min(w);
+            rect[3] = (height.clamp(0.02, 0.8) * w.min(h)).min(h);
+            rect[0] = (centre.0 - rect[2] / 2.0).clamp(0.0, (w - rect[2]).max(0.0));
+            rect[1] = (centre.1 - rect[3] / 2.0).clamp(0.0, (h - rect[3]).max(0.0));
+        }
+        let (Some(&x), Some(&y)) = (positions.get(i * 2), positions.get(i * 2 + 1)) else {
+            continue;
+        };
         if x.is_finite() && y.is_finite() {
             rect[0] = (x * w - rect[2] / 2.0).clamp(0.0, (w - rect[2]).max(0.0));
             rect[1] = (y * h - rect[3] / 2.0).clamp(0.0, (h - rect[3]).max(0.0));
@@ -125,13 +238,56 @@ pub fn layout(w: f32, h: f32) -> Vec<(Control, Rect)> {
     #[cfg(target_os = "ios")]
     return layout_with_positions(w, h, &horizon_ios_launcher::touch_preferences().0);
     #[cfg(not(target_os = "ios"))]
-    default_layout(w, h)
+    layout_with_positions(w, h, &[])
+}
+
+pub fn cursor_mode() -> bool {
+    #[cfg(target_os = "ios")]
+    {
+        horizon_ios_launcher::touch_preferences().1 & 2 != 0
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        false
+    }
+}
+pub fn mouse_gestures() -> bool {
+    #[cfg(target_os = "ios")]
+    {
+        horizon_ios_launcher::touch_preferences().1 & 8 == 0
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        true
+    }
+}
+
+pub fn hotbar_gestures() -> bool {
+    #[cfg(target_os = "ios")]
+    {
+        horizon_ios_launcher::touch_preferences().1 & 16 == 0
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        true
+    }
+}
+
+pub fn joystick_mode() -> bool {
+    #[cfg(target_os = "ios")]
+    {
+        horizon_ios_launcher::touch_preferences().1 & 4 != 0
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        false
+    }
 }
 
 /// Paint can disappear for a clean capture without disabling the touch regions.
 pub fn controls_visible() -> bool {
     #[cfg(target_os = "ios")]
-    return !horizon_ios_launcher::touch_preferences().1;
+    return horizon_ios_launcher::touch_preferences().1 & 1 == 0;
     #[cfg(not(target_os = "ios"))]
     true
 }
@@ -191,8 +347,10 @@ const HOLD: f64 = 0.35;
 
 #[derive(Clone, Debug)]
 enum Kind {
+    Ignored,
     Button(Control),
     World { dragged: bool, mining: bool },
+    Stick { mask: u8 },
 }
 
 #[derive(Clone, Debug)]
@@ -207,6 +365,15 @@ struct Finger {
 /// The fingers on the screen while playing.
 #[derive(Clone, Debug, Default)]
 pub struct Touches {
+    /// Desktop-style camera input has no tap-disambiguation threshold.
+    pub direct_look: bool,
+    /// UIKit-style buttons retain the initial control until the finger lifts.
+    pub capture_buttons: bool,
+    stick_state: desktop::Joystick,
+    pub forward_lock: bool,
+    pub locked: bool,
+    stick_rect: Rect,
+    look_primary: Option<u64>,
     fingers: Vec<Finger>,
 }
 
@@ -219,8 +386,31 @@ impl Touches {
         now: f64,
         layout: &[(Control, Rect)],
     ) -> Vec<Out> {
-        let mut out = self.end(id);
+        let mut out = self.cancel(id);
         let kind = match hit(layout, at) {
+            Some(Control::Joystick) => {
+                if self
+                    .fingers
+                    .iter()
+                    .any(|f| matches!(f.kind, Kind::Stick { .. }))
+                {
+                    Kind::Button(Control::Joystick)
+                } else {
+                    let r = layout
+                        .iter()
+                        .find(|(c, _)| *c == Control::Joystick)
+                        .unwrap()
+                        .1;
+                    self.locked = false;
+                    self.stick_rect = r;
+                    for (c, down) in self.stick_state.sample(r, at, true) {
+                        out.push(if down { Out::Press(c) } else { Out::Release(c) });
+                    }
+                    let mask = self.stick_state.mask;
+                    Kind::Stick { mask }
+                }
+            }
+            Some(control) if self.capture_buttons && self.held(control) => Kind::Ignored,
             Some(control) => {
                 out.push(Out::Press(control));
                 Kind::Button(control)
@@ -230,6 +420,9 @@ impl Touches {
                 mining: false,
             },
         };
+        if self.direct_look && matches!(kind, Kind::World { .. }) && self.look_primary.is_none() {
+            self.look_primary = Some(id);
+        }
         self.fingers.push(Finger {
             id,
             kind,
@@ -248,17 +441,34 @@ impl Touches {
         };
         let mut out = Vec::new();
         match &mut f.kind {
-            Kind::Button(control) if control.moves() => {
+            Kind::Button(control) if control.moves() && !self.capture_buttons => {
                 if let Some(next) = hit(layout, at).filter(|c| c.moves() && c != control) {
                     out.push(Out::Release(*control));
                     out.push(Out::Press(next));
                     *control = next;
                 }
             }
-            Kind::Button(_) => {}
+            Kind::Stick { mask } => {
+                if let Some((_, r)) = layout.iter().find(|(c, _)| *c == Control::Joystick) {
+                    for (c, down) in self.stick_state.sample(*r, at, true) {
+                        out.push(if down { Out::Press(c) } else { Out::Release(c) });
+                    }
+                    *mask = self.stick_state.mask;
+                }
+            }
+            Kind::Button(_) | Kind::Ignored => {}
             Kind::World { dragged, .. } => {
+                if self.direct_look {
+                    if self.look_primary.is_none() {
+                        self.look_primary = Some(id);
+                    }
+                    if self.look_primary != Some(id) {
+                        f.last = at;
+                        return vec![];
+                    }
+                }
                 let (dx, dy) = (at.0 - f.start.0, at.1 - f.start.1);
-                if !*dragged && dx.hypot(dy) > SLOP {
+                if !*dragged && (self.direct_look || dx.hypot(dy) > SLOP) {
                     *dragged = true;
                 }
                 if *dragged {
@@ -275,8 +485,33 @@ impl Touches {
         let Some(i) = self.fingers.iter().position(|f| f.id == id) else {
             return Vec::new();
         };
-        match self.fingers.remove(i).kind {
-            Kind::Button(control) => vec![Out::Release(control)],
+        if self.look_primary == Some(id) {
+            self.look_primary = None;
+        }
+        let finger = self.fingers.remove(i);
+        if matches!(finger.kind, Kind::Stick { .. })
+            && self.forward_lock
+            && self.stick_state.mask == 1
+            && contains(lock_rect(self.stick_rect), finger.last)
+        {
+            self.locked = true;
+            return vec![];
+        }
+        match finger.kind {
+            Kind::Ignored => vec![],
+            Kind::Stick { .. } => self
+                .stick_state
+                .finish([0., 0., 1., 1.], true)
+                .into_iter()
+                .map(|(c, down)| if down { Out::Press(c) } else { Out::Release(c) })
+                .collect(),
+            Kind::Button(control) => {
+                if self.held(control) {
+                    vec![]
+                } else {
+                    vec![Out::Release(control)]
+                }
+            }
             Kind::World { mining: true, .. } => vec![Out::MineEnd],
             Kind::World { dragged: false, .. } => vec![Out::Tap],
             Kind::World { .. } => Vec::new(),
@@ -285,7 +520,10 @@ impl Touches {
 
     /// UIKit cancelled a finger: release its holds without interpreting it as a tap.
     pub fn cancel(&mut self, id: u64) -> Vec<Out> {
+        let enabled = self.forward_lock;
+        self.forward_lock = false;
         let mut out = self.end(id);
+        self.forward_lock = enabled;
         out.retain(|o| *o != Out::Tap);
         out
     }
@@ -311,14 +549,53 @@ impl Touches {
     /// Every finger lifted at once (a screen opened over the game).
     pub fn release_all(&mut self) -> Vec<Out> {
         let ids: Vec<u64> = self.fingers.iter().map(|f| f.id).collect();
-        ids.into_iter().flat_map(|id| self.cancel(id)).collect()
+        let mut out: Vec<_> = ids.into_iter().flat_map(|id| self.cancel(id)).collect();
+        if self.locked {
+            self.locked = false;
+            out.extend(
+                self.stick_state
+                    .finish(self.stick_rect, true)
+                    .into_iter()
+                    .map(|(c, d)| if d { Out::Press(c) } else { Out::Release(c) }),
+            );
+        }
+        out
     }
 
+    pub fn stick_point(&self, r: Rect) -> (f32, f32) {
+        let centre = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+        let Some(f) = self
+            .fingers
+            .iter()
+            .find(|f| matches!(f.kind, Kind::Stick { .. }))
+        else {
+            return centre;
+        };
+        let (dx, dy) = (f.last.0 - centre.0, f.last.1 - centre.1);
+        let length = dx.hypot(dy);
+        let radius = r[2].min(r[3]) * 0.375;
+        let scale = if length > radius {
+            radius / length
+        } else {
+            1.0
+        };
+        (centre.0 + dx * scale, centre.1 + dy * scale)
+    }
     /// A finger holds this button down (drawn pressed).
     pub fn held(&self, control: Control) -> bool {
-        self.fingers
-            .iter()
-            .any(|f| matches!(f.kind, Kind::Button(c) if c == control))
+        (self.locked && control == Control::Forward)
+            || self.fingers.iter().any(|f| match f.kind {
+                Kind::Ignored => false,
+                Kind::Button(c) => c == control,
+                Kind::Stick { mask } => {
+                    control == Control::Joystick
+                        || desktop::DIRECTIONS
+                            .iter()
+                            .enumerate()
+                            .any(|(i, c)| *c == control && mask & (1 << i) != 0)
+                }
+                _ => false,
+            })
     }
 }
 
@@ -333,7 +610,13 @@ mod tests {
 
     #[test]
     fn buttons_do_not_overlap_and_fit_the_screen() {
-        for (w, h) in [(633.0, 292.0), (427.0, 240.0), (480.0, 270.0)] {
+        for (w, h) in [
+            (633.0, 292.0),
+            (427.0, 240.0),
+            (480.0, 270.0),
+            (404.0, 278.0),
+            (320.0, 240.0),
+        ] {
             let l = layout(w, h);
             for (i, (a, ra)) in l.iter().enumerate() {
                 assert!(
@@ -419,11 +702,11 @@ mod custom_layout_tests {
         for (w, h) in [(844.0, 390.0), (1024.0, 768.0), (390.0, 844.0)] {
             assert_eq!(
                 layout_with_positions(w, h, &[f32::NAN; 20]),
-                default_layout(w, h)
+                layout_with_positions(w, h, &[])
             );
             assert_eq!(
                 layout_with_positions(w, h, &[f32::INFINITY; 20]),
-                default_layout(w, h)
+                layout_with_positions(w, h, &[])
             );
         }
     }
@@ -475,7 +758,7 @@ mod custom_layout_tests {
         positions[10] = -20.0;
         positions[11] = 30.0;
         let layout = layout_with_positions(844.0, 390.0, &positions);
-        for ((c, r), (_, default)) in layout.iter().zip(default_layout(844.0, 390.0)) {
+        for ((c, r), (_, default)) in layout.iter().zip(layout_with_positions(844.0, 390.0, &[])) {
             if *c == Control::Jump {
                 assert_eq!(r[0], 0.0);
                 assert_eq!(r[1] + r[3], 390.0);
@@ -483,5 +766,146 @@ mod custom_layout_tests {
                 assert_eq!(*r, default);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod stick_gesture_tests {
+    use super::*;
+    #[test]
+    fn desktop_camera_reports_small_relative_motion_without_tap_slop() {
+        let mut fingers = Touches {
+            direct_look: true,
+            ..Default::default()
+        };
+        fingers.start(1, (10., 10.), 0., &[]);
+        assert_eq!(fingers.moved(1, (11., 12.), &[]), vec![Out::Look(1., 2.)]);
+        assert!(fingers.end(1).is_empty());
+    }
+    #[test]
+    fn joystick_down_diagonal_and_release_use_keyboard_edges() {
+        let mut fingers = Touches::default();
+        let layout = [(Control::Joystick, [0., 0., 100., 100.])];
+        assert_eq!(
+            fingers.start(1, (99., 1.), 0., &layout),
+            vec![
+                Out::Press(Control::Forward),
+                Out::Release(Control::Left),
+                Out::Release(Control::Back),
+                Out::Press(Control::Right)
+            ]
+        );
+        assert!(fingers.held(Control::Forward) && fingers.held(Control::Right));
+        assert!(fingers.start(2, (1., 99.), 0., &layout).is_empty());
+        assert_eq!(fingers.moved(1, (50., 50.), &layout), vec![]);
+        assert!(fingers.held(Control::Forward) && fingers.held(Control::Right));
+        assert_eq!(
+            fingers.moved(1, (1., 99.), &layout),
+            vec![
+                Out::Release(Control::Forward),
+                Out::Press(Control::Left),
+                Out::Press(Control::Back),
+                Out::Release(Control::Right)
+            ]
+        );
+        assert_eq!(
+            fingers.cancel(1),
+            vec![
+                Out::Release(Control::Forward),
+                Out::Release(Control::Left),
+                Out::Release(Control::Back),
+                Out::Release(Control::Right)
+            ]
+        );
+        assert!(!fingers.held(Control::Forward) && !fingers.held(Control::Back));
+    }
+    #[test]
+    fn desktop_camera_uses_only_primary_finger_and_hands_off_on_release() {
+        let mut fingers = Touches {
+            direct_look: true,
+            ..Default::default()
+        };
+        fingers.start(1, (10., 10.), 0., &[]);
+        fingers.start(2, (20., 20.), 0., &[]);
+        assert!(fingers.moved(2, (21., 22.), &[]).is_empty());
+        assert_eq!(fingers.moved(1, (12., 13.), &[]), [Out::Look(2., 3.)]);
+        fingers.end(1);
+        assert_eq!(fingers.moved(2, (24., 26.), &[]), [Out::Look(3., 4.)]);
+        fingers.cancel(2);
+        assert!(fingers.moved(2, (28., 30.), &[]).is_empty());
+    }
+}
+
+pub fn opacity(control: Control) -> f32 {
+    #[cfg(target_os = "ios")]
+    {
+        if let Some(i) = EDITABLE.iter().position(|c| *c == control) {
+            let v = horizon_ios_launcher::touch_preferences().0[80 + i];
+            if v.is_finite() {
+                return v.clamp(0.1, 1.0);
+            }
+        }
+    }
+    let _ = control;
+    1.0
+}
+pub fn forward_lock() -> bool {
+    #[cfg(target_os = "ios")]
+    {
+        horizon_ios_launcher::touch_preferences().1 & 32 != 0
+    }
+    #[cfg(not(target_os = "ios"))]
+    false
+}
+pub fn lock_rect(r: Rect) -> Rect {
+    [
+        r[0] + r[2] * 0.375,
+        r[1] - r[2] * 0.625,
+        r[2] * 0.25,
+        r[2] * 0.25,
+    ]
+}
+
+#[cfg(test)]
+mod amethyst_port_tests {
+    use super::*;
+    #[test]
+    fn lock_releases_on_cancel_and_retakes_on_touch() {
+        let r = [0.0, 100.0, 100.0, 100.0];
+        let layout = [(Control::Joystick, r)];
+        let mut t = Touches {
+            forward_lock: true,
+            ..Default::default()
+        };
+        t.start(1, (50.01, 110.0), 0.0, &layout);
+        t.moved(1, (50.01, 50.0), &layout);
+        t.end(1);
+        assert!(t.locked);
+        assert!(t.held(Control::Forward));
+        let out = t.release_all();
+        assert!(!t.locked);
+        assert!(out.contains(&Out::Release(Control::Forward)));
+        t.start(2, (50.01, 110.0), 0.0, &layout);
+        t.moved(2, (50.01, 50.0), &layout);
+        t.cancel(2);
+        assert!(!t.locked);
+        assert!(!t.held(Control::Forward));
+    }
+    #[test]
+    fn sizing_preserves_default_center_and_opacity_ids() {
+        let mut values = [f32::NAN; 100];
+        let a = layout_with_positions(800.0, 400.0, &values);
+        let before = a.iter().find(|(c, _)| *c == Control::Jump).unwrap().1;
+        values[50] = 0.2;
+        values[51] = 0.15;
+        let after = layout_with_positions(800.0, 400.0, &values)
+            .into_iter()
+            .find(|(c, _)| *c == Control::Jump)
+            .unwrap()
+            .1;
+        assert_eq!(after[2], 80.0);
+        assert!((before[0] + before[2] / 2.0 - after[0] - after[2] / 2.0).abs() < 0.001);
+        assert_eq!(EDITABLE[13], Control::Sprint);
+        assert_eq!(EDITABLE[14], Control::MiddleClick);
     }
 }

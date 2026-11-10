@@ -19,6 +19,38 @@ final class LauncherLayoutTests: XCTestCase {
         XCTAssertTrue(app.buttons["launcher-play-button"].waitForExistence(timeout: 15))
         return app
     }
+    func testNativeTapHoldAndHotbarRecognizersReachTheCBridge() {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = XCUIApplication()
+        let root = NSTemporaryDirectory() + "horizon-native-gesture-" + UUID().uuidString
+        app.launchEnvironment = ["PREVIEW_NATIVE_GESTURES":"world",
+            "HORIZON_HOME":root+"/game", "HORIZON_LAUNCHER_HOME":root+"/launcher",
+            "XDG_DATA_HOME":root+"/data", "XDG_CONFIG_HOME":root+"/config",
+            "HORIZON_LAUNCHER_NO_SELF_UPDATE":"1", "HORIZON_NO_AUDIO":"1"]
+        app.launch()
+        let canvas = app.otherElements["native-gesture-canvas"]
+        let events = app.staticTexts["native-gesture-events"]
+        XCTAssertTrue(events.waitForExistence(timeout: 10))
+        expectation(for:NSPredicate { _,_ in canvas.frame.width > canvas.frame.height },evaluatedWith:canvas)
+        waitForExpectations(timeout:5)
+        let empty = canvas.coordinate(withNormalizedOffset: CGVector(dx:0.6,dy:0.5))
+        empty.tap()
+        expectation(for:NSPredicate(format:"label CONTAINS %@","1:3:-1"),evaluatedWith:events)
+        waitForExpectations(timeout:5)
+        empty.press(forDuration:0.6)
+        expectation(for:NSPredicate(format:"label CONTAINS %@","2:1:-1"),evaluatedWith:events)
+        waitForExpectations(timeout:5)
+        XCTAssertTrue(events.label.contains("2:3:-1"))
+        let hotbar = app.staticTexts["native-gesture-hotbar"]
+        hotbar.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.5)).doubleTap()
+        expectation(for:NSPredicate(format:"label CONTAINS %@","3:3:4"),evaluatedWith:events)
+        waitForExpectations(timeout:5)
+        hotbar.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.5)).press(forDuration:0.6)
+        expectation(for:NSPredicate(format:"label CONTAINS %@","2:1:4"),evaluatedWith:events)
+        waitForExpectations(timeout:5)
+        XCTAssertTrue(events.label.contains("2:3:4"))
+    }
+
     func testTouchEditorLandscapeSaveCancelResetAndPortraitReturn() {
         XCUIDevice.shared.orientation = .portrait
         let app = launch(signedIn: false)
@@ -62,6 +94,24 @@ final class LauncherLayoutTests: XCTestCase {
         save.tap()
         XCTAssertTrue(edit.waitForExistence(timeout: 5))
         let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "Touch settings"; shot.lifetime = .keepAlways; add(shot)
+    }
+
+    func testMouseButtonsAndOptionalJoystickAreEditable() {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = launch(signedIn: false)
+        app.buttons.matching(NSPredicate(format: "label == %@", "Settings")).firstMatch.tap()
+        let mode = app.buttons["touch-movement-mode"]
+        XCTAssertTrue(mode.waitForExistence(timeout: 5))
+        mode.tap(); app.buttons["Joystick"].firstMatch.tap()
+        app.buttons["touch-edit-layout"].tap()
+        XCTAssertTrue(app.buttons["touch-editor-save"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.images["touch-layout-10"].exists)
+        XCTAssertTrue(app.images["touch-layout-11"].exists)
+        XCTAssertTrue(app.images["touch-layout-12"].exists)
+        XCTAssertFalse(app.images["touch-layout-0"].exists)
+        app.buttons["touch-editor-save"].tap()
+        XCTAssertTrue(mode.waitForExistence(timeout: 5))
+        mode.tap(); app.buttons["D-pad"].firstMatch.tap()
     }
 
     func testTabletTouchEditorKeepsToolbarOutsideCanvasAndRestoresOrientation() {

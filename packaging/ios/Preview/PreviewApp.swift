@@ -144,6 +144,9 @@ struct LauncherPreview: App {
     }
     var body: some Scene {
         WindowGroup {
+            if ProcessInfo.processInfo.environment["PREVIEW_NATIVE_GESTURES"] != nil {
+                NativeGestureFixture().ignoresSafeArea().persistentSystemOverlays(.hidden)
+            } else {
             HomeView(onPlay: { previewNotice = true })
                 .alert("Launcher UI preview", isPresented: $previewNotice) {
                     Button("OK", role: .cancel) {}
@@ -156,6 +159,60 @@ struct LauncherPreview: App {
                             .padding(.leading, 20).padding(.bottom, 110)
                     }
                 }
+            }
+        }
+    }
+}
+
+private struct NativeGestureFixture: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> NativeGestureFixtureController { NativeGestureFixtureController() }
+    func updateUIViewController(_ uiViewController: NativeGestureFixtureController, context: Context) {}
+}
+private final class NativeGestureFixtureController: UIViewController {
+    private var link: CADisplayLink?
+    private let output = UILabel()
+    private let target = UILabel()
+    private var events: [String] = []
+    override var prefersHomeIndicatorAutoHidden: Bool { true }
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .black; view.accessibilityIdentifier = "native-gesture-canvas"
+        output.textColor = .white; output.numberOfLines = 0
+        output.accessibilityIdentifier = "native-gesture-events"; output.text = "ready"
+        target.text = "Hotbar"; target.textAlignment = .center; target.textColor = .yellow
+        target.accessibilityIdentifier = "native-gesture-hotbar"
+        view.addSubview(output); view.addSubview(target)
+        TouchPreferences.shared.save(TouchConfiguration())
+    }
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        turn(view.window?.windowScene,to:.landscape)
+        TouchGestureBridge.shared.attach(to: view)
+        link = CADisplayLink(target: self, selector: #selector(frame))
+        link?.add(to: .main, forMode: .common)
+    }
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated); link?.invalidate(); link = nil
+    }
+    @objc private func frame() {
+        guard view.bounds.width > 0 else { return }
+        let displayScale = view.window?.screen.scale ?? UIScreen.main.scale
+        let geometry = TouchEditorGeometry(size: view.bounds.size, displayScale: displayScale, limit: 0)
+        output.frame = CGRect(x: view.bounds.width * 0.35, y: 50, width: view.bounds.width * 0.55, height: 120)
+        target.frame = CGRect(x: view.bounds.width / 2 - 40, y: view.bounds.height - 20 * geometry.pointsPerUnit, width: 80, height: 20 * geometry.pointsPerUnit)
+        var buffer = [Double](repeating: -999, count: 6 * 64)
+        let flags: UInt32 = ProcessInfo.processInfo.environment["PREVIEW_NATIVE_GESTURES"] == "world" ? 1 : 0
+        let count = buffer.withUnsafeMutableBufferPointer { bytes in
+            horizonTouchGestures(1, flags, geometry.gui.width, geometry.gui.height,
+                                 geometry.pointsPerUnit * displayScale, bytes.baseAddress, UInt32(bytes.count))
+        }
+        for index in 0..<Int(count) {
+            let offset = index * 6
+            events.append("\(Int(buffer[offset])):\(Int(buffer[offset + 1])):\(Int(buffer[offset + 4]))")
+        }
+        if !events.isEmpty {
+            output.text = events.suffix(20).joined(separator: " ")
+            output.accessibilityLabel = events.joined(separator: " ")
         }
     }
 }

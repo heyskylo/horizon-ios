@@ -324,11 +324,12 @@ pub fn present_download() -> bool {
     false
 }
 
-/// Snapshot ABI shared with TouchControls.swift: ten normalized button centres,
-/// NaN for the built-in placement, and bit zero to hide paint only (never input).
+/// Snapshot ABI shared with TouchControls.swift: thirteen normalized button centres,
+/// NaN for built-in placement. Flags: hide paint=1, cursor=2, joystick=4,
+/// disable mouse gestures=8, disable hotbar gestures=16.
 /// An older/missing launcher keeps the original layout and visibility.
-pub fn touch_preferences() -> ([f32; 20], bool) {
-    let positions = [f32::NAN; 20];
+pub fn touch_preferences() -> ([f32; 100], u32) {
+    let positions = [f32::NAN; 100];
     #[cfg(target_os = "ios")]
     let (positions, hidden) = {
         let mut positions = positions;
@@ -336,8 +337,57 @@ pub fn touch_preferences() -> ([f32; 20], bool) {
         (positions, hidden)
     };
     #[cfg(not(target_os = "ios"))]
-    let hidden = false;
+    let hidden = 0;
     (positions, hidden)
+}
+
+/// A UIKit-recognized gesture, delivered on the same main thread as the frame.
+/// Kinds: cancel=0, tap=1, long press=2, double hotbar tap=3, scroll=4,
+/// two-finger keyboard hold=5. Phases use UIKit's stable recognizer states.
+#[derive(Clone, Copy, Debug)]
+pub struct TouchGesture {
+    pub kind: u8,
+    pub phase: u8,
+    pub point: (f64, f64),
+    pub slot: i8,
+    pub age: f64,
+    pub context: u64,
+    pub modifiers: u32,
+    pub touch: u64,
+}
+
+pub fn touch_gestures(screen: u64, flags: u32, size: (f64, f64), scale: f64) -> Vec<TouchGesture> {
+    #[cfg(target_os = "ios")]
+    return ios::touch_gestures(screen, flags, size, scale);
+    #[cfg(not(target_os = "ios"))]
+    {
+        let _ = (screen, flags, size, scale);
+        Vec::new()
+    }
+}
+
+/// Opaque ids remain unique across restarted games and secondary scenes.
+pub fn next_touch_context() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+pub fn set_touch_context(context: u64) {
+    #[cfg(target_os = "ios")]
+    ios::set_touch_context(context);
+    #[cfg(not(target_os = "ios"))]
+    let _ = context;
+}
+/// Whether this bundle contains the native recognizer bridge. Older launcher
+/// frameworks keep the engine's existing direct-touch fallback.
+pub fn native_gestures_available() -> bool {
+    #[cfg(target_os = "ios")]
+    {
+        ios::gesture_poll().is_some()
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        false
+    }
 }
 
 #[cfg(target_os = "ios")]
@@ -384,28 +434,120 @@ mod ios {
             .then(|| CString::new(framework.into_os_string().into_encoded_bytes()).ok())?
     }
 
-    pub fn touch_preferences(positions: &mut [f32; 20]) -> bool {
+    pub fn touch_preferences(positions: &mut [f32; 100]) -> u32 {
         // Resolve once, retaining the framework handle for the process lifetime.
         // No disk reads or dlopen calls in subsequent input/render frames.
         type Snapshot = extern "C" fn(*mut f32, u32) -> u32;
         static SNAPSHOT: std::sync::OnceLock<Option<Snapshot>> = std::sync::OnceLock::new();
         let snapshot = SNAPSHOT.get_or_init(|| {
             let path = framework()?;
-            // SAFETY: this bundled Swift C export accepts exactly 20 writable
-            // floats and a capacity, keeps no pointer and uses a locked snapshot.
+            // SAFETY: this bundled Swift C export accepts up to 26 writable
+            // floats and a capacity (older readers request 20), keeps no pointer and uses a locked snapshot.
             unsafe {
                 let handle = libc::dlopen(path.as_ptr(), libc::RTLD_NOW);
                 if handle.is_null() {
                     return None;
                 }
-                let symbol = libc::dlsym(handle, c"horizon_touch_preferences_v1".as_ptr());
+                let mut symbol = libc::dlsym(handle, c"horizon_touch_snapshot_v2".as_ptr());
+                if symbol.is_null() {
+                    symbol = libc::dlsym(handle, c"horizon_touch_preferences_v1".as_ptr());
+                }
                 if symbol.is_null() {
                     return None;
                 }
                 Some(std::mem::transmute::<*mut c_void, Snapshot>(symbol))
             }
         });
-        snapshot.is_some_and(|call| call(positions.as_mut_ptr(), 20) & 1 != 0)
+        snapshot.map_or(0, |call| call(positions.as_mut_ptr(), 100))
+    }
+
+    type Poll = extern "C" fn(u64, u32, f64, f64, f64, *mut f64, u32) -> u32;
+    pub fn gesture_poll() -> Option<&'static Poll> {
+        static POLL: std::sync::OnceLock<Option<Poll>> = std::sync::OnceLock::new();
+        POLL.get_or_init(|| {
+            let path = framework()?;
+            // SAFETY: a bundled C export; all pointers live for this call only.
+            // The framework handle is retained for the entire process.
+            unsafe {
+                let handle = libc::dlopen(path.as_ptr(), libc::RTLD_NOW);
+                if handle.is_null() {
+                    return None;
+                }
+                let symbol = libc::dlsym(handle, c"horizon_touch_gestures_v2".as_ptr());
+                if symbol.is_null() {
+                    return None;
+                }
+                Some(std::mem::transmute::<*mut c_void, Poll>(symbol))
+            }
+        })
+        .as_ref()
+    }
+    pub fn set_touch_context(context: u64) {
+        type Set = extern "C" fn(u64);
+        static SET: std::sync::OnceLock<Option<Set>> = std::sync::OnceLock::new();
+        let set = SET.get_or_init(|| {
+            let path = framework()?;
+            // SAFETY: a bundled C export taking only an opaque integer id.
+            unsafe {
+                let handle = libc::dlopen(path.as_ptr(), libc::RTLD_NOW);
+                if handle.is_null() {
+                    return None;
+                }
+                let symbol = libc::dlsym(handle, c"horizon_touch_set_context_v1".as_ptr());
+                if symbol.is_null() {
+                    return None;
+                }
+                Some(std::mem::transmute::<*mut c_void, Set>(symbol))
+            }
+        });
+        if let Some(set) = set {
+            set(context);
+        }
+    }
+    pub fn touch_gestures(
+        screen: u64,
+        flags: u32,
+        size: (f64, f64),
+        scale: f64,
+    ) -> Vec<super::TouchGesture> {
+        let Some(poll) = gesture_poll() else {
+            return Vec::new();
+        };
+        let mut buffer = [0.0; 11 * 64];
+        let count = poll(
+            screen,
+            flags,
+            size.0,
+            size.1,
+            scale,
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+        )
+        .min(64);
+        buffer
+            .chunks_exact(11)
+            .take(count as usize)
+            .filter_map(|v| {
+                if !v.iter().all(|x| x.is_finite())
+                    || !(0.0..=6.0).contains(&v[0])
+                    || !(0.0..=5.0).contains(&v[1])
+                    || !(-1.0..=8.0).contains(&v[4])
+                    || v[5] < 0.0
+                {
+                    return None;
+                }
+                Some(super::TouchGesture {
+                    kind: v[0] as u8,
+                    phase: v[1] as u8,
+                    point: (v[2], v[3]),
+                    slot: v[4] as i8,
+                    age: v[5],
+                    context: ((v[7] as u64) << 32) | (v[6] as u64),
+                    modifiers: v[8] as u32,
+                    touch: ((v[10] as u64) << 32) | (v[9] as u64),
+                })
+            })
+            .collect()
     }
 
     pub fn present() -> bool {

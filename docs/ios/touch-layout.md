@@ -18,8 +18,40 @@ Apple documents a secondary-window technique for recordings made by an app's own
 
 ## Implementation and compatibility
 
-This is original Horizon code; no Amethyst or Pojav source was read or incorporated. Amethyst's GPLv3 license was checked before choosing an original implementation.
+The initial implementation used public controls documentation. The subsequent source-backed comparison explicitly requested by the user inspected pinned Pojav and Amethyst GPLv3 source. The production adapter is newly written Rust, and reference method bodies remain outside this repository. See [input parity and provenance](pojav-input-parity.md) for the source pins, test boundary and repository-policy exception.
 
-The Swift configuration uses `touchControls.v1` in this app's UserDefaults, separately from account data and world settings. Invalid data falls back to the built-in layout. Ten button centres cross the versioned C ABI as twenty floats, with NaN meaning default placement. Flag bit zero hides painting. No pointers are retained across the call. The engine resolves the bundled export once and falls back to the original controls if running with an older launcher framework. Desktop layouts are unchanged.
+The Swift configuration uses `touchControls.v1` in this app's UserDefaults, separately from account data and world settings. Invalid data falls back to the built-in layout. Thirteen button centres cross the capacity-checked C ABI as twenty-six floats (older readers still request twenty), with NaN meaning default placement. Flag bit zero hides painting, bit one selects the virtual cursor, bit two selects joystick movement, and bits three/four disable mouse/hotbar gestures. No pointers are retained across the call. The engine resolves the bundled export once and falls back to the original controls if running with an older launcher framework. Desktop layouts are unchanged.
 
 Validation covers production Rust layout and finger dispatch tests, isolated Swift persistence and ABI tests, iOS 18 phone and iPadOS 27 simulator editor interactions, an arm64 device framework build, and the iOS engine Clippy check. Simulator UI and compilation checks do not establish physical-device gameplay or recording behavior.
+
+## Cursor, mouse buttons and joystick
+
+App Settings → Touch controls offers **Mouse cursor** (default) or **Direct touch** for menus, and **D-pad** or **Joystick** for movement. In cursor mode, drag the empty menu surface to move a visible relative pointer. With **Tap and hold gestures** enabled (the default), a short tap left-clicks a menu, and a long press holds the left mouse button. Independent left/right mouse buttons hold until release, allowing one finger to move the pointer while another drags a slot or holds a mouse button. Quick clicks wait for the pointer’s rendered frame; screen transitions, cancellation, reloads and keyboard takeover discard stale presses. Direct touch retains absolute menu navigation.
+
+In a world, one primary finger turns the camera; the explicit left/right buttons provide held attack/use. With gestures enabled, a short surface tap uses/right-clicks and a 400 ms long press attacks/mines until release. Two-finger menu gestures scroll or open/close the keyboard. Hotbar gestures select a slot on tap, swap the offhand on double tap, and send Drop while held. The optional joystick generates physical WASD inputs through the in-game bindings, including diagonals and a centre dead zone. Mouse buttons and joystick have independent movable positions in the full-screen editor; the joystick replaces the directional pad while keeping sneak separate. Old saved layouts retain their positions and visibility. The native bridge continues to accept older 20-float readers while new readers receive all 26 position values.
+
+The source-backed adapter matches the tested Pojav iOS input boundary: eight direction sectors, four W/A/S/D states per sector change, a 35% travel dead zone with retained direction until release, and relative cursor scaling/clamping. In menu cursor mode, the optional joystick drives the cursor with frame-time scaled acceleration. It does not import Pojav JSON control maps or claim compatibility with every Pojav setting. Exact-axis behavior and the scope of the comparison are recorded in [input parity and provenance](pojav-input-parity.md).
+
+Mouse and hotbar gestures can be disabled independently in the app’s touch settings. Both menu modes use the same visible key/mouse buttons; direct mode positions the pointer at the finger, while cursor mode accumulates relative movement. The native gesture/callback comparison, actual simulator checks and release-validation limits are documented in [input parity](pojav-input-parity.md).
+
+
+## Amethyst-style controls (mobile port)
+
+The native launcher editor remains the layout editor. The world overlay now uses
+rounded translucent labels and a circular joystick, with Amethyst default positions.
+Movement remains selectable between directional buttons and joystick. The More drawer
+contains perspective, chat, debug, and player list; Runtime Menu opens the pause menu.
+Sprint and Shift toggle while playing; Shift remains a held modifier in menus.
+Middle Click uses the pick-block binding. Hide GUI leaves its own restore button.
+
+The editor supports resizing (pinch or Size controls), opacity, and optional forward
+lock. Save applies the draft; Cancel discards it; Reset restores positions, sizes,
+opacity and lock. Existing saved centres and movement selection remain readable.
+The first thirteen button identifiers are unchanged. The v2 snapshot appends new
+controls and carries bounded size and opacity values; older v1 bundles remain readable.
+
+The joystick retains the current adapter's Amethyst direction and centre-retention
+behavior. Forward lock starts only when the finger lifts over its target while moving
+forward; touch cancellation and leaving gameplay release it. Menu cursor placement,
+frozen click context, and keyboard/mouse ownership remain handled by the current adapter.
+The older checkout's standalone in-game editor is deliberately not copied into this build.

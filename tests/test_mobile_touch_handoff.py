@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def program():
     touch = (ROOT / 'crates/horizon-client/src/game/touch.rs').read_text()
     pad = (ROOT / 'crates/horizon-client/src/game/pad_menu.rs').read_text()
-    methods = '\n'.join(method(touch, n) for n in ('touch_pointer', 'touch_button', 'touch_wheel', 'touch_window_event', 'touch_synthetic_input'))
+    methods = '\n'.join(method(touch, n) for n in ('touch_pointer', 'touch_button', 'touch_mouse_button', 'touch_wheel', 'touch_scroll', 'touch_window_event', 'touch_synthetic_input'))
     methods += '\n' + '\n'.join('pub(crate) ' + method(pad, n) for n in ('key_focus_mouse', 'key_focus_to_mouse'))
     controller = (ROOT / 'crates/horizon-client/src/game/pad.rs').read_text()
     methods += '\n' + method(controller, 'pad_yield_input')

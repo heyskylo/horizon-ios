@@ -30,6 +30,7 @@ private func present(attempts: Int) {
     if root is LauncherHostingController || presentationPending {
         return
     }
+    TouchGestureBridge.shared.attach(to: root.view)
     presentationPending = true
     let host = LauncherHostingController(rootView: AnyView(EmptyView()))
     host.rootView = AnyView(

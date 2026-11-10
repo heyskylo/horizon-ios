@@ -763,3 +763,54 @@ mod tests {
         reset_atlas();
     }
 }
+
+pub fn touch_control(atlas: &HudAtlas, batch: &mut HudBatch, r: [f32; 4], label: &str, held: bool) {
+    let scale = batch.scale;
+    let mut ui = Ui::new(atlas, batch, (0.0, 0.0));
+    let k = scale / ui.density;
+    let [x, y, w, h] = r.map(|v| v * k);
+    ui.rounded(
+        x,
+        y,
+        w,
+        h,
+        w.min(h) / 2.0,
+        crate::hud::rgba(0, 0, 0, if held { 120 } else { 77 }),
+    );
+    let size = (h / if label.contains('\n') { 3.0 } else { 2.8 })
+        .min(w / label.lines().map(str::len).max().unwrap_or(1) as f32 * 1.6);
+    let count = label.lines().count() as f32;
+    for (i, line) in label.lines().enumerate() {
+        ui.text_centered(
+            Face::Regular,
+            size,
+            x + w / 2.0,
+            y + (h - count * size * 1.45) / 2.0 + i as f32 * size * 1.45,
+            crate::hud::rgba(255, 255, 255, 255),
+            line,
+        );
+    }
+    ui.finish();
+}
+
+/// Antialiased touch joystick disc, using the same masks as native controls.
+pub fn touch_disc(
+    atlas: &HudAtlas,
+    batch: &mut HudBatch,
+    centre: (f32, f32),
+    radius: f32,
+    color: u32,
+) {
+    let scale = batch.scale;
+    let mut ui = Ui::new(atlas, batch, (0.0, 0.0));
+    let k = scale / ui.density;
+    ui.rounded(
+        (centre.0 - radius) * k,
+        (centre.1 - radius) * k,
+        radius * 2.0 * k,
+        radius * 2.0 * k,
+        radius * k,
+        color,
+    );
+    ui.finish();
+}
