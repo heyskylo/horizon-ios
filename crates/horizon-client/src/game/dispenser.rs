@@ -85,6 +85,14 @@ fn block_box(p: Pos) -> Aabb {
         Vec3::new(f64::from(p.0 + 1), f64::from(p.1 + 1), f64::from(p.2 + 1)),
     )
 }
+/// `EntitySectionStorage.forEachAccessibleNonEmptySection`: x ascending, then
+/// the packed key (`SectionPos.asLong`: z as 22 unsigned bits, then y as 20);
+/// within a section the entities go in the order they joined, which ids follow.
+fn section_order(at: Vec3) -> (i32, u32, u32) {
+    let s = |v: f64| (v.floor() as i32) >> 4;
+    let (x, y, z) = (s(at.x), s(at.y), s(at.z));
+    (x, z as u32 & 0x3F_FFFF, y as u32 & 0xF_FFFF)
+}
 fn overlaps(a: Aabb, b: Aabb) -> bool {
     let (a0, a1, b0, b1) = (
         a.min_position(),
@@ -721,41 +729,43 @@ impl Game<'_> {
 
     // ---- entities ----
 
-    /// Entities whose box overlaps the block at `p`, in the order the level
-    /// added them (an entity section keeps insertion order; ids grow with it).
+    /// Entities whose box overlaps the block at `p`, in `getEntitiesOfClass`
+    /// order ([`section_order`]): players are entities of the level like any
+    /// other, so they sort with the mobs and stands.
     fn targets_at(&self, p: Pos) -> Vec<Target> {
         let block = block_box(p);
-        let mut found: Vec<(u32, Target)> = self
+        let key = |at: Vec3, id: u32| (section_order(at), id);
+        let mut found: Vec<(_, Target)> = self
             .mobs
             .iter()
             .enumerate()
             .filter(|(_, m)| !m.removed && overlaps(m.bounds(), block))
-            .map(|(i, m)| (m.id, Target::Mob(i)))
+            .map(|(i, m)| (key(m.position, m.id), Target::Mob(i)))
             .collect();
         found.extend(
             self.armor_stands
                 .iter()
                 .enumerate()
                 .filter(|(_, s)| overlaps(s.bounds(), block))
-                .map(|(i, s)| (s.id, Target::Stand(i))),
+                .map(|(i, s)| (key(s.position, s.id), Target::Stand(i))),
         );
-        found.sort_by_key(|(id, _)| *id);
-        let mut out: Vec<Target> = found.into_iter().map(|(_, t)| t).collect();
         // `ServerLevel.getEntities`: every player placed in this level, the
-        // integrated owner included (a server has no player of its own).
+        // integrated owner included (a server has no player of its own), its
+        // client loaded or not (it joins the level at placeNewPlayer/respawn).
         if let Some(host) = &self.lan {
-            out.extend(
-                host.hub
-                    .guests
-                    .iter()
-                    .filter(|g| {
-                        host.hub.here(g)
-                            && g.loaded
-                            && !g.dead
-                            && !g.spectator()
-                            && overlaps(g.bounds(), block)
-                    })
-                    .map(|g| Target::Guest(g.conn)),
+            found.extend(
+                (host.hub.guests.iter())
+                    .filter(|g| host.hub.here(g) && !g.dead && !g.spectator())
+                    .filter(|g| overlaps(g.bounds(), block))
+                    .map(|g| {
+                        (
+                            key(
+                                Vec3::new(g.position[0], g.position[1], g.position[2]),
+                                g.entity_id as u32,
+                            ),
+                            Target::Guest(g.conn),
+                        )
+                    }),
             );
         }
         if let Some(v) = self.player_view()
@@ -763,9 +773,13 @@ impl Game<'_> {
             && !self.spectator()
             && overlaps(v.bounds, block)
         {
-            out.push(Target::Player);
+            // The local player joins before the chunks around it load their
+            // entities (prepareLevels loads only saved tickets): the lowest id,
+            // 0 as `own_entity_id` has it.
+            found.push((key(v.position, 0), Target::Player));
         }
-        out
+        found.sort_by_key(|(k, _)| *k);
+        found.into_iter().map(|(_, t)| t).collect()
     }
     /// `EntityType.getYOffset(level, pos, false, box)`: [`Self::drop_offset_from`] without
     /// `movedUp`.
@@ -2523,5 +2537,80 @@ mod tests {
         let mut stack = ItemStack::new("minecraft:iron_helmet", 1);
         assert!(!game.dispense_equipment((8, 201, 8), Direction::Down, &mut stack));
         assert_eq!(stack.count, 1);
+    }
+
+    /// A stand of entity id `id` standing at `x`, 200, `z`.
+    fn stand_at(id: u32, x: f64, z: f64) -> horizon_client::entities::ArmorStand {
+        let at = horizon_core::geometry::Vec3::new(x, 200.0, z);
+        horizon_client::entities::ArmorStand::new(id, at, 0.0)
+    }
+
+    /// A guest whose client is still on its loading screen (joined or
+    /// respawned, no ServerboundPlayerLoadedPacket yet) is in the level all the
+    /// same: `getEntitiesOfClass` finds it and it wears the piece.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_dispenser_equips_a_player_whose_client_is_still_loading() {
+        let mut game = server_with_guest();
+        let g = &mut game.lan.as_mut().unwrap().hub.guests[0];
+        (g.loaded, g.loading) = (false, true);
+        let (done, left) = dispense_at_guest(&mut game, "minecraft:iron_helmet");
+        assert_eq!((done, left), (true, 1));
+        let guest = game.lan.as_ref().unwrap().hub.guest(2).unwrap();
+        let head = guest.armor[0].as_ref().map(|s| &*s.item);
+        assert_eq!(head, Some("minecraft:iron_helmet"));
+    }
+
+    /// Players are entities of the level: in one section they go in join
+    /// order (entity ids) with the mobs and stands, not after them.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_player_and_a_stand_in_front_go_in_join_order() {
+        // (stand id, guest id) -> who wears the helmet: the lower id joined first.
+        for (stand_id, guest_id, guest_first) in [(7, 5, true), (3, 5, false)] {
+            let mut game = server_with_guest();
+            game.lan.as_mut().unwrap().hub.guests[0].entity_id = guest_id;
+            game.armor_stands = vec![stand_at(stand_id, 8.5, 8.5)].into();
+            let (done, _) = dispense_at_guest(&mut game, "minecraft:iron_helmet");
+            assert!(done);
+            let guest = game.lan.as_ref().unwrap().hub.guest(2).unwrap();
+            assert_eq!(
+                guest.armor[0].is_some(),
+                guest_first,
+                "stand {stand_id}, guest {guest_id}"
+            );
+            assert_eq!(game.armor_stands[0].equipment[5].is_some(), !guest_first);
+        }
+    }
+
+    /// `forEachAccessibleNonEmptySection` walks sections before join order:
+    /// a stand whose feet are in section x 1 but whose box reaches into block
+    /// x 15 comes after one in section x 0, even with the lower id.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_dispenser_walks_entity_sections_before_ids() {
+        let mut game = server_with_guest();
+        game.lan.as_mut().unwrap().hub.guests.clear();
+        // Stand boxes are 0.5 wide: x 16.2 spans 15.95..16.45.
+        game.armor_stands = vec![stand_at(1, 16.2, 8.5), stand_at(2, 15.5, 8.5)].into();
+        let mut stack = ItemStack::new("minecraft:iron_helmet", 1);
+        assert!(game.dispense_equipment((15, 201, 8), Direction::Down, &mut stack));
+        assert!(game.armor_stands[0].equipment[5].is_none());
+        assert!(game.armor_stands[1].equipment[5].is_some());
+    }
+
+    /// `SectionPos.asLong` packs z (22 bits) over y (20 bits) under a fixed x,
+    /// and the section set is sorted as longs: z -1 packs as 0x3FFFFF << 20,
+    /// above z 0's 0; y -1 at z 0 packs as 0xFFFFF, below z 1's 1 << 20.
+    #[test]
+    fn sections_sort_as_their_packed_keys() {
+        use horizon_core::geometry::Vec3;
+        let at = |x: f64, y: f64, z: f64| super::section_order(Vec3::new(x, y, z));
+        assert!(at(0.0, 0.0, -1.0) > at(0.0, 0.0, 0.0));
+        assert!(at(0.0, -1.0, 0.0) < at(0.0, 0.0, 16.0));
+        assert!(at(0.0, -1.0, 0.0) > at(0.0, 0.0, 0.0));
+        // x is the outer loop, ascending as a signed coordinate.
+        assert!(at(-1.0, 0.0, 0.0) < at(0.0, 0.0, 0.0));
+        assert!(at(15.9, 0.0, 0.0) < at(16.0, 0.0, 0.0));
     }
 }
