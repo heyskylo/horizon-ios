@@ -20,8 +20,9 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.entity.EntityTypeTest;
 import net.minecraft.world.phys.*;
 
-/** Actual Arrow.tick at ticks 599/600. No server construction or world bootstrap. */
-public final class VanillaThrownPotionContentsOracle {
+/** Five tipped-arrow cases at ticks 599/600; only glowing/swiftness inputs.
+ * No server construction or world bootstrap. */
+public final class VanillaArrowContentsExpiryOracle {
     static Object unsafe;
     static Method allocate;
     static Field field(Class<?> c, String n) throws Exception {
@@ -45,6 +46,7 @@ public final class VanillaThrownPotionContentsOracle {
         @Override public boolean isInWaterOrRain() { return false; }
     }
     static PotionContents contents(JsonObject row) {
+        if (row.has("potion") && !row.get("potion").getAsString().equals("swiftness")) throw new AssertionError(row);
         var potion = row.has("potion") ? Optional.of(Potions.SWIFTNESS) : Optional.<Holder<Potion>>empty();
         var custom = new ArrayList<MobEffectInstance>();
         for (var value : row.getAsJsonArray("custom")) {

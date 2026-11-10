@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Isolated pinned potion methods versus actual in-memory Game paths.
+"""Five tipped-arrow contents/600-grounded-tick expiry cases versus vanilla 26.3.
 
-No MinecraftServer constructor/main/spin, world bootstrap, game executable,
-EULA, networking, display or device access. Invoke each phase only with a build
-lease. Baseline reproduction is recorded separately from this fixed-head comparison.
+This is a CI parity harness, discovered by tools/parity.py. It covers empty,
+colour-only, glowing-only, swiftness and name-only contents, not splash or
+lingering potions. The oracle accepts only glowing and swiftness for these rows.
+No server construction, world bootstrap, game executable, networking or display.
+The default runs the oracle then the fixed fixture; --phase fixed reuses a
+matching oracle run. Baseline reproduction is separate from this comparison.
 """
 import argparse
 import hashlib
@@ -19,15 +22,13 @@ except ImportError:
     import lab
     import test_rust_parity as artifacts
 
-BASE = '38174db59bfd5bf90027bd727f894b141c9e72dc'
 TEST = 'game::potions::arrow_contents::actual_arrow_contents_match_pinned_methods'
-ORACLE = 'VanillaThrownPotionContentsOracle'
+ORACLE = 'VanillaArrowContentsExpiryOracle'
 PRODUCTION = [
     'crates/horizon-client-render/src/brewing.rs',
     'crates/horizon-client/src/arrows.rs',
     'crates/horizon-client/src/game/potions.rs',
 ]
-EXTRA_SOURCE_GUARDS = []
 
 
 def effect(name='glowing', duration=800, amp=0, ambient=False, visible=True):
@@ -36,10 +37,9 @@ def effect(name='glowing', duration=800, amp=0, ambient=False, visible=True):
 
 def corpus():
     rows = []
-    def add(label, kind='splash', custom=(), scale=1, **extra):
-        rows.append(dict(id=label, kind=kind, custom=list(custom), scale=scale, **extra))
     for name, extra in [('empty', {}), ('color', {'color':123456}), ('custom', {'custom':[effect()]}), ('base', {'potion':'swiftness'}), ('name', {'name':'fixture'})]:
-        add('arrow-'+name, kind='arrow', **extra)
+        rows.append(dict(id='arrow-'+name, custom=[]))
+        rows[-1].update(extra)
     return rows
 
 
@@ -51,14 +51,11 @@ def sha(data):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--phase', default='all', choices=['all','oracle','fixed'])
-    p.add_argument('--work-dir', type=Path, default=lab.LOCAL/'thrown-potion-components-parity')
+    p.add_argument('--work-dir', type=Path, default=lab.LOCAL/'arrow-contents-expiry-parity')
     p.add_argument('--lab-root', type=Path, help='existing authenticated .local artifact directory, read only')
     p.add_argument('--resources', type=Path, default=lab.RESOURCES)
     a=p.parse_args()
     root=lab.ROOT
-    requested_phase=a.phase
-    if requested_phase=='all':
-        a.phase='fixed'
     if a.resources.resolve()!=lab.RESOURCES.resolve() and (root/'.local/horizon-client').exists():
         p.error('default prepared resources must remain absent for this explicit fixture')
     build=a.work_dir.resolve(); build.mkdir(parents=True,exist_ok=True)
@@ -67,28 +64,30 @@ def main():
     lock,jars,libraries=artifacts.verify_artifacts()
     rows=corpus(); input_bytes=(json.dumps(rows,indent=2)+'\n').encode()
     inputs=build/'inputs.json'; expected=build/'java.json'
-    if requested_phase not in ('all','oracle') and inputs.read_bytes()!=input_bytes:
+    if a.phase=='fixed' and inputs.read_bytes()!=input_bytes:
         p.error('input changed since the pinned Java oracle run')
     inputs.write_bytes(input_bytes)
     source=root/f'mods/horizon/src/test/java/dev/horizonlab/parity/{ORACLE}.java'
     native=root/'crates/horizon-client/src/game/potions.rs'
-    provenance=dict(base=BASE,phase=a.phase,rows=len(rows),input_sha256=sha(input_bytes),
+    provenance=dict(source_head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip(),
+                    phase=a.phase,rows=len(rows),input_sha256=sha(input_bytes),
                     oracle_source_sha256=sha(source.read_bytes()),native_source_sha256=sha(native.read_bytes()),
                     driver_source_sha256=sha(Path(__file__).read_bytes()),
                     helper_source_sha256={'ParityData.java':sha((source.parent/'ParityData.java').read_bytes())},
                     server_sha256=lab.digest(jars['server'],'sha256'),
                     methods=['PotionContents.getColor/equals','Arrow.tick/AbstractArrow.tick'],
-                    limits=['Arrow environmental block effects are intercepted; actual ground counter and potion expiry remain native'])
+                    limits=['Only glowing custom effects and swiftness base potion are accepted',
+                            'Arrow environmental block effects are intercepted; actual ground counter and potion expiry remain native'])
     def run(command,label,env=None,cwd=None,timeout=1800):
         with (build/(label+'.log')).open('w',encoding='utf-8') as log:
             result=subprocess.run(list(map(str,command)),cwd=cwd or root,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=timeout)
         if result.returncode:
             raise RuntimeError(f'{label} failed ({result.returncode}); see {build/(label+".log")}')
-    if requested_phase in ('all','oracle'):
+    if a.phase in ('all','oracle'):
         classes=build/'classes'; classes.mkdir(exist_ok=True)
         cp=os.pathsep.join(map(str,[jars['server'],*libraries]))
         expected.unlink(missing_ok=True)
-        with tempfile.TemporaryDirectory(prefix='horizon-potion-java-') as scratch:
+        with tempfile.TemporaryDirectory(prefix='horizon-arrow-java-') as scratch:
             homes={k:Path(scratch)/k for k in ('HORIZON_HOME','HORIZON_LAUNCHER_HOME','XDG_DATA_HOME','XDG_CONFIG_HOME')}
             env=lab.game_env(os.environ,**homes)
             env.pop('JAVA_TOOL_OPTIONS',None)
@@ -100,22 +99,21 @@ def main():
         provenance['reference_sha256']=sha(expected.read_bytes())
         (build/'oracle-provenance.json').write_text(json.dumps(provenance,indent=2)+'\n',encoding='utf-8')
         print(f'{len(rows)} isolated pinned-method rows recorded; no Horizon execution yet',flush=True)
-        if requested_phase=='oracle':
+        if a.phase=='oracle':
             return
     reference=json.loads((build/'oracle-provenance.json').read_text(encoding='utf-8'))
     for key in ('input_sha256','oracle_source_sha256','native_source_sha256','driver_source_sha256','helper_source_sha256','server_sha256'):
         assert reference[key]==provenance[key], f'provenance changed: {key}'
     assert reference['reference_sha256']==sha(expected.read_bytes()), 'pinned output changed'
     # Override every location even if the parent process has a real home set.
-    with tempfile.TemporaryDirectory(prefix='horizon-potion-methods-') as scratch:
+    with tempfile.TemporaryDirectory(prefix='horizon-arrow-methods-') as scratch:
         homes={k:Path(scratch)/k for k in ('HORIZON_HOME','HORIZON_LAUNCHER_HOME','XDG_DATA_HOME','XDG_CONFIG_HOME')}
         env=lab.game_env(os.environ,**homes,HORIZON_TEST_RESOURCES=a.resources.resolve(),
                          HORIZON_POTION_INPUT=inputs,HORIZON_POTION_EXPECTED=expected,
-                         HORIZON_POTION_OUTPUT=build/(a.phase+'.json'),CARGO_BUILD_JOBS='2',RUST_TEST_THREADS='2')
+                         HORIZON_POTION_OUTPUT=build/'fixed.json',CARGO_BUILD_JOBS='2',RUST_TEST_THREADS='2')
         def native_run(label):
             (build/(label+'.log')).unlink(missing_ok=True)
             provenance['production_source_sha256']={path:sha((root/path).read_bytes()) for path in PRODUCTION}
-            provenance['additional_source_sha256']={path:sha((root/path).read_bytes()) for path in EXTRA_SOURCE_GUARDS}
             command=['cargo','test','-p','horizon-client','--lib','--no-run','--message-format=json']
             run(command,label+'-build',env)
             artifacts=[]
@@ -132,7 +130,7 @@ def main():
             provenance['native_binary_sha256']=lab.digest(binary,'sha256')
             run([binary,'--list'],label+'-list',env,cwd=scratch,timeout=30)
             assert TEST+': test' in (build/(label+'-list.log')).read_text(encoding='utf-8'), 'exact fixture not registered'
-            result=build/(a.phase+'.json'); result.unlink(missing_ok=True)
+            result=build/'fixed.json'; result.unlink(missing_ok=True)
             run([binary,TEST,'--ignored','--exact','--nocapture'],label,env,cwd=scratch,timeout=300)
             log=(build/(label+'.log')).read_text(encoding='utf-8')
             assert re.search(r'running 1 test\b',log) and re.search(r'1 passed; 0 failed',log), 'fixture did not execute exactly once'
@@ -142,11 +140,10 @@ def main():
             assert observed==json.loads(expected.read_text(encoding='utf-8')), 'native output differs from pinned methods'
             assert provenance['native_binary_sha256']==lab.digest(binary,'sha256'), 'native binary changed during run'
             assert provenance['production_source_sha256']=={path:sha((root/path).read_bytes()) for path in PRODUCTION}, 'production source changed during run'
-            assert provenance['additional_source_sha256']=={path:sha((root/path).read_bytes()) for path in EXTRA_SOURCE_GUARDS}, 'additional guarded source changed during run'
         native_run('fixed')
     provenance['reference_sha256']=sha(expected.read_bytes())
-    (build/(a.phase+'-provenance.json')).write_text(json.dumps(provenance,indent=2)+'\n',encoding='utf-8')
-    print(f'{a.phase}: {len(rows)} rows match actual pinned methods')
+    (build/'fixed-provenance.json').write_text(json.dumps(provenance,indent=2)+'\n',encoding='utf-8')
+    print(f'fixed: {len(rows)} arrow rows match actual pinned methods')
 
 
 if __name__=='__main__':
