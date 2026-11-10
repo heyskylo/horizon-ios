@@ -4993,6 +4993,36 @@ def sulfur_cube_loaded_health():
     return lines
 
 
+def sulfur_cube_size_ticks():
+    # SulfurCube.ageBoundaryReached grows a cube to size 2 only where setAge crosses
+    # the baby boundary (#14916). Cubes with their AI on: an adult loaded at size 1
+    # and a baby of size 2 keep their size; a baby of size 1 that grows up is size 2.
+    cases = [(None, 0, [(0, 400)] * 4), (1, -24000, [(1, 800)] * 4),
+             (None, -2, [(0, 400), (0, 400), (1, 800), (1, 800)])]
+    lines = [cmd('/forceload add 0 0 31 31'), {'op': 'settle'}]
+    lines.extend(setup('/fill 0 199 0 31 208 31 air'))
+    lines.append(cmd('/fill 0 199 0 31 199 31 stone', expect_result=1024))
+    for i, (size, age, reads) in enumerate(cases):
+        uuid = f'00000000-0000-0000-0000-00e70000000{i + 1}'
+        nbt = f'UUID:[I;0,0,231,{i + 1}],NoGravity:1b,Silent:1b,PersistenceRequired:1b,Age:{age}'
+        if size is not None:
+            nbt += f',Size:{size}'
+        lines.append(cmd(f'/summon sulfur_cube {4.5 + 8 * i} 200 4.5 {{{nbt}}}', expect_result=1))
+    # Reads after 0, 1, 2 and 4 ticks.
+    for step, ticks in enumerate([0, 1, 1, 2]):
+        if ticks:
+            lines.append({'op': 'tick', 'n': ticks})
+        for i, (_, _, reads) in enumerate(cases):
+            uuid = f'00000000-0000-0000-0000-00e70000000{i + 1}'
+            size, health = reads[step]
+            lines.extend([
+                cmd(f'/data get entity {uuid} Size', expect_result=size),
+                cmd(f'/data get entity {uuid} Health 100', expect_result=health),
+            ])
+    lines.extend(setup('/kill @e[type=sulfur_cube]', '/forceload remove 0 0 31 31'))
+    return lines
+
+
 
 def numeric_array_edits(include_storage_side_effects=False):
     """Replay list/string controls before the finite numeric-array edit cases."""
@@ -7565,6 +7595,7 @@ def groups():
         ('mob NBT damage cooldown', mob_nbt_damage_cooldown()),
         ('mob full resistance hits', mob_full_resistance_hits()),
         ('sulfur cube loaded health', sulfur_cube_loaded_health()),
+        ('sulfur cube size ticks', sulfur_cube_size_ticks()),
         ('function return feedback', function_return_feedback()),
         ('fork function feedback', fork_function_feedback_cases()),
         ('function condition fallthrough', function_condition_fallthrough()),
