@@ -109,7 +109,7 @@ SculkShriekerBlockEntity.VibrationUser.onReceiveVibration	port	crates/horizon-cl
 ShelfBlockEntity.loadAdditional	skip:other		no own code: the raw saved tag keeps Items (shelf_signal reads it)
 ShelfBlockEntity.saveAdditional	skip:other		no own code: the raw saved tag keeps Items (shelf_signal reads it)
 ShelfBlockEntity.getUpdateTag	port	crates/horizon-client/src/lan/chunks.rs::entity_tag	the Shelf arm: Items and align_items_to_bottom
-ShelfBlockEntity.setChanged	inline	crates/horizon-client/src/game/machines.rs::Containers::container_changed	the shelf's own arm marks the block entity updated so clients see the swap
+ShelfBlockEntity.setChanged	inline	crates/horizon-client/src/game/machines.rs::Game::view_changed	the shelf's own arm marks the block entity updated so clients see the swap, and a container's slot write posts `block_activate` (the no-argument `setChanged()`)
 ShelfBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::place	Items as container component
 ShelfBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::collect	Items as container component
 ShulkerBoxBlockEntity.updateAnimation	port	crates/horizon-client-render/src/block_entity_anim.rs::Shulker::tick	lid progress
