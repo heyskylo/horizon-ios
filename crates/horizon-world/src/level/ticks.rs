@@ -8,6 +8,7 @@ use horizon_core::{
         ChunkTicks, LevelTicks, ScheduleResult, ScheduledTick, TickError, TickPriority, TickTypeId,
     },
 };
+use horizon_core::fast_hash::FxHashMap;
 
 /// Owned by the caller next to its chunk storage. Chunks must be registered
 /// with [`Ticks::add_chunk`] before ticks can be scheduled in them, mirroring
@@ -29,6 +30,8 @@ pub struct Ticks {
     /// Moving-piston block entities in ticker order (render and collide
     /// moving blocks from these; see `piston_shape`).
     pub moving_pistons: Vec<(BlockPos, super::pistons::MovingPiston)>,
+    /// Position to id hint for `moving_pistons`, see `moving_piston_slot`.
+    pub(crate) moving_piston_ids: FxHashMap<BlockPos, u64>,
     /// The pushes this tick's moving-piston block entities asked for: each
     /// piston with the progress it is about to reach, in the order they ticked
     /// (`PistonMovingBlockEntity.tick`'s `moveCollidedEntities` call). The
@@ -70,6 +73,7 @@ impl Ticks {
             comparator_outputs: Default::default(),
             torch_toggles: Vec::new(),
             moving_pistons: Vec::new(),
+            moving_piston_ids: FxHashMap::default(),
             piston_pushes: Vec::new(),
             next_block_entity_id: 0,
             block_events: Vec::new(),
@@ -88,11 +92,48 @@ impl Ticks {
         self.fluids.add_chunk(pos, fluids)
     }
     /// A moving-piston block entity loaded with its chunk, as a new ticker.
-    pub fn load_moving_piston(&mut self, pos: BlockPos, mut piston: super::pistons::MovingPiston) {
-        self.moving_pistons.retain(|(p, _)| *p != pos);
+    pub fn load_moving_piston(&mut self, pos: BlockPos, piston: super::pistons::MovingPiston) {
+        self.add_moving_piston(pos, piston);
+    }
+    /// Replaces the ticker at `pos` (if any) by `piston`, as a new block entity
+    /// with the next id, at the end of the ticker order.
+    pub(crate) fn add_moving_piston(
+        &mut self,
+        pos: BlockPos,
+        mut piston: super::pistons::MovingPiston,
+    ) {
+        self.take_moving_piston(pos);
         self.next_block_entity_id += 1;
         piston.id = self.next_block_entity_id;
         self.moving_pistons.push((pos, piston));
+        self.moving_piston_ids.insert(pos, piston.id);
+    }
+    /// Removes the ticker at `pos`; the other tickers keep their order.
+    pub(crate) fn take_moving_piston(
+        &mut self,
+        pos: BlockPos,
+    ) -> Option<super::pistons::MovingPiston> {
+        let slot = self.moving_piston_slot(pos)?;
+        self.moving_piston_ids.remove(&pos);
+        Some(self.moving_pistons.remove(slot).1)
+    }
+    /// Slot of the ticker at `pos` in `moving_pistons`. Every in-crate writer
+    /// appends a new, higher id, so the Vec is sorted by id and the hint finds
+    /// the slot by binary search. The hint is trusted only when that slot
+    /// holds `pos`; a Vec edited from outside falls back to a scan.
+    pub(crate) fn moving_piston_slot(&self, pos: BlockPos) -> Option<usize> {
+        if let Some(&id) = self.moving_piston_ids.get(&pos)
+            && let Ok(slot) = self.moving_pistons.binary_search_by_key(&id, |(_, m)| m.id)
+            && self.moving_pistons[slot].0 == pos
+        {
+            return Some(slot);
+        }
+        self.moving_pistons.iter().position(|(p, _)| *p == pos)
+    }
+    /// Whether the ticker `id` is still the one at `pos`.
+    pub(crate) fn moving_piston_has(&self, pos: BlockPos, id: u64) -> bool {
+        self.moving_piston_slot(pos)
+            .is_some_and(|slot| self.moving_pistons[slot].1.id == id)
     }
     /// Register a chunk without saved ticks.
     pub fn add_empty_chunk(&mut self, pos: ChunkPos) -> Result<(), TickError> {
