@@ -3870,18 +3870,18 @@ impl Game<'_> {
             q.extra.in_love = 0;
         }
         let q = self.mobs.iter().find(|m| m.id == partner).cloned();
-        // Animal.finalizeSpawnChildFromBreeding: entity event 18 for the parent.
-        self.mob_event_particles(parent, 18);
+        // Animal.finalizeSpawnChildFromBreeding's heart burst, not a turtle's.
+        if p.species() != Species::Turtle {
+            self.mob_event_particles(parent, 18);
+        }
         // Sniffer.spawnChildFromBreeding: an egg instead of a baby.
         if p.species() == Species::Sniffer {
             self.lay_sniffer_egg(&p);
             return;
         }
-        // TurtleBreedGoal.breed: the goal gave the mother her egg; only the
-        // experience is left, and only with mob loot on.
+        // TurtleBreedGoal.breed and Frog.spawnChildFromBreeding: only experience.
         if matches!(p.species(), Species::Turtle | Species::Frog) {
-            // One `new ExperienceOrb` of 1 to 7 from the mother's random (not
-            // split up as `ExperienceOrb.award` does).
+            // One `new ExperienceOrb` of 1 to 7 from the mother's random.
             if self.ui.rules.bool("mob_drops")
                 && let Some(m) = self.mobs.iter_mut().find(|m| m.id == parent)
             {
