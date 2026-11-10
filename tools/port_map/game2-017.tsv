@@ -82,7 +82,7 @@ HopperBlockEntity.getSourceContainer	port	crates/horizon-client/src/game/machine
 HopperBlockEntity.getItemsAtAndAbove	port	crates/horizon-client/src/game/machines.rs::Game::suck_item_entities	item entities in the suck box
 HopperBlockEntity.entityInside	inline	crates/horizon-client/src/game/machines.rs::Game::suck_item_entities	item entering the hopper is polled each tick instead
 JigsawBlockEntity.generate	port	crates/horizon-client/src/game/jigsaw_blocks.rs::Game::generate_jigsaw_block	
-JukeboxBlockEntity.notifyItemChangedInJukebox	port	crates/horizon-client/src/game/jukebox.rs::Game::set_has_record	gap: minor: no BLOCK_CHANGE game event
+JukeboxBlockEntity.notifyItemChangedInJukebox	port	crates/horizon-client/src/game/jukebox.rs::Game::set_has_record	the `has_record` state with update flag 2, and `minecraft:block_change` at the box (the sculk sensors hear a disc coming or going)
 JukeboxBlockEntity.getComparatorOutput	port	crates/horizon-client/src/game/jukebox.rs::jukebox_signals	comparator value of the song
 JukeboxBlockEntity.loadAdditional	port	crates/horizon-client/src/save.rs::decode_block_entity	RecordItem and ticks
 JukeboxBlockEntity.saveAdditional	port	crates/horizon-client/src/save.rs::encode_block_entity	RecordItem and ticks
