@@ -1251,6 +1251,9 @@ pub struct EditBox {
     /// `getMessage`: what the narrator calls the box ("<message> edit box:
     /// <value>").
     pub message: String,
+    /// `EditBox.setInvertHighlightedTextColor`: a selection draws its text
+    /// inverted (the default) or in the box's own colour (`AnvilScreen`).
+    pub invert_highlighted_text_color: bool,
     /// Where a borderless box drawn in a frame of its own focuses: a controller's outline goes
     /// round the frame, not over the text.
     pub frame: Option<[f32; 4]>,
@@ -1543,6 +1546,7 @@ impl EditBox {
             text_color_uneditable: rgba(112, 112, 112, 255),
             editable: true,
             message: String::new(),
+            invert_highlighted_text_color: true,
             frame: None,
         }
     }
@@ -1918,7 +1922,11 @@ impl EditBox {
             let right = self.x + self.width;
             let (x0, x1) = (cursor_x.min(right), (hx - 1.0).min(right));
             let (a, b) = (x0.min(x1), x0.max(x1));
-            batch.text_highlight(atlas, (a, ty - 1.0, b - a, 11.0), true);
+            batch.text_highlight(
+                atlas,
+                (a, ty - 1.0, b - a, 11.0),
+                self.invert_highlighted_text_color,
+            );
         }
         if show_cursor {
             if insert {
@@ -2626,6 +2634,20 @@ mod tests {
             menu_tooltip_position(screen, (100, 200), [100, 200, 150, 20], size),
             (112, 180)
         );
+    }
+
+    /// `EditBox.setInvertHighlightedTextColor`: a selection inverts its text
+    /// unless the box asks it not to (the anvil's rename box).
+    #[test]
+    fn a_selection_inverts_its_text_unless_the_box_says_not_to() {
+        let mut edit = EditBox::new(0.0, 0.0, 100.0, 20.0);
+        assert!(edit.invert_highlighted_text_color);
+        edit.invert_highlighted_text_color = false;
+        edit.set_value("name");
+        edit.set_cursor(0, false);
+        edit.set_cursor(4, true);
+        assert_eq!(edit.selected_text(), "name");
+        assert!(!edit.invert_highlighted_text_color);
     }
 
     /// `EditBox.setEditable(false)`: the box keeps the focus, the caret keys

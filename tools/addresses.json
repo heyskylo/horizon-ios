@@ -49,7 +49,6 @@
     "crates/horizon-client/src/mod_registry.rs horizon-rust.github.io",
     "crates/horizon-client/src/mod_registry.rs playhorizon.dev",
     "crates/horizon-client/src/no_resources.rs playhorizon.dev",
-    "crates/horizon-client/src/official_servers.rs afri-network.co.za",
     "crates/horizon-mod-registry/src/github.rs api.github.com",
     "crates/horizon-mod-registry/src/github.rs github.com",
     "crates/horizon-mod-registry/src/github.rs uploads.github.com",

@@ -103,7 +103,7 @@ impl Game<'_> {
     pub(super) fn pad_action_glyphs_on(&self) -> bool {
         self.pad.in_use
             && !self.pad.menu.keyboard
-            && self.pad.menu.osk.is_none()
+            && !self.pad_keyboard_captures()
             && self.pad.menu.pos.is_some()
             && self.pad_in_menu()
     }

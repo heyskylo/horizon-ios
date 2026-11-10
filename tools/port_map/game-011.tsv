@@ -148,3 +148,4 @@ TropicalFish.applyImplicitComponents	port	crates/horizon-client/src/entity_nbt.r
 TropicalFish.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	one in ten is a lone random fish, else a shared common variant
 TropicalFish.checkTropicalFishSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	water below and above, and any height biomes or the surface rule
 TropicalFish.Pattern.addToTooltip	port	crates/horizon-client/src/item_tooltip.rs::PlayerHeadName::tropical_fish_lines	ticked in #3512; `TropicalFish.Pattern.addToTooltip` is cited at crates/horizon-client/src/item_tooltip.rs:362
+OwnerHurtByTargetGoal.canUse	port	crates/horizon-client/src/mobs/tame.rs::wants_to_attack	dead attackers are refused by canBeSeenByAnyone
