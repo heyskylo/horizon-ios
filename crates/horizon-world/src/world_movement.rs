@@ -110,16 +110,14 @@ pub fn no_world_collision<W, E>(
 where
     W: BlockCollisionWorld<Error = E> + EntityMovementWorld<Error = E>,
 {
-    for hit in BlockCollisionScan::new(
+    if BlockCollisionScan::any_collision(
         world,
         request.context,
         request.bounds,
         false,
         request.candidate_budget,
     )? {
-        if !hit?.shape.is_empty() {
-            return Ok(false);
-        }
+        return Ok(false);
     }
     if !world
         .entity_collisions(request.entity, request.bounds)
