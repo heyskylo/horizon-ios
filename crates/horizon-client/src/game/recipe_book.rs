@@ -406,10 +406,15 @@ impl Game<'_> {
             r.builtin
                 .get(registry)
                 .and_then(|ids| ids.name(id))
+                .or_else(|| r.registries.name(registry, id))
                 .map(str::to_owned)
         };
         let item = |id: i32| name_of("minecraft:item", id);
-        let category = |id: i32| name_of("minecraft:recipe_book_category", id);
+        let category = |id: i32| {
+            name_of("minecraft:recipe_book_category", id).or_else(|| {
+                horizon_client::recipe_book::Category::from_id(id).map(|c| c.name().to_owned())
+            })
+        };
         let tag = |name: &str| items.item_tag_order.get(name).cloned().unwrap_or_default();
         book.use_server_entries(
             entries,
