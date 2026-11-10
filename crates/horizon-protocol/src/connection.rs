@@ -524,24 +524,26 @@ impl ConnReader {
     /// (`WouldBlock` when nothing waits).
     pub fn read_from(&mut self, source: &mut impl Read) -> std::io::Result<usize> {
         let wanted = match self.next_header() {
-            Ok(Some(wanted)) => wanted,
+            Ok(Some((prefix, len))) => prefix + len,
             _ => 0,
         };
         self.fill_from(source, wanted)
     }
     /// The bytes the next frame needs, once its length prefix is whole.
-    fn next_header(&self) -> Result<Option<usize>> {
-        Ok(frame::header(&self.buffer[self.start..self.end])?.map(|(prefix, len)| prefix + len))
+    fn next_header(&self) -> Result<Option<(usize, usize)>> {
+        frame::header(&self.buffer[self.start..self.end])
     }
     /// Take the next frame off the buffer, if it is whole.
     fn next(&mut self) -> Result<Next> {
-        let Some(wanted) = self.next_header()? else {
+        // Read the VarInt21 length once; the same prefix is used to locate
+        // the payload and to determine whether the full frame is available.
+        let Some((prefix, len)) = self.next_header()? else {
             return Ok(Next::Partial(0));
         };
+        let wanted = prefix + len;
         if self.end - self.start < wanted {
             return Ok(Next::Partial(wanted));
         }
-        let (prefix, _) = frame::header(&self.buffer[self.start..self.end])?.expect("whole");
         let frame = self.start + prefix..self.start + wanted;
         self.start = frame.end;
         Ok(match self.packet(frame)? {
@@ -865,6 +867,42 @@ mod tests {
         let (id, payload) = c.recv().unwrap();
         assert_eq!((id, payload.as_slice()), (9, &b"reply"[..]));
         server.join().unwrap();
+    }
+
+    #[test]
+    fn fragmented_plain_frame_header_and_following_packet() {
+        let (pipe, _peer) = Pipe::pair();
+        let mut connection = Connection::local(pipe);
+        let payload: Vec<u8> = (0..300).map(|i| i as u8).collect();
+        let mut body = vec![0xac, 0x02]; // Packet id 300, two-byte VarInt.
+        body.extend_from_slice(&payload);
+        let mut framed = frame::encode(&body, None).unwrap();
+        framed.extend(frame::encode(&[7, 9, 8], None).unwrap());
+
+        for chunk in [&framed[..1], &framed[1..2]] {
+            let mut input = chunk;
+            assert_eq!(
+                connection.reader.read_from(&mut input).unwrap(),
+                chunk.len()
+            );
+            assert!(connection.reader.buffered().unwrap().is_none());
+        }
+        assert_eq!(
+            connection.reader.next_header().unwrap(),
+            Some((2, body.len()))
+        );
+        let mut remaining = &framed[2..];
+        assert_eq!(
+            connection.reader.read_from(&mut remaining).unwrap(),
+            framed.len() - 2
+        );
+        assert_eq!(connection.reader.buffered().unwrap(), Some((300, payload)));
+        assert_eq!(connection.reader.buffered().unwrap(), Some((7, vec![9, 8])));
+        assert!(connection.reader.buffered().unwrap().is_none());
+        assert_eq!(
+            connection.reader.counters.received.load(Ordering::Relaxed),
+            2
+        );
     }
 
     #[test]
