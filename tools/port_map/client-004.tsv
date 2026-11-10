@@ -19,7 +19,7 @@ EntityRenderDispatcher.extractEntity	skip:other		render-state wrapper with a cra
 EntityRenderDispatcher.fillRendererDetails	skip:debug		crash report detail
 EntityRenderDispatcher.onResourceManagerReload	skip:data		renderer rebuild on resource reload; Horizon loads its assets from files
 EntityRenderer.getBoundingBoxForCulling	port	crates/horizon-client/src/game/entity_culling.rs::cull_box	Entity.getInterpolatedBoundingBox(partialTick) - the box at the frame's position - grown by 0.5 for the frustum test; the renderer overrides have their own rows, and a dropped item's is game/item_draw.rs::dropped_item_cull_box
-EntityRenderer.getBlockLightLevel	port	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	burning mobs, projectiles and dropped items drawn at full block light (game/creatures.rs::Game::mob_geometry, game/item_draw.rs::Game::dropped_item_geometry); other entities use world light
+EntityRenderer.getBlockLightLevel	port	crates/horizon-client/src/game/creatures/mob_geometry.rs::Game::mob_geometry	burning mobs, projectiles and dropped items drawn at full block light (game/creatures.rs::Game::mob_geometry, game/item_draw.rs::Game::dropped_item_geometry); other entities use world light
 EntityRenderer.submit	inline	crates/horizon-client/src/game.rs::Game::entity_geometry	leash ropes and name tags drawn in their own passes from there
 EntityRenderer.shouldShowName	port	crates/horizon-client/src/game/names.rs::Game::name_tags	named mob under the crosshair
 EntityRenderer.submitNameDisplay	port	crates/horizon-client/src/game/names.rs::Game::name_tag_geometry	
@@ -84,8 +84,8 @@ LivingEntityRenderer.extractNameTags	port	crates/horizon-client/src/game/names.r
 LivingEntityRenderer.solveBodyRot	port	crates/horizon-client/src/mobs/riders.rs::solve_body_rot	mobs through anim::body_rot, the window's player through tick_player_model
 LlamaRenderer.getTextureLocation	port	crates/horizon-client/src/mobs/render.rs::body	variant and baby texture
 LlamaRenderer.extractRenderState	port	crates/horizon-client/src/mobs/body_anim.rs::llama	chest flag; decor layers in mobs/render.rs::layers
-LlamaSpitRenderer.submit	port	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	gap: minor: drawn as a camera-facing sprite, not the spit model with its rotation
-LlamaSpitRenderer.extractRenderState	inline	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	rotation read there
+LlamaSpitRenderer.submit	port	crates/horizon-client/src/game/creatures/mob_geometry.rs::Game::mob_geometry	gap: minor: drawn as a camera-facing sprite, not the spit model with its rotation
+LlamaSpitRenderer.extractRenderState	inline	crates/horizon-client/src/game/creatures/mob_geometry.rs::Game::mob_geometry	rotation read there
 MobRenderer.checkMagicName	inline	crates/horizon-client/src/mobs/render.rs::body	gap: player: Toast is handled; a sheep named jeb_ does not get rainbow wool
 MushroomCowRenderer.getTextureLocation	port	crates/horizon-client/src/mobs/render.rs::body	variant and baby texture
 MushroomCowRenderer.extractRenderState	port	crates/horizon-client/src/mobs/render.rs::body	gap: player: the mushroom block on the back is not drawn
@@ -116,9 +116,9 @@ RabbitRenderer.extractRenderState	port	crates/horizon-client/src/mobs/body_anim.
 RavagerRenderer.extractRenderState	port	crates/horizon-client/src/mobs/ravager.rs::anim	stun, bite and roar clocks
 SalmonRenderer.setupRotations	port	crates/horizon-client/src/mobs/aquatic.rs::rotations	the 4.3-amplitude swim wiggle and the flop
 SheepRenderer.extractRenderState	inline	crates/horizon-client/src/mobs/render.rs::layers	the sheep's extra layers: a jeb_ custom name takes jeb_wool_rgb(age), else pack_dyes::sheep_wool(color); the undercoat and sheared rules are in the same arm, head eat and age elsewhere
-ShulkerBulletRenderer.submit	port	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	gap: minor: drawn as a spark sprite, not the spinning two-layer model
-ShulkerBulletRenderer.getBlockLightLevel	port	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	15 block light wherever the bullet flies; the same pass carries `EntityRenderer.getBlockLightLevel`'s isOnFire rule and `getPackedLightCoords`' eye probe
-ShulkerBulletRenderer.extractRenderState	inline	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	rotation read there
+ShulkerBulletRenderer.submit	port	crates/horizon-client/src/game/creatures/mob_geometry.rs::Game::mob_geometry	gap: minor: drawn as a spark sprite, not the spinning two-layer model
+ShulkerBulletRenderer.getBlockLightLevel	port	crates/horizon-client/src/game/creatures/mob_geometry.rs::Game::mob_geometry	15 block light wherever the bullet flies; the same pass carries `EntityRenderer.getBlockLightLevel`'s isOnFire rule and `getPackedLightCoords`' eye probe
+ShulkerBulletRenderer.extractRenderState	inline	crates/horizon-client/src/game/creatures/mob_geometry.rs::Game::mob_geometry	rotation read there
 ShulkerRenderer.shouldRender	skip:other		frustum culling only
 ShulkerRenderer.getTextureLocation	port	crates/horizon-client/src/mobs/shulker.rs::texture	colour texture
 ShulkerRenderer.extractRenderState	port	crates/horizon-client/src/mobs/shulker.rs::rotations	peek and head angles
@@ -134,8 +134,8 @@ StriderRenderer.isShaking	port	crates/horizon-client/src/mobs/render.rs::shaking
 SulfurCubeRenderer.submit	port	crates/horizon-client/src/mobs/sulfur_cube.rs::body	normal or small model
 SulfurCubeRenderer.extractRenderState	port	crates/horizon-client/src/game/sulfur_cubes.rs::Game::sulfur_cube_body_geometry	fuse flash, contained block and worn head
 SulfurCubeRenderer.applySizeAndSquish	port	crates/horizon-client/src/mobs/sulfur_cube.rs::scale	size and squish scale
-ThrownItemRenderer.submit	port	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	thrown item sprite at its scale; a fireball's stack is drawn as the item model (`DisplayContext.Ground`) at 3 or 0.75, full bright
-ThrownItemRenderer.extractRenderState	inline	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	item sprite read there; a fireball's stack is `Projectile.item` (`Fireball.getItem`)
+ThrownItemRenderer.submit	port	crates/horizon-client/src/game/creatures/mob_geometry.rs::Game::mob_geometry	thrown item sprite at its scale; a fireball's stack is drawn as the item model (`DisplayContext.Ground`) at 3 or 0.75, full bright
+ThrownItemRenderer.extractRenderState	inline	crates/horizon-client/src/game/creatures/mob_geometry.rs::Game::mob_geometry	item sprite read there; a fireball's stack is `Projectile.item` (`Fireball.getItem`)
 ThrownTridentRenderer.submit	port	crates/horizon-client/src/game/trident.rs::Game::trident_geometry	gap: minor: foil glint is not drawn on a thrown trident
 ThrownTridentRenderer.extractRenderState	inline	crates/horizon-client/src/game/trident.rs::Game::trident_geometry	yaw, pitch and foil read there
 TippableArrowRenderer.extractRenderState	port	crates/horizon-client/src/projectiles.rs::Projectile::arrow_effect_color	brewing::potion_color gives a tipped arrow its potion colour
