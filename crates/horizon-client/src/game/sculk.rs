@@ -359,12 +359,19 @@ impl Game<'_> {
             self.sculk.tracker = WardenSpawnTracker::from_nbt(tag);
         }
     }
-    /// Write the tracker into the player data being saved.
+    /// The tracker as saved, once it has been loaded.
+    pub(super) fn warden_tracker_tag(&self) -> Option<horizon_world::nbt::Tag> {
+        self.sculk
+            .tracker_loaded
+            .then(|| self.sculk.tracker.to_nbt())
+    }
+    /// Write the tracker into the player data being saved. With a LAN owner,
+    /// `store_owner` rewrites that from the owner's guest, so it puts the
+    /// tracker there as well (`playerdata::with_warden`).
     pub(super) fn save_warden_tracker(&mut self) {
-        if !self.sculk.tracker_loaded {
+        let Some(tag) = self.warden_tracker_tag() else {
             return;
-        }
-        let tag = self.sculk.tracker.to_nbt();
+        };
         let extra = self
             .level
             .player_extra
@@ -2409,18 +2416,28 @@ impl Game<'_> {
         at: [f64; 3],
         source: Option<super::commands::Target>,
     ) {
+        self.entity_event_by("minecraft:entity_die", at, source);
+    }
+    /// `Entity.gameEvent(event, attributedTo)` at `at`, attributed to `source`
+    /// (a LAN guest posts as that player), else to the entity itself.
+    pub(super) fn entity_event_by(
+        &mut self,
+        event: &'static str,
+        at: [f64; 3],
+        source: Option<super::commands::Target>,
+    ) {
         use super::commands::Target;
         if let Some(Target::Guest(conn)) = source {
             if self.lan_acting == Some(conn) {
                 let ctx = self.player_context(None);
-                self.post_game_event("minecraft:entity_die", at, ctx);
+                self.post_game_event(event, at, ctx);
                 return;
             }
             if let Some(mut host) = self.lan.take() {
                 let posted = self
                     .as_guest(&mut host, conn, |g| {
                         let ctx = g.player_context(None);
-                        g.post_game_event("minecraft:entity_die", at, ctx);
+                        g.post_game_event(event, at, ctx);
                     })
                     .is_some();
                 self.lan = Some(host);
@@ -2437,7 +2454,7 @@ impl Game<'_> {
         let mut ctx = self.who_context(who, None);
         // A stand is living, but Warden.canTargetEntity explicitly excludes it.
         ctx.living |= matches!(source, Some(Target::Stand(_)));
-        self.post_game_event("minecraft:entity_die", at, ctx);
+        self.post_game_event(event, at, ctx);
     }
 }
 

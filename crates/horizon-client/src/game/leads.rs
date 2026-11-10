@@ -13,6 +13,14 @@ use horizon_client::{
 };
 use horizon_world::nbt::Tag;
 
+/// The item context of a leash success (`InteractionResult.Success`): tying
+/// held mobs to this one and the holder's detach are `withoutItem`, so item
+/// criteria see an empty hand; shears and a new lead keep the used item.
+pub(super) enum LeashInteraction {
+    WithItem,
+    WithoutItem,
+}
+
 /// `Vec3.yRot(angle)`.
 /// `LocalPlayer.getRopeHoldPosition`'s `Mth.lerp(partialTick * 0.5F, getYRot(),
 /// yRotO)` and the same for the pitch, in radians.
@@ -463,13 +471,21 @@ impl Game<'_> {
             |id| self.mob_uuid(id),
         );
     }
-    /// `Entity.interact`'s leash part for a mob. Returns whether it was used.
+    #[cfg(test)]
     pub(super) fn interact_leash(&mut self, index: usize, item: &str) -> bool {
+        self.interact_leash_with_item_context(index, item).is_some()
+    }
+    /// `Entity.interact`: retain the holder-detach success's item context.
+    pub(super) fn interact_leash_with_item_context(
+        &mut self,
+        index: usize,
+        item: &str,
+    ) -> Option<LeashInteraction> {
         let sneaking = self.keys.held(Action::Sneak);
         let id = self.mobs[index].id;
         let at = self.mobs[index].center();
         if !self.mobs[index].alive() {
-            return false;
+            return None;
         }
         // Sneaking with mobs in hand: tie them to this one.
         if sneaking && leash::can_be_leashed(&self.mobs[index]) && !self.mobs[index].is_baby() {
@@ -483,7 +499,7 @@ impl Game<'_> {
             if self.tie_player_leads(center, Holder::Mob(id), Some(index)) {
                 self.lead_game_event("minecraft:entity_action", at);
                 self.lead_sound("tied", at);
-                return true;
+                return Some(LeashInteraction::WithoutItem);
             }
         }
         if item == "minecraft:shears" {
@@ -510,7 +526,7 @@ impl Game<'_> {
                 self.audio
                     .play("minecraft:item.shears.snip", Some(at), 1.0, 1.0);
                 self.damage_held_tool();
-                return true;
+                return Some(LeashInteraction::WithItem);
             }
         }
         // Mob.checkAndHandleImportantInteractions: only the player the lead
@@ -525,7 +541,7 @@ impl Game<'_> {
             self.break_leash_used(id, !creative);
             self.lead_game_event("minecraft:entity_interact", at);
             self.lead_sound("untied", at);
-            return true;
+            return Some(LeashInteraction::WithoutItem);
         }
         if item == "minecraft:lead" {
             let center = self.player_center();
@@ -551,10 +567,10 @@ impl Game<'_> {
                         *self.held_mut() = None;
                     }
                 }
-                return true;
+                return Some(LeashInteraction::WithItem);
             }
         }
-        false
+        None
     }
     /// `LeadItem.useOn` on the fence the crosshair hits.
     pub(super) fn interact_knot(&mut self) -> bool {
@@ -668,6 +684,9 @@ impl Game<'_> {
             [white.u1, white.v0],
             [white.u0, white.v0],
         ];
+        // A Polytone pack's `entity/lead.png`: each of the 24 segments, from the leashed end,
+        // takes its row of the texture, unshaded (measured on the real mod).
+        let lead = atlas.sprites.get("entity/lead").copied();
         let lerp3 = |a: horizon_core::geometry::Vec3, b: horizon_core::geometry::Vec3| {
             glam::DVec3::new(
                 a.x + (b.x - a.x) * alpha,
@@ -810,9 +829,21 @@ impl Game<'_> {
                         };
                         let (a0, b0) = point(step, fudge);
                         let (a1, b1) = point(step + 1, fudge);
-                        let color = shade(step);
+                        let (color, rows) = match lead {
+                            Some(r) => {
+                                let v = |s: i32| r.v0 + (r.v1 - r.v0) * s as f32 / 24.0;
+                                let (top, bottom) = (v(step), v(step + 1));
+                                let near =
+                                    [[r.u0, top], [r.u1, top], [r.u1, bottom], [r.u0, bottom]];
+                                let far =
+                                    [[r.u0, bottom], [r.u1, bottom], [r.u1, top], [r.u0, top]];
+                                (0xFFFF_FFFF, [near, far])
+                            }
+                            None => (shade(step), [uv; 2]),
+                        };
                         // Both faces: the leash is not culled.
-                        for quad in [[a0, b0, b1, a1], [a1, b1, b0, a0]] {
+                        for (quad, uv) in [[a0, b0, b1, a1], [a1, b1, b0, a0]].into_iter().zip(rows)
+                        {
                             for (v, uv) in quad.iter().zip(uv) {
                                 out.push(Vertex {
                                     normal: [0; 4],

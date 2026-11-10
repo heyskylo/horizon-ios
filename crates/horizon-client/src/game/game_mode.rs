@@ -63,7 +63,44 @@ pub(super) fn projectile_predicate_supported(tag: &horizon_world::nbt::Tag) -> b
         _ => false,
     }
 }
+/// `InventoryScreen.containerTick`: a survival inventory left open when the
+/// player gains infinite materials becomes the creative one, so the player
+/// stays in a menu. A spectator's inventory is closed (`Playing`), which is
+/// what Horizon did for every mode before; vanilla has no spectator branch
+/// and leaves it open.
+fn inventory_after_mode(screen: Screen, creative: bool, spectator: bool) -> Screen {
+    if screen != Screen::Inventory {
+        return screen;
+    }
+    if creative {
+        Screen::Creative
+    } else if spectator {
+        Screen::Playing
+    } else {
+        screen
+    }
+}
+
 impl Game<'_> {
+    /// `InventoryScreen.containerTick` on a mode change: the inventory the player has
+    /// open follows the mode. (`CreativeModeInventoryScreen.containerTick`, the way back
+    /// to survival, is not ported yet.)
+    fn mode_changed_under_inventory(&mut self) {
+        match inventory_after_mode(self.screen, self.creative, self.spectator()) {
+            Screen::Creative => {
+                if let Some(c) = self.carried.take() {
+                    let _ = self.give(c);
+                }
+                self.screen = Screen::Creative;
+                self.refresh_creative_tabs();
+                self.creative_screen.reopen();
+                self.refresh_saved_hotbars();
+            }
+            next if next != self.screen => self.screen = next,
+            _ => {}
+        }
+    }
+
     pub(super) fn spectator(&self) -> bool {
         self.mode == GameMode::Spectator
     }
@@ -134,9 +171,10 @@ impl Game<'_> {
                 p.flying = false;
             }
         }
-        if mode == GameMode::Spectator && self.screen == Screen::Inventory {
-            self.screen = Screen::Playing;
-        }
+        // InventoryScreen.containerTick: the open inventory follows the mode. Here, not in
+        // the command, so the window hears it too: it changes mode through the server's
+        // game event (`set_mode_id`), never through `set_game_mode`.
+        self.mode_changed_under_inventory();
     }
 }
 impl Game<'_> {
@@ -281,7 +319,7 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{loads_chunks, projectile_predicate_supported};
+    use super::{Screen, inventory_after_mode, loads_chunks, projectile_predicate_supported};
 
     // Added after the frozen old Game proof: unsupported conjuncts must not
     // become permission from their otherwise matching blocks portion.
@@ -306,6 +344,29 @@ mod tests {
         )
         .unwrap();
         assert!(projectile_predicate_supported(&tag));
+    }
+
+    /// `InventoryScreen.containerTick`: the survival inventory becomes the
+    /// creative one when the player gets infinite materials, and any other
+    /// screen is left where it is.
+    #[test]
+    fn a_survival_inventory_becomes_the_creative_one() {
+        assert!(inventory_after_mode(Screen::Inventory, true, false) == Screen::Creative);
+        let stays = inventory_after_mode(Screen::Inventory, false, false);
+        assert!(stays == Screen::Inventory, "survival keeps its inventory");
+        // A spectator's inventory is closed, which is what Horizon did for
+        // both before; vanilla has no spectator branch and leaves it open.
+        let closed = inventory_after_mode(Screen::Inventory, false, true);
+        assert!(closed == Screen::Playing);
+        for screen in [
+            Screen::Playing,
+            Screen::Creative,
+            Screen::Paused,
+            Screen::Stats,
+            Screen::Advancements,
+        ] {
+            assert!(inventory_after_mode(screen, true, false) == screen);
+        }
     }
 
     /// `ChunkMap.skipPlayer`: only a spectator with `spectators_generate_chunks`

@@ -24,8 +24,8 @@ use std::{
 };
 
 const MAGIC: &[u8; 8] = b"HZBEHAV\0";
-const VERSION: u32 = 2;
-const FILE_NAME: &str = "behaviours-v2.bin";
+const VERSION: u32 = 3;
+const FILE_NAME: &str = "behaviours-v3.bin";
 const REGISTRY_MAGIC: &[u8; 8] = b"HZREGIS\0";
 const REGISTRY_VERSION: u32 = 1;
 const REGISTRY_FILE_NAME: &str = "registry-v1.bin";
@@ -47,7 +47,7 @@ struct Snapshot {
     facts: Vec<Fact>,
     shapes: Vec<Shape>,
     shape_info: Vec<[u8; 3]>,
-    fluid_tags: [u8; 6],
+    fluid_tags: [crate::fluid::FluidMask; 6],
     blocks: Vec<Block>,
     items: HashMap<String, Item>,
 }
@@ -622,9 +622,7 @@ impl Snapshot {
                 if wire.shape < -1 || wire.shape >= shapes.len() as i32 {
                     return Err(invalid("cached shape index out of range"));
                 }
-                let fluid_kind = FluidKind::ALL
-                    .get(wire.fluid_kind as usize)
-                    .copied()
+                let fluid_kind = FluidKind::from_index(wire.fluid_kind as usize)
                     .ok_or_else(|| invalid("cached fluid kind out of range"))?;
                 Ok(StateFacts {
                     flags: wire.flags,

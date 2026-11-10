@@ -4,7 +4,9 @@
 `ServerRecipeBook.addRecipes` sends one `ClientboundRecipeBookAddPacket.Entry` per display a recipe has
 (`RecipeManager.listDisplaysForRecipe`), and `removeRecipes` a `ClientboundRecipeBookRemovePacket` of all of
 them. `minecraft:map_cloning` is a `crafting_transmute` recipe whose `material_count` runs from 1 to 8:
-`TransmuteRecipe.display()` gives it eight shapeless displays.
+`TransmuteRecipe.display()` gives it eight shapeless displays. A `crafting_dye` recipe shows the
+`minecraft:dyed` slot demo and a `crafting_imbue` recipe a 3×3 `with_any_potion` display; both have
+their own grant and removal steps here.
 
 A real network player (LocatorBarClient) joins a dedicated server (vanilla, then Horizon) with the
 menu recorder on: every recipe book Add and Remove packet is kept with its raw payload and its fields as
@@ -34,8 +36,12 @@ STEPS = [
     ('give-transmute', 'recipe give Bob minecraft:map_cloning'),
     ('take-transmute', 'recipe take Bob minecraft:map_cloning'),
     ('take-ordinary', 'recipe take Bob minecraft:crafting_table'),
+    ('give-dye', 'recipe give Bob minecraft:leather_helmet_dyed'),
+    ('take-dye', 'recipe take Bob minecraft:leather_helmet_dyed'),
+    ('give-imbue', 'recipe give Bob minecraft:tipped_arrow'),
+    ('take-imbue', 'recipe take Bob minecraft:tipped_arrow'),
 ]
-TARGET = {'give-transmute', 'take-transmute'}
+TARGET = {'give-transmute', 'take-transmute', 'give-dye', 'take-dye', 'give-imbue', 'take-imbue'}
 
 
 def run(label, command, client_command, build, world):
@@ -125,9 +131,11 @@ def facts(proof, steps):
         # ServerRecipeBook keeps sets: their saved order is not the book's.
         out[f'{step}/book/recipes'] = sorted(book.get('recipes', []))
         out[f'{step}/book/toBeDisplayed'] = sorted(book.get('toBeDisplayed', []))
-    # The ids the transmute grant added are the ids its removal takes back.
-    give = out['target-give-transmute/add/ids']
-    out['target-take-transmute/remove-matches-add'] = sorted(give) == sorted(out['target-take-transmute/remove/ids'])
+    # The ids a grant added are the ids its removal takes back.
+    for kind in ('transmute', 'dye', 'imbue'):
+        give = out[f'target-give-{kind}/add/ids']
+        out[f'target-take-{kind}/remove-matches-add'] = (
+            sorted(give) == sorted(out[f'target-take-{kind}/remove/ids']))
     return out
 
 

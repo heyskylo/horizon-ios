@@ -5,6 +5,7 @@ use super::{
     native_claimed_items::{NativeHit, RAYCAST_MAX},
 };
 use horizon_world::nbt::Tag;
+use horizon_world::registry::{BlockRegistry, BlockStateId};
 
 /// Which of a column's heights (`Heightmap.Types`) a run's `y` counts from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,6 +27,14 @@ pub struct NativeBlockRun {
     pub block: u32,
     pub only: Option<u32>,
 }
+/// Block entity data for the block at a position once the runs are made, as `/setblock ... {nbt}` loads it (SNBT).
+#[derive(Clone, Debug, PartialEq)]
+pub struct NativeBlockNbt {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+    pub nbt: String,
+}
 /// A bulk edit: block states and block predicates as commands write them (without NBT), and the runs naming them
 /// by index. `neighbour_updates` tells the neighbours of each block changed, as `set_block` does with its flags
 /// (API @API:edit_blocks_neighbour_updates@); off, none is told.
@@ -35,6 +44,9 @@ pub struct NativeBlockEdit {
     pub filters: Vec<String>,
     pub runs: Vec<NativeBlockRun>,
     pub neighbour_updates: bool,
+    /// Block entity data, loaded after all runs: an entry whose position holds no block entity, or whose `id`
+    /// names another type, is skipped (the block stays as the runs made it). API @API:edit_blocks_nbt@.
+    pub block_entities: Vec<NativeBlockNbt>,
 }
 
 impl Game<'_> {
@@ -85,6 +97,93 @@ impl Game<'_> {
             );
         }
         Ok(changed)
+    }
+    /// For a server mod about to edit the block at `pos` of `dimension` for
+    /// player `player` (`name`): whether the mods allow it. Asks every mod
+    /// (`native_can_build`) with `action`, `place` or `break`; any denies it,
+    /// and none at all allows it. Any other `action` is refused. The edit
+    /// itself is the caller's: `native_edit_blocks` and `native_set_block`
+    /// do not ask.
+    pub(super) fn native_may_build(
+        &self,
+        player: u128,
+        name: &str,
+        dimension: &str,
+        pos: [i32; 3],
+        action: &str,
+    ) -> bool {
+        if !matches!(action, "place" | "break") {
+            return false;
+        }
+        let mut cancel = false;
+        self.native_can_build(player, name, dimension, pos, action, &mut cancel);
+        !cancel
+    }
+    /// For a server mod: lights the loaded chunks `chunks` (`[x, z]`, block
+    /// coordinates `>> 4`) of the level being ticked again, whole, from their
+    /// blocks, and the loaded chunks beside them, as the lighting of
+    /// `native_edit_blocks` does but at once, so the light is there before the
+    /// chunks are sent (`native_resend_chunk`). A chunk without all eight
+    /// neighbours loaded is left out. The light that changed is saved and
+    /// goes to the players who see that chunk's border as any relight's does;
+    /// the others get it in a resent chunk. Returns how many chunks were lit
+    /// (the ring included); 0 for another dimension, on a client. Lights every
+    /// chunk it is given: call it for the chunks an edit changed, not every
+    /// tick. API @API:chunk_relight_resend@.
+    pub(super) fn native_relight_chunks(&mut self, dimension: &str, chunks: &[[i32; 2]]) -> u32 {
+        if !self.native_level_open(dimension) {
+            return 0;
+        }
+        let mut columns: Vec<(i32, i32)> = chunks
+            .iter()
+            .flat_map(|&[x, z]| {
+                (-1..=1).flat_map(move |dz| {
+                    (-1..=1).map(move |dx| (x.wrapping_add(dx), z.wrapping_add(dz)))
+                })
+            })
+            .filter(|key| self.world.chunks.contains_key(key))
+            .collect();
+        columns.sort_unstable();
+        columns.dedup();
+        self.streaming.relight_now(&mut self.world, &columns) as u32
+    }
+
+    /// For a server mod: the UUIDs of the players who are sent chunk `chunk`
+    /// (`[x, z]`) of the level being ticked and have it, in join order: the
+    /// ones to tell of a change there. Empty for another dimension and on a
+    /// client. API @API:chunk_relight_resend@.
+    pub(super) fn native_chunk_trackers(&self, dimension: &str, chunk: [i32; 2]) -> Vec<u128> {
+        if !self.native_level_open(dimension) {
+            return Vec::new();
+        }
+        match &self.lan {
+            Some(host) => host.hub.chunk_trackers((chunk[0], chunk[1])),
+            None => Vec::new(),
+        }
+    }
+
+    /// For a server mod: sends chunk `chunk` of the level being ticked again,
+    /// whole, with its light, block entities and biomes as they are now, to
+    /// every player who has it, or only to `player` when given and it has the
+    /// chunk. Returns how many players were sent it; 0 for a chunk not
+    /// loaded, a player who does not have it, another dimension, and on a
+    /// client. API @API:chunk_relight_resend@.
+    pub(super) fn native_resend_chunk(
+        &mut self,
+        dimension: &str,
+        chunk: [i32; 2],
+        player: Option<u128>,
+    ) -> u32 {
+        if !self.native_level_open(dimension) {
+            return 0;
+        }
+        match self.lan.as_mut() {
+            Some(host) => {
+                host.hub
+                    .resend_chunk(&self.world, (chunk[0], chunk[1]), player) as u32
+            }
+            None => 0,
+        }
     }
     /// Whether `dimension` is the authoritative level being ticked: where a server mod's world helpers act.
     pub(super) fn native_level_open(&self, dimension: &str) -> bool {
@@ -172,4 +271,62 @@ impl Game<'_> {
             .map(|(id, _, _)| id)
             .collect()
     }
+    /// For a server mod: load SNBT `nbt` into the block entity at `pos` of the level being ticked, as the NBT of
+    /// `/setblock ... {nbt}` is loaded (`id`, `x`, `y`, `z` are the block entity's own and kept). False, changing
+    /// nothing: another dimension, a client, a chunk not loaded, NBT that doesn't read or isn't a compound, no block
+    /// entity at `pos`, or an `id` that isn't that block entity's type. API @API:edit_blocks_nbt@.
+    pub(super) fn native_set_block_entity(
+        &mut self,
+        dimension: &str,
+        pos: [i32; 3],
+        nbt: &str,
+    ) -> bool {
+        self.native_level_open(dimension)
+            && super::block_edits::parse_block_entity_nbt(nbt)
+                .is_ok_and(|tag| self.set_block_entity_checked(pos, tag))
+    }
+    /// For a server mod: the full saved NBT of the block entity at `pos` of the level being ticked, as SNBT
+    /// (`/data get block`), None where there is none, in another dimension or on a client. API
+    /// @API:edit_blocks_nbt@.
+    pub(super) fn native_block_entity_nbt(
+        &mut self,
+        dimension: &str,
+        pos: [i32; 3],
+    ) -> Option<String> {
+        if !self.native_level_open(dimension) {
+            return None;
+        }
+        self.block_entity_nbt(pos)
+            .map(|tag| horizon_client::snbt::to_snbt(&tag))
+    }
+}
+
+/// `state` with its property `key` set to `value`; none when the block has
+/// no such property or value.
+pub(super) fn with_property(
+    registry: &BlockRegistry,
+    state: BlockStateId,
+    key: &str,
+    value: &str,
+) -> Option<BlockStateId> {
+    let mut s = registry.state(state)?.clone();
+    match s.properties.get(key) {
+        Some(v) if v == value => return Some(state),
+        Some(_) => {}
+        None => return None,
+    }
+    s.properties.insert(key.into(), value.into());
+    registry.resolve(&s).ok()
+}
+
+/// The state a mod's property write changes `state` to; none when the block
+/// has no such property or value, or already has it: `LevelChunk.setBlockState`
+/// returns null for the same state, so `Level.setBlock` returns false.
+pub(super) fn property_change(
+    registry: &BlockRegistry,
+    state: BlockStateId,
+    key: &str,
+    value: &str,
+) -> Option<BlockStateId> {
+    with_property(registry, state, key, value).filter(|&id| id != state)
 }

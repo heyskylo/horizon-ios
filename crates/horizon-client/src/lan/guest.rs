@@ -173,10 +173,10 @@ pub struct Guest {
     /// Where the player respawns (a bed's spot; `ServerPlayer.respawnConfig`),
     /// None for the world spawn.
     pub spawn: Option<[f64; 3]>,
-    /// A respawn point outside the Overworld (a respawn anchor, or one
-    /// `spawnpoint` set there): its dimension, block, yaw and whether it is
-    /// forced, as the player's save keeps it (`respawn`).
-    pub respawn_elsewhere: Option<(String, [i32; 3], f32, bool)>,
+    /// A block-resolved personal respawn point: its dimension, block, yaw,
+    /// pitch and whether it is forced, as the player's save keeps it
+    /// (`respawn`).
+    pub respawn_elsewhere: Option<(String, [i32; 3], f32, f32, bool)>,
     /// Pending ClientboundPlayerPositionPacket id; movement is ignored until
     /// the client accepts it (ServerGamePacketListenerImpl.awaitingPositionFromClient).
     pub awaiting_teleport: Option<(i32, [f64; 3])>,
@@ -744,6 +744,10 @@ impl Guest {
     }
     pub fn spectator(&self) -> bool {
         self.game_mode == SPECTATOR
+    }
+    /// `Abilities.mayBuild`: survival or creative.
+    pub fn may_build(&self) -> bool {
+        matches!(self.game_mode, SURVIVAL | CREATIVE)
     }
     /// PlayerAbilities flags (invulnerable, flying, may fly, instabuild).
     pub fn ability_flags(&self) -> i8 {

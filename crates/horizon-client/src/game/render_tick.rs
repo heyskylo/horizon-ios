@@ -167,6 +167,8 @@ impl Game<'_> {
                 || self.settings.extras.pvp.tweaks.clear_lava,
             full_water_vision: self.settings.extras.pvp.tweaks.clear_water,
             night_vision: self.fog_night_vision(),
+            environment: self.pack.polytone_colors.env,
+            fluid_fog: self.pack.polytone_colors.fluid_fog,
         };
         let mut fog = horizon_client::fog::setup_fog(tables, &self.fog, &input);
         if !self.settings.horizon.fog {
@@ -263,7 +265,7 @@ impl Game<'_> {
         let horizon = if self.level_flat() {
             f64::from(self.level_min_y())
         } else {
-            63.0
+            f64::from(self.pack.polytone_colors.env.horizon_height)
         };
         self.dim == Dim::Overworld
             && camera.y < horizon
@@ -469,6 +471,7 @@ impl Game<'_> {
     }
 
     pub(super) fn tick_particles(&mut self) {
+        self.update_animation_inputs();
         let mut laps = horizon_client::spans::laps();
         let eye = self.eye_position();
         if let Some(e) = eye {
@@ -677,6 +680,7 @@ impl Game<'_> {
                 .player
                 .as_ref()
                 .map(|p| ([p.position.x, p.position.y, p.position.z], p.velocity.y)),
+            cached_chunk: std::cell::Cell::new(None),
         };
         laps.lap("tp_level");
         // Resource packs' Polytone entity emitters on the player (#11486): fog, dust and
@@ -723,7 +727,70 @@ impl Game<'_> {
             }
         }
     }
+
+    /// The ticks the frame shows (animated textures, the HUD, a shader pack's clock): the
+    /// client's, or under `HORIZON_STILL` (`FixedStep::still`) the world's game time, which
+    /// moves only while the world runs.
+    pub(super) fn visual_ticks(&self) -> u64 {
+        if self.clock.still() {
+            self.world.game_time.max(0) as u64
+        } else {
+            self.ticks
+        }
+    }
+
+    /// The clock of the animated textures: `Minecraft.runTick` ticks the `TextureManager`
+    /// only while the level runs normally. Under `HORIZON_STILL` it is the world's ticks.
+    pub(super) fn texture_clock(&self) -> u64 {
+        if self.clock.still() {
+            self.visual_ticks()
+        } else {
+            self.texture_ticks
+        }
+    }
+
+    /// `Util.getMillis` for what the frame shows (the world border's scroll, the hearts' blink,
+    /// the glint's under the switch): under `HORIZON_STILL`, the world's ticks in milliseconds.
+    pub(super) fn visual_millis(&self) -> i64 {
+        if self.clock.still() {
+            self.visual_ticks() as i64 * 50
+        } else {
+            self.started.elapsed().as_millis() as i64
+        }
+    }
 }
+impl Game<'_> {
+    /// What the packs' Polytone animation modes read this tick (wiki "Variant Textures"): the
+    /// time of day, the weather, and for expressions the packs' Polytone frame, or the time and
+    /// weather alone when no Polytone pack makes one.
+    fn update_animation_inputs(&mut self) {
+        let (rain, thunder) = self.view_weather(0.0);
+        let day_time = self.view_day_time();
+        let frame = self
+            .pack
+            .polytone_particles
+            .as_ref()
+            .and_then(|p| p.frame.read().ok().map(|f| f.clone()))
+            .unwrap_or_else(|| horizon_client::environment::Frame {
+                rain,
+                thunder,
+                game_time: self.world.game_time,
+                day_time,
+                ..Default::default()
+            });
+        // `screen_time` counts while the same screen stays open.
+        let screen = (self.screen != super::Screen::Playing).then(|| {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::mem::discriminant(&self.screen).hash(&mut hasher);
+            hasher.finish()
+        });
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_animation_inputs(day_time, [rain, thunder], Some(&frame), screen);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Properties, World, splash_height};

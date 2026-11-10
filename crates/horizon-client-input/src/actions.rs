@@ -98,6 +98,7 @@ actions! {
     Emote, "key.emote", Some(KeyCode::KeyB);
     HotbarPrevious, "pad.hotbarPrevious", None;
     HotbarNext, "pad.hotbarNext", None;
+    Radial, "pad.radial", None;
 }
 
 impl Action {

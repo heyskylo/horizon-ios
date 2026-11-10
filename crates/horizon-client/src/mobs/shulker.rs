@@ -855,9 +855,11 @@ pub fn texture(m: &Mob) -> String {
         "red",
         "black",
     ];
-    match COLORS.get(m.extra.color as usize) {
-        Some(c) => format!("entity/shulker/shulker_{c}"),
-        None => "entity/shulker/shulker".into(),
+    // Shulker.getColor: the saved byte is signed; 16 and above are undyed, and
+    // DyeColor.byId sends a negative id to white (OutOfBoundsStrategy.ZERO).
+    match m.extra.color as i8 {
+        16.. => "entity/shulker/shulker".into(),
+        c => format!("entity/shulker/shulker_{}", COLORS[c.max(0) as usize]),
     }
 }
 /// `attachFace.getOpposite().getRotation()` by attach face: the open
@@ -1142,5 +1144,48 @@ mod tests {
         m.extra.variant3 = DOWN;
         let (_, h, _) = m.dims();
         assert!((h - 1.0).abs() < 1e-9, "{h}");
+    }
+}
+
+#[cfg(test)]
+mod saved_bytes_tests {
+    use super::*;
+
+    /// `Shulker.readAdditionalSaveData`: `AttachFace` is
+    /// `Direction.LEGACY_ID_CODEC` (`from3DDataValue` wraps the id through
+    /// `abs(id % 6)`), while `Peek` and `Color` are raw `getByteOr` bytes. The
+    /// load clamped all three to their setters' ranges instead.
+    #[test]
+    fn a_shulker_reads_its_face_and_lid_bytes_like_vanilla() {
+        use crate::entity_nbt::mob_from_nbt;
+        use horizon_world::nbt::Tag;
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.id = "minecraft:shulker".into();
+        k.species = Species::Shulker;
+        let types = [("minecraft:shulker".into(), kind)].into();
+        let tag = Tag::compound([
+            ("id", Tag::String("minecraft:shulker".into())),
+            (
+                "Pos",
+                Tag::List(vec![
+                    Tag::Double(0.0f64.to_bits()),
+                    Tag::Double(64.0f64.to_bits()),
+                    Tag::Double(0.0f64.to_bits()),
+                ]),
+            ),
+            ("AttachFace", Tag::Byte(7)),
+            ("Peek", Tag::Byte(-1)),
+            ("Color", Tag::Byte(-1)),
+        ]);
+        let m = mob_from_nbt(&tag, &types, 1, None).unwrap();
+        assert_eq!(m.extra.variant3, 1, "abs(7 % 6) is up");
+        assert_eq!(m.extra.counter, -1, "the peek byte is kept");
+        assert_eq!(m.extra.color, 255, "the color byte is kept");
+        assert_eq!(
+            texture(&m),
+            "entity/shulker/shulker_white",
+            "DyeColor.byId(-1)"
+        );
     }
 }

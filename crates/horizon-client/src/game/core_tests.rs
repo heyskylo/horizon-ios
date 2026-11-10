@@ -1,4 +1,5 @@
 //! Unit tests that lived in game.rs's inline `tests` module.
+use super::inventory_input::drop_whole_stack;
 use super::*;
 use horizon_client::container_screen::{Button, Clicks, Release, Target};
 use horizon_client::keymapping::{KeyAction, SNEAK, SPRINT, ToggleKeys};
@@ -234,8 +235,14 @@ fn glfw_button_indices_are_glfw_indices() {
 /// F3 left on when leaving a world kept the axes on the title screen.
 #[test]
 fn the_debug_crosshair_is_gone_once_the_world_is() {
-    assert!(debug_crosshair_drawn(true, true, false, false));
-    assert!(!debug_crosshair_drawn(true, true, false, true));
+    assert!(debug_crosshair_drawn(true, true, false, false, false));
+    assert!(!debug_crosshair_drawn(true, true, false, true, false));
+}
+
+/// F3's 3D crosshair drew beside the radial menu's stick, which the 2D one gives way to.
+#[test]
+fn the_debug_crosshair_gives_way_to_the_radial_menu() {
+    assert!(!debug_crosshair_drawn(true, true, false, false, true));
 }
 
 /// Opening a world in front of a block left its outline over Loading terrain's panorama (#12872).
@@ -622,3 +629,6 @@ fn stack_drop_requires_ctrl_even_with_sprint_latched() {
         }
     }
 }
+
+#[path = "play_ping_tests.rs"]
+mod play_ping_tests;

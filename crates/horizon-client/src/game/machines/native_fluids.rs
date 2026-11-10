@@ -731,8 +731,15 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "prepared resources in HORIZON_TEST_RESOURCES; run alone to isolate the mod registry"]
+    #[ignore = "prepared resources in HORIZON_TEST_RESOURCES"]
     fn the_standard_helpers_route_to_native_owned_storage() {
+        crate::mod_api::in_own_process(
+            "game::machines::native_fluids::tests::the_standard_helpers_route_to_native_owned_storage",
+            the_standard_helpers_route_to_native_owned_storage_in_own_process,
+        );
+    }
+
+    fn the_standard_helpers_route_to_native_owned_storage_in_own_process() {
         use crate::game::{Audio, Options, Progress, Settings, World, load_resources};
         use crate::mod_api::{
             self, CustomBlockFluidsEvent, CustomFluidDrainEvent, CustomFluidFillEvent,

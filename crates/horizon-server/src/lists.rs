@@ -8,7 +8,7 @@
 //! reloads it (`whitelist reload`), as it would be written while the server is stopped.
 
 use crate::{config, supervisor};
-use horizon_server_files::user_lists::{
+use horizon_platform::server_files::user_lists::{
     BanEntry, BanList, IpBanList, NameAndId, OpEntry, OpList, WhiteEntry, WhiteList,
 };
 use std::path::Path;
@@ -244,7 +244,7 @@ fn add_offline(dir: &Path, name: &str) -> Result<(), String> {
 /// The profile a running server would store for `name`: the offline one, or in online mode the account the
 /// services know by that name.
 pub fn account(name: &str, online: bool) -> Result<NameAndId, String> {
-    horizon_server_files::profiles::resolve(name, online).ok_or_else(|| {
+    horizon_platform::server_files::profiles::resolve(name, online).ok_or_else(|| {
         if online {
             format!("That player does not exist (no Minecraft account is named {name}, or the services didn't answer)")
         } else {
@@ -259,9 +259,9 @@ fn listed<'a>(mut users: impl Iterator<Item = &'a NameAndId>, name: &str) -> Opt
 }
 
 /// A list from its file; a missing file is an empty list, a broken one an error (vanilla would replace it).
-fn load<E: horizon_server_files::user_lists::Entry>(
-    mut list: horizon_server_files::user_lists::UserList<E>,
-) -> Result<horizon_server_files::user_lists::UserList<E>, String> {
+fn load<E: horizon_platform::server_files::user_lists::Entry>(
+    mut list: horizon_platform::server_files::user_lists::UserList<E>,
+) -> Result<horizon_platform::server_files::user_lists::UserList<E>, String> {
     // UserList::load deliberately tolerates I/O errors for the running game's vanilla behavior.
     // A stopped command must not edit an empty replacement for a file it could not read.
     let text = match std::fs::read_to_string(&list.file) {
