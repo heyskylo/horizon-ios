@@ -878,9 +878,14 @@ mod escape_tests {
         let mut game = server_game();
         let feet = horizon_core::geometry::Vec3::new(8.5, 70.0, 8.5);
         game.player = Some(horizon_client::motion::PlayerMotion::new(game.motion, feet).unwrap());
-        game.world
-            .chunks
-            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        // Entity-ticking chunks also need the surrounding loaded chunks.
+        for x in -2..=2 {
+            for z in -2..=2 {
+                game.world
+                    .chunks
+                    .insert((x, z), Arc::new(Chunk::empty(x, z)));
+            }
+        }
         game.update_chunk_tickets();
         assert!(game.entity_ticking_area()(8, 8));
         let stone = game
@@ -894,13 +899,17 @@ mod escape_tests {
         game.spawn_item(stack, [8.5, 64.4, 8.5], [0.0, 0.0, 0.0], 10);
         let item = game.dropped.last().unwrap();
         let expected = f64::from(item.random.clone().next_float() * 0.2 + 0.1);
+        let mut own = item.random.clone();
+        own.next_float();
         let mut level = game.world.random.clone();
         game.ticked_entities_through = u32::MAX;
         game.tick_items();
         let item = game.dropped.last().unwrap();
         // Up is the nearest open side from the middle of the block.
         // The push replaces the fall's velocity; then the 0.98 drag.
-        assert_eq!(item.velocity.y, expected * 0.98);
+        // Entity.getAirDrag returns 0.98F, promoted to double for the drag.
+        assert_eq!(item.velocity.y, expected * f64::from(0.98_f32));
+        assert_eq!(item.random.clone().next_int(), own.next_int());
         assert_eq!(game.world.random.next_float(), level.next_float());
     }
 }
