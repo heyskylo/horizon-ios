@@ -697,7 +697,7 @@ fn description(
             "Your display didn't say how bright it gets: calibrate to set it up."
         }
         (Item::Horizon(H::HdrCalibrate), Setup::Guessed) => {
-            "Your display's reported peak is often too high: calibrate to set it up."
+            "Auto uses the peak Windows reports. Calibrate if highlights look clipped."
         }
         (Item::Horizon(H::HdrCalibrate), Setup::Automatic) => {
             "Already set up for your display. Only calibrate if HDR looks wrong."
@@ -705,7 +705,7 @@ fn description(
         (Item::Horizon(H::HdrCalibrate), Setup::Changed) => {
             "Puts Peak Brightness and Paper White back to your display's setup."
         }
-        // A guessed peak's Auto is what calibration replaced; paper white is the player's own.
+        // A peak of unknown source isn't said to be set up; paper white is the player's own.
         (Item::Horizon(h @ (H::HdrPeak | H::HdrPaperWhite)), Setup::Automatic | Setup::Changed)
             if h == H::HdrPaperWhite || out.reported.is_some_and(|r| !r.peak_guessed) =>
         {
@@ -1219,10 +1219,13 @@ impl Item {
     }
     pub fn label(self, s: &Settings, out: &EffectiveOutput) -> Text {
         match self {
-            Item::Vanilla(Opt::RenderDistance) if s.horizon.lod_distance > 0 => labelled(
-                "Full Detail Distance",
-                lang::tr("%s chunks", &[&s.render_distance]),
-            ),
+            // Far terrain renames the row; its value stays vanilla's `options.chunks`.
+            Item::Vanilla(Opt::RenderDistance) if s.horizon.lod_distance > 0 => {
+                Text::option_name_value(
+                    Text::literal(lang::get("Full Detail Distance")),
+                    Text::tr("options.chunks", &[&s.render_distance]),
+                )
+            }
             Item::Vanilla(o) => o.label(s),
             Item::Horizon(h) => h.label(s, out),
             Item::Extra(e) => Text::option_name_value(
@@ -2110,10 +2113,36 @@ mod tests {
         assert_eq!(item.slider(&s), Some(13.0 / 23.0));
         s.horizon.lod_distance = 12;
         assert_eq!(item.slider(&s), Some(1.0 / 23.0));
-        assert_eq!(
-            Item::Vanilla(Opt::RenderDistance).label(&s, &NONE).plain(),
-            format!("Full Detail Distance: {near} chunks")
-        );
+    }
+
+    /// With far terrain on, Render Distance reads "Full Detail Distance" but keeps vanilla's
+    /// `options.chunks` value: it was Horizon's "%s chunks", so "12 Chunks" became "12 chunks"
+    /// (#14880).
+    #[test]
+    fn full_detail_distance_keeps_the_vanilla_chunk_count() {
+        struct Vanilla;
+        impl lang::ResourceSource for Vanilla {
+            fn read(&self, path: &str) -> Option<Vec<u8>> {
+                (path == "assets/minecraft/lang/en_us.json").then(|| {
+                    serde_json::to_vec(&serde_json::json!({
+                        "options.renderDistance": "Render Distance",
+                        "options.chunks": "%s Chunks",
+                        "options.generic_value": "%s: %s"
+                    }))
+                    .unwrap()
+                })
+            }
+        }
+        let mut s = Settings::default();
+        let near = s.render_distance;
+        let render = Item::Vanilla(Opt::RenderDistance);
+        let ((off, on), _) = lang::scoped(lang::Language::load(&[&Vanilla], "en_us"), || {
+            let off = render.label(&s, &NONE).plain();
+            s.horizon.lod_distance = 256;
+            (off, render.label(&s, &NONE).plain())
+        });
+        assert_eq!(off, format!("Render Distance: {near} Chunks"));
+        assert_eq!(on, format!("Full Detail Distance: {near} Chunks"));
     }
 
     #[test]

@@ -707,9 +707,7 @@ pub fn tick(
     if m.no_ai {
         update_fall_flying(m, w, events);
         reset_effect_fall_distance(m);
-        // Mob.aiStep still runs without AI (only serverAiStep is skipped),
-        // so undead still burn in daylight and the endermite's life keeps
-        // counting.
+        // Mob.aiStep still runs without AI: undead burn, endermites age.
         burn_undead(m, w, events);
         if m.species() == Species::Endermite {
             endermite_lifetime(m);
@@ -752,6 +750,7 @@ pub fn tick(
             super::ravager::ai_step(m, w, events);
         }
         aquatic::no_ai_step(m, w, events);
+        super::cube::no_ai_tick(m, w, events); // AbstractCubeMob.tick
         // Shulker.tick after its living tick: a NoAI shell still keeps a
         // face and eases its lid, pushing what the lid opens into.
         if m.species() == Species::Shulker {
