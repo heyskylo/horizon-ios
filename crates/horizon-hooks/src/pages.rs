@@ -61,11 +61,91 @@ pub enum Row {
         value: f32,
         text: Label,
     },
-    /// A button that does something.
-    Button { label: &'static str },
+    /// A button that does something ([`Row::button`]). An inactive one is drawn greyed and
+    /// never pressed; two half-width ones in a row sit side by side; a footer one sits at the
+    /// bottom beside Done on a page drawn as its own screen, and with the others elsewhere.
+    /// Horizon Settings' Extras shows only active ones.
+    #[non_exhaustive]
+    Button {
+        label: &'static str,
+        active: bool,
+        half: bool,
+        footer: bool,
+    },
+    /// Text shown as it is, wrapped to the page's width ([`Row::text`]): white, or grey when
+    /// `quiet` (secondary); `groups` breaks it only between its `-`-separated groups (a code).
+    #[non_exhaustive]
+    Text {
+        text: String,
+        quiet: bool,
+        groups: bool,
+    },
+    /// Empty space, in GUI pixels, on a page drawn as its own screen; nothing elsewhere.
+    Space(u8),
     /// A key binding, as Key Binds shows one: `key` is its key name (`key.keyboard.z`,
     /// `key.mouse.left`). A press waits for the next key or mouse button ([`Act::Bind`]).
     Key { label: &'static str, key: String },
+}
+
+impl Row {
+    /// An active, full-width button in the page's body.
+    pub fn button(label: &'static str) -> Self {
+        Self::Button {
+            label,
+            active: true,
+            half: false,
+            footer: false,
+        }
+    }
+
+    /// White text in the page's body, wrapped at spaces.
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text {
+            text: text.into(),
+            quiet: false,
+            groups: false,
+        }
+    }
+
+    /// A button greyed out (`false`): drawn, never pressed.
+    pub fn active(mut self, on: bool) -> Self {
+        if let Self::Button { active, .. } = &mut self {
+            *active = on;
+        }
+        self
+    }
+
+    /// A button half as wide: two in a row sit side by side.
+    pub fn half(mut self) -> Self {
+        if let Self::Button { half, .. } = &mut self {
+            *half = true;
+        }
+        self
+    }
+
+    /// A button in the footer, beside Done, on a page drawn as its own screen.
+    pub fn footer(mut self) -> Self {
+        if let Self::Button { footer, .. } = &mut self {
+            *footer = true;
+        }
+        self
+    }
+
+    /// Text in grey: secondary.
+    pub fn quiet(mut self) -> Self {
+        if let Self::Text { quiet, .. } = &mut self {
+            *quiet = true;
+        }
+        self
+    }
+
+    /// Text broken only between its `-`-separated groups, never inside one (a code).
+    pub fn groups(mut self) -> Self {
+        if let Self::Text { groups, .. } = &mut self {
+            *groups = true;
+        }
+        self
+    }
 }
 
 /// A value shown on a row: a translation key, or text shown as it is (a number, a name).
