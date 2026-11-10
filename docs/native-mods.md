@@ -3426,6 +3426,10 @@ Bundles need "hooks": @API:hurt_entity@.
   are saved with the world's maps (`data/minecraft/maps/<id>.dat`) and sent like vanilla map data to whoever carries
   the map or sees it framed, players who join later included, so the mod never resends them. None and false on a
   client of a server. Bundles need `"hooks": @API:new_map@`.
+- Helpers `native_map_colors(map_id) -> Option<Vec<u8>>` and `native_map_meta(map_id) -> Option<(u8, String, bool)>`: the
+  picture (16384 bytes, row by row, as `native_paint_map` takes it) and the scale, dimension and locked flag of a map the
+  world keeps. A map is read from its loaded copy or its saved file, which is not loaded by the read. None for a map the
+  world never made or saved, and on a client of a server. No hook is needed.
 - Helper `native_open_menu_with_input(uuid, rows, title, items, input) -> Option<i32>`: a server menu (see "Server
   menus") whose slots in the range `input` hold items as a chest's do (Bukkit's custom inventory with storage slots):
   the player puts stacks in and takes them out by vanilla's click rules (pickup, split, shift-click from their
