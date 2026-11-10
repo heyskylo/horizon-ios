@@ -3195,19 +3195,14 @@ impl Hub {
                 self.guests[i].sender.send(body.clone());
             }
             if recording {
+                let bounds = super::prediction::bounds(&positions);
                 for &i in &viewers {
-                    let g = &mut self.guests[i];
-                    let Some(record) = g.anticheat.record.as_deref_mut() else {
-                        continue;
-                    };
-                    let slack = super::prediction::slack(std::array::from_fn(|i| {
-                        g.position[i] - g.previous_position[i]
-                    }));
-                    for &(x, y, z) in &positions {
-                        if super::prediction::near(g.position, [x, y, z], slack) {
-                            record.changed_near(self.ticks, [x, y, z]);
-                        }
-                    }
+                    super::prediction::note_changes(
+                        &mut self.guests[i],
+                        self.ticks,
+                        bounds,
+                        &positions,
+                    );
                 }
             }
             // Block entities with data the client shows.

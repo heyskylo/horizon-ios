@@ -24,6 +24,7 @@ use std::collections::VecDeque;
 use horizon_anticheat::prediction::{Change, ClientTick, KEPT, Record, Restart};
 use horizon_core::geometry::Vec3;
 
+use super::guest::Guest;
 use crate::motion::PlayerMotion;
 use crate::sprint::Keys;
 
@@ -84,6 +85,57 @@ pub fn near(at: [f64; 3], block: [i32; 3], slack: f64) -> bool {
 /// server's view of what is around it (a firework flying with it) is a tick or so behind.
 pub fn slack(moved: [f64; 3]) -> f64 {
     (2.0 * moved.iter().map(|v| v * v).sum::<f64>().sqrt()).min(16.0)
+}
+
+/// The smallest box (min, max corners) holding every block in `positions`. Empty: min above max,
+/// which [`reaches`] rejects.
+pub fn bounds(positions: &[(i32, i32, i32)]) -> ([i32; 3], [i32; 3]) {
+    positions
+        .iter()
+        .fold(([i32::MAX; 3], [i32::MIN; 3]), |(lo, hi), &(x, y, z)| {
+            let b = [x, y, z];
+            (
+                std::array::from_fn(|i| lo[i].min(b[i])),
+                std::array::from_fn(|i| hi[i].max(b[i])),
+            )
+        })
+}
+
+/// Whether a block of `bounds` can be [`near`] `at` with this `slack`: the same reach as `near`,
+/// tested on the box's corners. The offset from `at` grows monotonically with the block, so a box
+/// whose nearest corner is out of reach holds no near block, and a box holding one is never
+/// rejected.
+fn reaches(at: [f64; 3], slack: f64, (lo, hi): ([i32; 3], [i32; 3])) -> bool {
+    let d = |i: usize, b: i32| f64::from(b) + 0.5 - at[i];
+    let r = 4.5 + slack;
+    d(0, hi[0]) >= -r
+        && d(0, lo[0]) <= r
+        && d(2, hi[2]) >= -r
+        && d(2, lo[2]) <= r
+        && d(1, hi[1]) >= -4.5 - slack
+        && d(1, lo[1]) <= 6.5 + slack
+}
+
+/// Records, as [`Record::changed_near`] during server tick `tick`, the blocks of `positions` (one
+/// section, `bounds` its [`bounds`]) that are [`near`] guest `g`, in their order.
+pub fn note_changes(
+    g: &mut Guest,
+    tick: u64,
+    bounds: ([i32; 3], [i32; 3]),
+    positions: &[(i32, i32, i32)],
+) {
+    let Some(record) = g.anticheat.record.as_deref_mut() else {
+        return;
+    };
+    let slack = slack(std::array::from_fn(|i| g.position[i] - g.previous_position[i]));
+    if !reaches(g.position, slack, bounds) {
+        return;
+    }
+    for &(x, y, z) in positions {
+        if near(g.position, [x, y, z], slack) {
+            record.changed_near(tick, [x, y, z]);
+        }
+    }
 }
 
 /// One client tick played again.
