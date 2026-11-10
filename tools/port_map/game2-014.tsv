@@ -38,7 +38,7 @@ LecternBlock.getStateForPlacement	port	crates/horizon-world/src/level/place.rs::
 LecternBlock.rotate	port	crates/horizon-world/src/worldgen/structure.rs::StateTransforms::rotate	facing through the rotate table
 LecternBlock.createBlockStateDefinition	skip:data	-	state properties come from the data tables
 LecternBlock.tryPlaceBook	port	crates/horizon-client/src/game/books.rs::Game::use_lectern	a book goes onto an empty lectern
-LecternBlock.placeBook	inline	crates/horizon-client/src/game/books.rs::Game::use_lectern	consumes the held book, sets has_book from the placing player (the property change posts `minecraft:block_change`), plays the put sound
+LecternBlock.placeBook	inline	crates/horizon-client/src/game/books.rs::Game::use_lectern	consumes the held book, sets has_book from the placing player through `resetBookState`, which posts `minecraft:block_change`, and plays the put sound
 LecternBlock.resetBookState	port	crates/horizon-client/src/game/books.rs::Game::lectern_menu_done	book removal clears powered and has_book, and `set_lectern_has_book` posts `minecraft:block_change`
 LecternBlock.changePowered	port	crates/horizon-client/src/game/books.rs::Game::set_lectern_powered	
 LecternBlock.updateBelow	inline	crates/horizon-client/src/game/books.rs::Game::set_lectern_powered	neighbour update below the lectern
