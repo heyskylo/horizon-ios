@@ -519,6 +519,11 @@ mod tick_parity {
             time: 0,
             speed: 3,
         };
+        // More than 128 ticking sections: prepare_masks must exercise its
+        // helper path when HORIZON_PARALLEL_TICK is enabled, not just defer work.
+        for x in 2..=65 {
+            original.chunks.insert((x, 0), chunk(x));
+        }
         Arc::make_mut(original.chunks.get_mut(&(1, 0)).unwrap()).lit = true; // precipitation-only chunk
         let mut cached = original.clone();
         // The masked path reads only the drawn blocks that can tick.
@@ -530,7 +535,7 @@ mod tick_parity {
         let mut cache = RandomTickSections::default();
         let mut mask_cache = RandomTickSections::default();
         let (mut a, mut b, mut c) = (Ticks::new(12345), Ticks::new(12345), Ticks::new(12345));
-        for x in -1..=1 {
+        for x in -1..=65 {
             a.add_empty_chunk(ChunkPos::new(x, 0)).unwrap();
             b.add_empty_chunk(ChunkPos::new(x, 0)).unwrap();
             c.add_empty_chunk(ChunkPos::new(x, 0)).unwrap();
@@ -543,6 +548,12 @@ mod tick_parity {
                 level.reads.borrow_mut().clear();
                 level.events.clear();
                 match step {
+                    4 => {
+                        // The large fixture has exercised every tick speed and
+                        // helper-mask invalidation; keep the remaining edit,
+                        // unload and reload cases small as before.
+                        level.chunks.retain(|&(x, _), _| x <= 1);
+                    }
                     12 => {
                         level.chunks.remove(&(-1, 0));
                     }
