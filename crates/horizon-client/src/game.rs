@@ -50,7 +50,6 @@ fn pack_files(world_tables: &Option<WorldTables>) -> horizon_world::loot::PackOv
 }
 
 mod activity;
-mod advancement_view;
 mod advancements;
 mod advancements_screen;
 mod agent;
