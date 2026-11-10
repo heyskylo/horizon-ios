@@ -861,6 +861,19 @@ impl Projectile {
         self.previous_yaw = self.yaw;
         self.previous_pitch = self.pitch;
     }
+    /// `ProjectileUtil.rotateTowardsMovement`: eases the rotation from the
+    /// previous tick's towards the movement by `t`.
+    fn rotate_towards_movement(&mut self, t: f32) {
+        let v = self.velocity;
+        if v.x * v.x + v.y * v.y + v.z * v.z == 0.0 {
+            return;
+        }
+        let horizontal = (v.x * v.x + v.z * v.z).sqrt();
+        let y_rot = (v.z.atan2(v.x) * 180.0 / std::f64::consts::PI) as f32 + 90.0;
+        let x_rot = (horizontal.atan2(v.y) * 180.0 / std::f64::consts::PI) as f32 - 90.0;
+        self.pitch = self.previous_pitch + t * (x_rot - self.previous_pitch);
+        self.yaw = self.previous_yaw + t * (y_rot - self.previous_yaw);
+    }
     /// `Entity.setOldPosAndRot`: where the renderer interpolates from.
     pub fn set_old_pos_and_rot(&mut self) {
         self.previous = self.position;
@@ -1523,7 +1536,9 @@ impl Projectile {
             return (self.position.y > -128.0 && self.age < 6000, spit_hit);
         }
         self.position = to;
-        if !self.is_fireball() {
+        if self.is_fireball() {
+            self.rotate_towards_movement(0.2);
+        } else {
             self.update_rotation();
         }
         // Entity.baseTick's updateFluidInteraction, after the move.
@@ -2415,6 +2430,22 @@ mod tests {
         let mut r = LegacyRandom::new(1);
         // ceil(3 * 2) = 6 for a non-critical arrow.
         assert_eq!(p.arrow_damage(&mut r), 6.0);
+    }
+    #[test]
+    fn a_dragon_fireball_turns_towards_its_flight_a_fifth_per_tick() {
+        let mut p = Projectile::new(
+            ProjectileKind::DragonFireball,
+            Vec3::new(8.5, 231.0, 8.5),
+            None,
+        );
+        p.velocity = Vec3::new(0.1, 0.25, -0.3);
+        p.yaw = 0.0;
+        p.pitch = 0.0;
+        for _ in 0..3 {
+            p.tick(&Wall(vec![]));
+        }
+        assert!((p.yaw - 8.996_265).abs() < 0.05, "yaw {}", p.yaw);
+        assert!((p.pitch + 18.704_494).abs() < 0.05, "pitch {}", p.pitch);
     }
     #[test]
     fn fireball_accelerates_along_its_direction() {
