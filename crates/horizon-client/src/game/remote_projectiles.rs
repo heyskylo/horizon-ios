@@ -793,13 +793,17 @@ impl Game<'_> {
     }
 
     pub(super) fn remove_remote_projectile(&mut self, id: u32) {
-        self.fangs.list.retain(|f| f.id != id);
         self.tnts.retain(|t| t.id != id);
         self.falling.retain(|f| f.id != id);
+        self.crystals.retain(|c| c.id != id);
+        self.remove_remote_small_projectiles(id);
+    }
+
+    pub(super) fn remove_remote_small_projectiles(&mut self, id: u32) {
+        self.fangs.list.retain(|f| f.id != id);
         self.creatures.projectiles.retain(|p| p.id != id);
         self.tridents.retain(|t| t.id != id);
         self.rockets.retain(|r| r.id != id);
-        self.crystals.retain(|c| c.id != id);
         self.potions.remove_remote_thrown(id);
         self.potions.clouds.retain(|c| c.id != id);
         self.end.remove_remote_eye(id);

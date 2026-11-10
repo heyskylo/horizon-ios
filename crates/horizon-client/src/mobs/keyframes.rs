@@ -73,7 +73,7 @@ impl Animation {
     /// KeyframeAnimation.apply(millis, scale): offsets added to each bone's pose.
     pub fn apply(&self, millis: i64, scale: f32, poses: &mut super::anim::Poses) {
         let mut seconds = millis as f32 / 1000.0;
-        if self.looping {
+        if self.looping && self.length > 0.0 {
             seconds %= self.length;
         }
         for (bone, channels) in &self.bones {
@@ -230,5 +230,35 @@ mod tests {
             },
         ];
         assert!((sample(&k, 1.0, 1.0)[0] - 1.0).abs() < 1e-6);
+    }
+    #[test]
+    fn looping_animation_applies_walk_without_overflow() {
+        let anim = Animation {
+            length: 1.25,
+            looping: true,
+            bones: vec![(
+                "body".to_string(),
+                vec![Channel {
+                    target: Target::Position,
+                    keyframes: vec![
+                        Keyframe {
+                            time: 0.0,
+                            pre: [0.0; 3],
+                            post: [0.0, 1.0, 0.0],
+                            catmull: false,
+                        },
+                        Keyframe {
+                            time: 1.25,
+                            pre: [0.0, 1.0, 0.0],
+                            post: [0.0, 1.0, 0.0],
+                            catmull: false,
+                        },
+                    ],
+                }],
+            )],
+        };
+        let mut poses = super::super::anim::Poses::default();
+        anim.apply_walk(50.0, 1.0, 1.0, 2.5, &mut poses);
+        assert!((poses.get("body")[1] - 1.0).abs() < 1e-6);
     }
 }

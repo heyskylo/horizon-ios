@@ -59,6 +59,24 @@ pub struct PackColors {
     pub xp_bar: [Option<u32>; 2],
     /// The effect fogs' settings: the fog reads them every frame.
     pub env: Environment,
+    /// The fog the packs' fluid modifiers give water and lava.
+    pub fluid_fog: FluidFogs,
+}
+
+/// A fluid modifier's fog: a flat colour (RGB), and the fog's radius and fade multipliers (1 is
+/// vanilla's).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FluidFog {
+    pub color: Option<u32>,
+    pub radius: f32,
+    pub fade: f32,
+}
+
+/// The fog the packs' fluid modifiers give water and lava.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FluidFogs {
+    pub water: Option<FluidFog>,
+    pub lava: Option<FluidFog>,
 }
 
 impl Default for PackColors {
@@ -72,6 +90,7 @@ impl Default for PackColors {
             entity_shadows: true,
             xp_bar: [None; 2],
             env: Environment::default(),
+            fluid_fog: FluidFogs::default(),
         }
     }
 }
