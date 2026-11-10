@@ -10,7 +10,7 @@ use horizon_client::client_perf::request::Threads;
 use horizon_client::perf_net::Refusal;
 use horizon_client::server_perf::{
     self, CaptureEnd, CaptureOptions, SamplerOptions, ServerPerf, WorldCounts,
-    traffic::Wire,
+    traffic::{Conn, Wire},
     world::{LevelCounts, MobCost, MobCosts, WorkerJobs},
 };
 use horizon_client::{spans, streaming::job_stats};
@@ -401,13 +401,21 @@ impl Game<'_> {
         levels
     }
 
-    /// Each player's wire bytes (in, out) by connection.
+    /// Each player's connection: wire bytes (in, out), name, brand and view distance.
     pub(in crate::game) fn wire_bytes(&self) -> Wire {
         self.lan.as_ref().map_or_else(Vec::new, |h| {
             h.hub
                 .guests
                 .iter()
-                .filter_map(|g| Some((g.conn, g.sender.wire_bytes()?)))
+                .filter_map(|g| {
+                    Some(Conn {
+                        id: g.conn,
+                        bytes: g.sender.wire_bytes()?,
+                        name: g.name.clone(),
+                        brand: g.brand.clone(),
+                        view_distance: g.view_distance.max(0) as u32,
+                    })
+                })
                 .collect()
         })
     }

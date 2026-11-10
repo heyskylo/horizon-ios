@@ -538,6 +538,12 @@ message PlayerTraffic {
   // Empty on a side that does not count packets.
   repeated uint32 packets_in = 6;
   repeated uint32 packets_out = 7;
+  // The player's name; empty on a client's own connection and in older captures.
+  string name = 8;
+  // The client's minecraft:brand (vanilla, fabric, horizon...); empty until it sent one.
+  string brand = 9;
+  // The chunk radius the server sends this client, as last read.
+  uint32 view_distance = 10;
 }
 
 message NetTraffic {

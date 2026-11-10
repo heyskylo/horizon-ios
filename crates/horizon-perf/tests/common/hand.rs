@@ -262,6 +262,9 @@ pub fn capture(n: &Names) -> Vec<Field> {
                 bytes_out: vec![10_240, 20_480],
                 packets_in: vec![10, 10],
                 packets_out: vec![100, 200],
+                name: "Alex".into(),
+                brand: "vanilla".into(),
+                view_distance: 12,
             },
             PlayerTraffic {
                 index: 2,
@@ -271,6 +274,7 @@ pub fn capture(n: &Names) -> Vec<Field> {
                 bytes_out: vec![0, 5_120],
                 packets_in: vec![0, 4],
                 packets_out: vec![0, 50],
+                ..PlayerTraffic::default()
             },
         ],
     }));

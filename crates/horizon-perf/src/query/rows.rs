@@ -144,6 +144,10 @@ pub struct NetTotal {
 pub struct NetPlayer {
     pub id: String,
     pub index: u32,
+    /// Empty on a client's own connection and in captures made before names were kept.
+    pub name: String,
+    pub brand: String,
+    pub view_distance: u32,
     pub joined_t: f64,
     pub left_t: Option<f64>,
     pub out_bytes: u64,

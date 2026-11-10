@@ -7,6 +7,9 @@ const KIB: f64 = 1024.0;
 /// What one player moved in the selected window.
 pub(crate) struct PlayerRate {
     pub index: u32,
+    pub name: String,
+    pub brand: String,
+    pub view_distance: u32,
     pub joined_t: f64,
     pub left_t: Option<f64>,
     pub bytes_out: u64,
@@ -56,6 +59,9 @@ pub(crate) fn rates(
             }
             PlayerRate {
                 index: p.index,
+                name: p.name.clone(),
+                brand: p.brand.clone(),
+                view_distance: p.view_distance,
                 joined_t: p.joined_t,
                 left_t: p.left_t,
                 bytes_out: out,
@@ -69,7 +75,7 @@ pub(crate) fn rates(
         .collect()
 }
 
-/// Bytes and packets per player (by join-order id) and all players together.
+/// Bytes and packets per player (by join-order id, with name and client brand) and all players together.
 pub(super) fn net(ctx: &Ctx) -> Result<Reply, QueryError> {
     let side = ctx.side(0)?;
     let Some(net) = ctx.views[0].capture.net.iter().find(|n| n.side() == side) else {
@@ -117,6 +123,9 @@ fn player_row(p: &PlayerRate) -> NetPlayer {
     NetPlayer {
         id: player_id(p.index),
         index: p.index,
+        name: p.name.clone(),
+        brand: p.brand.clone(),
+        view_distance: p.view_distance,
         joined_t: num(p.joined_t),
         left_t: opt_num(p.left_t),
         out_bytes: p.bytes_out,

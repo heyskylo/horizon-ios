@@ -242,6 +242,7 @@ pub fn capture() -> Vec<Field> {
                 .collect(),
             packets_in: (0..24).map(|_| 100).collect(),
             packets_out: (0..24).map(|_| 1_500).collect(),
+            ..PlayerTraffic::default()
         })
         .collect();
     body.push(Field::Net(NetTraffic {

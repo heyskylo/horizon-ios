@@ -658,9 +658,18 @@ fn spans_inside_other_spans_keep_their_parents_and_a_root_under_two_parents_is_t
 /// Connection 1 is on from the start; connection 2 joins at 3 s and leaves after 8 s.
 fn wire_at(t: f64) -> traffic::Wire {
     let s = t.floor() as u64;
-    let mut wire = vec![(1, (1000 + 100 * s, 2000 + 1000 * s))];
+    let conn = |id, bytes, name: &str, brand: &str| traffic::Conn {
+        id,
+        bytes,
+        name: name.into(),
+        brand: brand.into(),
+        view_distance: 12,
+    };
+    let mut wire = vec![conn(1, (1000 + 100 * s, 2000 + 1000 * s), "Alex", "vanilla")];
     if (3..=8).contains(&s) {
-        wire.push((2, (10 * (s - 2), 30 * (s - 2))));
+        // The brand arrives after login: the first read has none yet.
+        let brand = if s == 3 { "" } else { "horizon" };
+        wire.push(conn(2, (10 * (s - 2), 30 * (s - 2)), "Steve", brand));
     }
     wire
 }
@@ -698,6 +707,11 @@ fn network_bytes_are_per_player_per_block_by_join_order() {
     assert_eq!(second.bytes_in, [20, 40, 0]);
     assert_eq!(second.bytes_out, [60, 120, 0]);
     assert!(first.packets_in.is_empty() && first.packets_out.is_empty());
+    assert_eq!(
+        (first.name.as_str(), first.brand.as_str(), first.view_distance),
+        ("Alex", "vanilla", 12)
+    );
+    assert_eq!((second.name.as_str(), second.brand.as_str()), ("Steve", "horizon"));
 }
 
 fn level(

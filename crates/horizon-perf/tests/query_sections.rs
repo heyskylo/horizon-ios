@@ -197,6 +197,10 @@ fn net_gives_rates_per_player_over_the_time_each_was_on() {
         (3.0, 0.2, 4.0)
     );
     assert_eq!(one.packets_out, 300);
+    assert_eq!(
+        (one.name.as_str(), one.brand.as_str(), one.view_distance),
+        ("Alex", "vanilla", 12)
+    );
     // Player 2 joined at 5 s: 5,120 B in 5 s = 1.0 KiB/s.
     let two = net_player(&reply, "n:p2");
     assert_eq!((two.out_kib_s, two.in_kib_s, two.joined_t), (1.0, 0.1, 5.0));

@@ -1,6 +1,6 @@
 //! The client's .hzperf captures (docs/perf-platform.md §4.1): the window's frames feed the always-on health history, and a capture writes it with the samples of the render thread.
 use crate::gfx::pack_timing::{GpuReadout, TimedFrames};
-use crate::server_perf::traffic::Wire;
+use crate::server_perf::traffic::{Conn, Wire};
 use crate::server_perf::{
     self, CaptureEnd, CaptureOptions, CaptureStatus, MAX_WINDOW_S, Role, SamplerOptions, Saved,
     ServerPerf, TickDetail, WorldCounts,
@@ -11,7 +11,10 @@ use horizon_perf_format::v1::{
 };
 use request::{GpuSwitch, StartOptions, Threads};
 use std::ffi::OsStr;
+use horizon_protocol::connection::Counters;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 pub mod request;
@@ -68,6 +71,23 @@ pub struct ClientPerf {
     window: Option<(f64, StopReason)>,
     /// The running capture's switches, which a side that joins it follows.
     running: Option<(StartOptions, Trigger)>,
+    /// The server connection's byte counts while the window plays on one: the capture's own traffic.
+    connection: Option<Arc<Counters>>,
+}
+
+/// The window's one connection as the traffic recorder's wire list.
+fn wire_of(connection: Option<&Counters>) -> Wire {
+    let order = Ordering::Relaxed;
+    connection
+        .map(|c| {
+            let count = |n: &std::sync::atomic::AtomicI64| n.load(order).max(0) as u64;
+            vec![Conn {
+                id: 1,
+                bytes: (count(&c.bytes_in), count(&c.bytes_out)),
+                ..Conn::default()
+            }]
+        })
+        .unwrap_or_default()
 }
 
 impl ClientPerf {
@@ -79,7 +99,13 @@ impl ClientPerf {
             gpu_ms: Vec::new(),
             window: None,
             running: None,
+            connection: None,
         }
+    }
+
+    /// The connection whose bytes a capture records, or None in a world of the window's own.
+    pub fn set_connection(&mut self, connection: Option<Arc<Counters>>) {
+        self.connection = connection;
     }
 
     /// Seconds since the game began, the clock every other time here is on.
@@ -126,7 +152,9 @@ impl ClientPerf {
             self.perf
                 .set_frame_medians(median(&mut self.cpu_ms), median(&mut self.gpu_ms));
         }
-        self.perf.tick(t, wall_ms, detail, world, Wire::new);
+        let connection = self.connection.as_deref();
+        self.perf
+            .tick(t, wall_ms, detail, world, || wire_of(connection));
         if let Some((end, reason)) = self.window
             && t >= end
         {
@@ -162,7 +190,7 @@ impl ClientPerf {
             },
             block_names,
             levels: Vec::new(),
-            wire: Wire::new(),
+            wire: wire_of(self.connection.as_deref()),
             gpu: options.gpu.mode(),
             timeline: options.timeline.then(Default::default),
             file: options.file.clone(),
@@ -214,6 +242,7 @@ impl ClientPerf {
         let end = CaptureEnd {
             gpu,
             bench,
+            wire: wire_of(self.connection.as_deref()),
             ..CaptureEnd::default()
         };
         self.perf.begin_stop(t, reason, end)

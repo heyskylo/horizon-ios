@@ -1,12 +1,27 @@
-//! Each player's wire bytes per block of the capture, as `NetTraffic`; players are told apart by join order only.
+//! Each player's wire bytes per block of the capture, as `NetTraffic`, with the player's name, client brand and view distance.
 use crate::server_perf::spans::BLOCK_S;
 use horizon_perf_format::v1::{NetTraffic, PlayerTraffic, Side};
 
-/// A connection's wire bytes (received, sent) since it opened, by connection id.
-pub type Wire = Vec<(u32, (u64, u64))>;
+/// One connection as read now: its wire bytes (received, sent) since it opened, and who plays on it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Conn {
+    pub id: u32,
+    pub bytes: (u64, u64),
+    pub name: String,
+    /// The client's `minecraft:brand`, empty until it sends one.
+    pub brand: String,
+    /// The chunk radius this client is sent.
+    pub view_distance: u32,
+}
+
+/// The open connections, read together.
+pub type Wire = Vec<Conn>;
 
 struct Player {
     conn: u32,
+    name: String,
+    brand: String,
+    view_distance: u32,
     joined_t: f64,
     left_t: Option<f64>,
     last: (u64, u64),
@@ -27,15 +42,18 @@ fn block_of(t: f64) -> usize {
 impl TrafficRecorder {
     /// `wire` is read as the capture starts: those players were on already, and only the bytes after it count.
     pub fn new(mut wire: Wire) -> Self {
-        wire.sort_by_key(|&(conn, _)| conn);
+        wire.sort_by_key(|c| c.id);
         Self {
             players: wire
                 .into_iter()
-                .map(|(conn, last)| Player {
-                    conn,
+                .map(|c| Player {
+                    conn: c.id,
+                    name: c.name,
+                    brand: c.brand,
+                    view_distance: c.view_distance,
                     joined_t: 0.0,
                     left_t: None,
-                    last,
+                    last: c.bytes,
                     bytes_in: Vec::new(),
                     bytes_out: Vec::new(),
                 })
@@ -44,14 +62,18 @@ impl TrafficRecorder {
     }
 
     /// The connections' counts `t` seconds into the capture; a new connection counts from zero, an unlisted one has left.
-    pub fn sample(&mut self, t: f64, wire: &[(u32, (u64, u64))]) {
+    pub fn sample(&mut self, t: f64, wire: &[Conn]) {
         let block = block_of(t);
-        for &(conn, (now_in, now_out)) in wire {
-            let at = match self.players.iter().position(|p| p.conn == conn) {
+        for c in wire {
+            let (now_in, now_out) = c.bytes;
+            let at = match self.players.iter().position(|p| p.conn == c.id) {
                 Some(at) => at,
                 None => {
                     self.players.push(Player {
-                        conn,
+                        conn: c.id,
+                        name: String::new(),
+                        brand: String::new(),
+                        view_distance: 0,
                         joined_t: t,
                         left_t: None,
                         last: (0, 0),
@@ -62,6 +84,13 @@ impl TrafficRecorder {
                 }
             };
             let p = &mut self.players[at];
+            if !c.name.is_empty() {
+                p.name.clone_from(&c.name);
+            }
+            if !c.brand.is_empty() {
+                p.brand.clone_from(&c.brand);
+            }
+            p.view_distance = c.view_distance;
             p.bytes_in.resize(block + 1, 0);
             p.bytes_out.resize(block + 1, 0);
             p.bytes_in[block] += now_in.saturating_sub(p.last.0);
@@ -69,7 +98,7 @@ impl TrafficRecorder {
             p.last = (now_in, now_out);
         }
         for p in &mut self.players {
-            if p.left_t.is_none() && !wire.iter().any(|&(conn, _)| conn == p.conn) {
+            if p.left_t.is_none() && !wire.iter().any(|c| c.id == p.conn) {
                 p.left_t = Some(t);
             }
         }
@@ -96,6 +125,9 @@ impl TrafficRecorder {
                         bytes_out: p.bytes_out,
                         packets_in: Vec::new(),
                         packets_out: Vec::new(),
+                        name: p.name,
+                        brand: p.brand,
+                        view_distance: p.view_distance,
                     }
                 })
                 .collect(),
