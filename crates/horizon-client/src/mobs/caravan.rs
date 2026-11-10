@@ -273,3 +273,62 @@ pub fn trader_llama_tick(m: &mut Mob, w: &MobWorld) {
         m.removed = true;
     }
 }
+
+#[cfg(test)]
+mod defend_trader_tests {
+    use super::*;
+    use crate::mobs::world::{test_player, with_test_world};
+    use crate::mobs::{Mob, Species, sensor_scan_tests::kind};
+    use horizon_core::geometry::Vec3;
+    use horizon_core::random::LegacyRandom;
+    use std::sync::Arc;
+
+    /// `TraderLlamaDefendWanderingTraderGoal` runs the trader's attacker
+    /// through `TargetingConditions.DEFAULT`, which never accepts a
+    /// spectator.
+    #[test]
+    fn a_trader_llama_does_not_defend_the_trader_from_a_spectator() {
+        let mut outcomes = Vec::new();
+        if !with_test_world(&[], |w, _| {
+            for spectator in [false, true] {
+                let mut world = w.clone();
+                let mut p = test_player(Vec3::new(3.5, 64.0, 0.5));
+                p.spectator = spectator;
+                world.player = Some(p);
+                let mut owner_kind = (*kind()).clone();
+                owner_kind.species = Species::WanderingTrader;
+                let mut owner = Mob::new(2, Arc::new(owner_kind), Vec3::new(1.5, 64.0, 0.5), 0.0);
+                owner.ai.last_hurt_by = Some(Who::Player);
+                owner.ai.last_hurt_by_time = 5;
+                let seen = [owner.seen(None)];
+                let world = crate::mobs::MobWorld {
+                    others: &seen,
+                    ..world
+                };
+                let mut llama_kind = (*kind()).clone();
+                llama_kind.species = Species::TraderLlama;
+                let mut llama = Mob::new(1, Arc::new(llama_kind), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                llama.extra.leash = Some(super::super::leash::Holder::Mob(2));
+                llama.ai.goals.add(1, DefendTrader::default());
+                let mut lr = LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &world,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut llama.ai.goals);
+                goals.tick(&mut llama, &mut cx);
+                outcomes.push(goals.is_running("DefendTrader"));
+                llama.ai.goals = goals;
+            }
+        }) {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            vec![true, false],
+            "a survival player is defended against; a spectator is not"
+        );
+    }
+}
