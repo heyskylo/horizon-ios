@@ -16,6 +16,7 @@ pub mod session;
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -74,17 +75,59 @@ impl Endpoints {
     }
 }
 
+/// Orders resolved addresses so the two families alternate, the first one's address first (the
+/// order RFC 8305 asks a client to try them in). A host whose IPv6 route is dead then costs one
+/// short attempt before its IPv4 address is tried, instead of every AAAA record in turn.
+fn interleave(addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
+    let Some(first) = addrs.first().map(SocketAddr::is_ipv6) else {
+        return addrs;
+    };
+    let (mut same, mut other): (Vec<_>, Vec<_>) =
+        addrs.into_iter().partition(|a| a.is_ipv6() == first);
+    same.reverse();
+    other.reverse();
+    let mut out = Vec::with_capacity(same.len() + other.len());
+    while !same.is_empty() || !other.is_empty() {
+        out.extend(same.pop());
+        out.extend(other.pop());
+    }
+    out
+}
+
+/// The system's resolver with its answer interleaved (`interleave`).
+struct Interleaved<R>(R);
+
+impl<R: ureq::Resolver> ureq::Resolver for Interleaved<R> {
+    fn resolve(&self, netloc: &str) -> std::io::Result<Vec<SocketAddr>> {
+        self.0.resolve(netloc).map(interleave)
+    }
+}
+
+struct System;
+
+impl ureq::Resolver for System {
+    fn resolve(&self, netloc: &str) -> std::io::Result<Vec<SocketAddr>> {
+        netloc.to_socket_addrs().map(Iterator::collect)
+    }
+}
+
+/// The agent builder sign-in requests start from: the launcher's user agent, a 20 s timeout, a
+/// 10 s connect timeout (shared between the addresses, so a dead IPv6 route falls back to IPv4
+/// long before the 20 s run out) and addresses of both families interleaved.
+fn builder() -> ureq::AgentBuilder {
+    ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(20))
+        .timeout_connect(Duration::from_secs(10))
+        .resolver(Interleaved(System))
+        .user_agent(&format!("horizon-launcher/{}", crate::backend::VERSION))
+}
+
 /// A request to `url`: the launcher's user agent, a 20 s timeout, and the player's proxy when one
 /// is set (`proxy`), since a sign-in has to get out the way downloads do.
 fn request_to(method: &str, url: &str) -> ureq::Request {
-    crate::proxy::agent(
-        ureq::AgentBuilder::new()
-            .timeout(Duration::from_secs(20))
-            .user_agent(&format!("horizon-launcher/{}", crate::backend::VERSION)),
-        url,
-    )
-    .build()
-    .request(method, url)
+    crate::proxy::agent(builder(), url)
+        .build()
+        .request(method, url)
 }
 
 /// One request's result: the status and the JSON body (empty when there is none). Transport
