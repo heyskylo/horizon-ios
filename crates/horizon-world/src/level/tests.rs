@@ -3251,6 +3251,82 @@ fn water_douses_a_lit_campfire_with_the_extinguish_sound() {
         )),
         "the extinguish sound"
     );
+    // `douse(null, level, pos, state)` ends with
+    // `level.gameEvent(null, GameEvent.BLOCK_CHANGE, pos)`, so a sculk sensor
+    // hears the fire go out.
+    assert!(
+        w.level.events.iter().any(|e| matches!(
+            e,
+            LevelEvent::GameEvent {
+                event: "minecraft:block_change",
+                pos,
+                ..
+            } if *pos == at
+        )),
+        "the block-change game event"
+    );
+}
+
+#[test]
+fn water_douses_a_lit_candle_with_the_candle_sound() {
+    // CandleBlock.placeLiquid: a lit candle that takes water runs
+    // `AbstractCandleBlock.extinguish` with the new waterlogged state, which
+    // sets it unlit, plays CANDLE_EXTINGUISH and posts BLOCK_CHANGE.
+    let mut w = world!();
+    let at = BlockPos::new(0, 1, 0);
+    w.put(at, w.id("candle", &[("lit", "true")]));
+    w.level.events.clear();
+    let placed = w.f.behaviours.bucket_empty(
+        &mut w.level,
+        &mut w.ticks,
+        at,
+        None,
+        BucketContent::Fluid(crate::fluid::FluidKind::Water),
+        "minecraft:item.bucket.empty",
+        false,
+        false,
+    );
+    assert_eq!(placed, Some(at));
+    assert_eq!(w.prop(at, "lit"), "false");
+    assert_eq!(w.prop(at, "waterlogged"), "true");
+    assert!(
+        w.level.events.iter().any(|e| matches!(
+            e,
+            LevelEvent::Sound { sound, .. } if &**sound == "minecraft:block.candle.extinguish"
+        )),
+        "the candle extinguish sound"
+    );
+    assert!(
+        w.level.events.iter().any(|e| matches!(
+            e,
+            LevelEvent::GameEvent {
+                event: "minecraft:block_change",
+                pos,
+                ..
+            } if *pos == at
+        )),
+        "the block-change game event"
+    );
+    // A candle that is already out (no extinguish) posts no such event.
+    w.put(at, w.id("candle", &[("lit", "false")]));
+    w.level.events.clear();
+    w.f.behaviours.bucket_empty(
+        &mut w.level,
+        &mut w.ticks,
+        at,
+        None,
+        BucketContent::Fluid(crate::fluid::FluidKind::Water),
+        "minecraft:item.bucket.empty",
+        false,
+        false,
+    );
+    assert!(!w.level.events.iter().any(|e| matches!(
+        e,
+        LevelEvent::GameEvent {
+            event: "minecraft:block_change",
+            ..
+        }
+    )));
 }
 
 #[test]
