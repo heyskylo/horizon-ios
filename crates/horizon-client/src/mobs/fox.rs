@@ -463,7 +463,16 @@ fn alertable(m: &Mob, w: &MobWorld) -> bool {
         .nearby(from, 12.0, |s: &Seen| {
             s.id != id
                 && (s.position.y - y).abs() <= 6.0
-                && m.distance_sqr(s.position) <= 144.0
+                && {
+                    // `TargetingConditions.testInvisible`: the range shrinks
+                    // with visibility, floor 2.
+                    let range = if s.has_effect("invisibility") {
+                        2.0
+                    } else {
+                        12.0
+                    };
+                    m.distance_sqr(s.position) <= range * range
+                }
                 && match s.species {
                     Species::Fox => false,
                     Species::Chicken | Species::Rabbit => true,
@@ -479,7 +488,11 @@ fn alertable(m: &Mob, w: &MobWorld) -> bool {
             && !p.spectator
             && !p.sneaking
             && (p.position.y - y).abs() <= 6.0
-            && m.distance_sqr(p.position) <= 144.0
+            && {
+                let range =
+                    (12.0 * p.visibility_percent(Some(m.kind.id.as_str()), w.items)).max(2.0);
+                m.distance_sqr(p.position) <= range * range
+            }
     })
 }
 
