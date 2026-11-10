@@ -268,3 +268,38 @@ fn a_loaded_hurt_by_mob_naming_no_entity_stays_until_it_arrives() {
         "resolved, then ended"
     );
 }
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_loaded_hurt_by_mob_naming_the_mob_itself_resolves_and_ends_after_100_ticks() {
+    use horizon_client::mobs::Who;
+    // `EntityReference.getEntity` looks the UUID up in the level and does not
+    // exclude the holder, so `baseTick` ends the record like any other.
+    const SELF: &str = "00006094-0000-0000-0000-000000000006";
+    let mut game = game();
+    assert!(game.run_command(
+        "summon pig 8.5 100 12.5 {NoAI:1b,PersistenceRequired:1b,UUID:[I;24724,0,0,6],last_hurt_by_mob:[I;24724,0,0,6],ticks_since_last_hurt_by_mob:3}"
+    ));
+    let named = Some(Tag::IntArray(vec![24724, 0, 0, 6]));
+    let me = index(&mut game, SELF);
+    let id = game.mobs[me].id;
+    assert_eq!(fields(&mut game, me), (named.clone(), Some(Tag::Int(3))));
+    step(&mut game, 1);
+    let me = index(&mut game, SELF);
+    assert_eq!(
+        game.mobs[me].ai.last_hurt_by,
+        Some(Who::Mob(id)),
+        "resolved"
+    );
+    assert_eq!(game.mobs[me].ai.last_hurt_by_ref, None, "no bare reference");
+    assert_eq!(fields(&mut game, me), (named.clone(), Some(Tag::Int(4))));
+    // Aged 100 ticks: still there; one more and `baseTick` ends it.
+    step(&mut game, 96);
+    let me = index(&mut game, SELF);
+    assert_eq!(game.mobs[me].ai.last_hurt_by, Some(Who::Mob(id)));
+    assert_eq!(fields(&mut game, me), (named, Some(Tag::Int(100))));
+    step(&mut game, 1);
+    let me = index(&mut game, SELF);
+    assert_eq!(game.mobs[me].ai.last_hurt_by, None, "101 ticks");
+    assert_eq!(fields(&mut game, me), (None, None), "101 ticks");
+}
