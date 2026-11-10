@@ -6,7 +6,7 @@ use super::{ExportError, ExportOptions, sampled};
 use crate::error::side_name;
 use crate::samples::{NO_NODE, Samples};
 use crate::view::View;
-use crate::wire::{Select, StateName};
+use crate::wire::StateName;
 
 const WAITING: &str = "[waiting]";
 
@@ -27,9 +27,6 @@ fn stack<'s>(samples: &'s Samples, node: u32) -> Vec<&'s str> {
 }
 
 pub fn encode(view: &View, options: &ExportOptions) -> Result<Vec<u8>, ExportError> {
-    if options.select == Select::Live {
-        return Err(ExportError::NotASampleKind(options.select));
-    }
     let sides = sampled(view, options)?;
     if !sides.iter().any(|s| s.samples.has_kind(options.select)) {
         return Err(ExportError::NoSamplesOfKind(options.select));

@@ -32,6 +32,7 @@ pub struct Builder {
     pub block_units: Vec<u32>,
     pub wall: bool,
     pub alloc: bool,
+    pub live: bool,
     /// Threads after the first: name, ticks and slow ticks.
     pub extra_threads: Vec<(String, u64, u64)>,
 }
@@ -53,6 +54,7 @@ impl Builder {
             block_units: block_units.to_vec(),
             wall: false,
             alloc: false,
+            live: false,
             extra_threads: Vec::new(),
         };
         b.ctx("", "", (0, 0), "");
@@ -138,14 +140,23 @@ impl Builder {
 
     /// An allocation sample row (kind 2 after cpu and wall), weighing `count * period` bytes.
     pub fn alloc_weight(&mut self, node: u32, count: u64) {
-        self.alloc = true;
+        self.heap_weight(node, count, 0, false);
+    }
+
+    /// An allocation row in time block `block`, or with `live` a live-bytes row of `count` bytes.
+    pub fn heap_weight(&mut self, node: u32, count: u64, block: u32, live: bool) {
+        if live {
+            self.live = true;
+        } else {
+            self.alloc = true;
+        }
         self.weights.node.push(node);
         self.weights.thread.push(0);
-        self.weights.kind.push(u32::MAX);
+        self.weights.kind.push(u32::MAX - u32::from(live));
         self.weights.state.push(0);
         self.weights.slow.push(false);
         self.weights.context.push(0);
-        self.weights.block.push(0);
+        self.weights.block.push(block);
         self.weights.count.push(count);
     }
 
@@ -170,6 +181,15 @@ impl Builder {
             kinds.push(kind(SampleSource::Alloc, SampleUnit::Bytes, 64.0));
             for k in &mut self.weights.kind {
                 if *k == u32::MAX {
+                    *k = at;
+                }
+            }
+        }
+        if self.live {
+            let at = kinds.len() as u32;
+            kinds.push(kind(SampleSource::Live, SampleUnit::Bytes, 1.0));
+            for k in &mut self.weights.kind {
+                if *k == u32::MAX - 1 {
                     *k = at;
                 }
             }

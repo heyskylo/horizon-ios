@@ -13,7 +13,7 @@ use crate::samples::NO_NODE;
 use crate::view::View;
 use crate::wire::{ContextKey, Select, StateName};
 
-const TYPES: [Select; 3] = [Select::Cpu, Select::Wall, Select::Alloc];
+const TYPES: [Select; 4] = [Select::Cpu, Select::Wall, Select::Alloc, Select::Live];
 
 fn varint(out: &mut Vec<u8>, mut v: u64) {
     while v >= 0x80 {

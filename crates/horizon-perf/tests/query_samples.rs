@@ -690,6 +690,52 @@ fn allocation_samples_are_bytes_per_tick() {
 }
 
 #[test]
+fn live_samples_are_bytes_held_at_the_end_and_a_window_narrows_them() {
+    let dir = TempDir::new("live");
+    let mut b = Builder::new(10, &[5, 5]);
+    let main = b.node(None, "a::main");
+    let grow = b.node(Some(main), "a::grow");
+    let hold = b.node(Some(main), "a::hold");
+    b.weight(grow, 1, W::default());
+    b.heap_weight(grow, 30, 0, false);
+    b.heap_weight(hold, 10, 1, false);
+    b.heap_weight(grow, 3000, 0, true);
+    b.heap_weight(hold, 1000, 1, true);
+    b.heap_weight(hold, 500, 0, true);
+    let file = save(&dir, "live.hzperf", &b.fields());
+    let self_bytes = |args: &[&str]| -> Vec<(String, f64)> {
+        let reply = query(args);
+        assert!(reply.ok, "{reply:?}");
+        hot_rows(&reply)
+            .iter()
+            .map(|r| (r.name.clone(), r.self_ms))
+            .collect()
+    };
+    let live = query(&["hot", "--select", "live", &file]);
+    assert_eq!(live.unit, Some(Unit::Bytes));
+    assert_eq!(
+        self_bytes(&["hot", "--select", "live", &file]),
+        [
+            ("a::grow".to_owned(), 3000.0),
+            ("a::hold".to_owned(), 1500.0)
+        ]
+    );
+    // 30 and 10 samples of 64 bytes over 10 ticks.
+    assert_eq!(
+        self_bytes(&["hot", "--select", "alloc", &file]),
+        [("a::grow".to_owned(), 192.0), ("a::hold".to_owned(), 64.0)]
+    );
+    assert_eq!(
+        self_bytes(&["hot", "--select", "live", "--from", "5", &file]),
+        [("a::hold".to_owned(), 1000.0)]
+    );
+    assert_eq!(
+        self_bytes(&["hot", "--select", "alloc", "--from", "5", &file]),
+        [("a::hold".to_owned(), 128.0)]
+    );
+}
+
+#[test]
 fn a_selection_the_capture_cannot_answer_says_why() {
     let dir = TempDir::new("errors");
     let file = standard(&dir);
