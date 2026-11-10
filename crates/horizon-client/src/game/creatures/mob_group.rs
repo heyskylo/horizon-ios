@@ -167,6 +167,8 @@ impl<M: MobSlot> Group<M> {
         for i in 0..self.mobs.len() {
             let at = self.at(i);
             self.random.begin_item(at);
+            #[cfg(test)]
+            super::mob_islands::inject_turn_failure(at);
             if let Some(foreign) = foreign {
                 foreign.reader.set(at);
             }

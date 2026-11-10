@@ -66,13 +66,29 @@ thread_local! {
     static VERIFY: Cell<bool> = const { Cell::new(false) };
     static CHECK: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
     static FAIL_THREADS: std::cell::RefCell<Option<FailThreads>> = const { std::cell::RefCell::new(None) };
+    static FAIL_TURN: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FailAt {
+    Spawn,
+    Setup,
+    Turn,
 }
 
 #[cfg(test)]
 #[derive(Clone)]
 struct FailThreads {
-    spawn: bool,
+    at: FailAt,
     started: Arc<std::sync::Barrier>,
+}
+
+#[cfg(test)]
+pub(super) fn inject_turn_failure(at: usize) {
+    if FAIL_TURN.with(Cell::get) == Some(at) {
+        panic!("injected mob turn failure");
+    }
 }
 
 fn verifying() -> bool {
@@ -331,20 +347,21 @@ impl Islands<'_> {
         std::thread::scope(|s| {
             // Guards for every not-yet-started lane live inside the scope's callback. If the
             // OS refuses a spawn, they drop before scope joins any started, waiting threads.
-            let _first_done = first.random.lane_done();
+            let first_done = first.random.lane_done();
             let pending: Vec<_> = parts
                 .map(|(g, ticking)| {
                     let done = g.random.lane_done();
                     (g, ticking, done)
                 })
                 .collect();
+            let mut handles = Vec::with_capacity(pending.len());
             for (g, ticking, done) in pending {
                 let run = &run;
                 #[cfg(test)]
                 let failure = failure.clone();
                 #[cfg(test)]
                 if let Some(failure) = &failure
-                    && failure.spawn
+                    && failure.at == FailAt::Spawn
                     && g.global[0] == 2
                 {
                     // The first worker has reached its RNG request while the server lane and
@@ -352,7 +369,7 @@ impl Islands<'_> {
                     failure.started.wait();
                     panic!("injected spawn failure at the OS-spawn error boundary");
                 }
-                std::thread::Builder::new()
+                let handle = std::thread::Builder::new()
                     .name("mob-island".into())
                     .spawn_scoped(s, move || {
                         let _done = done;
@@ -360,21 +377,37 @@ impl Islands<'_> {
                         if let Some(failure) = &failure
                             && g.global[0] == 1
                         {
-                            if !failure.spawn {
-                                panic!("injected worker setup failure");
+                            match failure.at {
+                                FailAt::Setup => panic!("injected worker setup failure"),
+                                FailAt::Turn => FAIL_TURN.with(|f| f.set(Some(1))),
+                                FailAt::Spawn => {
+                                    use horizon_core::random::RandomSource;
+                                    g.random.begin_item(1);
+                                    failure.started.wait();
+                                    g.random.next_long();
+                                    g.random.end_item();
+                                }
                             }
-                            use horizon_core::random::RandomSource;
-                            g.random.begin_item(1);
-                            failure.started.wait();
-                            g.random.next_long();
-                            g.random.end_item();
                         }
                         horizon_client::mobs::sulfur_cube::set_tnt_explodes(tnt);
                         horizon_client::block_contact::in_level(level, || run(g, ticking));
                     })
                     .expect("a mob island's thread starts");
+                handles.push(handle);
             }
             run(first, first_ticking);
+            drop(first_done);
+            let mut panic = None;
+            for handle in handles {
+                if let Err(payload) = handle.join()
+                    && panic.is_none()
+                {
+                    panic = Some(payload);
+                }
+            }
+            if let Some(payload) = panic {
+                std::panic::resume_unwind(payload);
+            }
         });
     }
 }
@@ -931,10 +964,17 @@ mod tests {
 
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-    fn partial_spawn_and_worker_setup_failures_release_every_lane() {
+    fn startup_and_turn_failures_release_lanes_and_preserve_payload() {
         let (sent, finished) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            for spawn in [true, false] {
+            for (at, expected) in [
+                (
+                    FailAt::Spawn,
+                    "injected spawn failure at the OS-spawn error boundary",
+                ),
+                (FailAt::Setup, "injected worker setup failure"),
+                (FailAt::Turn, "injected mob turn failure"),
+            ] {
                 let mut game = super::super::super::native_machines::tests::server_game();
                 for x in [0.5, 1.5, 2.5] {
                     game.spawn_mob("minecraft:cow", [x, 65.0, 0.5], true)
@@ -975,7 +1015,7 @@ mod tests {
                 };
                 FAIL_THREADS.with(|f| {
                     *f.borrow_mut() = Some(FailThreads {
-                        spawn,
+                        at,
                         started: Arc::new(std::sync::Barrier::new(2)),
                     });
                 });
@@ -997,9 +1037,15 @@ mod tests {
                     );
                 }));
                 FAIL_THREADS.with(|f| *f.borrow_mut() = None);
-                assert!(
-                    caught.is_err(),
-                    "injected failure reaches the server caller"
+                let payload = caught.expect_err("injected failure reaches the server caller");
+                let text = payload
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| payload.downcast_ref::<String>().map(String::as_str));
+                assert_eq!(
+                    text,
+                    Some(expected),
+                    "the original panic payload reaches the caller"
                 );
             }
             sent.send(()).unwrap();
