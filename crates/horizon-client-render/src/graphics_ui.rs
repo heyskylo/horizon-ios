@@ -697,7 +697,7 @@ fn description(
             "Your display didn't say how bright it gets: calibrate to set it up."
         }
         (Item::Horizon(H::HdrCalibrate), Setup::Guessed) => {
-            "Your display's reported peak is often too high: calibrate to set it up."
+            "Auto uses the peak Windows reports. Calibrate if highlights look clipped."
         }
         (Item::Horizon(H::HdrCalibrate), Setup::Automatic) => {
             "Already set up for your display. Only calibrate if HDR looks wrong."
@@ -705,7 +705,7 @@ fn description(
         (Item::Horizon(H::HdrCalibrate), Setup::Changed) => {
             "Puts Peak Brightness and Paper White back to your display's setup."
         }
-        // A guessed peak's Auto is what calibration replaced; paper white is the player's own.
+        // A peak of unknown source isn't said to be set up; paper white is the player's own.
         (Item::Horizon(h @ (H::HdrPeak | H::HdrPaperWhite)), Setup::Automatic | Setup::Changed)
             if h == H::HdrPaperWhite || out.reported.is_some_and(|r| !r.peak_guessed) =>
         {

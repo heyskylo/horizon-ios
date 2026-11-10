@@ -15306,8 +15306,8 @@ fn log_os_reported(reported: Option<crate::graphics::Reported>) {
     });
 }
 /// What the OS reports in absolute nits, HDR output's scale (Windows: DXGI's SDR white level,
-/// the brightness slider's, as Paper White, and its `MaxLuminance`, mostly the display's EDID
-/// guess, as Peak Brightness), kept within the settings' ranges. The player's values win.
+/// the brightness slider's, as Paper White, and its `MaxLuminance`, the display's or a calibration
+/// profile's, as Peak Brightness), kept within the settings' ranges. The player's values win.
 fn os_reported(info: &wgpu::DisplayHdrInfo) -> Option<crate::graphics::Reported> {
     let luminance = info.luminance?;
     let usable = |n: f32| n.is_finite() && n > 0.0;
