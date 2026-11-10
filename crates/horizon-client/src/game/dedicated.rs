@@ -2365,9 +2365,25 @@ impl Game<'_> {
     /// swapped in, so its record is older than what the game holds, and writing it would put
     /// back older data than the last autosave; that guest keeps the file it has. A hub that the
     /// panic took with it (`self.lan.take()` was in progress) saves no players at all. The
-    /// levels, the scoreboard and the other state are saved as in a normal stop.
-    fn stop_after_crash(&mut self, message: &str) -> Result<()> {
-        log("ERROR", &format!("The server thread panicked: {message}"));
+    /// levels, the scoreboard and the other state are saved as in a normal stop. Single
+    /// player's server thread ends here too, after a tick that panicked or failed
+    /// (`integrated_tick_loop`), and then stops as `stop_integrated` does.
+    pub(super) fn stop_after_crash(&mut self, message: &str) -> Result<()> {
+        // Single player's server thread (`integrated.rs`) has no console: it logs to the game's log.
+        let integrated = self.serving.is_some();
+        let warn = |message: &str| {
+            if integrated {
+                log::warn!("Horizon: {message}");
+            } else {
+                log("WARN", message);
+            }
+        };
+        if integrated {
+            // `message` already says whether the tick panicked or failed.
+            log::error!("Horizon: {message}");
+        } else {
+            log("ERROR", &format!("The server thread panicked: {message}"));
+        }
         let acting = self.lan_acting;
         let hub_lost = self.lan.is_none();
         if let (Some(conn), Some(host)) = (acting, self.lan.as_mut())
@@ -2376,15 +2392,13 @@ impl Game<'_> {
             guest.placed = false;
         }
         if hub_lost {
-            log(
-                "WARN",
-                "The panic interrupted the network tick: players are not saved, only the world",
-            );
+            warn("The panic interrupted the network tick: players are not saved, only the world");
         } else if acting.is_some() {
-            log(
-                "WARN",
-                "The panic interrupted a player's turn: that player keeps the last saved file",
-            );
+            warn("The panic interrupted a player's turn: that player keeps the last saved file");
+        }
+        if integrated {
+            // `IntegratedServer.stopServer`'s steps; `save_guest` skips the guest unplaced above.
+            return self.stop_integrated();
         }
         self.native_lifecycle.begin_close();
         log("INFO", "Saving worlds");
@@ -2448,7 +2462,7 @@ pub(super) fn crash_fixture(point: &str, armed: impl FnOnce() -> bool) {
 }
 
 /// The text of a panic payload (`panic!("..")` is a `&str`, a formatted one a `String`).
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+pub(super) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     payload
         .downcast_ref::<&str>()
         .map(|s| (*s).to_owned())
