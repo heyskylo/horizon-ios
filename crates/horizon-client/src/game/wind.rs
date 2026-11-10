@@ -464,7 +464,9 @@ impl Game<'_> {
         }
         let mut entities = self.take_entities();
         for_each_entity_mut!(entities, entity => {
-            if let Some((_, push)) = late.iter().find(|(id, _)| *id == entity.id()) {
+            // Every burst of the tick pushed it, one after the other.
+            let id = entity.id();
+            for (_, push) in late.iter().filter(|(pushed, _)| *pushed == id) {
                 entity.push_from_explosion(*push);
             }
         });
