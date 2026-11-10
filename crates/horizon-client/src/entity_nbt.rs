@@ -2267,8 +2267,8 @@ pub fn mob_from_nbt_with_random(
         m.extra.bred = flag(tag, "Bred");
         m.extra.owner = crate::save::uuid_from_tag(tag.get("Owner"));
         let v = number(tag.get("Variant")).unwrap_or(0) as i32;
-        m.extra.variant = (v & 0xFF).clamp(0, 6) as u8;
-        m.extra.variant2 = ((v >> 8) & 0xFF).clamp(0, 4) as u8;
+        m.extra.variant = ((v & 0xFF) % 7) as u8;
+        m.extra.variant2 = (((v >> 8) & 0xFF) % 5) as u8;
         if crate::mobs::llama::is_llama(m.species()) {
             crate::mobs::llama::from_nbt(&mut m, tag);
         }
@@ -4618,6 +4618,32 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// `Horse.getVariant` is `Variant.byId(typeVariant & 255)` and
+    /// `getMarkings` `Markings.byId((typeVariant & 0xFF00) >> 8)`; both maps
+    /// are `OutOfBoundsStrategy.WRAP` (7 coats, 5 markings), so 9 is coat 2
+    /// and markings 6 is 1.
+    #[test]
+    fn a_horses_unknown_coat_and_markings_wrap() {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let ty = Arc::make_mut(&mut kind);
+        ty.id = "minecraft:horse".into();
+        ty.species = crate::mobs::Species::Horse;
+        let types = [("minecraft:horse".into(), kind)].into();
+        let look = |saved: i32| {
+            let raw = Tag::compound([
+                ("id", string("minecraft:horse")),
+                ("Pos", doubles(&[4.5, 220.0, 4.5])),
+                ("Variant", Tag::Int(saved)),
+            ]);
+            let m = mob_from_nbt(&raw, &types, 1, None).unwrap();
+            (m.extra.variant, m.extra.variant2)
+        };
+        assert_eq!(look(6 | 4 << 8), (6, 4));
+        assert_eq!(look(9), (2, 0));
+        assert_eq!(look(6 << 8), (0, 1));
+        assert_eq!(look(255 | 255 << 8), (3, 0));
     }
 
     /// A mount keeps its body armour and a helmet (say
