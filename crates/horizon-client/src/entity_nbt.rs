@@ -3728,10 +3728,7 @@ pub fn falling_state_from_nbt(registry: &BlockRegistry, tag: &Tag) -> Option<Blo
 
 /// `NoGravity` and `DropItem` (true when absent) of a saved falling block.
 pub fn falling_block_flags(tag: &Tag) -> (bool, bool) {
-    (
-        flag(tag, "NoGravity"),
-        number(tag.get("DropItem")).is_none_or(|v| v != 0),
-    )
+    (flag(tag, "NoGravity"), flag_or(tag, "DropItem", true))
 }
 
 /// `Cushion.addAdditionalSaveData`: the block it sits on and its colour.
