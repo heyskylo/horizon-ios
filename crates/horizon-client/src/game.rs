@@ -1505,7 +1505,7 @@ impl LevelAccess for GameLevel<'_> {
         {
             return signal;
         }
-        machines::container_signal(self.world, self.behaviours, self.items, self.registry, pos)
+        machines::container_signal(self, pos)
     }
     fn item_frame_analog_output(&self, pos: BlockPos, facing: Direction) -> Option<i32> {
         let mut frames = self
