@@ -296,6 +296,9 @@ mod block_event_queue_tests {
             assert_eq!(ticks.pop_block_event(), Some(event(i)));
         }
         assert_eq!(ticks.pop_block_event(), None);
-        assert!(ticks.queue_block_event(event(0)), "popped events queue again");
+        assert!(
+            ticks.queue_block_event(event(0)),
+            "popped events queue again"
+        );
     }
 }
