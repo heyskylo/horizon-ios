@@ -89,6 +89,8 @@ enum Action {
     Stop,
     Status,
     Mark,
+    Open,
+    Share,
 }
 
 impl FromStr for Action {
@@ -100,6 +102,8 @@ impl FromStr for Action {
             "stop" => Ok(Self::Stop),
             "status" => Ok(Self::Status),
             "mark" => Ok(Self::Mark),
+            "open" => Ok(Self::Open),
+            "share" => Ok(Self::Share),
             other => Err(format!("unknown profile action {other}")),
         }
     }
@@ -147,6 +151,10 @@ pub enum Request {
     },
     Status,
     Mark(String),
+    /// Open the saved capture in the viewer, through the captures hook.
+    Open(PathBuf),
+    /// Upload the saved capture, through the captures hook; the reply is the link.
+    Share(PathBuf),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -155,7 +163,7 @@ pub struct Parsed {
     pub request: Request,
 }
 
-const USAGE: &str = "profile [client|server] start [--seconds S] [--hz N] [--over MS] [--threads main|all] [--wall] [--gpu[=detail]] [--no-samples] [--timeline] | stop [--bench REPORT] | status | mark NAME";
+const USAGE: &str = "profile [client|server] start [--seconds S] [--hz N] [--over MS] [--threads main|all] [--wall] [--gpu[=detail]] [--no-samples] [--timeline] | stop [--bench REPORT] | status | mark NAME | open FILE | share FILE";
 
 /// The words after `profile`; the side comes first or as `--side`, and the switches follow `start`.
 pub fn parse(words: &[&str]) -> Result<Parsed, String> {
@@ -169,6 +177,21 @@ pub fn parse(words: &[&str]) -> Result<Parsed, String> {
     let action: Action = action.parse().map_err(|e| format!("{e}; usage: {USAGE}"))?;
     if action == Action::Mark {
         return mark(side, rest);
+    }
+    if matches!(action, Action::Open | Action::Share) {
+        let file = rest.join(" ");
+        if file.is_empty() {
+            return Err(format!("{} needs a FILE; usage: {USAGE}", words[0]));
+        }
+        let file = PathBuf::from(file);
+        let request = match action {
+            Action::Open => Request::Open(file),
+            _ => Request::Share(file),
+        };
+        return Ok(Parsed {
+            side: None,
+            request,
+        });
     }
     let mut options = StartOptions::default();
     let mut switched = false;
@@ -316,6 +339,20 @@ pub struct Traced {
     pub file: Option<String>,
 }
 
+/// The reply to `profile open`: the viewer the capture was opened in.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Opened {
+    pub ok: bool,
+    pub viewer: String,
+}
+
+/// The reply to `profile share`: the capture's share link.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Shared {
+    pub ok: bool,
+    pub url: String,
+}
+
 /// The reply to `profile mark`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Marked {
@@ -331,6 +368,20 @@ mod tests {
 
     fn p(line: &str) -> Result<Parsed, String> {
         parse(&line.split_whitespace().collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn open_and_share_take_a_file_with_spaces_kept() {
+        assert_eq!(
+            p("open reports/a.hzperf").unwrap().request,
+            Request::Open(PathBuf::from("reports/a.hzperf"))
+        );
+        assert_eq!(
+            p("share /tmp/my  capture.hzperf").unwrap().request,
+            Request::Share(PathBuf::from("/tmp/my capture.hzperf"))
+        );
+        assert!(p("open").is_err());
+        assert!(p("share").is_err());
     }
 
     #[test]

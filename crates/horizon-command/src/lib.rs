@@ -891,8 +891,12 @@ impl Dispatcher {
         }
         let status = d.literal(command, "status");
         d.executes(status, MOD_COMMAND);
-        let share = d.literal(command, "share");
-        d.executes(share, MOD_COMMAND);
+        for action in ["open", "share"] {
+            let action = d.literal(command, action);
+            d.executes(action, MOD_COMMAND);
+            let id = d.argument(action, "id", ArgType::Word);
+            d.executes(id, MOD_COMMAND);
+        }
         let mark = d.literal(command, "mark");
         let name = d.argument(mark, "name", ArgType::Greedy);
         d.executes(name, MOD_COMMAND);

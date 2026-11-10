@@ -47,8 +47,11 @@ def commands(bins, work, env):
     return ctl, perf, socket
 
 
-def check_ctl(bins, resources):
-    """profile start, mark and stop in single player, and the file they leave: both sides, the window and the server thread."""
+def check_ctl(bins, resources, official=False):
+    """profile start, mark and stop in single player, and the file they leave: both sides, the window and the server thread.
+
+    `official`: horizon-client is the horizon-official build, which has the captures part (open_at, [Open] and [Share]).
+    """
     work, env = ac.scratch('profile', resources)
     ctl, perf, socket = commands(bins, work, env)
     try:
@@ -69,7 +72,11 @@ def check_ctl(bins, resources):
         stopped = ctl('profile', 'stop')
         after = ctl('status')['frames']
         assert stopped['path'] == started['path'], (started, stopped)
-        assert stopped['open_at'].startswith('https://') and stopped['sides'] == ['server', 'client'], stopped
+        assert stopped['sides'] == ['server', 'client'], stopped
+        if official:
+            assert stopped['open_at'].startswith('https://'), stopped
+        else:
+            assert 'open_at' not in stopped, stopped
         file = work / stopped['path']
         assert file.exists(), file
         assert ctl('profile', 'status')['capturing'] is False
@@ -138,6 +145,13 @@ def check_ctl(bins, resources):
             time.sleep(0.5)
         assert ctl('profile', 'status')['capturing'] is False
         print(f'PASS: /profiler saved {next(iter(new)).name}')
+        lines = ' '.join(ctl('chat-log', '10')['chat'])
+        assert 'Saved' in lines and 'reports' in lines, lines
+        assert ('[Open]' in lines and '[Share]' in lines) == official, (official, lines)
+        if not official:
+            ctl('chat', '/profiler open')
+            assert 'not available in this build' in ' '.join(ctl('chat-log', '3')['chat'])
+        print(f'PASS: /profiler stop {"offers [Open] and [Share]" if official else "offers neither, and open says it is not available"}')
         return True
     except (ac.Failed, AssertionError) as e:
         print(f'FAIL: {e!r}')
@@ -243,6 +257,7 @@ def check_gpu_env(bins, resources):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--bin-dir', help='prebuilt horizon-client, horizon-ctl and horizon-perf (default: build with the fast profile)')
+    parser.add_argument('--official', action='store_true', help='the horizon-client in --bin-dir is the horizon-official build: expect open_at and the [Open] and [Share] buttons')
     args = parser.parse_args()
     if args.bin_dir:
         bins = Path(args.bin_dir).resolve()
@@ -255,7 +270,7 @@ def main():
     resources = lab.RESOURCES.resolve()
     if not (resources / 'horizon-resources.json').exists():
         sys.exit(f'no prepared resources in {resources}')
-    passed = [check_ctl(bins, resources), check_env(bins, resources), check_gpu(bins, resources), check_gpu_env(bins, resources)]
+    passed = [check_ctl(bins, resources, args.official), check_env(bins, resources), check_gpu(bins, resources), check_gpu_env(bins, resources)]
     sys.exit(0 if all(passed) else 1)
 
 
