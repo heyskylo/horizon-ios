@@ -50,7 +50,7 @@ CrafterBlockEntity.canPlaceItem	port	crates/horizon-client/src/game/machines.rs:
 CrafterBlockEntity.smallerStackExist	port	crates/horizon-client-render/src/containers.rs::Crafter::can_place	the smaller-stack check later in the slots
 CrafterBlockEntity.saveAdditional	port	crates/horizon-client/src/save.rs::encode_block_entity	crafter arm: items, disabled slots, triggered, ticks
 CrafterBlockEntity.isEmpty	port	crates/horizon-client/src/game/machines.rs::Containers::is_empty	
-CrafterBlockEntity.fillStackedContents	missing		no crafter case in the recipe book: `recipe_book` and `crafting` fill a crafting grid, never a crafter's slots
+CrafterBlockEntity.fillStackedContents	port	crates/horizon-client/src/menu/place.rs::Menu::stacked_contents	the crafter's nine slots are the menu's MAIN container (`CrafterMenu.addSlots`), accounted like a grid (`accountSimpleStack`) for the recipe book's craftable check
 CrafterBlockEntity.addDisabledSlots	port	crates/horizon-client/src/save.rs::encode_block_entity	disabled_slots in the crafter arm
 CrafterBlockEntity.slotCanBeDisabled	port	crates/horizon-client-render/src/containers.rs::Crafter::slot_can_be_disabled	
 CreakingHeartBlockEntity.updateCreakingState	inline	crates/horizon-client/src/mobs/creaking_heart.rs::server_tick	creaking_heart_state set in server_tick
