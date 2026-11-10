@@ -87,7 +87,7 @@ PlayerCapeModel.setupAnim	port	crates/horizon-client/src/mobs/render.rs::cape	th
 PlayerEarsModel.createEarsLayer	port	crates/horizon-client/src/mobs/render.rs::ears	the layer is the baked player#ears model, drawn there
 PlayerModel.createMesh	skip:data		layer baked into entity-models.json, loaded by key
 PlayerModel.createArmorMeshSet	skip:data		layer baked into entity-models.json, loaded by key
-PlayerModel.setupAnim	port	crates/horizon-client/src/mobs/anim.rs::setup	gap: player: hat, jacket, sleeve and pant toggles (modelPart options) are not read, so a hidden layer still draws; humanoid pose is in the Humanoid branch
+PlayerModel.setupAnim	port	crates/horizon-client/src/mobs/anim.rs::setup	the hat, jacket, sleeve and pant toggles hide their layers (anim::player_model_visibility); humanoid pose is in the Humanoid branch
 PlayerModel.translateToHand	port	crates/horizon-client/src/mobs/render.rs::hand_base	gap: minor: slim-arm 0.5 pixel hand offset not applied
 BlockModelLighter.prepareQuadAmbientOcclusion	port	crates/horizon-client-render/src/mesher/lighting.rs::ambient_occlusion	per-vertex AO brightness and smooth light from the corner samples
 BlockModelLighter.prepareQuadFlat	port	crates/horizon-client-render/src/mesher/lighting.rs::flat_shaped	light only; the directional colour is applied in Mesher::face

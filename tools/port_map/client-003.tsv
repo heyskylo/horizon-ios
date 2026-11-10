@@ -85,8 +85,8 @@ ServerAddress.isValidAddress	port	crates/horizon-protocol/src/servers.rs::parse_
 ServerAddress.equals	skip:java		value equality; Horizon compares the strings
 ServerNameResolver.resolveAddress	port	crates/horizon-protocol/src/resolver.rs::resolve	gap: minor: no block-list check on the resolved address
 ServerRedirectHandler.createDnsSrvRedirectHandler	port	crates/horizon-protocol/src/resolver.rs::srv_redirect	SRV lookup of _minecraft._tcp on port 25565
-AbstractBoatRenderer.submit	port	crates/horizon-client/src/game/boats.rs::Game::boat_geometry	gap: player: no bubble-column wobble (bubbleAngle tilt); the rest of the transform, hurt tilt and paddles are drawn
-AbstractBoatRenderer.extractRenderState	inline	crates/horizon-client/src/game/boats.rs::Game::boat_geometry	gap: player: bubbleAngle is not read, so boats in bubble columns do not wobble
+AbstractBoatRenderer.submit	port	crates/horizon-client/src/game/boats.rs::Game::boat_geometry	the transform, hurt tilt, bubble-column wobble (bubble_angle) and paddles are drawn
+AbstractBoatRenderer.extractRenderState	inline	crates/horizon-client/src/game/boats.rs::Game::boat_geometry	bubbleAngle is read (Boat::bubble_angle) for the bubble-column wobble
 AbstractCubeMobRenderer.downscaleSlightly	port	crates/horizon-client/src/mobs/cube.rs::scale	slime only: the 0.999 scale and small lift
 AbstractCubeMobRenderer.applySizeAndSquish	port	crates/horizon-client/src/mobs/cube.rs::scale	size and squish scale
 AbstractCubeMobRenderer.extractRenderState	port	crates/horizon-client/src/mobs/cube.rs::scale	squish and size are read from the mob at draw time
@@ -98,7 +98,7 @@ AbstractMinecartRenderer.oldRender	port	crates/horizon-client/src/game/minecarts
 AbstractMinecartRenderer.newExtractState	port	crates/horizon-client/src/game/remote.rs::Game::remote_minecart_lerp	the cart's position and rotation sampled at the frame's partial tick from the steps a NewMinecartBehavior cart has queued; None when the cart has no lerp, and the renderer then keeps the entity's own interpolated position and rotation
 AbstractMinecartRenderer.oldExtractState	port	crates/horizon-client/src/game/minecarts.rs::Game::cart_geometry	rail front and back points are taken from the cart's rail position
 AbstractMinecartRenderer.getRenderOffset	missing		minor: only the new render path offsets the cart
-AbstractSkeletonRenderer.extractRenderState	port	crates/horizon-client/src/mobs/anim.rs::setup	gap: player: a skeleton's freeze-conversion shake (its isShaking) is not drawn; the aggressive and bow flags are read in setup
+AbstractSkeletonRenderer.extractRenderState	port	crates/horizon-client/src/mobs/anim.rs::setup	the aggressive and bow flags are read in setup; the freeze-conversion shake is render::shaking
 AbstractSkeletonRenderer.getArmPose	port	crates/horizon-client/src/mobs/anim.rs::setup	bow-and-arrow arm pose when aggressive with a bow
 AbstractZombieRenderer.extractRenderState	port	crates/horizon-client/src/mobs/anim.rs::setup	aggressive arms (zombie arm pose)
 AbstractZombieRenderer.isShaking	port	crates/horizon-client/src/mobs/render.rs::shaking	converting zombies and husks shake
@@ -121,7 +121,7 @@ BeeRenderer.extractRenderState	port	crates/horizon-client/src/mobs/body_anim.rs:
 BreezeRenderer.extractRenderState	port	crates/horizon-client/src/mobs/breeze.rs::anim	idle, shoot, slide, inhale and long-jump states
 CamelRenderer.createCamelSaddleLayer	port	crates/horizon-client/src/mobs/render.rs::layers	camel uses the equine saddle branch
 CamelRenderer.extractAdditionalState	port	crates/horizon-client/src/mobs/camel.rs::animation_states	sit, stand, idle and dash states; the dash cooldown is in dash()
-CatRenderer.extractRenderState	port	crates/horizon-client/src/mobs/tame.rs::anim	gap: player: sitting and roll poses are drawn; lie-down (lieDownAmount) and relaxed poses are not, so a cat never lies down
+CatRenderer.extractRenderState	port	crates/horizon-client/src/mobs/tame.rs::cat_anim	sitting, lie-down (lieDownAmount, lieDownAmountTail), relaxed and crouch/sprint poses are read; the lying roll is tame::cat_rotations
 ChickenRenderer.bakeModels	skip:data		models are loaded from Horizon's assets
 ChickenRenderer.submit	port	crates/horizon-client/src/mobs/render.rs::body	adult, baby and cold model choice
 ChickenRenderer.getTextureLocation	port	crates/horizon-client/src/mobs/render.rs::body	texture by variant and age
@@ -140,7 +140,7 @@ DisplayRenderer.getSkyLightLevel	port	crates/horizon-client/src/game/text_displa
 DisplayRenderer.getBlockLightLevel	port	crates/horizon-client/src/game/text_displays.rs::Game::display_light	the brightness override's sky and block light packed as light coords, else the world light at the display's block position
 DisplayRenderer.getShadowRadius	port	crates/horizon-client/src/shadows.rs::display_caster	the interpolated radius, which shadows::shadow clamps to 32
 DisplayRenderer.getShadowStrength	port	crates/horizon-client/src/shadows.rs::display_caster	the interpolated strength, which shadows::shadow fades over the camera distance
-DisplayRenderer.submit	port	crates/horizon-client/src/game/text_displays.rs::Game::text_display_geometry	gap: player: only text displays are drawn; block and item displays are not
+DisplayRenderer.submit	port	crates/horizon-client/src/game/text_displays.rs::Game::text_display_geometry	text displays here; block and item displays in crates/horizon-client/src/game/text_displays.rs::Game::block_item_display_geometry
 DisplayRenderer.calculateOrientation	port	crates/horizon-client/src/text_display.rs::TextDisplayData::matrix	billboard orientation (fixed, horizontal, vertical, center)
 DisplayRenderer.extractRenderState	port	crates/horizon-client/src/game/text_displays.rs::Game::text_display_geometry	interpolation progress and the entity yaw and pitch are read there
 DisplayRenderer.BlockDisplayRenderer.extractRenderState	inline	crates/horizon-client/src/game/text_displays.rs::RemoteTextDisplay::show	DATA_BLOCK_STATE_ID read into the display state

@@ -743,7 +743,7 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
             if let Some(armor) = m.extra.body.as_deref()
                 && let Some(material) = armor
                     .strip_prefix("minecraft:")
-                    .and_then(|a| a.strip_suffix("_horse_armor"))
+                    .and_then(super::equine::horse_armor_asset)
             {
                 let tex = interned(format_args!("entity/equipment/horse_body/{material}"));
                 let color = if material == "leather" {

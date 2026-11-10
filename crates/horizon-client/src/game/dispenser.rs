@@ -459,7 +459,7 @@ impl Game<'_> {
             r.triangle(0.2, spread),
             r.triangle(f64::from(s[2]) * pow, spread),
         ];
-        self.spawn_item(stack, at, v, 0);
+        self.spawn_item_thrown(stack, at, v);
     }
     /// `DefaultDispenseItemBehavior.execute`: drop one item.
     fn default_execute(
@@ -987,22 +987,35 @@ impl Game<'_> {
         self.mobs.insert(i, m);
         self.handle_mob_events(events)
     }
-    /// A mob a bucket emptied: `setFromBucket` keeps it, then it calls out.
-    /// Fish and axolotls carry the flag itself (saved as `FromBucket`, read by
-    /// `requiresCustomPersistence`); the others stay persistent instead.
-    pub(super) fn mob_placed(&mut self, id: u32) -> Result<()> {
+    /// A mob a bucket emptied (`MobBucketItem.spawn`): the bucket's components
+    /// and entity data (`loadFromBucketTag`), then `setFromBucket(true)`, which
+    /// `requiresCustomPersistence` reads, then it calls out. Only the bucket's
+    /// data can make it persistent, not the spawn: `spawn_mob_at` creates a
+    /// persistent mob. A tadpole's setter does nothing: its `fromBucket` is
+    /// always true.
+    pub(super) fn mob_placed(&mut self, id: u32, stack: &ItemStack) -> Result<()> {
         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-            if matches!(
-                m.species(),
+            m.persistent = false;
+            horizon_client::entity_nbt::apply_item_components(m, stack);
+            match m.species() {
                 Species::Cod
-                    | Species::Salmon
-                    | Species::Pufferfish
-                    | Species::TropicalFish
-                    | Species::Axolotl
-            ) {
-                m.extra.from_bucket = true;
-            } else {
-                m.persistent = true;
+                | Species::Salmon
+                | Species::Pufferfish
+                | Species::TropicalFish
+                | Species::Axolotl => m.extra.from_bucket = true,
+                Species::SulfurCube => {
+                    // SulfurCube.loadFromBucketTag: its own lowercase keys, 0
+                    // and false when absent, whatever `Age` the data holds.
+                    let data = stack
+                        .data()
+                        .and_then(|c| c.other("minecraft:bucket_entity_data"));
+                    let age = data.and_then(|d| horizon_client::save::number(d.get("age")));
+                    m.extra.age = age.unwrap_or(0) as i32;
+                    m.extra.age_locked =
+                        data.is_some_and(|d| horizon_client::entity_nbt::flag(d, "age_locked"));
+                    m.extra.scratch[3] = 1;
+                }
+                _ => {}
             }
         }
         self.mob_ambient(id)
@@ -1353,13 +1366,10 @@ impl Game<'_> {
             self.evaporation_smoke([target.0, target.1, target.2]);
         }
         if let Some(kind) = mob {
-            // MobBucketItem.checkExtraContent: the mob (from the bucket, so
-            // persistent) calls out, then ENTITY_PLACE.
+            // MobBucketItem.checkExtraContent: the mob from the bucket calls
+            // out, then ENTITY_PLACE.
             if let Some(id) = self.spawn_mob_at(kind, target, true) {
-                if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-                    horizon_client::entity_nbt::apply_item_components(m, &stack);
-                }
-                self.mob_placed(id)?;
+                self.mob_placed(id, &stack)?;
             }
             self.post_block_game_event(
                 "minecraft:entity_place",

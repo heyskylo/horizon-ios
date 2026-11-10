@@ -3621,13 +3621,14 @@ impl ParticleEngine {
         self.sprite_from_age(&mut q);
         q
     }
-    /// ClientLevel.createFireworks: a Starter (or poofs without explosions).
+    /// ClientLevel.createFireworks: a Starter (or poofs without explosions) with `playSound`.
     pub fn fireworks(
         &mut self,
         at: [f64; 3],
         v: [f64; 3],
         explosions: Vec<FireworkExplosion>,
         camera: [f64; 3],
+        play_sound: bool,
     ) {
         if explosions.is_empty() {
             for _ in 0..self.random.next_int_bound(3).unwrap_or(0) + 2 {
@@ -3651,17 +3652,17 @@ impl ParticleEngine {
             life: 0,
             lifetime,
             twinkle_delay: twinkle,
-            far,
+            sound: play_sound.then_some(far),
         });
     }
     fn tick_starters(&mut self) {
         for mut s in std::mem::take(&mut self.starters) {
-            if s.life == 0 {
+            if s.life == 0 && s.sound.is_some() {
                 let large = s.explosions.len() >= 3
                     || s.explosions
                         .iter()
                         .any(|e| e.shape == FireworkShape::LargeBall);
-                let sound = match (large, s.far) {
+                let sound = match (large, s.sound == Some(true)) {
                     (true, true) => "minecraft:entity.firework_rocket.large_blast_far",
                     (true, false) => "minecraft:entity.firework_rocket.large_blast",
                     (false, true) => "minecraft:entity.firework_rocket.blast_far",
@@ -3704,16 +3705,13 @@ impl ParticleEngine {
                     (c & 255) as f32 / 255.0,
                     ((c >> 24) & 255) as f32 / 255.0,
                 ];
-                self.create(
-                    &ParticleOptions::colored(ParticleType::Flash, rgba),
-                    s.at,
-                    [0.0; 3],
-                );
+                let flash = ParticleOptions::colored(ParticleType::Flash, rgba);
+                self.create(&flash, s.at, [0.0; 3]);
             }
             s.life += 1;
             if s.life > s.lifetime {
-                if s.twinkle_delay {
-                    let sound = if s.far {
+                if s.twinkle_delay && s.sound.is_some() {
+                    let sound = if s.sound == Some(true) {
                         "minecraft:entity.firework_rocket.twinkle_far"
                     } else {
                         "minecraft:entity.firework_rocket.twinkle"
@@ -5054,7 +5052,9 @@ struct Starter {
     life: i32,
     lifetime: i32,
     twinkle_delay: bool,
-    far: bool,
+    /// `FireworkParticles.Starter.playSound`, with `isFarAwayFromCamera` when
+    /// it plays: `None` for a silent rocket.
+    sound: Option<bool>,
 }
 const STAR: [[f64; 2]; 6] = [
     [0.0, 1.0],

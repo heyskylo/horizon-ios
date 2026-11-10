@@ -247,6 +247,11 @@ pub(super) trait Entity: EntityRules {
     fn portal_size(&self) -> Option<(f32, f32)> {
         None
     }
+    /// Whether [`Self::portal_size`] is Some, without working the size out (a
+    /// mob's depends on its age, scale and pose).
+    fn sweeps_portals(&self) -> bool {
+        self.portal_size().is_some()
+    }
     /// `Entity.canUsePortal(false)` for a kind in `portal_size`. A kind that
     /// cannot stays tracked, so its cooldown and process run out.
     fn can_use_portal(&self, _game: &Game<'_>) -> bool {
@@ -1104,6 +1109,9 @@ impl Entity for Mob {
     stored_motion!();
     fn portal_size(&self) -> Option<(f32, f32)> {
         Some((self.width(), self.height()))
+    }
+    fn sweeps_portals(&self) -> bool {
+        true
     }
     fn can_use_portal(&self, game: &Game<'_>) -> bool {
         game.mob_can_use_portal(self)
