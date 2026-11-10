@@ -5168,19 +5168,16 @@ impl Game<'_> {
             ArrowEvent::ShootEvent | ArrowEvent::Drop => {}
         }
     }
-    /// `Level.isRainingAt` for arrows.
+    /// The boats, minecarts and primed TNT a projectile can strike
+    /// (`VehicleEntity.isPickable`, `PrimedTnt.isPickable`).
+    pub(super) fn pickable_object_targets(&self) -> Vec<(Who, Aabb)> {
+        let boats = self.boats.iter().map(|b| (Who::Mob(b.id), b.bounds()));
+        let carts = self.carts.iter().map(|c| (Who::Mob(c.id), c.bounds()));
+        let tnts = self.tnts.iter().map(|t| (Who::Mob(t.id), t.bounds()));
+        boats.chain(carts).chain(tnts).collect()
+    }
     /// What a projectile can hit: the mobs, the player, the dragon's parts and
     /// the End crystals (under reserved ids, game/dragon.rs).
-    /// The boats and minecarts a projectile can strike.
-    pub(super) fn vehicle_targets(&self) -> Vec<(Who, Aabb)> {
-        let mut targets: Vec<(Who, Aabb)> = self
-            .boats
-            .iter()
-            .map(|b| (Who::Mob(b.id), b.bounds()))
-            .collect();
-        targets.extend(self.carts.iter().map(|c| (Who::Mob(c.id), c.bounds())));
-        targets
-    }
     pub(super) fn projectile_targets(&self) -> Vec<(Who, Aabb)> {
         let mut targets: Vec<(Who, Aabb)> = self
             .mobs
@@ -5198,9 +5195,9 @@ impl Game<'_> {
                 .into_iter()
                 .map(|(id, b)| (Who::Mob(id), b)),
         );
-        // Boats and minecarts are pickable for every projectile
-        // (`VehicleEntity.isPickable`), so every kind shares this one list.
-        targets.extend(self.vehicle_targets());
+        // Boats, minecarts and primed TNT are pickable for every projectile,
+        // so every kind shares this one list.
+        targets.extend(self.pickable_object_targets());
         targets
     }
     pub(super) fn arrow_rain(&self) -> impl Fn(BlockPos) -> bool + '_ {
