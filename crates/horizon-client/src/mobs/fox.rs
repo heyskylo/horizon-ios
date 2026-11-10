@@ -1422,4 +1422,49 @@ mod consume_tests {
         // tests) there is no fox to feed: the test has nothing to check.
         let _ = ran;
     }
+    #[cfg(test)]
+    mod sleep_tests {
+        use super::*;
+        use crate::mobs::sensor_scan_tests::kind;
+        use crate::mobs::world::with_test_world;
+        use horizon_core::random::LegacyRandom;
+        use std::sync::Arc;
+
+        /// `Fox.FoxSleepGoal.canUse` refuses to sleep while `xxa`, `yya` or
+        /// `zza` is nonzero, even when already asleep.
+        #[test]
+        fn a_fox_with_movement_input_does_not_sleep() {
+            let mut outcomes = Vec::new();
+            if !with_test_world(&[], |w, _| {
+                for moving in [false, true] {
+                    let mut kind = (*kind()).clone();
+                    kind.species = Species::Fox;
+                    let mut fox = Mob::new(1, Arc::new(kind), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                    set_flag(&mut fox, SLEEPING, true);
+                    if moving {
+                        fox.ai.xxa = 1.0;
+                    }
+                    fox.ai.goals.add(1, Sleep { countdown: 0 });
+                    let mut lr = LegacyRandom::new(0);
+                    let mut events = Vec::new();
+                    let mut cx = Cx {
+                        w,
+                        lr: &mut lr,
+                        events: &mut events,
+                    };
+                    let mut goals = std::mem::take(&mut fox.ai.goals);
+                    goals.tick(&mut fox, &mut cx);
+                    outcomes.push(goals.is_running("Sleep"));
+                    fox.ai.goals = goals;
+                }
+            }) {
+                return;
+            }
+            assert_eq!(
+                outcomes,
+                vec![true, false],
+                "a still fox stays asleep; a moving one does not"
+            );
+        }
+    }
 }
