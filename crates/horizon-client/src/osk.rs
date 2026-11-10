@@ -192,6 +192,8 @@ fn wrap_hints(
     measure: impl Fn(&str) -> f32,
 ) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
+    // The last line ends a hint that was broken: the next hint starts a line of its own.
+    let mut sealed = false;
     for item in items {
         if measure(&item) > width {
             let mut line = String::new();
@@ -213,15 +215,17 @@ fn wrap_hints(
                 line.push_str(word);
             }
             lines.push(line);
+            sealed = true;
             continue;
         }
         match lines.last_mut() {
-            Some(line) if measure(&format!("{line}{HINT_SEP}{item}")) <= width => {
+            Some(line) if !sealed && measure(&format!("{line}{HINT_SEP}{item}")) <= width => {
                 line.push_str(HINT_SEP);
                 line.push_str(&item);
             }
             _ => lines.push(item),
         }
+        sealed = false;
     }
     lines
 }
@@ -623,6 +627,12 @@ mod tests {
         assert_eq!(
             wrap_hints(items, 10.0, measure),
             ["A Type", "RT Fill in", "the next", "one", "B Close"]
+        );
+        // The hint after a broken one starts its own line, though it would fit on the last.
+        let items = ["RT Fill in the next one", "B Go"].map(String::from);
+        assert_eq!(
+            wrap_hints(items, 16.0, measure),
+            ["RT Fill in the", "next one", "B Go"]
         );
         // One word wider than the panel stays with its button's print, on a line drawn smaller.
         let items = ["A Type", "X Unaussprechlich gross"].map(String::from);
