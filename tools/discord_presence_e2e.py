@@ -9,7 +9,7 @@ The game goes title -> world -> Nether -> quit through horizon-ctl, and the acti
     single     single player on its server thread
     lan        a host opens its world to LAN and a guest joins: the guest shows "Multiplayer",
                the host "Hosting a world" with a party of 2 of 8
-    setting    off in horizon-extras.txt: nothing reaches Discord; the Horizon Settings switch
+    setting    off in horizon-extras.txt: nothing reaches Discord; the Extras switch
                turns it on (the activity appears) and off (it is cleared)
     late       Discord starts after the game: found within the 15 s retry
 
@@ -207,8 +207,21 @@ def lan(bins):
                 g.close()
 
 
+def extras_row(game, label):
+    """The Extras page's row whose label starts with `label`, scrolling the list down to it: only
+    the rows on screen are widgets."""
+    first = game.ctl_run('ui')['widgets'][0]['bounds']
+    for _ in range(20):
+        found = [w for w in game.ctl_run('ui')['widgets'] if (w.get('label') or '').startswith(label)]
+        if found:
+            return found[0]
+        game.ctl_run('scroll-at', str(first[0] + 5), str(first[1] + 5), '-5')
+        time.sleep(0.3)
+    raise AssertionError(f'no {label!r} row on the Extras page')
+
+
 def setting(bins):
-    """Off in horizon-extras.txt: Discord never hears from the game. Turned on in Horizon Settings: the
+    """Off in horizon-extras.txt: Discord never hears from the game. Turned on in Extras: the
     activity appears; off again: it is cleared."""
     game = Game(bins, 'setting', extras='discordPresence:false\n')
     d = game.discord
@@ -216,8 +229,8 @@ def setting(bins):
         game.ctl_run('wait-for', 'screen', 'title')
         time.sleep(3)
         assert not d.handshakes and not d.activities, (d.handshakes, d.activities)
-        game.ctl_run('options', 'horizon')
-        switch = next(w for w in game.ctl_run('ui')['widgets'] if w.get('label', '').startswith('Discord Rich'))
+        game.ctl_run('options', 'extras')
+        switch = extras_row(game, 'Discord Rich')
         assert switch['label'] == 'Discord Rich Presence: Off', switch
         game.ctl_run('click', switch['id'])
         d.wait('turned on', shows('In the menus'))

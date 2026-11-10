@@ -70,9 +70,9 @@ ElytraModel.setupAnim	port	crates/horizon-client/src/game/perspective.rs::Game::
 ShieldModel.createLayer	skip:data		layer baked into entity-models.json, loaded by key
 LeashKnotModel.createBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
 ArrowModel.createBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
-ArrowModel.setupAnim	inline	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	the root rolls while the shake timer runs
-ShulkerBulletModel.createBodyLayer	inline	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	the model is the baked shulker_bullet#main, drawn there as the tumbling orb
-ShulkerBulletModel.setupAnim	inline	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	yaw and pitch toward the flight, the tumble turned by its age, scaled -0.5
+ArrowModel.setupAnim	inline	crates/horizon-client/src/game/creatures/mob_geometry.rs::Game::mob_geometry	the root rolls while the shake timer runs
+ShulkerBulletModel.createBodyLayer	inline	crates/horizon-client/src/game/creatures/mob_geometry.rs::Game::mob_geometry	the model is the baked shulker_bullet#main, drawn there as the tumbling orb
+ShulkerBulletModel.setupAnim	inline	crates/horizon-client/src/game/creatures/mob_geometry.rs::Game::mob_geometry	yaw and pitch toward the flight, the tumble turned by its age, scaled -0.5
 TridentModel.createLayer	skip:data		layer baked into entity-models.json, loaded by key
 WindChargeModel.createBodyLayer	skip:data		layer baked into entity-models.json, loaded by key
 WindChargeModel.setupAnim	port	crates/horizon-client/src/game/wind.rs::Game::wind_charge_geometry	wind and wind_charge parts spin in opposite directions

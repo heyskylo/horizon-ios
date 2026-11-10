@@ -278,6 +278,145 @@ pub enum Pass {
     World,
     /// The inventory's picture of the window's own model.
     Picture,
+    /// The window's own model while its body is out of view (first person): no bone, only what
+    /// floats around it ([`crate::Hooks::first_person`]).
+    FirstPerson,
+}
+
+/// How a player model moves this frame ([`PlayerDraw::motion`]), with the frame's part of a tick.
+#[derive(Clone, Copy, Debug, Default)]
+#[non_exhaustive]
+pub struct Motion {
+    /// Where its feet are, in the world.
+    pub feet: [f64; 3],
+    /// Where its head turns (degrees, the game's yaw and pitch).
+    pub head_yaw: f32,
+    pub head_pitch: f32,
+    pub crouching: bool,
+    /// Lies in a bed.
+    pub asleep: bool,
+    /// Flies with an elytra.
+    pub flying: bool,
+    /// Swims (any part of the swimming pose).
+    pub swimming: bool,
+}
+
+impl Motion {
+    pub fn new(feet: [f64; 3], head_yaw: f32, head_pitch: f32) -> Self {
+        Self {
+            feet,
+            head_yaw,
+            head_pitch,
+            ..Self::default()
+        }
+    }
+
+    /// With its poses: crouching, asleep, flying, swimming.
+    pub fn poses(self, crouching: bool, asleep: bool, flying: bool, swimming: bool) -> Self {
+        Self {
+            crouching,
+            asleep,
+            flying,
+            swimming,
+            ..self
+        }
+    }
+}
+
+/// The camera a player model is drawn for ([`PlayerDraw::view`]).
+#[derive(Clone, Copy, Debug, Default)]
+#[non_exhaustive]
+pub struct View {
+    /// Where it is, in the world: matrices and [`Particle`] corners are relative to it.
+    pub camera: [f64; 3],
+    /// Its right and up, for what faces it.
+    pub right: [f32; 3],
+    pub up: [f32; 3],
+    /// Where the window's player looks, and their level left (first person).
+    pub forward: [f32; 3],
+    pub left: [f32; 3],
+}
+
+impl View {
+    pub fn new(camera: [f64; 3], right: [f32; 3], up: [f32; 3]) -> Self {
+        Self {
+            camera,
+            right,
+            up,
+            ..Self::default()
+        }
+    }
+
+    /// With where the window's player looks and their level left.
+    pub fn looking(self, forward: [f32; 3], left: [f32; 3]) -> Self {
+        Self {
+            forward,
+            left,
+            ..self
+        }
+    }
+}
+
+/// How a mesh or particles are lit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Light {
+    /// As the player model is.
+    Model,
+    /// Fully lit: it glows.
+    Full,
+    /// By the world where the mesh's origin is (as particles: like [`Light::Model`]).
+    AtPlace,
+}
+
+/// How [`PlayerDraw::draw`] draws a mesh.
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct Look {
+    /// The sprite part it is textured by (u0, v0, u1, v1).
+    pub uv: [f32; 4],
+    pub light: Light,
+    /// Drawn see-through at this alpha, after every player, its back faces dropped.
+    pub see_through: Option<f32>,
+}
+
+impl Look {
+    /// Opaque, lit as the model.
+    pub fn new(uv: [f32; 4]) -> Self {
+        Self {
+            uv,
+            light: Light::Model,
+            see_through: None,
+        }
+    }
+
+    pub fn lit(self, light: Light) -> Self {
+        Self { light, ..self }
+    }
+
+    pub fn see_through(self, alpha: f32) -> Self {
+        Self {
+            see_through: Some(alpha),
+            ..self
+        }
+    }
+}
+
+/// A quad that faces the camera ([`PlayerDraw::particles`]).
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct Particle {
+    /// Its corners, relative to the camera.
+    pub corners: [[f32; 3]; 4],
+    /// Each corner's place across the sprite part (0 to 1).
+    pub uv: [[f32; 2]; 4],
+    pub alpha: f32,
+}
+
+impl Particle {
+    pub fn new(corners: [[f32; 3]; 4], uv: [[f32; 2]; 4], alpha: f32) -> Self {
+        Self { corners, uv, alpha }
+    }
 }
 
 /// The poses of a [`Mesh`]'s parts for one [`PlayerDraw::draw`], each at rest to begin with.
@@ -293,19 +432,25 @@ pub trait PlayerDraw {
     fn pass(&self) -> Pass;
     /// The model's age in ticks, with the frame's part of a tick.
     fn ticks(&self) -> f32;
-    /// Where `bone` is as the body is drawn this frame; None if the model has no such part.
+    /// The model's own matrix, its origin at the neck (y down, 16 units a block).
+    fn base(&self) -> [[f32; 4]; 4];
+    fn motion(&self) -> Motion;
+    fn view(&self) -> View;
+    /// Where `bone` is as the body is drawn this frame; None if the model has no such part (or
+    /// no body is drawn: [`Pass::FirstPerson`]).
     fn bone(&mut self, bone: Bone) -> Option<[[f32; 4]; 4]>;
     /// The pose laid over the model's body ([`PlayerModels::set_body_pose`]), if any.
     fn body_pose(&self) -> Option<&Arc<dyn BodyPose>>;
     /// As [`Sprites::get`].
     fn sprite(&self, id: u64) -> Option<[f32; 4]>;
-    /// Draws `mesh` at `matrix`, textured by the sprite part `uv` (u0, v0, u1, v1) and lit as the
-    /// model is; `pose` poses its parts first.
+    /// Draws `mesh` at `matrix` as `look` says; `pose` poses its parts first.
     fn draw(
         &mut self,
         mesh: &Arc<Mesh>,
         matrix: [[f32; 4]; 4],
-        uv: [f32; 4],
+        look: Look,
         pose: &mut dyn FnMut(&mut dyn PartPoses),
     );
+    /// Draws `particles`, textured by the sprite part `uv`, see-through after every player.
+    fn particles(&mut self, uv: [f32; 4], particles: &[Particle], light: Light);
 }

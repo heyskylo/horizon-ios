@@ -4,11 +4,12 @@
 //! (`game-build.yml`); horizon-client keeps its own plain executable.
 //!
 //! Each Horizon crate that runs in the game gives a `&'static` value implementing
-//! `horizon_platform::hooks::Hooks`, and [`register`] adds it. Nothing here depends on an engine
-//! crate.
+//! `horizon_platform::hooks::Hooks`, and its settings store and pages if it has any, and
+//! [`register`] adds them. Nothing here depends on an engine crate.
 #![forbid(unsafe_code)]
 
 use horizon_platform::hooks::{self, Hooks};
+use horizon_platform::{pages, settings};
 
 /// Every Horizon part in the game, in the order its hooks run.
 const PARTS: [&dyn Hooks; 4] = [
@@ -21,12 +22,18 @@ const PARTS: [&dyn Hooks; 4] = [
     // "Playing Horizon" on the player's Discord profile.
     &horizon_discord::HOOKS,
 ];
+/// Their settings, in the player's settings files.
+const STORES: [&dyn settings::Store; 1] = [&horizon_discord::SETTING];
+/// Their rows and pages in the options screens.
+const PAGES: [&dyn pages::Page; 1] = [&horizon_discord::SECTION];
 
 /// Registers Horizon's in-game parts with the game. The executable calls it before it runs the
 /// game, and so does the launcher's generated executable for native mods.
 pub fn register() {
-    for part in PARTS {
-        if let Err(e) = hooks::register(part) {
+    let late = PARTS.into_iter().map(hooks::register);
+    let late = late.chain(STORES.into_iter().map(settings::register));
+    for result in late.chain(PAGES.into_iter().map(pages::register)) {
+        if let Err(e) = result {
             // The executable registered after starting the game: a bug, not a player's problem.
             log::warn!("Horizon: an in-game part did not register: {e}");
         }

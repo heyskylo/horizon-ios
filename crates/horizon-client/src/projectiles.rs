@@ -888,6 +888,22 @@ impl Projectile {
         self.pitch = self.previous_pitch + t * (x_rot - self.previous_pitch);
         self.yaw = self.previous_yaw + t * (y_rot - self.previous_yaw);
     }
+    /// The kinds whose tick turns them with `Projectile.updateRotation`: a
+    /// `ThrowableProjectile` (the thrown kinds and the experience bottle) and
+    /// llama spit.
+    fn turns_with_update_rotation(&self) -> bool {
+        self.is_thrown() || self.kind == ProjectileKind::ExperienceBottle
+    }
+    /// `Projectile.updateRotation`: a fifth of the way (`lerpRotation`) from
+    /// the rotation the tick started with toward the motion's direction.
+    fn turn_towards_movement(&mut self) {
+        use horizon_core::geometry::trig::atan2_degrees;
+        let v = self.velocity;
+        let x_rot = atan2_degrees(v.y, v.horizontal_distance());
+        let y_rot = atan2_degrees(v.x, v.z);
+        self.pitch = crate::arrows::lerp_rotation(self.previous_pitch, x_rot);
+        self.yaw = crate::arrows::lerp_rotation(self.previous_yaw, y_rot);
+    }
     /// `Entity.setOldPosAndRot`: where the renderer interpolates from.
     pub fn set_old_pos_and_rot(&mut self) {
         self.previous = self.position;
@@ -1453,6 +1469,11 @@ impl Projectile {
                 );
             }
         }
+        // ThrowableProjectile.tick and LlamaSpit.tick turn with this move's
+        // motion, hit or not (a spit's drag and gravity come after).
+        if self.turns_with_update_rotation() {
+            self.turn_towards_movement();
+        }
         let from = self.position;
         let to = Vec3::new(
             from.x + self.velocity.x,
@@ -1546,13 +1567,15 @@ impl Projectile {
                 self.velocity.y * drag - self.get_gravity(),
                 self.velocity.z * drag,
             );
-            self.update_rotation();
             return (self.position.y > -128.0 && self.age < 6000, spit_hit);
         }
         self.position = to;
+        // Fireballs ease towards the motion (`ProjectileUtil.rotateTowardsMovement`);
+        // wind charges still face their motion at once; the thrown kinds turned
+        // in `tick` above.
         if self.is_fireball() {
             self.rotate_towards_movement(0.2);
-        } else {
+        } else if !self.turns_with_update_rotation() {
             self.update_rotation();
         }
         // Entity.baseTick's updateFluidInteraction, after the move.

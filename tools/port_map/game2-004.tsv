@@ -25,7 +25,7 @@ AbstractPiglin.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.r
 AbstractPiglin.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	reads immunity, time in overworld and the pick-up flag
 AbstractPiglin.customServerAiStep	port	crates/horizon-client/src/mobs/piglin.rs::ai_step	gap: minor: zombification runs outside the Nether by the nether flag, not the PIGLINS_ZOMBIFY attribute
 AbstractPiglin.finishConversion	port	crates/horizon-client/src/mobs/piglin.rs::ai_step	spawns the zombified piglin with nausea and removes the old one
-Piglin.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	gap: minor: CannotHunt is not read, so hunting ignores it; baby and inventory are read
+Piglin.readAdditionalSaveData	port	crates/horizon-client/src/mobs/piglin.rs::read_guarded_anger	baby and inventory are read in entity_nbt::mob_from_nbt; the brain's minecraft:angry_at UUID and TTL come back through read_guarded_anger (CannotHunt still not read)
 Piglin.getSlot	missing		item commands stop at the open container: a piglin's own inventory slots (300 and up) are not addressable
 Piglin.defineSynchedData	skip:java		synched-data registration; Horizon keeps baby, crossbow and dancing state in Mob fields
 Piglin.createAttributes	skip:data		attribute defaults (health 16, speed 0.35, attack 5) live in data tables
@@ -107,7 +107,7 @@ Spider.registerGoals	port	crates/horizon-client/src/mobs/hostile.rs::register	sp
 Spider.canBeAffected	port	crates/horizon-client/src/mobs.rs::Mob::can_be_affected	poison, and CaveSpider takes the same arm by inheritance
 Spider.isClimbing	skip:other		getter; Horizon reads the mob's climbing field
 Spider.setClimbing	inline	crates/horizon-client/src/mobs/ai.rs::ai_step	climbing set from the horizontal collision each tick
-Spider.getVehicleAttachmentPoint	port	crates/horizon-client/src/mobs/riders.rs::passenger_attachment	gap: minor: always the spider's fixed seat; vanilla uses a lower seat for riders narrower than the spider
+Spider.getVehicleAttachmentPoint	port	crates/horizon-client/src/mobs/riders.rs::vehicle_attachment	0.3125 of the scale when the vehicle's box is no wider than the spider's; a wider one falls to the type's vehicle attachment, which is its feet
 Spider.SpiderEffectsGroupData.setRandomEffect	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::spider	hard-difficulty effect: speed, strength, regeneration or invisibility
 AngerManagement.codec	port	crates/horizon-client/src/entity_nbt.rs::warden_anger_to_nbt	the `anger` compound: `suspects` as {uuid, anger} pairs, read back by warden_anger_from_nbt; a warden writes no `angry_at` or `anger_end_time`, which are NeutralMob's
 AngerManagement.createUuidAngerPairs	port	crates/horizon-client/src/mobs/warden.rs::AngerManagement::unloaded	the suspects in the level by their UUID, then the ones that are away, which are kept by UUID already

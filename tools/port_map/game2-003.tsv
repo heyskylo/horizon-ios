@@ -1,4 +1,5 @@
 Strider.checkStriderSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	strider arm: climbs lava upward, then needs air above
+Strider.checkFallDamage	port	crates/horizon-client/src/mobs/living.rs::Mob::check_fall_damage	in lava the fall distance is reset and the base's landing never runs: no damage and no dust
 Strider.onSyncedDataUpdated	skip:other		client copy of the boost sync; Horizon keeps one boost state on the server side (equine.rs boost)
 Strider.defineSynchedData	skip:java		SynchedEntityData builder; the synced values are Mob fields (extra.flag, extra.counter2)
 Strider.canUseSlot	port	crates/horizon-client/src/game/dispenser.rs::mob_can_use_slot	saddle needs alive and adult
@@ -9,7 +10,7 @@ Strider.setSuffocating	inline	crates/horizon-client/src/mobs/strider.rs::pre_tic
 Strider.getPassengerAttachmentPoint	port	crates/horizon-client/src/mobs/riders.rs::passenger_attachment	gap: minor: client-only walk bob of the rider is not applied (up to 0.06 block)
 Strider.getDismountLocationForPassenger	port	crates/horizon-client/src/game/mounts.rs::strider_dismount_location	the five columns along the rider's facing (0, -22.5, 22.5, -45, 45), each from the top of the strider down to half a block below its feet; no lava, a valid floor and room for a dismount pose
 Strider.tickRidden	port	crates/horizon-client/src/mobs/equine.rs::ridden_step	strider branch: rider yaw, half pitch, boost factor, cold slowdown
-Strider.playStepSound	port	crates/horizon-client/src/mobs/ai.rs::step_sound	lava or normal step sound
+Strider.playStepSound	port	crates/horizon-client/src/mobs/ai/step.rs::step_sound	lava or normal step sound
 Strider.isBeingTempted	inline	crates/horizon-client/src/mobs/ai.rs::play_ambient	the Tempt goal running check is folded into the ambient sound guard
 Strider.canAddPassenger	missing		no boarding rule of its own: `mobs/riders.rs::start_riding` tests the mount and the cooldown only, so a player can still board a saddled strider whose head is in lava where vanilla refuses (`isEyeInFluid` LAVA)
 Strider.getLeashOffset	port	crates/horizon-client/src/mobs/leash.rs::leash_offset	0.6 of the eye height, the default width/2 forwards
@@ -95,6 +96,7 @@ MagmaCube.finalizeSpawn	port	crates/horizon-client/src/mobs/cube.rs::finalize	sa
 Slime.addTargetingGoals	port	crates/horizon-client/src/mobs/cube.rs::register	same targets as magma cubes
 Slime.finalizeSpawn	port	crates/horizon-client/src/mobs/cube.rs::finalize	same spawn size roll as the other cubes
 SulfurCube.defineSynchedData	skip:java		SynchedEntityData builder; the synced values are Mob fields (extra.counter2, flags)
+SulfurCube.playStepSound	port	crates/horizon-client/src/mobs/ai/step.rs::step_sound	a cube carrying a block in its body returns before the block's step and walks silently
 SulfurCube.addBehaviourGoals	port	crates/horizon-client/src/mobs/sulfur_cube.rs::register	temptation goal at 2 and search-for-items at 3
 SulfurCube.onSyncedDataUpdated	skip:other		client copy of the fuse sync; the fuse is mob state (sulfur_cube::fuse)
 SulfurCube.saveToBucketTag	inline	crates/horizon-client/src/mobs/sulfur_cube.rs::to_nbt	the bucket keeps the mob NBT, including Age and AgeLocked

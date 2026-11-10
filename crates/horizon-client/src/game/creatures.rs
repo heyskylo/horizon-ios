@@ -3059,7 +3059,7 @@ impl Game<'_> {
                         // `CrossbowItem.createProjectile`: a rocket, from 0.15 under the eyes.
                         let mut at = arrow.position;
                         at.y -= f64::from(0.15f32) - 0.1;
-                        self.launch_angled_rocket(at, arrow.velocity, &ammo, arrow.owner);
+                        self.launch_angled_rocket(at, &ammo, arrow.owner, |_| arrow.velocity);
                     } else {
                         Self::arrow_from_ammo(&ammo, &mut arrow);
                         self.launch_mob_projectile(arrow);
