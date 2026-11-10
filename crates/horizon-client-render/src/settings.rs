@@ -337,6 +337,13 @@ impl Settings {
             .and_then(|mode| self.video_modes.iter().position(|m| *m == mode))
             .map_or(-1, |i| i as i32)
     }
+    /// Loads only the crates' settings stores (`horizon_hooks::settings`) from the files next to
+    /// `path`, into the seat whose turn it is (`horizon_hooks::seat`): a splitscreen player whose
+    /// settings were made from P1's rather than loaded.
+    pub fn load_stores(path: &Path) {
+        let dir = path.parent();
+        horizon_hooks::settings::engine::load(&mut |file| fs::read_to_string(dir?.join(file)).ok());
+    }
     pub fn load(path: &Path) -> Self {
         let mut horizon = path
             .parent()
@@ -862,6 +869,10 @@ pub enum Opt {
     PadNintendoButtons,
     PadKeyboard,
     PadGameplayGuide,
+    /// The radial menu's opener held or pressed once (`PadSettings::radial_mode`).
+    PadRadialMode,
+    /// The stick the radial menu selects with (`PadSettings::radial_stick`).
+    PadRadialStick,
     /// `options.modelPart.*`: one skin layer (index into `options_file::MODEL_PARTS`).
     ModelPart(usize),
     /// A slider of a page a crate registered (`horizon_hooks::pages`): (page, row).

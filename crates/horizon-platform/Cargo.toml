@@ -10,7 +10,7 @@ description = "The platform's public API: what the Horizon layer and mods may us
 # Each part of the engine a Horizon crate may reach, so a crate builds only the engine it uses.
 # level.dat, servers.dat and region files: NBT, compression, region read and write.
 world = ["dep:horizon-world"]
-# A server's address after its SRV record, and the offline-mode UUID of a name.
+# A server's address after its SRV record, the offline-mode UUID of a name, and servers.dat.
 protocol = ["world", "dep:horizon-protocol"]
 # Preparing the game's files from the player's own Minecraft install.
 prepare = ["dep:horizon-prepare"]

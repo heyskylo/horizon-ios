@@ -114,9 +114,7 @@ impl Game<'_> {
             // A pad's toggle-sneak isn't holding it: it has no release that would end it.
             Source::Keyboard => {
                 !(slot == SNEAK && self.settings.controller.toggle_sneak)
-                    && self
-                        .pad
-                        .holds_action(&self.settings.controller, ["key.sneak", "key.sprint"][slot])
+                    && self.pad.holds_action(["key.sneak", "key.sprint"][slot])
             }
             Source::Pad => self.physical_keys.iter().any(|physical| {
                 self.settings
@@ -180,7 +178,7 @@ impl Game<'_> {
         raw: KeyCode,
         source: Source,
     ) -> Result<()> {
-        if self.screen == Screen::Playing && self.studio.replay.is_some() {
+        if self.screen == Screen::Playing && self.replay.playing() {
             if !pressed {
                 self.keys.release(&key, source);
                 return Ok(());
@@ -191,7 +189,7 @@ impl Game<'_> {
                 }
                 return Ok(());
             }
-            if !studio_freecam_movement_key(key) || !self.studio.freecam.active {
+            if !studio_freecam_movement_key(key) || !self.studio.flying() {
                 return Ok(());
             }
         }
@@ -459,7 +457,7 @@ impl Game<'_> {
 
     /// Whether a device holds the key mapping named `mapping` (`key.use`).
     pub(super) fn input_holds(&self, mapping: &str) -> bool {
-        self.pad.holds_action(&self.settings.controller, mapping)
+        self.pad.holds_action(mapping)
     }
 
     /// Turns the view by what the devices give this frame (`Entity.turn`).
@@ -481,7 +479,7 @@ impl Game<'_> {
 
     /// A new player entity took over (spawn, respawn, a server joined, a dimension change).
     pub(super) fn input_player_replaced(&mut self) {
-        self.pad.player_replaced();
+        self.pad_player_replaced();
     }
 
     /// Whether the drop about to happen is a device's whole-stack drop (it has no Control key to
