@@ -2999,7 +2999,10 @@ impl Hub {
             .filter_map(|key| Some((*key, self.encoder.biome_data(world.chunks.get(key)?))))
             .collect();
         let bodies = super::biome_resend::bodies(
-            self.guests.iter().filter(|g| self.watches(g)).map(|g| &g.sent_chunks),
+            self.guests
+                .iter()
+                .filter(|g| self.watches(g))
+                .map(|g| &g.sent_chunks),
             &data,
         );
         for (g, body) in self.guests.iter().filter(|g| self.watches(g)).zip(bodies) {

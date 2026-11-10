@@ -26,7 +26,10 @@ pub(super) fn bodies<'a>(
             Some(at) => at,
             None => {
                 let chunks: Vec<_> = picks.iter().map(|&i| data[i].1.clone()).collect();
-                encoded.push((picks, C::ChunksBiomes(play::ChunksBiomes { chunks }).encode()));
+                encoded.push((
+                    picks,
+                    C::ChunksBiomes(play::ChunksBiomes { chunks }).encode(),
+                ));
                 encoded.len() - 1
             }
         };

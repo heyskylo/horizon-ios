@@ -6,10 +6,10 @@
 //! decoded packets with these threads, so a world that is not open to the
 //! network pays nothing.
 mod advancements;
-mod biome_resend;
 pub mod anticheat;
 pub mod arrivals;
 pub mod attributes;
+mod biome_resend;
 pub mod border;
 pub mod chunk_sync;
 pub mod chunks;
