@@ -95,6 +95,7 @@ MagmaCube.finalizeSpawn	port	crates/horizon-client/src/mobs/cube.rs::finalize	sa
 Slime.addTargetingGoals	port	crates/horizon-client/src/mobs/cube.rs::register	same targets as magma cubes
 Slime.finalizeSpawn	port	crates/horizon-client/src/mobs/cube.rs::finalize	same spawn size roll as the other cubes
 SulfurCube.defineSynchedData	skip:java		SynchedEntityData builder; the synced values are Mob fields (extra.counter2, flags)
+SulfurCube.canBreatheUnderwater	port	crates/horizon-client/src/mobs/ai/air.rs::can_breathe_under_water	true while it has a body item
 SulfurCube.addBehaviourGoals	port	crates/horizon-client/src/mobs/sulfur_cube.rs::register	temptation goal at 2 and search-for-items at 3
 SulfurCube.onSyncedDataUpdated	skip:other		client copy of the fuse sync; the fuse is mob state (sulfur_cube::fuse)
 SulfurCube.saveToBucketTag	inline	crates/horizon-client/src/mobs/sulfur_cube.rs::to_nbt	the bucket keeps the mob NBT, including Age and AgeLocked

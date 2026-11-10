@@ -1,3 +1,4 @@
+HappyGhast.canBreatheUnderwater	port	crates/horizon-client/src/mobs/ai/air.rs::can_breathe_under_water	a baby answers true, an adult takes the tag
 WorldGenRegion.getChunk	port	crates/horizon-world/src/worldgen/feature_region.rs::TerrainRegion::chunk	gap: minor: returns the resident chunk without the generating-step status check
 GossipContainer.getReputation	port	crates/horizon-client/src/gossip.rs::Gossips::reputation	Villager calls it with all types only; the type predicate is fixed to all
 Frog.travelInWater	missing		minor: frog water travel (getSpeed() move, 0.9 drag on all axes) absent; generic fluid travel used instead
