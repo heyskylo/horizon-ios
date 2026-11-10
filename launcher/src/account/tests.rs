@@ -2491,7 +2491,12 @@ fn addresses_alternate_families_starting_with_the_first() {
         vec![v6(1), v4(4), v6(2), v4(5), v6(3)]
     );
     assert_eq!(interleave(vec![v4(1), v6(2)]), vec![v4(1), v6(2)]);
+    assert_eq!(
+        interleave(vec![v4(1), v4(2), v4(3), v6(4), v6(5)]),
+        vec![v4(1), v6(4), v4(2), v6(5), v4(3)]
+    );
     assert_eq!(interleave(vec![v4(1), v4(2)]), vec![v4(1), v4(2)]);
+    assert_eq!(interleave(vec![v6(1), v6(2)]), vec![v6(1), v6(2)]);
     assert!(interleave(Vec::new()).is_empty());
 }
 
@@ -2525,10 +2530,7 @@ ok",
         dead(closed),
         SocketAddr::from(([127, 0, 0, 1], port)),
     ];
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(10))
-        .resolver(Interleaved(Fixed(addrs)))
-        .build();
+    let agent = builder().resolver(Interleaved(Fixed(addrs))).build();
     let body = agent
         .get("http://horizon.test/")
         .call()
