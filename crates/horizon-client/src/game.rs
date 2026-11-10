@@ -719,10 +719,10 @@ struct Mining {
     ticks: u32,
 }
 #[derive(Clone, Copy)]
-struct Hit {
-    pos: [i32; 3],
-    face: [i32; 3],
-    point: [f64; 3],
+pub(crate) struct Hit {
+    pub(crate) pos: [i32; 3],
+    pub(crate) face: [i32; 3],
+    pub(crate) point: [f64; 3],
 }
 impl Hit {
     /// The block the clicked face leads to (`pos.relative(direction)`).
