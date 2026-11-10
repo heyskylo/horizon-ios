@@ -297,8 +297,13 @@ impl Sprites {
         let mut resized = Vec::with_capacity(self.native.len());
         self.pixels.clear();
         for (from, frames, initial) in &self.native {
-            let frames: Arc<Vec<Vec<u8>>> =
-                Arc::new(frames.iter().map(|f| resample(f, *from, size)).collect());
+            // Native frames already match the atlas size: share the immutable
+            // buffers with animations rather than copying every frame again.
+            let frames: Arc<Vec<Vec<u8>>> = if *from == size {
+                Arc::clone(frames)
+            } else {
+                Arc::new(frames.iter().map(|f| resample(f, *from, size)).collect())
+            };
             self.pixels.extend_from_slice(&frames[*initial]);
             resized.push(frames);
         }
@@ -882,6 +887,35 @@ pub(crate) fn sprite_mipmap_limit(requested: u32, size: u32, minimum: u32, avail
 mod tests {
     use super::*;
     use std::fs::{self, File};
+    #[test]
+    fn native_frames_at_atlas_size_are_shared_without_resampling() {
+        let pixels = vec![
+            [10, 20, 30, 255].repeat((SPRITE_SIZE * SPRITE_SIZE) as usize),
+            [40, 50, 60, 255].repeat((SPRITE_SIZE * SPRITE_SIZE) as usize),
+        ];
+        let native = Arc::new(pixels.clone());
+        let smaller = Arc::new(vec![vec![12; 8 * 8 * 4], vec![34; 8 * 8 * 4]]);
+        let metadata = r#"{"frametime":2}"#;
+        let mut sprites = Sprites {
+            native: vec![
+                (SPRITE_SIZE, Arc::clone(&native), 1),
+                (8, Arc::clone(&smaller), 0),
+            ],
+            pbr: vec![[None, None], [None, None]],
+            animations: vec![
+                test_frames(0, pixels.clone(), metadata),
+                test_frames(1, smaller.as_ref().clone(), metadata),
+            ],
+            ..Default::default()
+        };
+        sprites.finish();
+        assert!(Arc::ptr_eq(&sprites.animations[0].frames, &native));
+        assert!(!Arc::ptr_eq(&sprites.animations[1].frames, &smaller));
+        assert_eq!(sprites.animations[0].pixels(1), pixels[1].as_slice());
+        let resized = resample(&smaller[0], 8, SPRITE_SIZE);
+        assert_eq!(sprites.animations[1].pixels(0), resized.as_slice());
+        assert_eq!(&sprites.pixels[..pixels[1].len()], pixels[1].as_slice());
+    }
     #[test]
     fn the_texture_budget_picks_the_largest_side_that_fits() {
         // 1300 layers: vanilla's count, about.
