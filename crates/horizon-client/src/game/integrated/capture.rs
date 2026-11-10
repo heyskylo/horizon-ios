@@ -407,7 +407,7 @@ fn server_saved(side: &mut ServerSide, saved: io::Result<server_perf::Saved>) ->
                     ok: true,
                     sides: vec![ProfileSide::Server],
                     path: shown(&saved.path),
-                    open_at: files::PERF_UI_URL.to_owned(),
+                    open_at: horizon_client::client_perf::request::viewer(),
                     removed: removed.clone(),
                 }));
             }

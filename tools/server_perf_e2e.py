@@ -80,7 +80,7 @@ def check(bins, scratch, out):
         while time.time() < deadline and path is None:
             time.sleep(0.5)
             path = capture_file(folder)
-            if path and not any('Open it at' in line for line in server.since(0)):
+            if path and not any('the file stays on your computer' in line for line in server.since(0)):
                 path = None
         if path is None:
             raise Failed('no capture was saved:\n' + '\n'.join(server.since(0)[-15:]))

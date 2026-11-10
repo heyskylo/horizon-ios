@@ -496,7 +496,7 @@ Notes on fields:
   (`perf/sampler-viewer:crates/horizon-client/src/game/profile_control.rs:10-12`). Moving to the game home also keeps
   agent runs isolated by their scratch `HORIZON_HOME`. `HORIZON_PROFILE=DIR` overrides the folder.
 - **Names:** `profile-<YYYYMMDD-HHMMSS>Z.hzperf` (UTC).
-- **On finish:** an in-game `/profiler` capture shows its local path, uploads in the background, and displays a clickable capture URL through `horizon.perf.shared`. Upload failure keeps the file and offers `/profiler share` to retry. Control-socket, environment and dedicated-console captures print the local path and viewer homepage; `horizon-perf share FILE` uploads those explicitly.
+- **On finish:** saving is local, Open is local, Share is the only upload, and none of the three reads the telemetry switches. An in-game `/profiler stop` saves the file and prints its name (a click opens the folder). Only a build with a captures part (`horizon-official`: `Hooks::captures`, `horizon-perf-share`) adds `[Open]` and `[Share]` to that line; they run `/profiler open <id>` and `/profiler share <id>`, `<id>` being the file's stem (no id: the last capture this player saved). Open serves the file once on 127.0.0.1 behind a random token and opens the viewer on it (`<viewer>#local=http://127.0.0.1:<port>/<token>`); Share uploads it (§7.3) and prints the link. A build without the part replies "not available in this build" and `profile stop` has no `open_at`. Control-socket, environment and dedicated-console captures print the local path; `horizon-ctl profile open|share FILE` and `horizon-perf open|share FILE` do the same from outside. A server capture a Horizon client asks for arrives in the client's `reports/` and gets the same buttons; a Java client on a Horizon server gets none, and a plain dedicated server (no captures part, by design) prints the file's path in its log. The viewer and upload addresses are `horizon-addresses`' `PERF_VIEWER` and `PERF_CAPTURES` (`HORIZON_PERF_VIEWER`, `HORIZON_PERF_CAPTURES` override them).
 - **Retention:** after writing, the game deletes the oldest `profile-*.hzperf` beyond 30 files or 1 GiB in that folder,
   and logs what it deleted. Files that don't match the pattern, for example files the user renamed, are never touched.
   Old `perf-*.json` and `.txt` files are left alone.
@@ -646,7 +646,7 @@ the capture names them in `net` (build with `cargo build --profile fast -p horiz
 `python3 tools/server_perf_e2e.py --bin-dir target/fast`). It is not in CI yet: run it by hand before merging a change to what a capture holds.
 
 Uploads (§7.3) change nothing in the file: what a shared capture holds is exactly what the local one holds. Sharing is
-an explicit action (the UI's Share button, `horizon-perf share`, or starting an in-game `/profiler` capture, whose message announces uploading);
+an explicit action (the UI's Share button, `horizon-perf share`, or `[Share]` and `/profiler share` in game); a capture is never uploaded by stopping it;
 the upload server stores the bytes as sent, keeps no account data, logs no capture contents, and drops IPs from its
 logs after the rate-limit window.
 
@@ -978,9 +978,9 @@ working when mounted on playhorizon.dev.
   90 % full, new uploads get `507 storage_full`; shared captures are never evicted early.
 - **Abuse limits:** per-IP rate limit (default 20 uploads an hour), size cap, no executable content served (the bytes
   are only ever served with the capture content type).
-- **The CLI:** `horizon-perf share FILE` uploads and pins (posts to `PERF_UPLOAD_URL`, default the self-hosted API) and
+- **The CLI:** `horizon-perf share FILE` uploads and pins (posts to `PERF_UPLOAD_URL`, else `HORIZON_PERF_CAPTURES`, else the address list's) and
   prints the link and delete token; `horizon-perf upload FILE` makes a 1-hour temporary upload; `horizon-perf summary|query|diff` accept a share link wherever they accept a file.
-- **The game:** captures started with `/profiler` upload in the background after saving and print a clickable `/perf/c/<id>` link in chat. Timed captures use the same flow. The local file is retained; upload failures offer `/profiler share` to retry the latest completed capture in the session. An adjacent `.hzperf.share.json` receipt stores the endpoint and owner/delete token (mode 0600 on Unix), so a retry after a failed share pin reuses the upload. Control-socket, environment and dedicated report captures remain local unless explicitly shared through the CLI. Do not share the owner receipt.
+- **The game:** nothing uploads by itself. `[Share]` or `/profiler share [id]` uploads the capture in the background and prints a clickable `/perf/c/<id>` link in chat; a failure keeps the file and offers `/profiler share` to retry. An adjacent `.hzperf.share.json` receipt stores the endpoint and owner/delete token (mode 0600 on Unix), so a retry after a failed share pin reuses the upload. Control-socket, environment and dedicated report captures remain local unless explicitly shared through the CLI. Do not share the owner receipt.
 
 ## 8. `horizon-perf mcp`
 
@@ -1177,7 +1177,7 @@ None at the moment.
 | C | The `horizon-ctl profile` trigger is exposed over MCP (`mcp: true`). |
 | D | `ab_bench.py`'s relaunch mode calls `horizon-perf diff` instead of the dropped `bench_stats.py`. |
 | E | New dependencies `prost`, `prost-build`, `protox` accepted. |
-| F | Web UI and upload API self-hosted at `https://playsunrise.net` (umceko cluster); `PERF_UI_URL` points there. |
+| F | Web UI and upload API self-hosted at `https://playsunrise.net` (umceko cluster); our deploys set `HORIZON_PERF_VIEWER` and `HORIZON_PERF_CAPTURES` to it; the built-in defaults are playhorizon.dev's (`horizon-addresses`). |
 | G | No CODEOWNERS: once merged, anyone can edit the contract (supersedes Q8's ownership after the contract lands). |
 | H | Both the UI and the upload layer are built compatible with playhorizon.dev's stack (Next.js App Router on Railway, JSON `/api/…`, `no-store`) so they plug in later: `sunrise-org/horizon-site` owns `app/perf/` and `app/api/perf/`. Upload and share links are now in scope on the self-hosted instance (supersedes Q5's "local files only"); sharing is an explicit user action. |
 | I | Upload storage: RustFS (S3-compatible) on the umceko cluster, 1 GiB PV on `local-path`; not Railway for now. Size cap 64 MiB; per-IP limit 20 uploads/hour. Retention: two states: temporary uploads are deleted after 1 h; Share pins a capture for 30 days or until deleted with its token; above 90 % volume use, new uploads get 507. |

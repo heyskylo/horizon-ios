@@ -1455,7 +1455,7 @@ dependencies = [
 name = "horizon-bench"
 version = "0.1.0"
 dependencies = [
- "horizon-telemetry",
+ "horizon-system",
  "serde",
  "serde_json",
 ]
@@ -1867,6 +1867,7 @@ dependencies = [
  "horizon-game",
  "horizon-heartbeat",
  "horizon-official-servers",
+ "horizon-perf-share",
  "horizon-platform",
  "log",
  "winresource",
@@ -1898,12 +1899,11 @@ dependencies = [
  "flate2",
  "horizon-bench",
  "horizon-perf-format",
+ "horizon-perf-share",
  "prost",
  "regex",
  "serde",
  "serde_json",
- "ureq",
- "url",
 ]
 
 [[package]]
@@ -1918,11 +1918,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-perf-share"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.3.4",
+ "horizon-addresses",
+ "horizon-platform",
+ "log",
+ "open",
+ "serde",
+ "serde_json",
+ "ureq",
+ "url",
+]
+
+[[package]]
 name = "horizon-platform"
 version = "0.1.0"
 dependencies = [
+ "horizon-bench",
  "horizon-core",
  "horizon-hooks",
+ "horizon-perf-format",
  "horizon-prepare",
  "horizon-protocol",
  "horizon-server-files",
@@ -2007,10 +2024,8 @@ dependencies = [
  "chrono",
  "getrandom 0.3.4",
  "horizon-anticheat",
- "horizon-bench",
  "horizon-chat-filter",
  "horizon-mcp",
- "horizon-perf-format",
  "horizon-platform",
  "horizon-release-sign",
  "libc",

@@ -57,6 +57,7 @@ usage:
   horizon-perf export  [FILE|latest] --pprof|--folded|--perfetto [--out PATH] [--side client|server] [--thread T] [--select KIND] [--slow] [--dir DIR]
   horizon-perf upload  [FILE|latest] [--dir DIR]         temporary one-hour upload; prints its link and delete token as JSON
   horizon-perf share   [FILE|latest] [--dir DIR]         upload and share for 30 days; prints its link and delete token as JSON
+  horizon-perf open    [FILE|latest] [--dir DIR]         serves the file once on 127.0.0.1 and opens the viewer on it; waits for the fetch
   horizon-perf mcp                                     MCP server on stdio: perf_summary, perf_query, perf_diff, perf_list, perf_follow
 
 OPs: {ops}.
@@ -158,9 +159,6 @@ fn json_line<T: Serialize>(reply: &T) -> Result<String, CliError> {
         .map_err(failed)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(super) const DEFAULT_UPLOAD_URL: &str = crate::sharing::DEFAULT_UPLOAD_URL;
-
 const FOLLOW_CHUNK: usize = 64 * 1024;
 
 /// What the process around the command supplies.
@@ -207,6 +205,8 @@ pub fn run(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(), CliErr
         "summary" => summary(rest, env, out),
         #[cfg(not(target_arch = "wasm32"))]
         "upload" | "share" => sharing::run(rest, env, out, command == "share"),
+        #[cfg(not(target_arch = "wasm32"))]
+        "open" => sharing::open(rest, env, out),
         "list" => list(rest, env, out),
         "follow" => follow(rest, env, out),
         "query" => query::query(rest, env, out),

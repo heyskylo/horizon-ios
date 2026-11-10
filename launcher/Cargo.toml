@@ -49,7 +49,6 @@ glam = "0.30"
 horizon-mcp = { path = "../crates/horizon-mcp" }
 # Join a friend: invite codes (the game does the joining).
 horizon-friends = { path = "../crates/horizon-friends" }
-horizon-bench = { path = "../crates/horizon-bench" }
 # Import modpack: the porting pipeline, run on the player's own files (docs/modpacks.md).
 horizon-port-pack = { path = "../crates/horizon-port-pack" }
 # Horizon's mod registry: its index and the checks a download passes before install.

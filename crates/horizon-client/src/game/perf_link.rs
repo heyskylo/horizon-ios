@@ -369,7 +369,7 @@ impl Game<'_> {
                     ok: true,
                     sides: vec![ProfileSide::Server],
                     path: shown(&path),
-                    open_at: files::PERF_UI_URL.to_owned(),
+                    open_at: horizon_client::client_perf::request::viewer(),
                     removed: deleted.iter().map(|p| shown(p)).collect(),
                 })
             }

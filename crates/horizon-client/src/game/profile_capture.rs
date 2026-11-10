@@ -10,8 +10,8 @@ use crate::Result;
 use horizon_client::client_perf::{
     self, ClientPerf,
     request::{
-        self, Failed, GpuSwitch, Marked, ProfileSide, Request, StartOptions, Started, Status,
-        Stopped, Traced,
+        self, Failed, GpuSwitch, Marked, Opened, ProfileSide, Request, Shared, StartOptions,
+        Started, Status, Stopped, Traced,
     },
 };
 use horizon_client::command::{Arg, Dispatcher, PROFILER_GPU, Registries};
@@ -97,6 +97,13 @@ struct ServerOnly {
     began: f64,
 }
 
+/// What a player asked of a saved capture, through the captures hook.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Job {
+    Open,
+    Share,
+}
+
 /// The game's capture state: the health history, the running capture and who is waiting on it.
 pub(super) struct Profile {
     /// The server thread's health history and its side of a capture; set on its own Game only.
@@ -111,8 +118,8 @@ pub(super) struct Profile {
     memory_due: Option<(f64, u32)>,
     /// Where the answer to a `/profiler` request that finishes later arrives.
     chat_answer: Option<Receiver<String>>,
-    uploads: VecDeque<PathBuf>,
-    upload: Option<(PathBuf, Receiver<std::result::Result<String, String>>)>,
+    jobs: VecDeque<(PathBuf, Job)>,
+    job: Option<(PathBuf, Job, Receiver<std::result::Result<String, String>>)>,
     last_capture: Option<PathBuf>,
     /// `profile stop` waits for the file to be whole.
     reply: Option<Sender<String>>,
@@ -148,8 +155,8 @@ impl Profile {
             started_by: Trigger::Unspecified,
             memory_due: None,
             chat_answer: None,
-            uploads: VecDeque::new(),
-            upload: None,
+            jobs: VecDeque::new(),
+            job: None,
             last_capture: None,
             reply: None,
             spans_were_on: false,
@@ -306,7 +313,7 @@ pub(super) fn reply_text<T: serde::Serialize>(reply: &T) -> String {
 struct ChatAnswer {
     error: Option<String>,
     path: Option<String>,
-    open_at: Option<String>,
+    removed: Option<Vec<String>>,
 }
 
 /// The words after `/profiler` when `command`, without its slash, is that command.
@@ -314,6 +321,64 @@ pub(super) fn profiler_args(command: &str) -> Option<&str> {
     command
         .strip_prefix("profiler")
         .filter(|rest| rest.is_empty() || rest.starts_with(' '))
+}
+
+fn unavailable() -> String {
+    horizon_client::lang::get("horizon.perf.unavailable")
+}
+
+/// A path a request names, relative to the game's home.
+fn game_path(file: &Path) -> PathBuf {
+    horizon_client::logging::game_home().join(file)
+}
+
+/// Why a `/profiler open` or `share` found no capture.
+#[derive(Debug, PartialEq, Eq)]
+enum Missing {
+    Last,
+    Named(String),
+}
+
+/// The capture `id` names, a capture file in `reports` (this session's `last` one when no id).
+fn resolve_capture(
+    last: Option<&Path>,
+    reports: &Path,
+    id: Option<&str>,
+) -> std::result::Result<PathBuf, Missing> {
+    let Some(id) = id else {
+        return last.map(Path::to_path_buf).ok_or(Missing::Last);
+    };
+    if let Some(last) = last.filter(|p| p.file_stem().is_some_and(|s| s == id)) {
+        return Ok(last.to_path_buf());
+    }
+    let name = format!("{id}.hzperf");
+    let path = reports.join(&name);
+    if files::is_capture_name(&name) && path.is_file() {
+        Ok(path)
+    } else {
+        Err(Missing::Named(id.to_owned()))
+    }
+}
+
+/// A bracketed chat button that runs `command` when clicked.
+fn capture_button(label: &str, hover: &str, command: String) -> Text {
+    Text::translate(label, &[]).with_style(&Style {
+        color: Some(GOLD),
+        underlined: Some(true),
+        click: Some(ClickEvent::RunCommand(command)),
+        hover: Some(Box::new(Text::translate(hover, &[]))),
+        ..Style::default()
+    })
+}
+
+/// The captures hook's answer: the share link for [`Job::Share`], nothing for [`Job::Open`].
+fn run_job(job: Job, file: &Path) -> std::result::Result<String, String> {
+    let captures = horizon_hooks::engine::captures()
+        .ok_or_else(|| horizon_client::lang::get("horizon.perf.unavailable"))?;
+    match job {
+        Job::Open => captures.open(file).map(|()| String::new()),
+        Job::Share => captures.share(file),
+    }
 }
 
 /// A command in a chat line that runs when clicked.
@@ -411,6 +476,28 @@ impl Game<'_> {
                 Ok(None)
             }
             Request::Status => json_of(&self.profile.status()),
+            Request::Open(file) => {
+                let captures = horizon_hooks::engine::captures().ok_or_else(unavailable)?;
+                captures.open(&game_path(&file))?;
+                json_of(&Opened {
+                    ok: true,
+                    viewer: captures.viewer().to_owned(),
+                })
+            }
+            Request::Share(file) => {
+                let file = game_path(&file);
+                let reply = reply.clone();
+                horizon_hooks::engine::captures().ok_or_else(unavailable)?;
+                std::thread::Builder::new()
+                    .name("perf-share".into())
+                    .spawn(move || {
+                        let _ = reply.send(match run_job(Job::Share, &file) {
+                            Ok(url) => reply_text(&Shared { ok: true, url }),
+                            Err(error) => reply_text(&Failed { error }),
+                        });
+                    })?;
+                Ok(None)
+            }
             Request::Mark(name) => {
                 let (client, server) = self.profile.mark(parsed.side, &name);
                 let posted = server.filter(|_| {
@@ -619,22 +706,26 @@ impl Game<'_> {
         let line = format!("profiler{args}");
         let tree = Dispatcher::profiler();
         let parse = tree.parse(&line, &Registries::default());
-        let (literals, name) = match parse.executable() {
+        let (literals, name, id) = match parse.executable() {
             Ok((context, _)) => (
                 context.literals.clone(),
                 match context.get("name") {
                     Some(Arg::Str(name)) => Some(name.clone()),
                     _ => None,
                 },
+                match context.get("id") {
+                    Some(Arg::Str(id)) => Some(id.clone()),
+                    _ => None,
+                },
             ),
             Err(e) => return self.syntax_failure(&e, &line),
         };
-        if literals.get(1).map(String::as_str) == Some("share") {
-            if let Some(path) = self.profile.last_capture.clone() {
-                self.queue_profile_upload(path, true);
-            } else {
-                self.profiler_refused(Text::translate("horizon.perf.share_missing", &[]));
-            }
+        if let Some(job) = match literals.get(1).map(String::as_str) {
+            Some("open") => Some(Job::Open),
+            Some("share") => Some(Job::Share),
+            _ => None,
+        } {
+            self.profiler_job(job, id.as_deref());
             return;
         }
         let owned = profiler_words(&literals, name.as_deref());
@@ -675,7 +766,7 @@ impl Game<'_> {
                     "horizon.perf.marked",
                     &[Text::literal(name)],
                 )),
-                Request::Stop { .. } => {}
+                Request::Stop { .. } | Request::Open(_) | Request::Share(_) => {}
             },
             Err(e) => self.profiler_error(&e.to_string()),
         }
@@ -736,7 +827,25 @@ impl Game<'_> {
     fn profiler_saved(&mut self, path: &str) {
         let full = horizon_client::logging::game_home().join(path);
         self.profile.last_capture = Some(full.clone());
-        self.queue_profile_upload(full, false);
+        let mut line = Text::translate("horizon.perf.saved", &[Self::capture_file_link(&full)]);
+        if horizon_hooks::engine::captures().is_some()
+            && let Some(id) = full.file_stem().and_then(|s| s.to_str())
+        {
+            line = line
+                .append(Text::literal(" "))
+                .append(capture_button(
+                    "horizon.perf.open_button",
+                    "horizon.perf.open_hover",
+                    format!("/profiler open {id}"),
+                ))
+                .append(Text::literal(" "))
+                .append(capture_button(
+                    "horizon.perf.share_button",
+                    "horizon.perf.share_hover",
+                    format!("/profiler share {id}"),
+                ));
+        }
+        self.profiler_say(line);
     }
 
     /// The saved file as a chat link that opens its folder.
@@ -758,25 +867,50 @@ impl Game<'_> {
         )
     }
 
-    /// `announce`: say it starts; a stop already said it uploads.
-    fn queue_profile_upload(&mut self, path: PathBuf, announce: bool) {
-        if !self.profile.uploads.contains(&path)
-            && !self
-                .profile
-                .upload
-                .as_ref()
-                .is_some_and(|(active, _)| *active == path)
-        {
-            self.profile.uploads.push_back(path);
-            if announce {
+    fn capture_named(&self, id: Option<&str>) -> std::result::Result<PathBuf, Text> {
+        resolve_capture(self.profile.last_capture.as_deref(), &reports_dir(), id).map_err(
+            |missing| match missing {
+                Missing::Last => Text::translate("horizon.perf.share_missing", &[]),
+                Missing::Named(id) => {
+                    Text::translate("horizon.perf.not_found", &[Text::literal(id)])
+                }
+            },
+        )
+    }
+
+    /// `/profiler open|share [ID]`: runs the captures hook on a saved capture, off the game thread.
+    fn profiler_job(&mut self, job: Job, id: Option<&str>) {
+        if horizon_hooks::engine::captures().is_none() {
+            return self.profiler_refused(Text::translate("horizon.perf.unavailable", &[]));
+        }
+        match self.capture_named(id) {
+            Ok(path) => self.queue_profile_job(path, job),
+            Err(refused) => self.profiler_refused(refused),
+        }
+    }
+
+    fn queue_profile_job(&mut self, path: PathBuf, job: Job) {
+        let queued = self
+            .profile
+            .jobs
+            .iter()
+            .any(|(p, j)| *p == path && *j == job);
+        let active = self
+            .profile
+            .job
+            .as_ref()
+            .is_some_and(|(p, j, _)| *p == path && *j == job);
+        if !queued && !active {
+            self.profile.jobs.push_back((path, job));
+            if job == Job::Share {
                 self.profiler_say(Text::translate("horizon.perf.uploading", &[]));
             }
         }
     }
 
-    fn poll_profile_upload(&mut self) {
-        if let Some((file, receiver)) = &self.profile.upload {
-            let file = file.clone();
+    fn poll_profile_job(&mut self) {
+        if let Some((file, job, receiver)) = &self.profile.job {
+            let (file, job) = (file.clone(), *job);
             let result = match receiver.try_recv() {
                 Ok(result) => result,
                 Err(TryRecvError::Empty) => return,
@@ -784,9 +918,16 @@ impl Game<'_> {
                     Err(horizon_client::lang::get("horizon.perf.upload_interrupted"))
                 }
             };
-            self.profile.upload = None;
-            match result {
-                Ok(url) => {
+            self.profile.job = None;
+            match (job, result) {
+                (Job::Open, Ok(_)) => {
+                    self.profiler_say(Text::translate("horizon.perf.opened", &[]))
+                }
+                (Job::Open, Err(error)) => self.profiler_refused(Text::translate(
+                    "horizon.perf.open_failed",
+                    &[Text::literal(error)],
+                )),
+                (Job::Share, Ok(url)) => {
                     let saved = Text::translate(
                         "horizon.perf.saved",
                         &[Text::literal(Self::capture_file_link(&file).plain())],
@@ -805,7 +946,7 @@ impl Game<'_> {
                     self.profiler_say(Text::translate("horizon.perf.shared", &[]));
                     self.system_message(link);
                 }
-                Err(error) => self.profiler_refused(Text::translate(
+                (Job::Share, Err(error)) => self.profiler_refused(Text::translate(
                     "horizon.perf.upload_failed",
                     &[
                         Text::literal(error),
@@ -815,26 +956,18 @@ impl Game<'_> {
                 )),
             }
         }
-        if let Some(path) = self.profile.uploads.pop_front() {
-            let endpoint = std::env::var("PERF_UPLOAD_URL")
-                .unwrap_or_else(|_| horizon_perf::sharing::DEFAULT_UPLOAD_URL.to_owned());
+        if let Some((path, job)) = self.profile.jobs.pop_front() {
             let (send, receive) = std::sync::mpsc::channel();
             let file = path.clone();
             match std::thread::Builder::new()
-                .name("perf-upload".into())
+                .name("perf-share".into())
                 .spawn(move || {
-                    let result =
-                        horizon_perf::sharing::share_saved(&endpoint, &file).map(|reply| reply.url);
-                    let _ = send.send(result);
+                    let _ = send.send(run_job(job, &file));
                 }) {
-                Ok(_) => self.profile.upload = Some((path, receive)),
+                Ok(_) => self.profile.job = Some((path, job, receive)),
                 Err(error) => self.profiler_refused(Text::translate(
-                    "horizon.perf.upload_failed",
-                    &[
-                        Text::literal(error.to_string()),
-                        Self::capture_file_link(&path),
-                        command_link("/profiler share"),
-                    ],
+                    "horizon.perf.error",
+                    &[Text::literal(error.to_string())],
                 )),
             }
         }
@@ -886,7 +1019,7 @@ impl Game<'_> {
         match serde_json::from_str::<ChatAnswer>(&text) {
             Ok(ChatAnswer { error: Some(e), .. }) => self.profiler_error(&e),
             Ok(ChatAnswer {
-                open_at: Some(_),
+                removed: Some(_),
                 path: Some(path),
                 ..
             }) => self.profiler_saved(&path),
@@ -983,7 +1116,7 @@ impl Game<'_> {
         for saved in self.profile.perf.take_saved(false) {
             self.profile_saved(saved);
         }
-        self.poll_profile_upload();
+        self.poll_profile_job();
     }
 
     /// Ends the capture a closing game still has, and waits for its file.
@@ -1013,6 +1146,8 @@ impl Game<'_> {
                     log::info!("Horizon: removed the oldest capture {}", path.display());
                 }
                 log::info!("Horizon: {}", files::saved_line(&saved.path));
+                self.profile.last_capture =
+                    Some(horizon_client::logging::game_home().join(shown(&saved.path)));
                 if let Some(reply) = reply {
                     let _ = reply.send(reply_text(&Stopped {
                         ok: true,
@@ -1024,7 +1159,7 @@ impl Game<'_> {
                         .flatten()
                         .collect(),
                         path: shown(&saved.path),
-                        open_at: files::PERF_UI_URL.to_owned(),
+                        open_at: horizon_client::client_perf::request::viewer(),
                         removed: saved.deleted.iter().map(|p| shown(p)).collect(),
                     }));
                 }
@@ -1094,6 +1229,25 @@ mod tests {
         ] {
             assert!(chat_request(line).is_err(), "{line}");
         }
+    }
+
+    #[test]
+    fn open_and_share_find_a_named_capture_in_the_reports_folder_or_the_last_one() {
+        let dir = std::env::temp_dir().join(format!("horizon-resolve-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let name = "profile-20251107-143844Z";
+        std::fs::write(dir.join(format!("{name}.hzperf")), b"x").unwrap();
+        std::fs::write(dir.join("notes.hzperf"), b"x").unwrap();
+        let found = |id| resolve_capture(None, &dir, id);
+        assert_eq!(found(Some(name)), Ok(dir.join(format!("{name}.hzperf"))));
+        assert_eq!(found(None), Err(Missing::Last));
+        for id in ["notes", "profile-20251107-000000Z", "..", "../notes"] {
+            assert_eq!(found(Some(id)), Err(Missing::Named(id.into())), "{id}");
+        }
+        let last = dir.join("trace.hzperf");
+        assert_eq!(resolve_capture(Some(&last), &dir, None), Ok(last.clone()));
+        assert_eq!(resolve_capture(Some(&last), &dir, Some("trace")), Ok(last));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn start<'a>(

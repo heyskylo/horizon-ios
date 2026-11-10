@@ -306,9 +306,12 @@ pub fn report(dir: &Path, words: &[String]) -> Result<(), String> {
         if let Some(path) = capture_files(&reports)
             .into_iter()
             .find(|p| !before.contains(p))
-            && horizon_perf_format::files::is_complete(&path).unwrap_or(false)
+            && horizon_platform::perf_format::files::is_complete(&path).unwrap_or(false)
         {
-            println!("{}", horizon_perf_format::files::saved_line(&path));
+            println!(
+                "{}",
+                horizon_platform::perf_format::files::saved_line(&path)
+            );
             return Ok(());
         }
     }
@@ -352,7 +355,7 @@ fn capture_files(dir: &Path) -> Vec<PathBuf> {
         .filter(|p| {
             p.file_name()
                 .and_then(|n| n.to_str())
-                .is_some_and(horizon_perf_format::files::is_capture_name)
+                .is_some_and(horizon_platform::perf_format::files::is_capture_name)
         })
         .collect()
 }

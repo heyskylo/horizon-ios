@@ -650,7 +650,8 @@ fn the_messages_the_game_shows_are_translation_keys_with_one_argument_each() {
         serde_json::from_str(include_str!("../../assets/horizon/lang/en_us.json")).unwrap();
     for key in [
         "horizon.perf.saved",
-        "horizon.perf.open_in_browser",
+        "horizon.perf.open_failed",
+        "horizon.perf.not_found",
         "horizon.perf.error",
     ] {
         let text = en

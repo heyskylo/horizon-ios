@@ -1280,6 +1280,9 @@ fn profiler_commands_parse_and_complete_for_a_player_without_operator_permission
         "profiler stop server",
         "profiler status",
         "profiler share",
+        "profiler share profile-20251107-143844Z",
+        "profiler open",
+        "profiler open profile-20251107-143844Z",
         "profiler mark slow frame",
     ] {
         assert_eq!(

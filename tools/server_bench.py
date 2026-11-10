@@ -80,7 +80,7 @@ REPORT_MAX_SECONDS = 600
 # What a run's record is called inside the capture it is attached to.
 RUN_RECORD = 'server-bench-run'
 # The line the server logs once the capture is on disk.
-SAVED = re.compile(r'Saved (.+?\.hzperf)\. Open it at')
+SAVED = re.compile(r'Saved (.+?\.hzperf) \(the file stays')
 
 PROPERTIES = {
     'level-seed': '12345',
