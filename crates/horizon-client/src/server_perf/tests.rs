@@ -665,7 +665,12 @@ fn wire_at(t: f64) -> traffic::Wire {
         brand: brand.into(),
         view_distance: 12,
     };
-    let mut wire = vec![conn(1, (1000 + 100 * s, 2000 + 1000 * s), "Alex", "vanilla")];
+    let mut wire = vec![conn(
+        1,
+        (1000 + 100 * s, 2000 + 1000 * s),
+        "Alex",
+        "vanilla",
+    )];
     if (3..=8).contains(&s) {
         // The brand arrives after login: the first read has none yet.
         let brand = if s == 3 { "" } else { "horizon" };
@@ -708,10 +713,17 @@ fn network_bytes_are_per_player_per_block_by_join_order() {
     assert_eq!(second.bytes_out, [60, 120, 0]);
     assert!(first.packets_in.is_empty() && first.packets_out.is_empty());
     assert_eq!(
-        (first.name.as_str(), first.brand.as_str(), first.view_distance),
+        (
+            first.name.as_str(),
+            first.brand.as_str(),
+            first.view_distance
+        ),
         ("Alex", "vanilla", 12)
     );
-    assert_eq!((second.name.as_str(), second.brand.as_str()), ("Steve", "horizon"));
+    assert_eq!(
+        (second.name.as_str(), second.brand.as_str()),
+        ("Steve", "horizon")
+    );
 }
 
 fn level(

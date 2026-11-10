@@ -9,9 +9,9 @@ use horizon_perf_format::FieldSender;
 use horizon_perf_format::v1::{
     BenchResult, Machine, Side, Start, StopReason, Trigger, WarningCode,
 };
+use horizon_protocol::connection::Counters;
 use request::{GpuSwitch, StartOptions, Threads};
 use std::ffi::OsStr;
-use horizon_protocol::connection::Counters;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;

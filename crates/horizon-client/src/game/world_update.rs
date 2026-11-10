@@ -215,7 +215,9 @@ impl Game<'_> {
         self.streaming.extra.truncate(areas);
         horizon_client::spans::time("uw_spawn_fresh", || self.spawn_fresh_chunks());
         // Before the unloaded chunks' block entities are written and dropped.
-        horizon_client::spans::time("uw_native_changed", || self.native_chunks_changed(&unloaded));
+        horizon_client::spans::time("uw_native_changed", || {
+            self.native_chunks_changed(&unloaded)
+        });
         if let Some(lod) = &mut self.lod {
             self.lod_observe
                 .extend(uploads.iter().map(|(key, _)| (key.0, key.2)));

@@ -14,11 +14,11 @@ use horizon_client::client_perf::{
         Stopped, Traced,
     },
 };
+use horizon_client::command::{Arg, Dispatcher, PROFILER_GPU, Registries};
+use horizon_client::hud::MARK_SPRITE;
 use horizon_client::perf_net::Link;
 use horizon_client::server_perf::{self, TickDetail, WorldCounts};
 use horizon_client::spans::{self, Span};
-use horizon_client::command::{Arg, Dispatcher, PROFILER_GPU, Registries};
-use horizon_client::hud::MARK_SPRITE;
 use horizon_client::text::{
     ClickEvent, DARK_GRAY, GOLD, GRAY, InlineObject, RED, Style, Text, WHITE,
 };
@@ -743,7 +743,11 @@ impl Game<'_> {
     fn capture_file_link(path: &Path) -> Text {
         let folder = path.parent().unwrap_or(path).to_string_lossy().into_owned();
         let home = horizon_client::logging::game_home();
-        let shown = path.strip_prefix(&home).unwrap_or(path).to_string_lossy().into_owned();
+        let shown = path
+            .strip_prefix(&home)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned();
         Text::styled(
             shown,
             Style {
@@ -1078,7 +1082,11 @@ mod tests {
             chat_request("profiler mark slow chunk").unwrap().request,
             Request::Mark("slow chunk".into())
         );
-        for line in ["profiler start --gpu", "profiler start --seconds 30", "profiler stop gpu"] {
+        for line in [
+            "profiler start --gpu",
+            "profiler start --seconds 30",
+            "profiler stop gpu",
+        ] {
             assert!(chat_request(line).is_err(), "{line}");
         }
     }
