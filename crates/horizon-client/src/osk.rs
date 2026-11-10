@@ -575,7 +575,10 @@ mod tests {
         // One unit per character: "A Type" is 6 wide, the separator 3.
         let items = || ["A Type", "X Delete", "Y Space", "B Close"].map(String::from);
         let measure = |s: &str| s.chars().count() as f32;
-        assert_eq!(wrap_hints(items(), 100.0, measure), ["A Type   X Delete   Y Space   B Close"]);
+        assert_eq!(
+            wrap_hints(items(), 100.0, measure),
+            ["A Type   X Delete   Y Space   B Close"]
+        );
         assert_eq!(
             wrap_hints(items(), 20.0, measure),
             ["A Type   X Delete", "Y Space   B Close"]
