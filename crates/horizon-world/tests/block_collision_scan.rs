@@ -472,6 +472,55 @@ fn passing_missing_chunks_and_empty_sections_changes_nothing() {
     }
 }
 
+/// Boolean scans preserve the first-hit result, errors, and world callback
+/// count of the geometry-producing iterator, including short visit budgets.
+#[test]
+fn boolean_collision_scan_matches_first_hit_and_queries() {
+    let boxes = [
+        Aabb::new(Vec3::new(-2.3, 55.0, -1.4), Vec3::new(3.7, 59.5, 2.8)),
+        Aabb::new(Vec3::new(1.0, 80.0, 1.0), Vec3::new(2.0, 81.0, 2.0)),
+        Aabb::new(Vec3::new(30.0, 60.0, 0.0), Vec3::new(49.0, 65.0, 3.0)),
+    ];
+    for bounds in boxes {
+        for hooks in [false, true] {
+            for only_suffocating in [false, true] {
+                for budget in [0, 1, 3, 24, 128, 100_000] {
+                    let mut expected_world = Sparse { hooks, queries: 0 };
+                    let expected = BlockCollisionScan::new(
+                        &mut expected_world,
+                        CollisionContext::empty(false),
+                        bounds,
+                        only_suffocating,
+                        budget,
+                    )
+                    .unwrap()
+                    .next()
+                    .transpose()
+                    .map(|hit| hit.is_some())
+                    .map_err(|error| error.to_string());
+                    let mut actual_world = Sparse { hooks, queries: 0 };
+                    let actual = BlockCollisionScan::any_collision(
+                        &mut actual_world,
+                        CollisionContext::empty(false),
+                        bounds,
+                        only_suffocating,
+                        budget,
+                    )
+                    .map_err(|error| error.to_string());
+                    assert_eq!(
+                        actual, expected,
+                        "{bounds:?}, hooks={hooks}, suffocating={only_suffocating}, budget={budget}"
+                    );
+                    assert_eq!(
+                        actual_world.queries, expected_world.queries,
+                        "world callbacks changed for {bounds:?}, budget={budget}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// The sweep of a far move is mostly sky and chunks that are not loaded: the scan asks about a
 /// row segment of them once, not about each cell.
 #[test]

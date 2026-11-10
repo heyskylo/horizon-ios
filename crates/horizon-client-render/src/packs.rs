@@ -466,6 +466,13 @@ fn read_meta(source: &Source) -> Option<serde_json::Value> {
 /// file with a comment after the closing brace. Gson reads past a UTF-8 byte order mark;
 /// serde_json rejects it.
 pub(crate) fn parse_meta(bytes: &[u8]) -> Option<serde_json::Value> {
+    first_json(bytes)
+}
+
+/// Reads the first JSON value from resource metadata, matching Gson's
+/// `JsonReader` (which ignores a trailing signature or comment). Resource
+/// packs commonly append such text to texture metadata as well as pack.mcmeta.
+pub(crate) fn first_json(bytes: &[u8]) -> Option<serde_json::Value> {
     serde_json::Deserializer::from_slice(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes))
         .into_iter()
         .next()?

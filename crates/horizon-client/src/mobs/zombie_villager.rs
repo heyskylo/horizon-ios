@@ -179,11 +179,16 @@ pub fn read_nbt(m: &mut Mob, tag: &Tag) {
     let cure = parse_cure(tag);
     let e = villager::ext_mut(m);
     e.data_finalized = finalized;
-    e.cure = cure;
+    e.cure = None;
     e.gossips = tag
         .get("Gossips")
         .map(crate::gossip::Gossips::from_nbt)
         .unwrap_or_default();
+    // Vanilla calls `startConverting` from the load itself (strength replaces
+    // weakness); the entity event has no viewer yet, so it is dropped.
+    if let Some(c) = cure {
+        start_converting(m, c.starter, c.time, &mut Vec::new());
+    }
 }
 
 #[cfg(test)]
@@ -202,6 +207,22 @@ mod tests {
         m
     }
 
+    #[test]
+    fn loading_a_cure_starts_converting() {
+        let mut m = zombie_villager();
+        m.add_effect("minecraft:weakness", 400, 0);
+        let mut map = Compound::new();
+        map.insert("ConversionTime".into(), Tag::Int(7));
+        read_nbt(&mut m, &Tag::Compound(map));
+        assert!(is_converting(&m));
+        assert!(m.extra.effects.iter().all(|e| e.0 != "minecraft:weakness"));
+        assert!(
+            m.extra
+                .effects
+                .iter()
+                .any(|e| e.0 == "minecraft:strength" && e.1 == 7)
+        );
+    }
     #[test]
     fn a_cure_round_trips_through_nbt() {
         let cure = Cure {

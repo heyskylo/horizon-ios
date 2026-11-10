@@ -10,9 +10,10 @@
 //! - On x86-64, `sin`, `cos`, `tan`, `exp`, `log`, `log10` and `pow` are
 //!   Intel's libm stubs, which round like glibc for nearly every argument;
 //!   there they use the platform libm, as before. Windows' libm (Microsoft's)
-//!   rounds `sin` and `cos` differently for about 3% of arguments, so there
-//!   they are correctly rounded instead ([`exact`]), as Intel's stubs are for
-//!   all but about 0.1%.
+//!   rounds `sin` and `cos` differently for about 3% of arguments, and `log`
+//!   for about 0.15%, so there they are correctly rounded instead
+//!   ([`exact`]), as Intel's stubs are for all but about 0.1% of `sin` and
+//!   `cos` and about 0.002% of `log`.
 //! - On AArch64 only `sin` and `cos` are intrinsics, which compute fdlibm's
 //!   `sin` and `cos` with fused multiply-adds ([`aarch64`]). Everything else
 //!   is `StrictMath`, which the Java SE API defines as fdlibm 5.3's results
@@ -84,6 +85,8 @@ pub fn exp(x: f64) -> f64 {
 pub fn log(x: f64) -> f64 {
     if cfg!(target_arch = "aarch64") {
         fdlibm::log(x)
+    } else if cfg!(windows) {
+        exact::log(x)
     } else {
         x.ln()
     }
@@ -148,13 +151,17 @@ pub fn round(x: f64) -> i64 {
     (if x - f >= 0.5 { f + 1.0 } else { f }) as i64
 }
 
-/// `sin` and `cos` correctly rounded, for Windows, whose libm rounds them
-/// unlike Java's x86-64 intrinsics. Double-double arithmetic (two `f64`s per
-/// value): `x` reduced by a four-part pi/2, a short series checked against an
-/// error bound, and where the bound leaves the rounding open, the full series
-/// with its terms summed exactly. Checked against 400-bit results on 1.3 million
-/// arguments, small ones and ones next to multiples of pi/2 among them; not a
-/// proof.
+/// `sin`, `cos` and `log` correctly rounded, for Windows, whose libm rounds
+/// them unlike Java's x86-64 intrinsics. Double-double arithmetic (two `f64`s
+/// per value): `x` reduced by a four-part pi/2 (`log`: split into a power of
+/// two and a mantissa near 1), a short series checked against an error bound,
+/// and where the bound leaves the rounding open, the full series with its
+/// terms summed exactly. Checked against 400-bit results on 1.3 million
+/// arguments (`sin`, `cos`), small ones and ones next to multiples of pi/2
+/// among them, and `log` against 70-digit results on 374,000 arguments (none
+/// wrong; every power of two, subnormals and the arguments near 1 among them);
+/// not a proof. A result left open by the series' 2^-100 is rounded as the
+/// series gives it.
 pub mod exact {
     /// A value `hi + lo` with |lo| <= ulp(hi) / 2.
     #[derive(Clone, Copy)]
@@ -383,6 +390,144 @@ pub mod exact {
         let (r, q) = reduce(x);
         eval(r, q, true)
     }
+
+    /// ln 2 = L1 + L2 + L3 to 2^-136: the first two have 40 significant bits, so `k * Ln` is exact
+    /// for |k| < 2^13 (a double's exponent is below 2^11).
+    const L1: f64 = f64::from_bits(0x3FE6_2E42_FEFA_2000);
+    const L2: f64 = f64::from_bits(0x3D69_EF35_793C_6000);
+    const L3: f64 = f64::from_bits(0x3AE6_7300_7E5E_D5E8);
+
+    /// `k * ln 2` as a double-double.
+    fn k_ln2(k: f64) -> Dd {
+        Dd(k * L1, 0.0).add(Dd(k * L2, 0.0)).add(two_prod(k, L3))
+    }
+
+    /// The series' last term is s^43 / 43, below 2^-110 of s for |s| <= 0.1716.
+    const LOG_TERMS: u32 = 22;
+
+    /// 1/7, 1/9, ... 1/43 for the f64 tail of atanh.
+    const LOG_TAIL: [f64; 19] = [
+        1.0 / 7.0,
+        1.0 / 9.0,
+        1.0 / 11.0,
+        1.0 / 13.0,
+        1.0 / 15.0,
+        1.0 / 17.0,
+        1.0 / 19.0,
+        1.0 / 21.0,
+        1.0 / 23.0,
+        1.0 / 25.0,
+        1.0 / 27.0,
+        1.0 / 29.0,
+        1.0 / 31.0,
+        1.0 / 33.0,
+        1.0 / 35.0,
+        1.0 / 37.0,
+        1.0 / 39.0,
+        1.0 / 41.0,
+        1.0 / 43.0,
+    ];
+
+    impl Dd {
+        /// `self / b`: three quotient digits, each from the remainder of the last.
+        fn div_dd(self, b: Dd) -> Dd {
+            let q1 = self.0 / b.0;
+            let r = self.add(Dd(q1, 0.0).mul(b).neg());
+            let q2 = r.0 / b.0;
+            let r = r.add(Dd(q2, 0.0).mul(b).neg());
+            let q3 = r.0 / b.0;
+            fast_two_sum(q1, q2).add(Dd(q3, 0.0))
+        }
+    }
+
+    /// `x = m * 2^k` with m in [sqrt(1/2), sqrt(2)), for a positive finite `x`.
+    fn split(x: f64) -> (f64, f64) {
+        // A subnormal is scaled into the normal range first (an exact power of two).
+        let (x, shift) = if x < f64::MIN_POSITIVE {
+            (x * f64::from_bits(0x4350_0000_0000_0000), -54.0) // 2^54
+        } else {
+            (x, 0.0)
+        };
+        let bits = x.to_bits();
+        let k = f64::from(((bits >> 52) & 0x7FF) as i32 - 1023) + shift;
+        let m = f64::from_bits((bits & 0x000F_FFFF_FFFF_FFFF) | 0x3FF0_0000_0000_0000);
+        if m > std::f64::consts::SQRT_2 {
+            (m / 2.0, k + 1.0)
+        } else {
+            (m, k)
+        }
+    }
+
+    /// atanh's argument for `m`: s = (m - 1) / (m + 1), so ln m = 2 atanh s. `m - 1` is exact for m in
+    /// [1/2, 2] and `m + 1` is a two-term sum.
+    fn atanh_arg(m: f64) -> Dd {
+        Dd(m - 1.0, 0.0).div_dd(two_sum(m, 1.0))
+    }
+
+    /// ln(x) to about 2^-64: ln 2 times the power of two, then 2 atanh s with the first terms in
+    /// double-double and the small rest in f64.
+    fn log_fast(s: Dd, k: f64) -> Dd {
+        let s2 = s.mul(s);
+        let s3 = s2.mul(s);
+        let s5 = s3.mul(s2);
+        let head = s.add(s3.div(3.0)).add(s5.div(5.0));
+        let x2 = s2.0;
+        let tail = s.0 * x2 * x2 * x2 * horner(&LOG_TAIL, x2);
+        let a = head.add(Dd(tail, 0.0));
+        k_ln2(k).add(Dd(2.0 * a.0, 2.0 * a.1))
+    }
+
+    /// ln(x) correctly rounded where `log_fast` can't tell: every term of the series to 2^-110 as a
+    /// double-double, with `k ln 2`, summed exactly.
+    fn log_series(s: Dd, k: f64) -> f64 {
+        let s2 = s.mul(s);
+        let mut parts = [0.0f64; 4 + 2 * LOG_TERMS as usize];
+        let c = two_prod(k, L3);
+        parts[..4].copy_from_slice(&[k * L1, k * L2, c.0, c.1]);
+        let mut power = s;
+        for n in 0..LOG_TERMS {
+            let t = power.div(f64::from(2 * n + 1));
+            parts[4 + 2 * n as usize] = 2.0 * t.0;
+            parts[5 + 2 * n as usize] = 2.0 * t.1;
+            power = power.mul(s2);
+        }
+        exact_sum(&parts)
+    }
+
+    /// Both paths of `log` for a positive finite `x`: what the quick one decides (`None` when its
+    /// bound leaves the rounding open) and the full series' result.
+    #[cfg(test)]
+    pub(super) fn log_paths(x: f64) -> (Option<f64>, f64) {
+        let (m, k) = split(x);
+        let s = if m == 1.0 { Dd(0.0, 0.0) } else { atanh_arg(m) };
+        let quick = if m == 1.0 {
+            rounded(k_ln2(k))
+        } else {
+            rounded(log_fast(s, k))
+        };
+        (quick, log_series(s, k))
+    }
+
+    /// `log(x)` rounded to nearest, as Java's `Math.log` with the platform's libm out of it: NaN
+    /// for NaN and negative `x`, -infinity for 0, infinity for infinity.
+    pub fn log(x: f64) -> f64 {
+        if x.is_nan() || x < 0.0 {
+            return f64::NAN;
+        }
+        if x == 0.0 {
+            return f64::NEG_INFINITY;
+        }
+        if x == f64::INFINITY {
+            return x;
+        }
+        let (m, k) = split(x);
+        if m == 1.0 {
+            // m == 1 only for a power of two; ln x is k ln 2 (and +0 for x = 1).
+            return rounded(k_ln2(k)).unwrap_or_else(|| log_series(Dd(0.0, 0.0), k));
+        }
+        let s = atanh_arg(m);
+        rounded(log_fast(s, k)).unwrap_or_else(|| log_series(s, k))
+    }
 }
 
 #[cfg(test)]
@@ -480,6 +625,143 @@ mod tests {
         assert_eq!(exact::sin(std::f64::consts::FRAC_PI_2), 1.0);
         assert_eq!(exact::cos(std::f64::consts::PI), -1.0);
         assert_eq!(exact::sin(3.0e6), 3.0e6f64.sin());
+    }
+
+    /// Java 25's `Math.log` on x86-64 HotSpot, for arguments where Windows' libm rounds the other way.
+    #[test]
+    fn exact_log_rounds_like_javas_x86_intrinsic() {
+        for case in [
+            (0x3fc0b54b0f805bf8, 0xc00049ff997752f7),
+            (0x3fe5fc1b645b70b0, 0xbfd8064e759ed413),
+            (0x3fed51d47877b266, 0xbfb664f5a8926a06),
+            (0x3fee6d6750850a06, 0xbfa9cd367b827495),
+            (0x3fef36e69c369e4e, 0xbf99737a0b9f7bc3),
+            (0x3ff067263f2b4825, 0x3f9977ced5d8d5a3),
+            (0x3ff0d0afbaf78b76, 0x3fa9716a3d908db9),
+            (0x3ff1159c9e7111ec, 0x3fb0c9bcebcf476b),
+            (0x3ff245ab6c5b81a0, 0x3fc0ff3c2942bd99),
+            (0x3ff4e7278a462123, 0x3fd11b777b0a57d5),
+        ] {
+            check1(exact::log, case);
+        }
+    }
+
+    /// Where HotSpot's stub is one ulp off the correctly rounded value (about 0.002% of arguments:
+    /// 7 in 374,000 tried, a set that over-samples arguments near 1): `exact::log` is the correctly
+    /// rounded one, checked against the logarithm at 70 digits, so it differs from Java on these.
+    #[test]
+    fn exact_log_is_correctly_rounded_where_the_hotspot_stub_is_not() {
+        let cases: [(u64, u64, u64); 7] = [
+            (0x3feadbbb5fc7b29a, 0xbfc66ba44eb3a35b, 0xbfc66ba44eb3a35c),
+            (0x3fefdd43040fc60f, 0xbf7167f24d39a107, 0xbf7167f24d39a106),
+            (0x3fefe0369e739efb, 0xbf6fd93598c3afaf, 0xbf6fd93598c3afae),
+            (0x3fefe170e61a4416, 0xbf6e9dba9ec8dd96, 0xbf6e9dba9ec8dd95),
+            (0x3fefe17c22914fef, 0xbf6e92736481daa0, 0xbf6e92736481da9f),
+            (0x3ff00193bf8e3b48, 0x3f393aba964a825d, 0x3f393aba964a825e),
+            (0x3ffeec224043f7a4, 0x3fe515a4c3362a57, 0x3fe515a4c3362a58),
+        ];
+        for (x, correct, java) in cases {
+            check1(exact::log, (x, correct));
+            assert_eq!((correct as i64 - java as i64).abs(), 1, "{x:x}");
+        }
+    }
+
+    /// Arguments whose logarithm lies within 2^-65 of a half-way point between two doubles (the
+    /// nearest of about 1.6 million tried, against an 80-digit reference, some taken where the
+    /// reduced argument is largest): a result good to 2^-60 would round these either way, so only
+    /// the full series settles them.
+    #[test]
+    fn exact_log_near_a_half_way_point() {
+        let cases: [(u64, u64); 28] = [
+            (0x400ea6c9c15473c0, 0x3ff57de9d6444efb),
+            (0x3540d395cbb12275, 0xc05d9e944bf0eafb),
+            (0x3fe0c4b3724da5fd, 0xbfe4ae0392d6539d),
+            (0x3715347773c09881, 0xc058894bd6b37b85),
+            (0x6705dd33826cbaab, 0x407b1877c830c420),
+            (0x401083ea6bbf754b, 0x3ff6b019035375a2),
+            (0x4294faad08d7e127, 0x403d621471e8d52e),
+            (0x400e0cf8237e2418, 0x3ff52cd2b2e60bd8),
+            (0x5a69379ba43f3c00, 0x40725a7fc70ec9bf),
+            (0x0df65f8ebc1d4744, 0xc0815175b0d03992),
+            (0x3b35b2505194e4ed, 0xc04a2ff39ade0d68),
+            (0x1aa83a64505a779e, 0xc079d64d96d77675),
+            (0x3fc65b752af3ef33, 0xbffbeb0692d9b9fd),
+            (0x3fc5ad34f062142e, 0xbffc69aa91705d26),
+            (0x3fe686a172328200, 0xbfd677eebafc8ef7),
+            (0x3fd69091a29739ab, 0xbff0ae0f9d7de732),
+            (0x4016b4f3719e1215, 0x3ffbc82dd27ea12d),
+            (0x4016a2ba00937756, 0x3ffbbb513b53b162),
+            (0x4016bb154e484d16, 0x3ffbcc7f6aa1772e),
+            (0x40268fd88805e702, 0x4003628a4eb18cb1),
+            (0x40168e2ed9c45cd9, 0x3ffbacc532910968),
+            (0x3fd67d8a388e3af0, 0xbff0bb937f69f939),
+            (0x3fc6c43be6c0a543, 0xbffba0b86fd311b7),
+            (0x4016a5de7ed19e63, 0x3ffbbd89bbb55f79),
+            (0x400696e038424b87, 0x3ff09bcd1c311724),
+            (0x3fd6af8fc9ab0dc4, 0xbff09824c5c75526),
+            (0x4006a9fc873e071b, 0x3ff0a9509c1e714b),
+            (0x4006a792fa3825af, 0x3ff0a79c8cc08d8e),
+        ];
+        for case in cases {
+            check1(exact::log, case);
+            let x = f64::from_bits(case.0);
+            assert_eq!(exact::log_paths(x).1.to_bits(), case.1, "{:x}", case.0);
+        }
+    }
+
+    /// The special values, the powers of two, the subnormals and the ends of the range, as Java 25
+    /// returns them.
+    #[test]
+    fn exact_log_edges() {
+        assert!(exact::log(f64::NAN).is_nan() && exact::log(-1.0).is_nan());
+        assert!(exact::log(f64::NEG_INFINITY).is_nan());
+        assert_eq!(exact::log(0.0), f64::NEG_INFINITY);
+        assert_eq!(exact::log(-0.0), f64::NEG_INFINITY);
+        assert_eq!(exact::log(f64::INFINITY), f64::INFINITY);
+        assert_eq!(exact::log(1.0).to_bits(), 0);
+        for case in [
+            (f64::MAX.to_bits(), 0x40862e42fefa39ef),
+            (f64::MIN_POSITIVE.to_bits(), 0xc086232bdd7abcd2),
+            (0x000f_ffff_ffff_ffff, 0xc086232bdd7abcd2),
+            (1, 0xc0874385446d71c3),
+            (2.0f64.to_bits(), 0x3fe62e42fefa39ef),
+            (0.5f64.to_bits(), 0xbfe62e42fefa39ef),
+            (std::f64::consts::E.to_bits(), 1.0f64.to_bits()),
+            (10.0f64.to_bits(), 0x40026bb1bbb55516),
+            (0.1f64.to_bits(), 0xc0026bb1bbb55515),
+        ] {
+            check1(exact::log, case);
+        }
+    }
+
+    /// The quick path settles the rounding for most arguments, and the full series, which settles
+    /// the rest, gives the same result wherever the quick one decides.
+    #[test]
+    fn exact_log_quick_and_full_series_agree() {
+        let (mut state, mut open) = (0x9E37_79B9_7F4A_7C15u64, 0);
+        for i in 0..20_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            // Mantissas anywhere, exponents over the whole range, every tenth one near 1.
+            let x = if i % 10 == 0 {
+                1.0 + f64::from((state >> 40) as i32 - (1 << 23)) * 2.0f64.powi(-40)
+            } else {
+                f64::from_bits((state >> 1) & 0x7FEF_FFFF_FFFF_FFFF)
+            };
+            if !(x > 0.0 && x.is_finite()) {
+                continue;
+            }
+            let (quick, full) = exact::log_paths(x);
+            match quick {
+                Some(q) => assert_eq!(q.to_bits(), full.to_bits(), "{:x}", x.to_bits()),
+                None => open += 1,
+            }
+        }
+        assert!(
+            open > 0,
+            "no argument left the rounding open: the full series is not exercised"
+        );
     }
 
     fn check1(f: fn(f64) -> f64, (x, expected): (u64, u64)) {

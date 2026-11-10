@@ -250,6 +250,11 @@ pub fn puff_scale(state: i32) -> f64 {
         _ => 1.0,
     }
 }
+/// `Bucketable.fromBucket` of a fish or an axolotl; a tadpole's is always true
+/// (`Tadpole.setFromBucket` does nothing).
+pub fn from_bucket(m: &Mob) -> bool {
+    m.extra.from_bucket || m.species() == Species::Tadpole
+}
 /// `Tadpole.setAgeLockedData`: a golden dandelion flips the lock, puts the
 /// age back to 0 and starts the particle timer (40 ticks).
 pub fn set_age_locked_data(m: &mut Mob) {
@@ -257,18 +262,24 @@ pub fn set_age_locked_data(m: &mut Mob) {
     m.extra.age = 0;
     m.extra.age_lock_particle_timer = 40;
 }
-/// The parts of the species' `aiStep` that `NoAI` doesn't skip (it skips only
-/// `serverAiStep`): a pufferfish's stings, a glow squid's dark timer and a
-/// tadpole's age.
+/// Species aiStep additions when serverAiStep is skipped by NoAI.
 pub(super) fn no_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
-    match m.species() {
-        Species::Pufferfish => sting_touching_mobs(m, w, events),
-        Species::GlowSquid => glow_squid_dark_tick(m),
-        Species::Tadpole => {
-            grow_up(m, events);
-            super::ai::make_age_locked_particle(m, events);
-        }
-        _ => {}
+    if m.species() == Species::Pufferfish {
+        // Pufferfish.aiStep's mob contacts run even when serverAiStep is skipped.
+        sting_touching_mobs(m, w, events);
+    }
+    if matches!(m.species(), Species::Squid | Species::GlowSquid) {
+        // Squid.aiStep runs outside serverAiStep: tentacle cycle, rotation
+        // and sinking velocity on land update even when NoAI skips server AI.
+        squid_ai_step(m);
+    }
+    if m.species() == Species::GlowSquid {
+        glow_squid_dark_tick(m);
+    }
+    if m.species() == Species::Tadpole {
+        // Tadpole.aiStep ages it outside serverAiStep too.
+        grow_up(m, events);
+        super::ai::make_age_locked_particle(m, events);
     }
 }
 /// `Tadpole.aiStep`: growing up into a frog after 24000 ticks.
@@ -446,7 +457,7 @@ pub(super) fn sting_touching_mobs(m: &mut Mob, w: &MobWorld, events: &mut Vec<Mo
 }
 
 /// Squid.aiStep: tentacle cycle, propulsion and body rotation.
-fn squid_ai_step(m: &mut Mob) {
+pub fn squid_ai_step(m: &mut Mob) {
     squid_step(m, false);
 }
 
@@ -584,8 +595,17 @@ fn squid_step(m: &mut Mob, client: bool) {
     } else {
         v[TENTACLE_ANGLE] = v[TENTACLE_MOVEMENT].msin().abs() * PI * 0.25;
         if !client {
-            let yd = m.velocity.y - m.kind.gravity;
-            m.velocity = Vec3::new(0.0, yd * 0.98, 0.0);
+            let yd = if let Some((_, _, amp)) = m
+                .extra
+                .effects
+                .iter()
+                .find(|e| e.0 == "minecraft:levitation" || e.0 == "levitation")
+            {
+                0.05 * f64::from(amp + 1)
+            } else {
+                m.velocity.y - m.gravity()
+            };
+            m.velocity = Vec3::new(0.0, yd * f64::from(0.98_f32), 0.0);
         }
         let v = &mut m.anim.v;
         v[X_BODY_ROT] += (-90.0 - v[X_BODY_ROT]) * 0.02;
@@ -746,6 +766,21 @@ impl Goal for SquidFlee {
             m.extra.vector = [f[0] / 20.0, f[1] / 20.0, f[2] / 20.0];
         }
     }
+}
+/// `AbstractFish.removeWhenFarAway` and `Axolotl.removeWhenFarAway`: a fish or
+/// an axolotl with a custom name is never removed for distance, and one let out
+/// of a bucket is persistent before it (`isPersistenceRequired`).
+pub fn named_keeps_it(m: &Mob) -> bool {
+    m.custom_name.is_some()
+        && matches!(
+            m.species(),
+            Species::Cod
+                | Species::Salmon
+                | Species::TropicalFish
+                | Species::Pufferfish
+                | Species::Tadpole
+                | Species::Axolotl
+        )
 }
 /// `AbstractSchoolingFish`: cod, salmon and tropical fish.
 fn schooling(s: Species) -> bool {
@@ -1664,6 +1699,39 @@ mod pufferfish_sting_tests {
             vec![true, false],
             "a survival player puffs it; a spectator does not"
         );
+    }
+}
+
+#[cfg(test)]
+mod squid_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// `Squid.aiStep`: sinking velocity on land is applied even when NoAI skips server AI (#14467).
+    #[test]
+    fn noai_squid_on_land_sets_sinking_velocity() {
+        let mut k = crate::mobs::sensor_scan_tests::kind();
+        let km = Arc::make_mut(&mut k);
+        km.id = "minecraft:squid".into();
+        km.species = Species::Squid;
+        km.gravity = 0.08;
+        let mut squid = Mob::new(1, k, Vec3::ZERO, 0.0);
+        squid.no_ai = true;
+        squid_ai_step(&mut squid);
+        assert_eq!(squid.velocity, Vec3::new(0.0, -0.0784000015258789, 0.0));
+
+        use crate::mobs::world::with_test_world;
+        let _ = with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:squid"].clone());
+            let mut squid = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            squid.no_ai = true;
+            squid.tick(
+                w,
+                &mut horizon_core::random::LegacyRandom::new(0),
+                &mut Vec::new(),
+            );
+            assert_eq!(squid.velocity, Vec3::new(0.0, -0.0784000015258789, 0.0));
+        });
     }
 }
 

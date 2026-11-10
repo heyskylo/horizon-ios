@@ -256,19 +256,29 @@ pub fn extract_archive(
     saves: &Path,
     progress: &DownloadProgress,
 ) -> Result<PathBuf, DownloadError> {
+    if progress.is_cancelled() {
+        return Err(DownloadError::Cancelled);
+    }
+    extract_archive_inner(archive, name, saves, || {})
+}
+
+fn extract_archive_inner(
+    archive: &Path,
+    name: &str,
+    saves: &Path,
+    on_extracting: impl FnOnce(),
+) -> Result<PathBuf, DownloadError> {
     fs::create_dir_all(saves).map_err(DownloadError::failed)?;
     let folder = world_folder(saves, name);
     let world = saves.join(&folder);
     fs::create_dir_all(&world).map_err(DownloadError::failed)?;
     let file = File::open(archive).map_err(DownloadError::failed)?;
     let mut tar = TarReader::new(flate2::read::GzDecoder::new(BufReader::new(file)));
-    loop {
-        if progress.is_cancelled() {
-            return Err(DownloadError::Cancelled);
+    let mut on_extracting = Some(on_extracting);
+    while let Some(header) = tar.next().map_err(DownloadError::failed)? {
+        if let Some(on_extracting) = on_extracting.take() {
+            on_extracting();
         }
-        let Some(header) = tar.next().map_err(DownloadError::failed)? else {
-            break;
-        };
         let Some(relative) = under_world(&header.name) else {
             log::warn!(
                 "Realms: an archive entry outside world/ was skipped: {}",
@@ -748,6 +758,38 @@ mod tests {
         header[154] = 0;
         header[155] = b' ';
         gz.write_all(&header).unwrap();
+    }
+
+    #[test]
+    fn cancelling_after_extraction_starts_does_not_interrupt_the_archive() {
+        let dir = scratch("cancel-extracting");
+        let archive = dir.join("world.tar.gz");
+        one_entry_archive(&archive, "world/marker", b"complete");
+        let saves = dir.join("saves");
+        let progress = DownloadProgress::default();
+        let world = extract_archive_inner(&archive, "Friends", &saves, || progress.cancel())
+            .expect("cancellation after extraction starts must not interrupt it");
+
+        assert!(progress.is_cancelled());
+        assert_eq!(fs::read(world.join("marker")).unwrap(), b"complete");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_download_cancelled_before_extraction_does_not_create_a_world() {
+        let dir = scratch("cancel-before-extracting");
+        let archive = dir.join("world.tar.gz");
+        one_entry_archive(&archive, "world/marker", b"complete");
+        let saves = dir.join("saves");
+        let progress = DownloadProgress::default();
+        progress.cancel();
+
+        assert_eq!(
+            extract_archive(&archive, "Friends", &saves, &progress),
+            Err(DownloadError::Cancelled)
+        );
+        assert!(!saves.exists());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     fn write_test_data(gz: &mut impl Write, data: &[u8]) {
