@@ -3466,11 +3466,8 @@ pub fn spit_or_bullet_from_nbt(
     let mut p = Projectile::new(kind, at, from_player.then_some(Who::Player));
     p.velocity = motion(tag);
     [p.yaw, p.pitch] = rotation(tag);
-    p.left_owner = flag(tag, "LeftOwner");
-    p.has_been_shot = flag(tag, "HasBeenShot");
     p.owner_uuid = owner;
-    p.no_gravity = flag(tag, "NoGravity");
-    load_projectile_entity_fields(&mut p, tag);
+    projectile_fields::load_projectile_flags_and_entity_fields(&mut p, tag);
     p.on_ground = flag(tag, "OnGround");
     Some(p)
 }
