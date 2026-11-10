@@ -18,12 +18,12 @@ def program():
     pad = (ROOT / 'crates/horizon-client/src/game/pad.rs').read_text()
     emote = (ROOT / 'crates/horizon-client/src/game/emote_wheel.rs').read_text()
     modules = f'#[path="{ROOT / "crates/horizon-client/src/touch.rs"}"]mod touch;\n'
-    return STUBS + modules + '\nimpl Game {\n' + method(touch, 'touch_event') + '\n' + method(pad, 'pad_yield_input') + '\n' + method(emote, 'cancel_emote_controller') + '\n}\n' + CASES
+    return STUBS + modules + '\nimpl Game {\n' + method(touch, 'visible_touch_layout') + '\n' + method(touch, 'touch_event') + '\n' + method(pad, 'pad_yield_input') + '\n' + method(emote, 'cancel_emote_controller') + '\n}\n' + CASES
 
 
 STUBS = r'''
 #![allow(dead_code)]
-use std::time::Instant;
+use std::time::Instant;use touch::Control;
 type Result<T>=std::result::Result<T,String>;
 trait EventLoopCtl{}struct Loop;impl EventLoopCtl for Loop{}
 #[derive(Clone,Copy,PartialEq)]enum TouchPhase{Started,Moved,Ended,Cancelled}
@@ -31,14 +31,14 @@ struct Position{x:f64,y:f64}struct Touch{id:u64,phase:TouchPhase,location:Positi
 struct Batch{width:f32,height:f32,scale:f32}
 struct Hardware;impl Hardware{fn touch(&mut self){}}
 struct MenuFinger{id:u64}
-struct TouchInput{seen:bool,hardware:Hardware,fingers:touch::Touches,menu:Option<MenuFinger>}
+struct TouchInput{more:bool,hidden:bool,seen:bool,hardware:Hardware,fingers:touch::Touches,menu:Option<MenuFinger>}
 struct Pad{in_use:bool,held:Vec<&'static str>,released:Vec<&'static str>}
 struct EmoteWheel{controller:Option<()>}
 struct Game{emote_wheel:EmoteWheel,touch:TouchInput,pad:Pad,last_input:Instant,dispatched:Vec<(bool,Vec<touch::Out>)>}
 impl Game{
  fn menu_input_blocked(&self)->bool{false}
  fn cancel_touch_for_reload(&mut self){panic!("no reload in handoff fixture");}
- fn new()->Self{Self{emote_wheel:EmoteWheel{controller:Some(())},touch:TouchInput{seen:false,hardware:Hardware,fingers:touch::Touches::default(),menu:None},pad:Pad{in_use:true,held:vec!["key.forward","key.attack"],released:vec![]},last_input:Instant::now(),dispatched:vec![]}}
+ fn new()->Self{Self{emote_wheel:EmoteWheel{controller:Some(())},touch:TouchInput{more:false,hidden:false,seen:false,hardware:Hardware,fingers:touch::Touches::default(),menu:None},pad:Pad{in_use:true,held:vec!["key.forward","key.attack"],released:vec![]},last_input:Instant::now(),dispatched:vec![]}}
  fn touch_batch(&self)->Option<Batch>{Some(Batch{width:1000.,height:600.,scale:2.})}
  fn touch_playing(&self)->bool{true}
  fn touch_release_menu(&mut self,_:&dyn EventLoopCtl){self.touch.menu=None;}

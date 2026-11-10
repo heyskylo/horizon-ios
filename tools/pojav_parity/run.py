@@ -111,7 +111,7 @@ def main():
  p=argparse.ArgumentParser(description=__doc__);p.add_argument('--reference-dir',type=Path,required=True);p.add_argument('--report',type=Path,required=True);args=p.parse_args()
  ref=args.reference_dir.resolve()
  if ref.is_relative_to(ROOT):raise SystemExit('Keep GPL reference source outside the repository')
- work=Path(tempfile.mkdtemp(prefix='horizon-pojav-parity-'));hashes={} 
+ work=Path(tempfile.mkdtemp(prefix='horizon-pojav-parity-'));hashes={}
  for name in PINS:
   base=ref if name=='pojav' else ref/'amethyst'
   for rel in ['LICENSE','Natives/customcontrols/ControlJoystick.m','Natives/SurfaceViewController.m', 'Natives/input/ControllerInput.m' if name=='pojav' else 'Natives/ControllerInput.m']:
