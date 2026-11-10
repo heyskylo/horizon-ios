@@ -52,7 +52,7 @@ AbstractSignEditScreen.preeditUpdated	inline	crates/horizon-client/src/game/ime.
 AbstractSignEditScreen.extractRenderState	port	crates/horizon-client/src/game/sign_edit.rs::Game::draw_sign_editor	
 AbstractSignEditScreen.extractSign	inline	crates/horizon-client/src/game/sign_edit.rs::Game::draw_sign_editor	sign sprite and text scale
 AbstractSignEditScreen.extractSignText	inline	crates/horizon-client/src/game/sign_edit.rs::Game::draw_sign_editor	cursor at the end of a line is a bar; vanilla draws an underscore there; no bidirectional shaping
-AnvilScreen.subInit	port	crates/horizon-client/src/game/stations.rs::anvil_box	50 character unbordered rename box
+AnvilScreen.subInit	port	crates/horizon-client/src/game/stations/anvil.rs::rename_box	50 character unbordered rename box
 AnvilScreen.resize	skip:ui		re-init on window resize
 AnvilScreen.extractBackground	inline	crates/horizon-client/src/game/stations.rs::Game::draw_station	text field sprite, disabled without an input
 AnvilScreen.extractErrorIcon	inline	crates/horizon-client/src/game/stations.rs::Game::draw_station	error sprite when there is input and no result
