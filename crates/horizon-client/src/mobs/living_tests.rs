@@ -1175,3 +1175,4 @@ fn a_steered_mount_moves_through_the_air_at_a_tenth_of_its_speed() {
     m.extra.saddled = true;
     assert_eq!(m.flying_speed(), 0.3_f32 * 0.1);
 }
+
