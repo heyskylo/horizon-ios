@@ -165,3 +165,56 @@ def sulfur_body_replace():
     for tag in tags:
         read(tag)
     return ops
+
+
+def sulfur_body_item_replace():
+    """/item replace on a sulfur cube's armor.body. LivingEntity's body
+    SlotAccess takes an empty stack or one whose getEquipmentSlotForItem is
+    BODY, and SulfurCube.getEquipmentSlotForItem answers BODY for every
+    #sulfur_cube_swallowable item. A wolf beside it is the control."""
+    ops = []
+
+    def run(text, expected=None, record=True):
+        ops.append(cmd(text, record=record, expect_result=expected))
+
+    run('/gamerule spawn_mobs false')
+    run('/forceload add 0 0 15 15', 1)
+    run('/execute if loaded 4 200 4', 1)
+    run('/fill 0 199 0 15 199 15 minecraft:stone', 256)
+    for i, tag in enumerate(['h193_a', 'h193_b', 'h193_c']):
+        run(f'/summon minecraft:sulfur_cube {2.5 + 4 * i} 200 4.5 {{UUID:{uuid(61 + i)},Tags:["{tag}"],NoAI:1b,{CUBE}}}', 1)
+    run(f'/summon minecraft:wolf 2.5 200 10.5 {{UUID:{uuid(64)},Tags:["h193_w"],NoAI:1b,Silent:1b,PersistenceRequired:1b}}', 1)
+    a, b, c, w = ('@e[tag=h193_a,limit=1]', '@e[tag=h193_b,limit=1]', '@e[tag=h193_c,limit=1]',
+                  '@e[tag=h193_w,limit=1]')
+
+    def body(target):
+        run(f'/data get entity {target} equipment.body')
+
+    # A swallowable block goes in; an item outside the tag does not.
+    run(f'/item replace entity {a} armor.body with minecraft:white_wool')
+    body(a)
+    run(f'/item replace entity {a} armor.body with minecraft:diamond')
+    body(a)
+    run(f'/item replace entity {a} armor.body with minecraft:oak_planks')
+    body(a)
+    # Copied from one cube's body into another's.
+    run(f'/item replace entity {b} armor.body from entity {a} armor.body')
+    body(b)
+    # An empty stack always fits: the body comes off.
+    run(f'/item replace entity {a} armor.body with minecraft:air')
+    body(a)
+    # Body armour that is not swallowable: getEquipmentSlotForItem falls back
+    # to LivingEntity's (the equippable slot if canUseSlot, else mainhand).
+    run(f'/item replace entity {c} armor.body with minecraft:wolf_armor')
+    body(c)
+    # The wolf: its body takes wolf armour, not a block.
+    run(f'/item replace entity {w} armor.body with minecraft:white_wool')
+    body(w)
+    run(f'/item replace entity {w} armor.body with minecraft:wolf_armor')
+    body(w)
+    # The next ticks adopt the copied body's archetype (collectEquipmentChanges).
+    ops.append({'op': 'tick', 'n': 2})
+    for a_name in ATTRS[:5]:
+        run(f'/attribute {b} minecraft:{a_name} get 1000')
+    body(b)
+    return ops
