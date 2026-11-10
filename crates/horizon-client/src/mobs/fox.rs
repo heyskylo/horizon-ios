@@ -511,7 +511,10 @@ impl Goal for Sleep {
         MOVE | LOOK | JUMP
     }
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        m.ai.nav.is_done() && (self.can_sleep(m, cx.w) || flag(m, SLEEPING))
+        m.ai.xxa == 0.0
+            && m.ai.yya == 0.0
+            && m.ai.zza == 0.0
+            && (self.can_sleep(m, cx.w) || flag(m, SLEEPING))
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.can_sleep(m, cx.w)
