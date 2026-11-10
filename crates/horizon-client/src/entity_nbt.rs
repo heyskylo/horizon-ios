@@ -2389,8 +2389,8 @@ pub fn mob_from_nbt_with_random(
         m.extra.owner = crate::save::uuid_from_tag(tag.get("Owner"));
         m.extra.tame = m.extra.owner.is_some();
         m.extra.sitting = flag(tag, "Sitting");
-        m.extra.color =
-            number(tag.get("CollarColor")).map_or(crate::mobs::tame::RED, |c| (c as u8) & 15);
+        let legacy = |c: i64| u8::try_from(c as i8).ok().filter(|c| *c < 16).unwrap_or(0);
+        m.extra.color = number(tag.get("CollarColor")).map_or(crate::mobs::tame::RED, legacy);
     }
     if m.species() == crate::mobs::Species::Panda {
         let gene = |key| text(tag.get(key)).map_or(0, |n| crate::mobs::panda::gene_from_name(&n));
@@ -2415,8 +2415,8 @@ pub fn mob_from_nbt_with_random(
             .and_then(crate::save::item_from_nbt);
         m.extra.body_damage = armor.as_ref().map_or(0, |s| s.damage as i32);
         m.extra.body_extra = armor.and_then(|s| s.extra);
-        m.extra.color =
-            number(tag.get("CollarColor")).map_or(crate::mobs::tame::RED, |c| (c as u8) & 15);
+        let legacy = |c: i64| u8::try_from(c as i8).ok().filter(|c| *c < 16).unwrap_or(0);
+        m.extra.color = number(tag.get("CollarColor")).map_or(crate::mobs::tame::RED, legacy);
     }
     if matches!(
         m.species(),
@@ -4617,6 +4617,35 @@ mod tests {
                     assert_eq!(saved.get("audit:unrelated"), Some(&Tag::Int(7)));
                 }
             }
+        }
+    }
+
+    /// `Wolf` and `Cat` read `CollarColor` with `DyeColor.LEGACY_ID_CODEC`: a
+    /// byte through `DyeColor.byId`, whose out-of-range answer is the first
+    /// colour, white (`OutOfBoundsStrategy.ZERO`). Nothing wraps.
+    #[test]
+    fn a_collar_colour_outside_the_sixteen_reads_white() {
+        for (species, id) in [
+            (crate::mobs::Species::Wolf, "minecraft:wolf"),
+            (crate::mobs::Species::Cat, "minecraft:cat"),
+        ] {
+            let mut kind = crate::mobs::sensor_scan_tests::kind();
+            let ty = Arc::make_mut(&mut kind);
+            ty.id = id.into();
+            ty.species = species;
+            let types = [(id.into(), kind)].into();
+            let colour = |saved: Option<Tag>| {
+                let mut fields = vec![("id", string(id)), ("Pos", doubles(&[4.5, 220.0, 4.5]))];
+                fields.extend(saved.map(|c| ("CollarColor", c)));
+                let m = mob_from_nbt(&Tag::compound(fields), &types, 1, None).unwrap();
+                m.extra.color
+            };
+            assert_eq!(colour(Some(Tag::Byte(11))), 11, "{id}");
+            assert_eq!(colour(Some(Tag::Byte(17))), 0, "{id}: not 17 & 15");
+            assert_eq!(colour(Some(Tag::Byte(-1))), 0, "{id}: not 15");
+            // Codec.BYTE narrows an int first: 259 is byte 3.
+            assert_eq!(colour(Some(Tag::Int(259))), 3, "{id}");
+            assert_eq!(colour(None), crate::mobs::tame::RED, "{id}");
         }
     }
 
