@@ -4173,3 +4173,69 @@ fn fresh_chunk_block_events_do_not_wait_for_ticking_readiness() {
 
 mod barrel;
 mod trigger_tests;
+
+/// `ShulkerBoxBlockEntity.doNeighborUpdates`: the neighbours' shape updates
+/// (flag 3) and then their `neighborChanged`, at the four points in
+/// `ShulkerBoxBlockEntity.tick` where a lid starts or finishes moving.
+#[test]
+fn a_shulker_lid_updates_the_shapes_and_redstone_of_its_neighbours() {
+    use std::cell::RefCell;
+
+    struct Observer {
+        inner: TestLevel,
+        seen: RefCell<Vec<(BlockPos, BlockStateId, BlockId, bool)>>,
+    }
+    impl LevelAccess for Observer {
+        fn block_state(&self, pos: BlockPos) -> BlockStateId {
+            self.inner.block_state(pos)
+        }
+        fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
+            self.inner.set_raw(pos, state)
+        }
+        fn is_loaded(&self, _pos: BlockPos) -> bool {
+            true
+        }
+        fn random(&mut self) -> &mut LegacyRandom {
+            self.inner.random()
+        }
+        fn game_time(&self) -> i64 {
+            self.inner.game_time()
+        }
+        fn observe_neighbor_changed(
+            &self,
+            pos: BlockPos,
+            state: BlockStateId,
+            changed: BlockId,
+            moved: bool,
+        ) {
+            assert_eq!(self.block_state(pos), state);
+            self.seen.borrow_mut().push((pos, state, changed, moved));
+        }
+    }
+    let Some(f) = fixture() else { return };
+    let b = &f.behaviours;
+    let mut level = Observer {
+        inner: TestLevel::new(b),
+        seen: RefCell::new(Vec::new()),
+    };
+    let mut ticks = Ticks::new(0);
+    let pos = BlockPos::new(0, 0, 0);
+    let state = b.air();
+    b.shulker_neighbor_updates(&mut level, &mut ticks, pos, state);
+    let expected = [
+        (-1, 0, 0),
+        (1, 0, 0),
+        (0, -1, 0),
+        (0, 1, 0),
+        (0, 0, -1),
+        (0, 0, 1),
+    ];
+    let seen = level.seen.borrow();
+    assert_eq!(seen.len(), expected.len(), "{seen:?}");
+    for (event, (x, y, z)) in seen.iter().zip(expected) {
+        assert_eq!(
+            *event,
+            (BlockPos::new(x, y, z), state, b.block(state), false)
+        );
+    }
+}

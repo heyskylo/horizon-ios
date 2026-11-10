@@ -114,7 +114,7 @@ ShelfBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_en
 ShelfBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::collect	Items as container component
 ShulkerBoxBlockEntity.updateAnimation	port	crates/horizon-client-render/src/block_entity_anim.rs::Shulker::tick	lid progress
 ShulkerBoxBlockEntity.moveCollidedEntities	inline	crates/horizon-client/src/game/piston_push.rs::Game::push_shulker_entities	the sweeping lid box moves every body it meets out along the facing by the box's size plus 0.01 (`Entity.move(MoverType.SHULKER_BOX, …)`), through the piston push machinery
-ShulkerBoxBlockEntity.doNeighborUpdates	missing		the lid tick counts the calls (`ShulkerTick::neighbor_updates`) and both tick paths (`tick_shulkers`, the client's `Ticker::Shulker`) drop them: no `open` block state and no neighbour or shape update around the box
+ShulkerBoxBlockEntity.doNeighborUpdates	port	crates/horizon-world/src/level/mod.rs::Behaviours::shulker_neighbor_updates	the four points of `ShulkerBoxBlockEntity.tick` where a lid starts or finishes moving: `state.updateNeighbourShapes(level, pos, 3)` then `level.updateNeighborsAt(pos, block)`, once per `ShulkerTick.neighbor_updates`
 ShulkerBoxBlockEntity.saveAdditional	port	crates/horizon-client/src/save.rs::encode_block_entity	shulker box uses the chest arm (27 slots)
 ShulkerBoxBlockEntity.loadFromTag	port	crates/horizon-client/src/block_entity_item.rs::place	contents from the item's data
 SignBlockEntity.getText	skip:other		accessor; SignData keeps front and back sides as fields
