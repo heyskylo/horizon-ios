@@ -7160,13 +7160,7 @@ impl Game<'_> {
             let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
             let start = out.len();
             self.mark_motion(start, Self::MOTION_OBJECT | u64::from(f.id));
-            self.falling_model_vertices(
-                f.state,
-                horizon_core::random::position_seed(f.start_pos),
-                o,
-                packed,
-                &mut out,
-            );
+            self.falling_model_vertices(f.state, f.start_pos, o, packed, &mut out);
             let tint = horizon_client::mobs::render::abgr(tint);
             for vertex in &mut out[start..] {
                 vertex.color = horizon_client::hud_layout::multiply(vertex.color, tint);

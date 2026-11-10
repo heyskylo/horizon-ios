@@ -7,11 +7,13 @@ impl Game<'_> {
     pub(super) fn falling_model_vertices(
         &self,
         state: BlockStateId,
-        seed: i64,
+        start_pos: BlockPos,
         origin: glam::Vec3,
         light: u32,
         out: &mut Vec<Vertex>,
     ) {
+        // `FallingBlockRenderer`: the model is picked by the block's starting position.
+        let seed = horizon_core::random::position_seed(start_pos);
         let Ok(models) = self.pack.render.model_catalog.collect_seeded(state, seed) else {
             return;
         };
@@ -359,7 +361,7 @@ mod geometry_tests {
                     &mut expected,
                 );
                 let mut actual = Vec::new();
-                game.falling_model_vertices(state, seed, origin, light, &mut actual);
+                game.falling_model_vertices(state, pos, origin, light, &mut actual);
                 let (_, tint) = game.block_face_sprite(state).unwrap();
                 let tint = horizon_client::mobs::render::abgr(tint);
                 for vertices in [&mut expected, &mut actual] {
