@@ -101,7 +101,7 @@ SulfurCube.addBehaviourGoals	port	crates/horizon-client/src/mobs/sulfur_cube.rs:
 SulfurCube.onSyncedDataUpdated	skip:other		client copy of the fuse sync; the fuse is mob state (sulfur_cube::fuse)
 SulfurCube.saveToBucketTag	inline	crates/horizon-client/src/mobs/sulfur_cube.rs::to_nbt	the bucket keeps the mob NBT, including Age and AgeLocked
 SulfurCube.travelInFluid	inline	crates/horizon-client/src/mobs/sulfur_cube.rs::ai_step	buoyancy bob runs in the tick, not in the fluid travel
-SulfurCube.loadFromBucketTag	inline	crates/horizon-client/src/mobs/sulfur_cube.rs::from_nbt	reads Age and AgeLocked back
+SulfurCube.loadFromBucketTag	inline	crates/horizon-client/src/game/dispenser.rs::Game::mob_placed	the bucket's lowercase age and age_locked, 0 and false when absent
 SulfurCube.requiresCustomPersistence	port	crates/horizon-client/src/mobs/ai.rs::requires_custom_persistence	holding a block or let out of a bucket
 SulfurCube.hurtServer	port	crates/horizon-client/src/mobs/sulfur_cube.rs::accepts_damage	fire or explosion primes; a held block shrugs off blows and only knocks back
 SulfurCube.matchingArchetypes	port	crates/horizon-client/src/mobs/sulfur_cube.rs::archetype_of	one archetype per item, not a list
