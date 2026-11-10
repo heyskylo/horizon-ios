@@ -708,6 +708,20 @@ impl Game<'_> {
         }
         for &(pos, _) in &view.parts {
             self.container_changed(pos);
+            // `ShelfBlockEntity.setChanged()` (the no-argument override posts
+            // `BLOCK_ACTIVATE`): a container writing a shelf's slot is heard.
+            if matches!(
+                self.world.block_entities.get(&pos),
+                Some(BlockEntity::Shelf(_))
+            ) {
+                let state = self.world.block(pos.0, pos.1, pos.2);
+                self.post_block_game_event(
+                    "minecraft:block_activate",
+                    [pos.0, pos.1, pos.2],
+                    None,
+                    Some(state),
+                );
+            }
         }
     }
     /// `BlockEntity.setChanged` at `pos`: comparators re-read the container.
