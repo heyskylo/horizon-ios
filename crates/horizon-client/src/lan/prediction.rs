@@ -651,13 +651,8 @@ fn sync(body: &mut PlayerMotion, server: &PlayerMotion) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        assets::Assets,
-        motion::{MotionResources, MotionWorld},
-        world::World,
-    };
+    use crate::{motion::MotionWorld, world::World};
     use horizon_anticheat::prediction::Record;
-    use std::path::Path;
 
     /// Keys for each tick: 20 walking, 12 sprint-jumping, 12 strafing while turning, 6 still.
     fn script() -> Vec<(u8, f32)> {
@@ -764,17 +759,9 @@ mod tests {
         cheat: impl Fn(usize, Vec3, Vec3) -> Vec3,
         push: Option<Push>,
     ) -> Option<Vec<Step>> {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../.local/horizon-client")
-            .join(horizon_core::VANILLA_VERSION);
-        if !root.join("movement-properties.nbt").exists() {
-            return None;
-        }
-        let assets = Assets::load(&root).unwrap();
-        let render = assets.reload(&root).unwrap();
-        let binding = crate::collisions::load(&root, assets.registry).unwrap();
-        let resources = MotionResources::load(&root, &assets).unwrap();
-        let mut scene = World::test_scene(&assets, &render, 2).unwrap();
+        let fixture = crate::test_fixtures::vanilla()?;
+        let (assets, binding, resources) = (&fixture.assets, &fixture.collision, &fixture.motion);
+        let mut scene = World::test_scene(assets, &fixture.render, 2).unwrap();
         // A clean stone floor with its top at y 5, and a slab on the walk to step up on.
         let stone = assets.registry.default_state("minecraft:stone").unwrap();
         let air = assets.registry.default_state("minecraft:air").unwrap();
@@ -796,9 +783,9 @@ mod tests {
             scene.set(at[0], at[1], at[2], state).unwrap();
         }
         let start = run.start;
-        let mut client = PlayerMotion::new(&resources, start).unwrap();
+        let mut client = PlayerMotion::new(resources, start).unwrap();
         client.client_side = true;
-        let mut server = PlayerMotion::new(&resources, start).unwrap();
+        let mut server = PlayerMotion::new(resources, start).unwrap();
         (client.glider, server.glider) = (run.glider, run.glider);
         client.pitch = run.pitch;
         let mut world = |player: &mut PlayerMotion, f: &mut dyn FnMut(&mut MotionWorld)| {
@@ -806,9 +793,9 @@ mod tests {
                 entities: &[],
                 player,
                 scene: &mut scene,
-                assets: &assets,
-                collision_binding: &binding,
-                resources: &resources,
+                assets,
+                collision_binding: binding,
+                resources,
                 health: &resources.health,
             })
         };

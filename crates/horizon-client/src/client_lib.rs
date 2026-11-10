@@ -136,6 +136,8 @@ pub mod stopwatches;
 pub mod structure_blocks;
 pub mod studio;
 pub mod telemetry;
+#[cfg(test)]
+pub(crate) mod test_fixtures;
 pub mod text_display;
 pub mod tick_chunk_membership;
 pub mod ticket_levels;
