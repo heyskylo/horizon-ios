@@ -21,3 +21,19 @@ impl Game<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn view_is_needed_only_for_a_listened_trigger_once_loaded() {
+        let mut tree = Tree::default();
+        // Before loading the tree is empty but not read yet: built as before.
+        assert!(view_needed(false, &tree, "minecraft:tick"));
+        assert!(!view_needed(true, &tree, "minecraft:tick"));
+        tree.by_trigger.insert("minecraft:tick".into(), vec![(0, 0)]);
+        assert!(view_needed(true, &tree, "minecraft:tick"));
+        assert!(!view_needed(true, &tree, "minecraft:location"));
+    }
+}
