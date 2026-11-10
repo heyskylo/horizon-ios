@@ -12,10 +12,15 @@ use horizon_client::{
     Result,
     containers::{BlockEntity, HOPPER_SLOTS, ModContainer},
     items::{ItemStack, Items},
+    mobs::Mob,
     save,
     world::World,
 };
-use horizon_core::{geometry::Direction, position::BlockPos, random::RandomSource};
+use horizon_core::{
+    geometry::{Aabb, Direction, Vec3},
+    position::BlockPos,
+    random::RandomSource,
+};
 use horizon_world::{
     level::{Behaviours, LevelAccess},
     nbt::Tag,
@@ -224,6 +229,8 @@ struct Containers<'a> {
     registry: &'static horizon_world::registry::BlockRegistry,
     /// Brewing recipes, for what a brewing stand accepts (not needed for signals).
     brewing: Option<&'a horizon_client::brewing::Brewing>,
+    /// The level's mobs, for the cat half of `ChestBlock.isChestBlockedAt`.
+    mobs: &'a [Mob],
 }
 impl Containers<'_> {
     fn prop(&self, state: BlockStateId, key: &str) -> Option<&str> {
@@ -251,7 +258,8 @@ impl Containers<'_> {
     }
     /// `HopperBlockEntity.getBlockContainer` (double chests combined, right half
     /// first). `blocked_chests`: `ChestBlock.getContainer(.., false)` returns
-    /// nothing for a chest under a redstone conductor.
+    /// nothing for a blocked chest (`isChestBlockedAt`: a redstone conductor
+    /// above it or a cat sitting on it).
     fn view(&self, pos: Pos, blocked_chests: bool) -> Option<View> {
         let state = self.world.block(pos.0, pos.1, pos.2);
         let name = self.name(state);
@@ -308,6 +316,7 @@ impl Containers<'_> {
                 self.behaviours.facts(above).flags
                     & horizon_world::level::data::state_flags::CONDUCTOR
                     != 0
+                    || cat_sitting_above(self.mobs, p)
             };
             if blocked_chests && is_blocked(pos) {
                 return None;
@@ -611,20 +620,36 @@ fn bone_meal_stack() -> &'static ItemStack {
     &STACK
 }
 
-/// Comparator input from a container block entity (0 when there is none).
-pub(super) fn container_signal(
-    world: &World,
-    behaviours: &Behaviours,
-    items: &Items,
-    registry: &'static horizon_world::registry::BlockRegistry,
-    pos: BlockPos,
-) -> i32 {
+/// `ChestBlock.isCatSittingOnChest`: a sitting cat whose box meets the block
+/// above `key` (the box of the block above, not the chest's own).
+pub(super) fn cat_sitting_above(mobs: &[Mob], key: Pos) -> bool {
+    let area = Aabb::new(
+        Vec3::new(f64::from(key.0), f64::from(key.1 + 1), f64::from(key.2)),
+        Vec3::new(
+            f64::from(key.0 + 1),
+            f64::from(key.1 + 2),
+            f64::from(key.2 + 1),
+        ),
+    );
+    mobs.iter().any(|m| {
+        m.species() == horizon_client::mobs::Species::Cat
+            && m.alive()
+            && horizon_client::mobs::tame::cat_sitting(m)
+            && m.bounds().intersects(area)
+    })
+}
+
+/// Comparator input from a container block entity (0 when there is none):
+/// `ChestBlock.getContainer(.., false)`, whose blocked check sees the level's
+/// cats (`isCatSittingOnChest`).
+pub(super) fn container_signal(level: &super::GameLevel<'_>, pos: BlockPos) -> i32 {
     let c = Containers {
-        world,
-        behaviours,
-        items,
-        registry,
+        world: &*level.world,
+        behaviours: level.behaviours,
+        items: level.items,
+        registry: level.registry,
         brewing: None,
+        mobs: level.entities.mobs,
     };
     c.view((pos.x, pos.y, pos.z), true)
         .filter(|v| !matches!(v.kind, Kind::Composter(_)))
@@ -680,6 +705,7 @@ impl Game<'_> {
             items: self.items(),
             registry: self.pack.assets.registry,
             brewing: Some(&self.stations().brewing),
+            mobs: &self.mobs,
         }
     }
     pub(super) fn block_can_place(&self, pos: [i32; 3], slot: usize, stack: &ItemStack) -> bool {
@@ -2296,3 +2322,7 @@ mod pot_hopper_insertion_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "machines_chest_cat_tests.rs"]
+mod machines_chest_cat_tests;
