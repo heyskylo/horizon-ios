@@ -14,6 +14,25 @@ impl Game<'_> {
     /// shifted every block after it twice, for every falling block, every tick.
     /// One that lands, drops or goes leaves the list before its block is placed
     /// or dropped, as before; on an error the list keeps it as it was.
+    /// The end of a piston's `Entity.move(MoverType.PISTON, …)` for falling
+    /// block `i` after a step of `moved`: `checkFallDamage` adds the drop and,
+    /// on the ground, runs fallOn and posts HIT_GROUND after a fall, then
+    /// forgets it, so its own next tick does not land again.
+    pub(super) fn finish_falling_piston_move(&mut self, i: usize, moved: Vec3) {
+        let mut f = self.falling[i].clone();
+        if moved.y < 0.0 {
+            f.fall_distance -= f64::from(moved.y as f32);
+        }
+        if f.on_ground {
+            self.falling_block_impact(&mut f);
+            if f.fall_distance > 0.0 {
+                let bounds = horizon_client::falling_block::bounds(f.position);
+                self.post_landing_event(f.position, bounds, false);
+            }
+            f.fall_distance = 0.0;
+        }
+        self.falling[i] = f;
+    }
     pub(super) fn tick_one_falling(&mut self, i: usize, entities: &[Aabb]) -> Result<()> {
         let entity_drops = self.ui.rules.bool("entity_drops");
         let join = self.falling[i].join;
@@ -134,7 +153,12 @@ impl Game<'_> {
             f.velocity.z = 0.0;
         }
         if on_ground {
+            // fallOn (causeFallDamage), then HIT_GROUND after a fall.
             self.falling_block_impact(f);
+            if f.fall_distance > 0.0 {
+                let bounds = horizon_client::falling_block::bounds(f.position);
+                self.post_landing_event(f.position, bounds, false);
+            }
             f.fall_distance = 0.0;
         }
         // applyEffectsFromBlocks: WebBlock.entityInside makes it stuck
