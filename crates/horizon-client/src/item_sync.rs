@@ -1289,15 +1289,15 @@ mod tests {
         let consumable_bytes = r.data;
 
         // Not the honey bottle's own sound, so a fallback to the prototype shows.
-        let mut sounds = horizon_protocol::registry::Ids::default();
-        sounds.names = vec!["minecraft:entity.generic.drink".into()];
-        let mut mob_effects = horizon_protocol::registry::Ids::default();
-        mob_effects.names = vec!["minecraft:poison".into()];
-        let mut item_ids = horizon_protocol::registry::Ids::default();
-        item_ids.names = vec!["minecraft:honey_bottle".into()];
-        let mut comp_ids = horizon_protocol::registry::Ids::default();
-        comp_ids.names = vec![String::new(); component::CONSUMABLE as usize + 1];
-        comp_ids.names[component::CONSUMABLE as usize] = "minecraft:consumable".into();
+        let sounds =
+            horizon_protocol::registry::Ids::from_names(vec!["minecraft:entity.generic.drink".into()]);
+        let mob_effects =
+            horizon_protocol::registry::Ids::from_names(vec!["minecraft:poison".into()]);
+        let item_ids =
+            horizon_protocol::registry::Ids::from_names(vec!["minecraft:honey_bottle".into()]);
+        let mut comp_names = vec![String::new(); component::CONSUMABLE as usize + 1];
+        comp_names[component::CONSUMABLE as usize] = "minecraft:consumable".into();
+        let comp_ids = horizon_protocol::registry::Ids::from_names(comp_names);
         let mut registries = std::collections::HashMap::new();
         registries.insert("minecraft:sound_event".into(), sounds);
         registries.insert("minecraft:mob_effect".into(), mob_effects);
