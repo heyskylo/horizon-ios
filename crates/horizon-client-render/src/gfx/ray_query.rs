@@ -25,6 +25,23 @@ pub(in crate::gfx) fn blas_input(device: &wgpu::Device) -> wgpu::BufferUsages {
     }
 }
 
+/// The index buffer of `quads` quads (triangles 0 1 2 and 0 2 3), which the terrain draws
+/// and BLAS builds both read.
+pub(in crate::gfx) fn quad_indices(device: &wgpu::Device, quads: u32) -> wgpu::Buffer {
+    use wgpu::util::DeviceExt;
+    let indices: Vec<u32> = (0..quads)
+        .flat_map(|q| {
+            let b = q * 4;
+            [b, b + 1, b + 2, b, b + 2, b + 3]
+        })
+        .collect();
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Quad indices"),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::INDEX | blas_input(device),
+    })
+}
+
 /// Whether the player asked for ray tracing (the device needs the feature from its creation).
 fn requested() -> bool {
     asked(std::env::var("HORIZON_RAY_TRACING").ok().as_deref())

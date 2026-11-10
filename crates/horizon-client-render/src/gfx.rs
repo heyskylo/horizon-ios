@@ -5477,17 +5477,7 @@ impl Renderer {
         pass.draw(0..4, first..first + edges);
     }
     fn quad_indices(device: &wgpu::Device, quads: u32) -> wgpu::Buffer {
-        let indices: Vec<u32> = (0..quads)
-            .flat_map(|q| {
-                let b = q * 4;
-                [b, b + 1, b + 2, b, b + 2, b + 3]
-            })
-            .collect();
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Quad indices"),
-            contents: bytemuck::cast_slice(&indices),
-            usage: wgpu::BufferUsages::INDEX | surface_setup::ray_query::blas_input(device),
-        })
+        surface_setup::ray_query::quad_indices(device, quads)
     }
     fn offscreen_target(
         device: &wgpu::Device,
