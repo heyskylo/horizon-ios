@@ -737,10 +737,7 @@ impl Game<'_> {
             return;
         };
         let creative = self.creative;
-        // A server's table in a server session: its data packs' enchantments
-        // are ones the world's own table doesn't have.
-        let enchantments = std::sync::Arc::clone(self.enchantments());
-        let data = self.stations();
+        let (enchantments, data) = (std::sync::Arc::clone(self.enchantments()), self.stations());
         let items = self.items();
         match s.kind {
             // A server's table: its data slots carry the offers, and its
@@ -3193,5 +3190,3 @@ mod brewing_tick;
 
 #[cfg(test)]
 mod brewing_changed_tests;
-#[cfg(test)]
-mod remote_anvil_tests;
