@@ -33,6 +33,11 @@ pub(crate) fn can_freeze(m: &Mob, w: &MobWorld) -> bool {
     ) {
         return false;
     }
+    // SulfurCube.canFreeze: a cube carrying a block in its body does not freeze
+    // either; without one it takes the tags below like any other mob.
+    if m.species() == super::Species::SulfurCube && crate::mobs::sulfur_cube::has_body(m) {
+        return false;
+    }
     if w.data
         .entity_has("minecraft:freeze_immune_entity_types", &m.kind.id)
     {

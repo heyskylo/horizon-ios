@@ -5895,10 +5895,11 @@ mod freeze_tests {
                 world.set(0, 64, 0, snow).unwrap();
             },
             |w, types| {
-                let frozen = |id: &str, ticks_frozen: i32| {
+                let frozen_with = |id: &str, ticks_frozen: i32, body: Option<&str>| {
                     let kind = Arc::new(types.types[id].clone());
                     let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
                     m.ticks_frozen = ticks_frozen;
+                    m.extra.body = body.map(Into::into);
                     // The freeze damage falls on a tick that is a multiple of 40.
                     m.age = 40;
                     let start = m.health;
@@ -5906,6 +5907,7 @@ mod freeze_tests {
                     freeze_tick(&mut m, w, &mut events);
                     (m.ticks_frozen, start - m.health)
                 };
+                let frozen = |id: &str, ticks_frozen: i32| frozen_with(id, ticks_frozen, None);
                 // Powder snow builds no frozen ticks on a skeleton, and one
                 // already frozen melts two ticks a tick instead of taking the
                 // damage a fully frozen mob takes at 140.
@@ -5921,6 +5923,18 @@ mod freeze_tests {
                 }
                 // A zombie in the same block freezes, and at 140 takes the 1.
                 assert_eq!(frozen("minecraft:zombie", 139), (140, 1.0));
+                // SulfurCube.canFreeze: a cube carrying a block in its body does
+                // not freeze; without one it freezes and takes the 1 like a zombie.
+                assert_eq!(
+                    frozen_with("minecraft:sulfur_cube", 0, Some("minecraft:stone")),
+                    (0, 0.0)
+                );
+                assert_eq!(
+                    frozen_with("minecraft:sulfur_cube", 140, Some("minecraft:stone")),
+                    (138, 0.0)
+                );
+                assert_eq!(frozen("minecraft:sulfur_cube", 0), (1, 0.0));
+                assert_eq!(frozen("minecraft:sulfur_cube", 139), (140, 1.0));
             },
         );
     }
