@@ -709,8 +709,6 @@ mod tests {
         assert_eq!(limit.wait(t + WINDOW), Duration::from_secs(1));
     }
 
-    /// A fake Discord: answers the handshake with READY, each command with its nonce, after a ping.
-    #[cfg(unix)]
     /// The switch as the player's settings and the Extras page see it. The only test that
     /// touches the presence's statics.
     #[test]
@@ -742,6 +740,8 @@ mod tests {
         SECTION.act(0, Act::Press);
     }
 
+    /// A fake Discord: answers the handshake with READY, each command with its nonce, after a ping.
+    #[cfg(unix)]
     #[test]
     fn talks_to_discord_over_its_socket() {
         let dir = std::env::temp_dir().join(format!("horizon-discord-{}", std::process::id()));
