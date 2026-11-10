@@ -6831,6 +6831,30 @@ def projectile_fall_distance():
                        f'/forceload remove {x0} {z0}')
 
 
+def thrown_projectile_rotation():
+    """`ThrowableProjectile.tick` and `LlamaSpit.tick` end their move with `Projectile.updateRotation`:
+    the pitch and yaw go a fifth of the way (`lerpRotation`) from the last tick's towards the
+    movement's, the old yaw first brought within 180 degrees of the new one. A snowball that only
+    falls tips over gradually, not at once. Fireballs and shulker bullets turn by
+    `ProjectileUtil.rotateTowardsMovement` instead (#14466)."""
+    x0, y0, z0 = 20, 240, 20
+    # (type, extra NBT): no motion, a sideways throw, a climb, a yaw that wraps (170 to -170),
+    # and the spit, whose drag comes after its turn.
+    cases = [('snowball', ''), ('egg', ',Motion:[0.3d,0.1d,-0.2d]'),
+             ('ender_pearl', ',Motion:[-0.2d,0.4d,0.1d]'),
+             ('experience_bottle', ',Rotation:[170.0f,10.0f],Motion:[-0.0868241d,0.0d,-0.9848078d]'),
+             ('llama_spit', ',Motion:[0.2d,0.0d,-0.4d]')]
+    ops = []
+    for n, (kind, extra) in enumerate(cases, 1):
+        ops.append(cmd(f'/summon {kind} {x0 + 4 * n}.5 {y0} {z0}.5 {{UUID:[I;14600,0,{n},1]{extra}}}',
+                       expect_result=1))
+    for _ in range(3):
+        ops.append({'op': 'tick', 'n': 1})
+        ops += [cmd(f'/data get entity 00003908-0000-0000-0000-{n:04x}00000001 Rotation')
+                for n in range(1, len(cases) + 1)]
+    return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 16},z={z0 - 16},dx=32,dy=32,dz=32]')
+
+
 def living_short_timers():
     """#13846: `LivingEntity` reads `HurtTime` and `DeathTime` with `getShortOr` and writes them back as `(short)`
     casts: a negative value stays."""
@@ -7495,6 +7519,7 @@ def groups():
         ('command block last output', command_block_last_output()),
         ('living short timers', living_short_timers()),
         ('projectile fall distance', projectile_fall_distance()),
+        ('thrown projectile rotation', thrown_projectile_rotation()),
         ('item fall distance', item_fall_distance()),
         ('beacon levels load', beacon_levels_load()),
         ('zombie villager summoned data', zombie_villager_summoned_data()),
