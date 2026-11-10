@@ -902,7 +902,7 @@ pub fn decode_end_gateway(tag: &Tag) -> crate::containers::EndGateway {
         exit_portal: tag
             .get("exit_portal")
             .and_then(crate::block_entity_nbt::gateway_exit),
-        exact_teleport: number(tag.get("ExactTeleport")).unwrap_or(0) != 0,
+        exact_teleport: crate::entity_nbt::flag(tag, "ExactTeleport"),
     }
 }
 /// A mod's block entity: its compound without `id` and the position, and
@@ -7111,6 +7111,21 @@ mod tests {
     }
     use super::*;
     use crate::chunk::{MIN_Y, SECTIONS};
+
+    /// `TheEndGatewayBlockEntity.loadAdditional` reads `ExactTeleport` with
+    /// `getBooleanOr`: a number is true when its byte value is not 0, so an
+    /// int 256 is false and 257 true.
+    #[test]
+    fn an_end_gateways_exact_teleport_is_read_as_a_byte() {
+        let exact = |saved: Tag| {
+            decode_end_gateway(&Tag::compound([("ExactTeleport", saved)])).exact_teleport
+        };
+        assert!(exact(Tag::Byte(1)));
+        assert!(!exact(Tag::Byte(0)));
+        assert!(!exact(Tag::Int(256)));
+        assert!(exact(Tag::Int(257)));
+        assert!(!decode_end_gateway(&Tag::compound([("Age", Tag::Long(1))])).exact_teleport);
+    }
 
     #[test]
     fn end_gateway_block_entity_round_trips() {
