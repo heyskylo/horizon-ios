@@ -128,7 +128,11 @@ fn game_gateway_phases() -> [[i32; 2]; 4] {
             ("UUID", Tag::IntArray(uuid.to_vec())),
             (
                 "Pos",
-                Tag::List(vec![Tag::Double(4.5), Tag::Double(210.0), Tag::Double(4.5)]),
+                Tag::List(vec![
+                    Tag::Double(4.5f64.to_bits()),
+                    Tag::Double(210.0f64.to_bits()),
+                    Tag::Double(4.5f64.to_bits()),
+                ]),
             ),
             ("NoGravity", Tag::Byte(1)),
         ]);
