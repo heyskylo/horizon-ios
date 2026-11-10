@@ -8,6 +8,10 @@ a gap is not an error — it is an English sentence on a translated screen. That
 tests catch stale keys, repeated keys, empty values and changed placeholders, but
 deliberately not gaps, because a language is allowed to lag. This tool reports them.
 
+A crate that ships its own text keeps it in `crates/<name>/assets/lang/<code>.json`, the same
+shape with its own `en_us.json` reference (docs/layers.md, "Lang files"); each such folder is
+reported beside the game's, and its review record is `tools/lang_review/<name>/`.
+
 `launcher/lang/<code>.json` is the launcher's: its keys are the English sentence itself,
 so a file is complete by construction (`launcher/src/i18n/tests.rs` checks every `tr("…")`
 the code asks for). What it can still hold is a value identical to its English key, and a
@@ -43,6 +47,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 GAME = ROOT / "crates/horizon-client/assets/horizon/lang"
+CRATES = ROOT / "crates"
 LAUNCHER = ROOT / "launcher/lang"
 REVIEW = ROOT / "tools/lang_review"
 REFERENCE = "en_us.json"
@@ -192,6 +197,12 @@ def game_rows(directory: Path, codes: set[str],
     return reference, rows
 
 
+def crate_dirs(crates: Path) -> list[tuple[str, Path]]:
+    """The crates that ship their own lang files: (crate name, its `assets/lang`), by name."""
+    return sorted((path.parents[2].name, path.parent)
+                  for path in crates.glob("*/assets/lang/" + REFERENCE))
+
+
 def launcher_rows(directory: Path, codes: set[str], review: Path | None = None) -> list[dict]:
     """Every launcher language: the values still identical to their English key, the
     `{holes}` a value does not match it on, and with `review` (a `lang_review/launcher` folder)
@@ -228,8 +239,8 @@ def print_problems(rows: list[dict]) -> None:
             print(f"  ! {row['code']}: {row['problem']}")
 
 
-def print_game(reference: LangFile, directory: Path, rows: list[dict]) -> None:
-    print(f"GAME  {shown(directory)}  ({reference.code}: {len(reference.entries)} keys, the reference)")
+def print_game(reference: LangFile, directory: Path, rows: list[dict], kind: str = "GAME") -> None:
+    print(f"{kind}  {shown(directory)}  ({reference.code}: {len(reference.entries)} keys, the reference)")
     print()
     print(f"  {'code':<10}{'keys':>6}{'cover':>8}{'missing':>9}{'extra':>7}{'empty':>7}{'same':>6}"
           f"{'unreviewed':>12}")
@@ -278,9 +289,9 @@ def print_launcher_keys(rows: list[dict]) -> None:
                     print(f"  {side}: {', '.join(bad[side])}")
 
 
-def print_game_summary(reference: LangFile, rows: list[dict]) -> None:
+def print_game_summary(reference: LangFile, rows: list[dict], kind: str = "GAME") -> None:
     for row in rows:
-        line = (f"GAME {row['code']} {row['keys']}/{len(reference.entries)} keys, "
+        line = (f"{kind} {row['code']} {row['keys']}/{len(reference.entries)} keys, "
                 f"missing {len(row['missing'])}, extra {len(row['extra'])}, "
                 f"placeholders {len(row['placeholders'])}, empty {len(row['empty'])}, "
                 f"same {len(row['same'])}, unreviewed {len(row['unreviewed'])}")
@@ -336,6 +347,9 @@ def main(argv: list[str] | None = None) -> int:
     which.add_argument("--launcher-only", action="store_true", help="only the launcher's lang")
     parser.add_argument("--game-dir", type=Path, default=GAME,
                         help="the game's lang folder (default: %(default)s)")
+    parser.add_argument("--crates-dir", type=Path,
+                        help="report every <dir>/<crate>/assets/lang too (default: the repository's crates, "
+                             "unless --game-dir names another folder)")
     parser.add_argument("--launcher-dir", type=Path, default=LAUNCHER,
                         help="the launcher's lang folder (default: %(default)s)")
     parser.add_argument("--lang", nargs="+", metavar="CODE",
@@ -359,6 +373,8 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
     codes = set(args.lang or ())
+    if args.crates_dir is None and args.game_dir == GAME:
+        args.crates_dir = CRATES
     if args.mark_reviewed is not None:
         return mark_command(args, codes)
     if args.fail_under is not None and args.launcher_only:
@@ -377,6 +393,18 @@ def main(argv: list[str] | None = None) -> int:
             print(error, file=sys.stderr)
             return 2
         result["game"] = {"reference": reference.code, "keys": len(reference.entries), "files": game}
+    # (crate name, its folder, its reference, its rows): the text crates ship.
+    crates: list[tuple[str, Path, LangFile, list[dict]]] = []
+    if not args.launcher_only and args.crates_dir is not None:
+        for name, folder in crate_dirs(args.crates_dir):
+            try:
+                crates.append((name, folder, *game_rows(folder, codes, args.review_dir / name)))
+            except ValueError as error:
+                print(error, file=sys.stderr)
+                return 2
+        if crates:
+            result["crates"] = {name: {"reference": ref.code, "keys": len(ref.entries), "files": rows}
+                                for name, _, ref, rows in crates}
     launcher: list[dict] = []
     if not args.game_only:
         if not args.launcher_dir.is_dir():
@@ -388,7 +416,7 @@ def main(argv: list[str] | None = None) -> int:
             print(error, file=sys.stderr)
             return 2
         result["launcher"] = {"files": launcher}
-    if codes and not game and not launcher:
+    if codes and not game and not launcher and not any(rows for *_, rows in crates):
         print(f"no lang file is named {' or '.join(sorted(codes))}", file=sys.stderr)
         return 2
 
@@ -397,14 +425,21 @@ def main(argv: list[str] | None = None) -> int:
     elif args.unreviewed:
         if reference:
             print_unreviewed("GAME", game, reference.entries)
+        for name, _, ref, rows in crates:
+            print_unreviewed(f"GAME {name}", rows, ref.entries)
         print_unreviewed("LAUNCHER", launcher, None)
     elif args.summary:
         if reference:
             print_game_summary(reference, game)
+        for name, _, ref, rows in crates:
+            print_game_summary(ref, rows, f"GAME {name}")
         print_launcher_summary(launcher)
     else:
         if reference:
             print_game(reference, args.game_dir, game)
+        for name, folder, ref, rows in crates:
+            print()
+            print_game(ref, folder, rows, f"GAME {name}")
         if not args.game_only:
             if reference:
                 print()
@@ -412,11 +447,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.show_keys:
             if reference:
                 print_game_keys(game)
+            for *_, rows in crates:
+                print_game_keys(rows)
             if launcher:
                 print_launcher_keys(launcher)
 
     if args.fail_under is not None:
-        under = [row for row in game if 100 * row["coverage"] + 1e-9 < args.fail_under]
+        every = game + [row for *_, rows in crates for row in rows]
+        under = [row for row in every if 100 * row["coverage"] + 1e-9 < args.fail_under]
         for row in under:
             print(f"{row['code']}: {100 * row['coverage']:.1f}% < {args.fail_under:g}%", file=sys.stderr)
         if under:
@@ -425,8 +463,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def mark_command(args, codes: set[str]) -> int:
-    """`--mark-reviewed`: one file, named by `--lang`; --game-only or --launcher-only picks the
-    folder when the code is in both."""
+    """`--mark-reviewed`: one language, named by `--lang`; --game-only or --launcher-only picks the
+    folder when the code is in both. The game's text may be split between its own folder and the
+    crates' (`--crates-dir`): each key is recorded for the folder that holds it."""
     if len(codes) != 1:
         print("--mark-reviewed needs exactly one --lang code", file=sys.stderr)
         return 2
@@ -434,31 +473,44 @@ def mark_command(args, codes: set[str]) -> int:
     if code == "en_us":
         print("en_us is the English reference, not a translation", file=sys.stderr)
         return 2
-    found = [(kind, folder / f"{code}.json") for kind, folder, skip in (
-        ("game", args.game_dir, args.launcher_only), ("launcher", args.launcher_dir, args.game_only))
-        if not skip and (folder / f"{code}.json").exists()]
-    if not found:
+    game = [("game", args.game_dir)]
+    if args.crates_dir is not None:
+        game += crate_dirs(args.crates_dir)
+    sides = [[(kind, folder / f"{code}.json") for kind, folder in folders
+              if (folder / f"{code}.json").exists()]
+             for folders, skip in ((game, args.launcher_only), ([("launcher", args.launcher_dir)], args.game_only))
+             if not skip]
+    sides = [side for side in sides if side]
+    if not sides:
         print(f"no lang file is named {code}", file=sys.stderr)
         return 2
-    if len(found) > 1:
+    if len(sides) > 1:
         print(f"{code} is a game and a launcher file: add --game-only or --launcher-only", file=sys.stderr)
         return 2
-    kind, lang = found[0]
+    found = sides[0]
     keys = list(args.mark_reviewed)
     if args.keys_file:
         keys += [line for line in args.keys_file.read_text(encoding="utf-8").splitlines() if line.strip()]
     if not keys:
         print("--mark-reviewed needs keys, on the command line or in --keys-file", file=sys.stderr)
         return 2
-    try:
-        unknown = mark_reviewed(lang, args.review_dir / kind / lang.name, keys)
-    except ValueError as error:
-        print(error, file=sys.stderr)
-        return 2
-    for key in unknown:
-        print(f"{shown(lang)} has no key {key!r}", file=sys.stderr)
-    print(f"{len(keys) - len(unknown)} entries of {shown(lang)} recorded as reviewed")
-    return 1 if unknown else 0
+    # Each key goes to the first folder that has it; a key none has is reported against them all.
+    left = list(keys)
+    for kind, lang in found:
+        entries = LangFile(lang).entries
+        mine = [key for key in left if key in entries]
+        left = [key for key in left if key not in entries]
+        if not mine and len(found) > 1:
+            continue
+        try:
+            mark_reviewed(lang, args.review_dir / kind / lang.name, mine)
+        except ValueError as error:
+            print(error, file=sys.stderr)
+            return 2
+        print(f"{len(mine)} entries of {shown(lang)} recorded as reviewed")
+    for key in left:
+        print(f"{' or '.join(shown(lang) for _, lang in found)} has no key {key!r}", file=sys.stderr)
+    return 1 if left else 0
 
 
 if __name__ == "__main__":

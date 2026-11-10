@@ -143,15 +143,24 @@ fn parse_cure(tag: &Tag) -> Option<Cure> {
         starter: crate::save::uuid_from_tag(tag.get("ConversionPlayer")),
     })
 }
-/// `ZombieVillager.initializeZombieVillagerData`: the constructor picks a
-/// profession (`VILLAGER_PROFESSION.getRandom`, 15 of them) from the fresh
-/// entity's random, before anything seeds it: an independent draw that
-/// leaves the mob's own random alone.
-pub fn constructor_profession(m: &Mob) -> u8 {
-    let mut fresh = horizon_core::random::LegacyRandom::new(
-        (m.random.state() as i64).wrapping_mul(0x5851_F42D_4C95_7F2D) ^ i64::from(m.id),
-    );
-    fresh.next_int_bound(15).unwrap_or(0) as u8
+/// `ZombieVillager.initializeZombieVillagerData`: one
+/// `VILLAGER_PROFESSION.getRandom` (15 of them) from the entity's own random.
+/// The constructor makes that draw, so it advances the mob's random like
+/// vanilla's does, and a finalized save with no `VillagerData` makes it again.
+pub fn constructor_profession(m: &mut Mob) -> u8 {
+    m.random.next_int_bound(15).unwrap_or(0) as u8
+}
+
+/// The own-random draws of a fresh entity's construction, in vanilla's order:
+/// `Entity.<init>` takes the UUID's two draws, calls `defineSynchedData` last
+/// (this kind's profession) and only then runs `LivingEntity`'s yaw, which
+/// every spawn path replaces. The yaw is drawn here rather than in
+/// `living_random` so that the profession lands between the two.
+pub fn constructor_draws(m: &mut Mob) {
+    if m.species() == Species::ZombieVillager {
+        m.extra.variant2 = constructor_profession(m);
+    }
+    let _yaw = m.random.next_float();
 }
 /// The saved fields: the finalized flag, the cure and the gossip.
 pub fn write_nbt(m: &Mob, map: &mut Compound) {
@@ -173,7 +182,10 @@ pub fn write_nbt(m: &Mob, map: &mut Compound) {
 pub fn read_nbt(m: &mut Mob, tag: &Tag) {
     let saved = tag.get("VillagerData").is_some();
     let finalized = saved || crate::entity_nbt::flag(tag, "VillagerDataFinalized");
-    if !saved {
+    // `readAdditionalSaveData` redraws only for a finalized save that carries
+    // no `VillagerData` (`orElseGet(initializeZombieVillagerData)`); every
+    // other save keeps the profession the constructor drew.
+    if finalized && !saved {
         m.extra.variant2 = constructor_profession(m);
     }
     let cure = parse_cure(tag);
@@ -194,17 +206,81 @@ pub fn read_nbt(m: &mut Mob, tag: &Tag) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use horizon_core::geometry::Vec3;
+    use horizon_core::{
+        geometry::Vec3,
+        random::{EntityRandom, LegacyRandom},
+    };
 
-    fn zombie_villager() -> Mob {
+    fn kind() -> std::sync::Arc<super::super::MobType> {
         let mut kind = super::super::sensor_scan_tests::kind();
         let data = std::sync::Arc::make_mut(&mut kind);
         data.id = "minecraft:zombie_villager".into();
         data.species = Species::ZombieVillager;
         data.eye_height = 1.5;
-        let mut m = Mob::new(42, kind, Vec3::new(1.25, 2.0, 3.75), 0.0);
+        kind
+    }
+
+    fn zombie_villager() -> Mob {
+        let mut m = Mob::new(42, kind(), Vec3::new(1.25, 2.0, 3.75), 0.0);
         m.random.set_seed(0);
         m
+    }
+
+    /// `ZombieVillager.defineSynchedData` draws the profession from the
+    /// entity's own random, once, at construction (#14857). The expected
+    /// values are `java.util.Random(seed).nextInt(15)`, worked out from Java's
+    /// algorithm rather than from `LegacyRandom`.
+    #[test]
+    fn a_zombie_villager_draws_its_profession_at_construction() {
+        for (seed, first) in [(1, 0), (42, 5), (12345, 1)] {
+            let mut after = LegacyRandom::new(seed);
+            let _ = after.next_int_bound(15);
+            // `LivingEntity`'s yaw, drawn after `defineSynchedData`.
+            let _ = after.next_float();
+            let m = Mob::with_random(
+                1,
+                kind(),
+                Vec3::ZERO,
+                0.0,
+                EntityRandom::own(LegacyRandom::new(seed)),
+            );
+            assert_eq!(i32::from(m.extra.variant2), first, "seed {seed}");
+            // That one draw and no other: the mob's random sits where
+            // vanilla's does after `initializeZombieVillagerData`.
+            assert_eq!(m.random.state(), after.state(), "seed {seed}");
+        }
+    }
+
+    /// `readAdditionalSaveData` redraws the profession only for a finalized
+    /// save that carries no `VillagerData`; a plain save keeps the
+    /// constructor's draw and leaves the mob's random where it was.
+    #[test]
+    fn only_a_finalized_save_without_villager_data_redraws_the_profession() {
+        let load = |m: &mut Mob, snbt: &str| {
+            let tag = horizon_world::nbt::parse_snbt(snbt).unwrap().0;
+            read_nbt(m, &tag);
+        };
+        // Seed 42: the constructor's draw is 5, its second draw 3.
+        let mut kept = Mob::with_random(
+            1,
+            kind(),
+            Vec3::ZERO,
+            0.0,
+            EntityRandom::own(LegacyRandom::new(42)),
+        );
+        let before = kept.random.state();
+        load(&mut kept, "{}");
+        assert_eq!(kept.extra.variant2, 5);
+        assert_eq!(kept.random.state(), before);
+        let mut redrawn = Mob::with_random(
+            1,
+            kind(),
+            Vec3::ZERO,
+            0.0,
+            EntityRandom::own(LegacyRandom::new(42)),
+        );
+        load(&mut redrawn, "{VillagerDataFinalized:1b}");
+        assert_eq!(redrawn.extra.variant2, 3);
     }
 
     #[test]
