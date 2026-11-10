@@ -407,10 +407,13 @@ fn set_peek(m: &mut Mob, amount: i32, events: &mut Vec<MobEvent>) {
 fn ease_peek(m: &mut Mob) -> (f32, f32) {
     let old = m.anim.v[PEEK];
     let target = m.extra.counter as f32 * 0.01;
+    // `Mth.clamp(float, float, float)` tolerates `max < min` (a negative or
+    // oversized raw `Peek`), where `f32::clamp` would panic.
+    let mth_clamp = |v: f32, lo: f32, hi: f32| if v < lo { lo } else { v.min(hi) };
     let new = if old > target {
-        (old - 0.05).clamp(target, 1.0)
+        mth_clamp(old - 0.05, target, 1.0)
     } else {
-        (old + 0.05).clamp(0.0, target)
+        mth_clamp(old + 0.05, 0.0, target)
     };
     m.anim.v[PEEK] = new;
     (old, new)
@@ -926,6 +929,18 @@ mod tests {
         assert_eq!(m.position, Vec3::new(0.5, 3.0, 0.5));
         client_set_pos(&mut m, 2.9, 3.0, -0.2);
         assert_eq!(m.position, Vec3::new(2.5, 3.0, -0.5));
+    }
+
+    /// `Mth.clamp` saturates when the target is below the floor: a negative
+    /// raw `Peek` eases the lid there once and then holds, no panic.
+    #[test]
+    fn a_negative_peek_target_does_not_panic() {
+        let mut m = shulker();
+        m.extra.counter = -1;
+        for _ in 0..3 {
+            ease_peek(&mut m);
+        }
+        assert_eq!(m.anim.v[PEEK], -0.01);
     }
 
     /// Shulker.setRawPeekAmount: the lid opening posts CONTAINER_OPEN and shutting
