@@ -3727,6 +3727,42 @@ in VertexData {{ {member} }} vIn;
     /// A work group size given as a constant expression (GLSL 4.60, 4.4 and 4.4.1), kept within
     /// the implementation's: the program compiles with its value.
     #[test]
+    fn quad_swaps_translate() {
+        let csh = "#version 460\n#extension GL_KHR_shader_subgroup_quad : enable\n\
+                   layout(local_size_x = 64) in;\n\
+                   layout(rgba16f) writeonly uniform image2D colorimg4;\n\
+                   void main() { vec4 v = vec4(gl_LocalInvocationID.x);\n\
+                   v = subgroupQuadSwapHorizontal(v) + subgroupQuadSwapVertical(v) \
+                   + subgroupQuadSwapDiagonal(v);\n\
+                   imageStore(colorimg4, ivec2(gl_GlobalInvocationID.xy), v); }\n";
+        let pack = Pack::from_zip_bytes("P.zip", zip(&[("shaders/deferred_a.csh", csh)])).unwrap();
+        let c = translate_compute(&preprocess(&pack, "deferred_a.csh", &Macros::standard()))
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        let mut swaps = Vec::new();
+        let m = &c.module;
+        let functions = m.functions.iter().map(|(_, f)| f);
+        for f in functions.chain([&m.entry_points[0].function]) {
+            for (statement, _) in f.body.span_iter() {
+                if let naga::Statement::SubgroupGather {
+                    mode: naga::GatherMode::QuadSwap(direction),
+                    ..
+                } = statement
+                {
+                    swaps.push(*direction);
+                }
+            }
+        }
+        assert_eq!(
+            swaps,
+            [
+                naga::Direction::X,
+                naga::Direction::Y,
+                naga::Direction::Diagonal
+            ]
+        );
+    }
+
+    #[test]
     fn a_work_group_size_may_be_a_constant_expression() {
         let csh = "#version 460\nlayout(local_size_x = min(gl_MaxComputeWorkGroupSize.x, 256), \
                    local_size_y = 1, local_size_z = 1) in;\n\
