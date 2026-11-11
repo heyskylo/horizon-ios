@@ -2143,10 +2143,13 @@ impl Game<'_> {
         // So `living_knockback_v2` sees who hit and what they hold.
         let _attacker = self.knockback_scope_for(source.attacker);
         if let Some(t) = self.mobs.iter_mut().find(|m| m.id == target) {
+            let previous_invulnerable = t.invulnerable;
             let hit = t.damage_aimed(amount, source, aim);
             hurt = hit;
-            if hit && catch_up {
+            if hit && catch_up && t.invulnerable > previous_invulnerable {
                 // `LivingEntity.baseTick`'s countdowns, run after the hit in vanilla.
+                // A stronger hit during cooldown does not reset either timer;
+                // those timers have already counted down for this tick.
                 t.hurt_time = (t.hurt_time - 1).max(0);
                 t.invulnerable = (t.invulnerable - 1).max(0);
             }

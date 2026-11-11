@@ -158,6 +158,33 @@ fn a_hoglin_hits_from_its_second_fighting_tick_every_41_ticks() {
     assert_eq!(hits, [2, 43, 84]);
 }
 
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn deferred_stronger_hits_do_not_count_hurt_timers_down_twice() {
+    use horizon_client::mobs::Damage;
+    let mut game = game();
+    let first = mob_id(&mut game, NEAR_HOGLIN);
+    let second = mob_id(&mut game, HOGLIN);
+    let target = mob_id(&mut game, PIG);
+    game.creatures.ticked.extend([first, second, target]);
+    game.creatures.deferred_hits = true;
+    assert!(game.mob_hits_mob(target, 4.0, Damage::mob(first, [0.0; 3])));
+    assert!(game.mob_hits_mob(target, 6.0, Damage::mob(second, [0.0; 3])));
+    let victim = game.mobs.iter().find(|m| m.id == target).unwrap();
+    assert_eq!((victim.hurt_time, victim.invulnerable), (9, 19));
+    assert_eq!(victim.health, 94.0);
+
+    // A stronger hit on the following tick also leaves the already-counted
+    // timers alone rather than decrementing them again.
+    let victim = game.mobs.iter_mut().find(|m| m.id == target).unwrap();
+    victim.hurt_time = 8;
+    victim.invulnerable = 18;
+    assert!(game.mob_hits_mob(target, 8.0, Damage::mob(first, [0.0; 3])));
+    let victim = game.mobs.iter().find(|m| m.id == target).unwrap();
+    assert_eq!((victim.hurt_time, victim.invulnerable), (8, 18));
+    assert_eq!(victim.health, 92.0);
+}
+
 /// Added controls (after the frozen baseline above).
 fn mob_id(game: &mut Game<'_>, uuid: &str) -> u32 {
     match game.target_with_uuid(horizon_client::save::uuid_from_text(uuid).unwrap()) {
