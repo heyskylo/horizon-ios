@@ -535,6 +535,15 @@ impl Game<'_> {
         let Some(stack) = stack.filter(|s| &*s.item != "minecraft:air" && s.count > 0) else {
             return true;
         };
+        // SulfurCube.getEquipmentSlotForItem: a swallowable item is a body item.
+        if let Slot::Mob(id, "body") = s
+            && self.mobs.iter().find(|m| m.id == *id).is_some_and(|m| {
+                m.species() == horizon_client::mobs::Species::SulfurCube
+                    && horizon_client::mobs::sulfur_cube::swallowable(m, &stack.item)
+            })
+        {
+            return true;
+        }
         self.items()
             .get(&stack.item)
             .is_some_and(|info| info.equip_slot.as_deref() == Some(name))
@@ -1415,6 +1424,13 @@ impl Game<'_> {
             }
             let h = self.owner_holder(o);
             tracker.track(&h, changed);
+            // EntityItemAccessor: a player whose slots changed gets
+            // `containerMenu.broadcastChanges` at once, so InventoryChangeTrigger
+            // (and its announcement) comes before the command's message.
+            if changed > 0 && matches!(o, Owner::Entity(Target::Player)) && self.player.is_some() {
+                self.check_inventory_trigger();
+                self.cmds.broadcast_announced = self.adv.announced.len();
+            }
         }
         if selected == 0 {
             return Err(
@@ -1977,6 +1993,31 @@ mod mob_equipment_command_tests {
                 assert!(game.run_command(&format!("item replace entity {uuid} saddle with air")));
                 assert!(game.slot_get(&Slot::Mob(id, "saddle")).is_none());
             }
+        });
+    }
+    /// `SulfurCube.getEquipmentSlotForItem`: a `#sulfur_cube_swallowable`
+    /// item is a body item, so the body's `SlotAccess` takes it (#12038).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_sulfur_cubes_body_takes_a_swallowable_block() {
+        with_game(|game| {
+            assert!(game.run_command("summon sulfur_cube 4.5 200 4.5 {NoAI:1b,Tags:[\"cube\"]}"));
+            let body = |game: &Game<'_>| {
+                let m = game
+                    .mobs
+                    .iter()
+                    .find(|m| m.kind.id == "minecraft:sulfur_cube");
+                m.and_then(|m| m.extra.body.clone())
+            };
+            let replace = "item replace entity @e[tag=cube,limit=1] armor.body with";
+            assert!(game.run_command(&format!("{replace} white_wool")));
+            assert_eq!(body(game).as_deref(), Some("minecraft:white_wool"));
+            // An item outside the tag stays out, and the body stays on.
+            assert!(!game.run_command(&format!("{replace} diamond")));
+            assert_eq!(body(game).as_deref(), Some("minecraft:white_wool"));
+            // An empty stack always fits: the body comes off.
+            assert!(game.run_command(&format!("{replace} air")));
+            assert_eq!(body(game), None);
         });
     }
     #[test]

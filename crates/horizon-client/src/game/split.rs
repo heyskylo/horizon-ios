@@ -380,6 +380,7 @@ impl<'a> Split<'a> {
             None,
             api,
             batching,
+            self.host.settings.vsync,
             &self.host.settings.horizon,
             shader_pack,
             old.display_reading(),
@@ -464,6 +465,7 @@ impl<'a> Split<'a> {
             None,
             api,
             batching,
+            self.host.settings.vsync,
             &self.host.settings.horizon,
             shader_pack,
             old.display_reading(),
@@ -917,10 +919,8 @@ impl Game<'_> {
         self.drag_button = None;
         self.modifiers = Default::default();
         // A press this player's pad holds goes on, as for its keys.
-        self.left = self
-            .pad
-            .holds_action(&self.settings.controller, "key.attack");
-        self.right = self.pad.holds_action(&self.settings.controller, "key.use");
+        self.left = self.pad.holds_action("key.attack");
+        self.right = self.pad.holds_action("key.use");
         self.inventory_mouse_release(false);
         self.inventory_mouse_release(true);
         self.inventory_pick_release();

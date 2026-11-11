@@ -113,6 +113,117 @@ fn fire_from_damage_lights_or_burns_the_stand_though_the_command_fails() {
     assert!(health.ends_with(": 16.0f"), "{health}");
 }
 
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn igniting_a_frozen_stand_clears_its_freeze_while_burning_keeps_it() {
+    let mut game = game();
+    summon(&mut game, ",TicksFrozen:140");
+    let (_, frozen) = say(&mut game, &format!("data get entity {STAND} TicksFrozen"));
+    assert!(frozen.ends_with(": 140"), "{frozen}");
+    assert!(!game.run_command(&format!("damage {STAND} 1 minecraft:in_fire")));
+    let (_, fire) = say(&mut game, &format!("data get entity {STAND} Fire"));
+    assert!(fire.ends_with(": 100s"), "{fire}");
+    let (ok, frozen_after) = say(&mut game, &format!("data get entity {STAND} TicksFrozen"));
+    assert!(!ok, "{frozen_after}");
+
+    // When already burning, in_fire calls causeDamage(0.15) instead of igniteForSeconds.
+    assert!(game.run_command(&format!("data merge entity {STAND} {{TicksFrozen:140}}")));
+    assert!(!game.run_command(&format!("damage {STAND} 1 minecraft:in_fire")));
+    let (ok, still_frozen) = say(&mut game, &format!("data get entity {STAND} TicksFrozen"));
+    assert!(ok && still_frozen.ends_with(": 140"), "{still_frozen}");
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn damage_immunity_on_worn_boots_refuses_campfire_but_not_in_fire_or_wrong_slot() {
+    let mut game = game();
+    summon(
+        &mut game,
+        r#",equipment:{feet:{id:"minecraft:diamond_boots",count:1,components:{"minecraft:enchantments":{"minecraft:frost_walker":1}}}}"#,
+    );
+    // campfire is in both #ignites_armor_stands and #burn_from_stepping.
+    assert!(!game.run_command(&format!("damage {STAND} 1 minecraft:campfire")));
+    let (_, fire) = say(&mut game, &format!("data get entity {STAND} Fire"));
+    assert!(fire.ends_with(": 0s"), "{fire}");
+    // in_fire is not in #burn_from_stepping, so it still ignites the stand.
+    assert!(!game.run_command(&format!("damage {STAND} 1 minecraft:in_fire")));
+    let (_, fire) = say(&mut game, &format!("data get entity {STAND} Fire"));
+    assert!(fire.ends_with(": 100s"), "{fire}");
+
+    // Frost Walker on a helmet (head) is not in an active slot for the enchantment.
+    let mut helmeted = self::game();
+    summon(
+        &mut helmeted,
+        r#",equipment:{head:{id:"minecraft:diamond_helmet",count:1,components:{"minecraft:enchantments":{"minecraft:frost_walker":1}}}}"#,
+    );
+    assert!(!helmeted.run_command(&format!("damage {STAND} 1 minecraft:campfire")));
+    let (_, fire) = say(&mut helmeted, &format!("data get entity {STAND} Fire"));
+    assert!(fire.ends_with(": 100s"), "{fire}");
+}
+
+fn capture() {
+    super::sculk::TEST_POSTED_EVENTS.with(|events| *events.borrow_mut() = Some(Vec::new()));
+}
+
+fn take_events() -> Vec<(&'static str, [f64; 3], Option<horizon_client::mobs::Who>)> {
+    super::sculk::TEST_POSTED_EVENTS.with(|events| events.borrow_mut().take().unwrap_or_default())
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn cause_damage_and_explosion_post_attributed_game_events() {
+    use horizon_client::mobs::Who;
+    let mut game = game();
+    summon(&mut game, ",Fire:200s");
+    assert!(game.run_command("summon pig 14.5 100 2.5 {NoAI:1b}"));
+    let pig_id = game.mobs[0].id;
+    let at = [2.5, 100.0, 8.5];
+
+    // Burning stand hurt by in_fire (0.15) posts entity_damage attributed to the pig.
+    capture();
+    assert!(!game.run_command(&format!(
+        "damage {STAND} 1 minecraft:in_fire by @e[type=pig,limit=1]"
+    )));
+    assert_eq!(
+        take_events(),
+        vec![("minecraft:entity_damage", at, Some(Who::Mob(pig_id)))]
+    );
+
+    // Burning stand hurt by on_fire (4.0) while surviving posts entity_damage.
+    capture();
+    assert!(!game.run_command(&format!(
+        "damage {STAND} 1 minecraft:on_fire by @e[type=pig,limit=1]"
+    )));
+    assert_eq!(
+        take_events(),
+        vec![("minecraft:entity_damage", at, Some(Who::Mob(pig_id)))]
+    );
+
+    // Burning stand broken by on_fire (health <= 0.5) posts entity_die attributed to the pig.
+    assert!(game.run_command(&format!("data merge entity {STAND} {{Health:4f}}")));
+    capture();
+    assert!(!game.run_command(&format!(
+        "damage {STAND} 1 minecraft:on_fire by @e[type=pig,limit=1]"
+    )));
+    assert!(!game.run_command(&format!("execute if entity {STAND}")));
+    assert_eq!(
+        take_events(),
+        vec![("minecraft:entity_die", at, Some(Who::Mob(pig_id)))]
+    );
+
+    // Stand broken by explosion posts entity_die attributed to the pig.
+    summon(&mut game, "");
+    capture();
+    assert!(!game.run_command(&format!(
+        "damage {STAND} 1 minecraft:explosion by @e[type=pig,limit=1]"
+    )));
+    assert!(!game.run_command(&format!("execute if entity {STAND}")));
+    assert_eq!(
+        take_events(),
+        vec![("minecraft:entity_die", at, Some(Who::Mob(pig_id)))]
+    );
+}
+
 // Controls added after the baseline: the guards before the acting sources,
 // and a stand broken once however often it is hurt.
 
