@@ -95,3 +95,27 @@ fn set_filtering(s: &mut Settings, anisotropy_bit: i32, filtering: i32) {
     s.file.set("maxAnisotropyBit", V::Int(anisotropy_bit));
     s.file.set("textureFiltering", V::Int(filtering));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `SliderableEnum.fromSliderValue`: the graphics preset slider's stops are
+    /// floor(v * 4), 1.0 landing on the last, and the value setter follows.
+    #[test]
+    fn the_graphics_preset_slider_uses_floor_stops() {
+        assert_eq!(preset_from_slider(0.0), 0);
+        assert_eq!(preset_from_slider(0.24), 0);
+        assert_eq!(preset_from_slider(0.25), 1);
+        assert_eq!(preset_from_slider(0.49), 1);
+        assert_eq!(preset_from_slider(0.5), 2);
+        assert_eq!(preset_from_slider(0.74), 2);
+        assert_eq!(preset_from_slider(0.75), 3);
+        assert_eq!(preset_from_slider(1.0), 3);
+        let mut s = Settings::default();
+        set_slider(Opt::Preset, &mut s, 0.2);
+        assert_eq!(s.graphics_preset, "fast");
+        set_slider(Opt::Preset, &mut s, 0.8);
+        assert_eq!(s.graphics_preset, "custom");
+    }
+}

@@ -6,8 +6,6 @@ use std::time::Instant;
 
 pub use crate::settings::Opt;
 
-#[path = "options_ui_preset.rs"]
-mod preset;
 use crate::{
     gamepad::{self, GlyphStyle},
     hdr_calibration::Picture,
@@ -18,9 +16,6 @@ use crate::{
     settings_shell as shell,
     text::{self, Style, Text},
     ui,
-};
-pub(crate) use preset::{
-    PRESETS, apply_preset, drag_slider, preset_from_slider, preset_index, set_slider,
 };
 
 mod shell_pages;
@@ -8216,6 +8211,11 @@ mod tests {
     }
 }
 
+#[path = "options_ui_preset.rs"]
+mod preset;
+pub(crate) use preset::{
+    PRESETS, apply_preset, drag_slider, preset_from_slider, preset_index, set_slider,
+};
 #[cfg(test)]
 #[path = "options_ui_graphics_tests.rs"]
 mod graphics_tests;
