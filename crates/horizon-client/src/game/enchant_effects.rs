@@ -124,6 +124,15 @@ impl Game<'_> {
     /// `ItemStack.hurtAndBreak` for the player's `stack`: the wear Unbreaking
     /// leaves, and `ItemDurabilityTrigger` when some is left (`applyDamage`).
     pub(super) fn wear(&mut self, stack: &ItemStack, amount: u32) -> u32 {
+        // ItemStack.isDamageableItem: an unbreakable stack, or one without
+        // damage/max_damage, takes no wear before Unbreaking or mods are asked.
+        let component = |id| stack.data().and_then(|data| data.other(id));
+        if component("minecraft:unbreakable").is_some()
+            || component("!minecraft:max_damage").is_some()
+            || component("!minecraft:damage").is_some()
+        {
+            return 0;
+        }
         let mut loss = self.durability_loss(stack, amount);
         // The mods hear a server player's wear once Unbreaking has had its say,
         // and may change it or stop it.
