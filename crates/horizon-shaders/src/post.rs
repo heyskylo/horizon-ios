@@ -313,10 +313,20 @@ impl BufferSize {
 }
 
 /// `bufferObject.<n>`: an SSBO's size in bytes, or bytes per pixel of the render size scaled.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum BufferObject {
     Bytes(u64),
-    PerPixel { bytes: u64, scale: [f32; 2] },
+    PerPixel {
+        bytes: u64,
+        scale: [f32; 2],
+    },
+    /// A fixed size with the bytes a file of the pack holds, read on load: the documented
+    /// `bufferObject.<n> = <size> <file>` form, the file's path inside `shaders`.
+    File {
+        bytes: u64,
+        path: String,
+        data: Vec<u8>,
+    },
 }
 
 impl BufferObject {
@@ -329,20 +339,42 @@ impl BufferObject {
                 bytes,
                 scale: [x.parse().ok()?, y.parse().ok()?],
             }),
+            [_, path] => Some(Self::File {
+                bytes,
+                path: path.to_owned(),
+                data: Vec::new(),
+            }),
             _ => None,
         }
     }
 
     /// The size in bytes for a render size of `render`, at least 16.
-    pub fn size(self, render: [u32; 2]) -> u64 {
+    pub fn size(&self, render: [u32; 2]) -> u64 {
         match self {
-            Self::Bytes(b) => b,
+            Self::Bytes(b) => *b,
             Self::PerPixel { bytes, scale } => {
                 let [w, h] = [0, 1].map(|k| (render[k] as f32 * scale[k]) as u64);
                 bytes.saturating_mul(w).saturating_mul(h)
             }
+            Self::File { bytes, .. } => *bytes,
         }
         .max(16)
+    }
+
+    /// The file's path inside `shaders`, when the buffer is initialized from one.
+    pub fn file(&self) -> Option<&str> {
+        match self {
+            Self::File { path, .. } => Some(path),
+            _ => None,
+        }
+    }
+
+    /// The bytes the buffer starts with, when it is initialized from a file.
+    pub fn initial_data(&self) -> Option<&[u8]> {
+        match self {
+            Self::File { data, .. } => Some(data),
+            _ => None,
+        }
     }
 }
 
@@ -664,6 +696,27 @@ pub struct GameInputs {
 
 /// Loads the post-processing programs of `folder` and, for the geometry `inputs` describes, the
 /// gbuffers programs it draws with.
+/// The buffer object with its file read, when it has one: the documented
+/// `bufferObject.<n> = <size> <file>` form reads the file's bytes from the pack. A file that
+/// is not there, or that is bigger than the buffer it fills, is refused with a note.
+fn buffer_object_file(pack: &Pack, object: BufferObject) -> Result<BufferObject, String> {
+    let BufferObject::File { bytes, path, .. } = &object else {
+        return Ok(object);
+    };
+    let Some(data) = pack.read(path) else {
+        return Err(format!("`{path}`: no such file in the pack"));
+    };
+    // The size the pack asks for, not the size the buffer is made (which is at least 16).
+    if data.len() as u64 > *bytes {
+        return Err(format!("`{path}`: bigger than the buffer it fills"));
+    }
+    Ok(BufferObject::File {
+        bytes: *bytes,
+        path: path.clone(),
+        data,
+    })
+}
+
 pub fn load_post(
     pack: &Pack,
     folder: &str,
@@ -730,7 +783,10 @@ pub fn load_post(
     for e in &properties.entries {
         if let Some(n) = e.key.strip_prefix("bufferObject.") {
             match (n.parse(), BufferObject::parse(&e.value)) {
-                (Ok(n), Some(b)) => _ = post.buffer_objects.insert(n, b),
+                (Ok(n), Some(b)) => match buffer_object_file(pack, b) {
+                    Ok(b) => _ = post.buffer_objects.insert(n, b),
+                    Err(note) => post.notes.push(note),
+                },
                 _ => post.notes.push(format!("`{}`: not a buffer object", e.key)),
             }
             continue;
@@ -2015,6 +2071,106 @@ mod tests {
     const FSH: &str = "#version 120\nuniform sampler2D colortex0;\nvarying vec2 uv;\n\
                        void main() {\n/* DRAWBUFFERS:3 */\n\
                        gl_FragData[0] = texture2D(colortex0, uv);\n}\n";
+
+    #[test]
+    fn a_buffer_object_can_name_the_file_it_starts_with() {
+        assert_eq!(
+            BufferObject::parse("16 data/seed.bin"),
+            Some(BufferObject::File {
+                bytes: 16,
+                path: "data/seed.bin".to_owned(),
+                data: Vec::new(),
+            })
+        );
+        // The other forms still read as they did.
+        assert_eq!(BufferObject::parse("4096"), Some(BufferObject::Bytes(4096)));
+        assert_eq!(
+            BufferObject::parse("16 true 0.5 0.25"),
+            Some(BufferObject::PerPixel {
+                bytes: 16,
+                scale: [0.5, 0.25]
+            })
+        );
+    }
+
+    #[test]
+    fn a_buffer_object_reads_the_file_it_names() {
+        let seed: Vec<u8> = (0..16).collect();
+        let pack = Pack::from_zip_bytes(
+            "buffer.zip",
+            crate::pack::tests::zip(&[
+                (
+                    "shaders/shaders.properties",
+                    b"bufferObject.2 = 16 data/seed.bin".to_vec(),
+                ),
+                ("shaders/data/seed.bin", seed.clone()),
+            ]),
+        )
+        .unwrap();
+        let macros = Macros::standard();
+        let properties = Properties::parse("bufferObject.2 = 16 data/seed.bin", &macros);
+        let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
+        assert!(post.notes.is_empty(), "{:?}", post.notes);
+        let buffer = post.buffer_objects.get(&2).expect("the buffer is there");
+        assert_eq!(buffer.initial_data(), Some(seed.as_slice()));
+        assert_eq!(buffer.size([1, 1]), 16);
+    }
+
+    #[test]
+    fn a_buffer_object_whose_file_is_missing_is_refused() {
+        let pack = Pack::from_zip_bytes(
+            "buffer.zip",
+            crate::pack::tests::zip(&[(
+                "shaders/shaders.properties",
+                b"bufferObject.2 = 16 data/seed.bin".to_vec(),
+            )]),
+        )
+        .unwrap();
+        let macros = Macros::standard();
+        let properties = Properties::parse("bufferObject.2 = 16 data/seed.bin", &macros);
+        let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
+        assert!(post.buffer_objects.is_empty());
+        assert_eq!(post.notes.len(), 1, "{:?}", post.notes);
+        assert!(post.notes[0].contains("data/seed.bin"), "{:?}", post.notes);
+    }
+
+    #[test]
+    fn a_buffer_object_whose_file_is_bigger_than_it_is_refused() {
+        let pack = Pack::from_zip_bytes(
+            "buffer.zip",
+            crate::pack::tests::zip(&[
+                (
+                    "shaders/shaders.properties",
+                    b"bufferObject.2 = 4 data/seed.bin".to_vec(),
+                ),
+                ("shaders/data/seed.bin", (0..16).collect::<Vec<u8>>()),
+            ]),
+        )
+        .unwrap();
+        let macros = Macros::standard();
+        let properties = Properties::parse("bufferObject.2 = 4 data/seed.bin", &macros);
+        let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
+        assert!(post.buffer_objects.is_empty());
+        assert_eq!(post.notes.len(), 1, "{:?}", post.notes);
+        assert!(post.notes[0].contains("bigger"), "{:?}", post.notes);
+    }
+
+    #[test]
+    fn a_buffer_object_whose_file_leaves_the_pack_is_refused() {
+        let pack = Pack::from_zip_bytes(
+            "buffer.zip",
+            crate::pack::tests::zip(&[(
+                "shaders/shaders.properties",
+                "bufferObject.2 = 16 ../seed.bin",
+            )]),
+        )
+        .unwrap();
+        let macros = Macros::standard();
+        let properties = Properties::parse("bufferObject.2 = 16 ../seed.bin", &macros);
+        let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
+        assert!(post.buffer_objects.is_empty());
+        assert_eq!(post.notes.len(), 1, "{:?}", post.notes);
+    }
 
     #[test]
     fn buffer_objects_and_images_parse() {
