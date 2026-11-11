@@ -307,8 +307,11 @@ mod tests {
             &[],
         )];
 
+        let hp = |g: &Game<'_>| g.mobs.iter().find(|m| m.id as i32 == pig).unwrap().health;
+        let full = hp(&game);
         attack(&mut game, &mut host, pig);
         assert_eq!(disconnects(&rx), vec![], "a pig is a target");
+        assert!(hp(&game) < full, "the pig is not hurt: {full} health left");
         attack(&mut game, &mut host, far_item);
         assert_eq!(disconnects(&rx), vec![], "an item out of reach");
         host.hub.guests[0].inventory[0] = Some(ItemStack::new("minecraft:iron_spear", 1));
