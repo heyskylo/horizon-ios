@@ -577,9 +577,9 @@ time, on the Mac mini's runner, after preparing the resources again if the prepa
 `tools/ci/parity_issues.py` then compares the results with the previous audit
 (`.local/parity-runner/audit.json` in the runner's checkout):
 
-- a harness that passed last night and fails now gets an issue labelled `parity-regression`, titled
-  `Parity regression: <harness>`, with the commit, the run and the end of its log (one issue per harness: an open
-  one gets a comment instead);
+- a harness that fails now and passed last night, or is in its first audit, gets an issue labelled
+  `parity-regression`, titled `Parity regression: <harness>`, with the commit, the run and the end of its log (one
+  issue per harness: an open one gets a comment instead);
 - a harness with an open issue that passes again gets its issue closed.
 
 The bugs session picks the issues up. The audit's logs are the run's `nightly-parity-logs` artifact; harnesses
