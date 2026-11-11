@@ -215,35 +215,15 @@ fn load_anticheat() -> horizon_anticheat::Config {
     }
 }
 
-/// `server.toml`'s `[chat_filter]` (docs/chat-filter.md), like `[anticheat]`: on by default, off (with an
-/// error logged) when the section is wrong. The mutes are kept beside server.properties.
-fn load_chat_filter() -> Option<horizon_chat_filter::Guard> {
+/// `server.toml`'s `[chat_filter]` (docs/chat-filter.md), through the filter the executable installed
+/// (`horizon_server_files::chat_guard`): none without one.
+fn load_chat_filter() -> Option<Box<dyn horizon_server_files::chat_guard::ChatGuard>> {
     let text = std::fs::read_to_string("server.toml").unwrap_or_default();
-    let config = match horizon_chat_filter::Config::from_server_toml(&text) {
-        Ok(config) => config,
-        Err(e) => {
-            log(
-                "ERROR",
-                &format!("server.toml: {e}; the chat filter stays off"),
-            );
-            return None;
-        }
-    };
-    if !config.enabled {
-        return None;
+    let loaded = horizon_server_files::chat_guard::load(&text, std::path::Path::new("."));
+    for (level, line) in &loaded.log {
+        log(level, line);
     }
-    let (guard, problem) = horizon_chat_filter::Guard::load(config, std::path::Path::new("."));
-    if let Some(problem) = problem {
-        log("WARN", &problem);
-    }
-    log(
-        "INFO",
-        &format!(
-            "Chat filter on: {} words (server.toml [chat_filter]; enabled = false turns it off)",
-            guard.filter.len()
-        ),
-    );
-    Some(guard)
+    loaded.guard
 }
 
 /// `server.toml`'s `[combat]` (docs/pvp.md): `legacy = true` resolves melee hits by 1.8.9's rules. Off without
@@ -1256,7 +1236,7 @@ impl Game<'_> {
         self.sync_ops(&lists);
         let anticheat = load_anticheat();
         let chat_filter = load_chat_filter();
-        self.settings.extras.pvp.combat.rules = load_combat();
+        self.set_pvp_legacy_rules(load_combat());
         // Horizon's far ring (docs/hosting.md): server.toml's `max_view_distance`.
         let far = props
             .raw
