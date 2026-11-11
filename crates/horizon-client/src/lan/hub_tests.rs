@@ -1376,3 +1376,41 @@ fn memory_connection_first_view_sends_every_ready_column() {
         "an empty queue sends nothing"
     );
 }
+
+/// `ServerGamePacketListenerImpl.handleAcceptTeleportPacket`: an accept whose id is
+/// the last teleport's (`awaitingTeleport`) while none is awaited any more
+/// (`awaitingPositionFromClient` is null) disconnects with
+/// `multiplayer.disconnect.invalid_player_movement`; an accept of any other id is
+/// ignored, and the first accept of the awaited one moves the player as before.
+#[test]
+fn a_second_accept_of_the_same_teleport_disconnects() {
+    let (mut hub, _rx) = hub_with_a_guest();
+    let mut world = floor_at(0);
+    let accept = |id: i32| {
+        S::AcceptTeleportation(play::AcceptTeleportation {
+            id,
+            x: 5.0,
+            y: 70.0,
+            z: 5.0,
+            yaw: 0.0,
+            pitch: 0.0,
+        })
+    };
+    hub.teleport(0, Some([5.0, 70.0, 5.0]));
+    let id = hub.guests[0].teleport_counter;
+    assert!(hub.guests[0].awaiting_teleport.is_some());
+    // An id nobody sent is ignored while one is awaited.
+    tick_packet(&mut hub, &mut world, accept(id + 1));
+    assert!(hub.guests[0].awaiting_teleport.is_some());
+    assert!(hub.guests[0].left_reason.is_empty());
+    // The awaited one is accepted once.
+    tick_packet(&mut hub, &mut world, accept(id));
+    assert!(hub.guests[0].awaiting_teleport.is_none());
+    assert!(hub.guests[0].left_reason.is_empty());
+    // Another id with nothing awaited is ignored.
+    tick_packet(&mut hub, &mut world, accept(id + 1));
+    assert!(hub.guests[0].left_reason.is_empty());
+    // The same id again, with nothing awaited: disconnected.
+    tick_packet(&mut hub, &mut world, accept(id));
+    assert!(!hub.guests[0].left_reason.is_empty());
+}
