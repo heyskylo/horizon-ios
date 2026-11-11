@@ -263,6 +263,8 @@ pub struct Guest {
     pub chunk_queue: Vec<(i32, i32)>,
     /// The far ring's chunks still to send, past the view distance (`lan::far`), closest first.
     pub far_queue: Vec<(i32, i32)>,
+    /// Where the bounded far-ring scan resumes; reset when the view changes.
+    pub far_cursor: usize,
     /// PlayerChunkSender: batches sent but not yet acknowledged, how many
     /// may be (1 until the client's first acknowledgement, then 10), the
     /// rate the client asks for and the chunks the next batch may hold.
@@ -540,6 +542,7 @@ impl Guest {
             far_sent_chunks: Default::default(),
             chunk_queue: Vec::new(),
             far_queue: Vec::new(),
+            far_cursor: 0,
             unacknowledged: 0,
             max_unacknowledged: 1,
             chunks_per_tick: 9.0,
@@ -661,6 +664,16 @@ impl Guest {
             })),
             Err(e) => log::debug!("Horizon: attachment sync not sent: {e}"),
         }
+    }
+    /// [`Self::send`] of a `ChunksBiomes` whose body is `packet.encode()`, the same
+    /// bytes for each guest with those columns. `note_change` ignores that packet.
+    pub fn send_chunks_biomes_body(&self, body: Vec<u8>) {
+        if self.fake
+            && !super::conn::fake_wants_id(horizon_protocol::ids::play::clientbound::CHUNKS_BIOMES)
+        {
+            return;
+        }
+        self.sender.send(body);
     }
     /// What `packet` changes about how the client moves, for the prediction's replay: kept until
     /// the tick's ping places it (`Hub::anticheat_ping`).

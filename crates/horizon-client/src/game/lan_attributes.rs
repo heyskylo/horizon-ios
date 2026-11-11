@@ -103,10 +103,32 @@ impl Game<'_> {
         }
     }
 
+    /// What a mob's synced attribute instances are read from (`mob_attributes`).
+    pub(super) fn attr_sources(&self) -> AttrSources<'_> {
+        AttrSources {
+            catalog: &self.motion.attributes,
+            items: self.items(),
+            commands: &self.cmds.attributes,
+        }
+    }
+}
+
+/// What the synced attribute instances are read from: the attribute catalog, the item table and
+/// what `/attribute` changed. Plain tables, so the tick's helper threads can read them
+/// (`Game::lan_entities`).
+#[derive(Clone, Copy)]
+pub(super) struct AttrSources<'a> {
+    catalog: &'a horizon_world::attributes::entity::Catalog,
+    items: &'a horizon_client::items::Items,
+    commands:
+        &'a std::collections::HashMap<Target, horizon_world::attributes::entity::EntityAttributes>,
+}
+
+impl AttrSources<'_> {
     /// The registry id of a client-syncable attribute the entity type has
     /// (`AttributeMap.getInstance` is null for the others), by name.
     fn synced_attribute(&self, entity: &str, name: &str) -> Option<i32> {
-        let catalog = &self.motion.attributes;
+        let catalog = self.catalog;
         let id = catalog.id(name)?;
         (catalog.attribute(id).syncable && catalog.default_base(entity, id).is_some())
             .then(|| id.registry_id())
@@ -114,7 +136,7 @@ impl Game<'_> {
 
     /// The type's base value of an attribute, as the instance starts.
     fn attribute_default(&self, entity: &str, name: &str) -> f64 {
-        let catalog = &self.motion.attributes;
+        let catalog = self.catalog;
         catalog
             .id(name)
             .and_then(|id| catalog.default_base(entity, id))
@@ -132,7 +154,7 @@ impl Game<'_> {
         out: &mut Vec<AttributeSnapshot>,
     ) {
         for (slot, item) in slots {
-            let Some(info) = item.and_then(|i| self.items().get(i)) else {
+            let Some(info) = item.and_then(|i| self.items.get(i)) else {
                 continue;
             };
             for (attribute, id, amount, op, group) in &info.modifiers {
@@ -306,6 +328,16 @@ impl Game<'_> {
         }
     }
 
+    /// The instances `/attribute` created in an entity's generic map
+    /// replace the ones derived from its state.
+    fn generic_attributes_of(&self, t: Target, out: &mut Vec<AttributeSnapshot>) {
+        if let Some(map) = self.commands.get(&t) {
+            generic_attributes_into(map, out);
+        }
+    }
+}
+
+impl Game<'_> {
     /// An armor stand's synced instances: movement speed (its first
     /// `aiStep`), its equipment's modifiers and what `/attribute` changed.
     pub(super) fn stand_attributes(
@@ -315,18 +347,19 @@ impl Game<'_> {
     ) -> Vec<AttributeSnapshot> {
         const KIND: &str = "minecraft:armor_stand";
         let mut out = Vec::new();
-        if let Some(a) = self.synced_attribute(KIND, "minecraft:movement_speed") {
+        let sources = self.attr_sources();
+        if let Some(a) = sources.synced_attribute(KIND, "minecraft:movement_speed") {
             instance(
                 &mut out,
                 a,
-                self.attribute_default(KIND, "minecraft:movement_speed"),
+                sources.attribute_default(KIND, "minecraft:movement_speed"),
             );
         }
         let slots = horizon_client::entities::ArmorStand::SLOTS
             .into_iter()
             .zip(equipment.iter().map(|s| s.as_ref().map(|s| &s.item)));
-        self.equipment_attributes(KIND, |_| None, slots, &mut out);
-        self.generic_attributes_of(Target::Stand(id), &mut out);
+        sources.equipment_attributes(KIND, |_| None, slots, &mut out);
+        sources.generic_attributes_of(Target::Stand(id), &mut out);
         out
     }
 
@@ -370,14 +403,6 @@ impl Game<'_> {
             if has != creative {
                 let _ = p.set_modifier(attribute, id, amount, "add_value", creative);
             }
-        }
-    }
-
-    /// The instances `/attribute` created in an entity's generic map
-    /// replace the ones derived from its state.
-    fn generic_attributes_of(&self, t: Target, out: &mut Vec<AttributeSnapshot>) {
-        if let Some(map) = self.cmds.attributes.get(&t) {
-            generic_attributes_into(map, out);
         }
     }
 }

@@ -26,6 +26,7 @@ pub mod record;
 use horizon_core::geometry::Vec3;
 use record::{Change, ClientTick, KEPT, Record, Restart};
 
+use super::guest::Guest;
 use crate::motion::PlayerMotion;
 use crate::sprint::Keys;
 
@@ -86,6 +87,59 @@ pub fn near(at: [f64; 3], block: [i32; 3], slack: f64) -> bool {
 /// server's view of what is around it (a firework flying with it) is a tick or so behind.
 pub fn slack(moved: [f64; 3]) -> f64 {
     (2.0 * moved.iter().map(|v| v * v).sum::<f64>().sqrt()).min(16.0)
+}
+
+/// The smallest box (min, max corners) holding every block in `positions`. Empty: min above max,
+/// which [`reaches`] rejects.
+pub fn bounds(positions: &[(i32, i32, i32)]) -> ([i32; 3], [i32; 3]) {
+    positions
+        .iter()
+        .fold(([i32::MAX; 3], [i32::MIN; 3]), |(lo, hi), &(x, y, z)| {
+            let b = [x, y, z];
+            (
+                std::array::from_fn(|i| lo[i].min(b[i])),
+                std::array::from_fn(|i| hi[i].max(b[i])),
+            )
+        })
+}
+
+/// Whether a block of `bounds` can be [`near`] `at` with this `slack`: the same reach as `near`,
+/// tested on the box's corners. The offset from `at` grows monotonically with the block, so a box
+/// whose nearest corner is out of reach holds no near block, and a box holding one is never
+/// rejected.
+fn reaches(at: [f64; 3], slack: f64, (lo, hi): ([i32; 3], [i32; 3])) -> bool {
+    let d = |i: usize, b: i32| f64::from(b) + 0.5 - at[i];
+    let r = 4.5 + slack;
+    d(0, hi[0]) >= -r
+        && d(0, lo[0]) <= r
+        && d(2, hi[2]) >= -r
+        && d(2, lo[2]) <= r
+        && d(1, hi[1]) >= -4.5 - slack
+        && d(1, lo[1]) <= 6.5 + slack
+}
+
+/// Records, as [`Record::changed_near`] during server tick `tick`, the blocks of `positions` (one
+/// section, `bounds` its [`bounds`]) that are [`near`] guest `g`, in their order.
+pub fn note_changes(
+    g: &mut Guest,
+    tick: u64,
+    bounds: ([i32; 3], [i32; 3]),
+    positions: &[(i32, i32, i32)],
+) {
+    let Some(record) = g.record.as_deref_mut() else {
+        return;
+    };
+    let slack = slack(std::array::from_fn(|i| {
+        g.position[i] - g.previous_position[i]
+    }));
+    if !reaches(g.position, slack, bounds) {
+        return;
+    }
+    for &(x, y, z) in positions {
+        if near(g.position, [x, y, z], slack) {
+            record.changed_near(tick, [x, y, z]);
+        }
+    }
 }
 
 /// One client tick played again.
@@ -1483,5 +1537,89 @@ mod tests {
             (honest.z > 25.4 && honest.y < before.y)
                 .then(|| Vec3::new(honest.x, before.y, honest.z))
         });
+    }
+
+    /// A small deterministic generator for the reach tests (the crate has no rand dependency).
+    struct Xorshift(u64);
+
+    impl Xorshift {
+        fn next_u64(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        /// In [0, 1).
+        fn unit(&mut self) -> f64 {
+            (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
+        }
+    }
+
+    /// For random viewers and random sections, a section with a block near the viewer is never
+    /// rejected by its box, and a section with none may be.
+    #[test]
+    fn reach_box_never_rejects_a_near_block() {
+        let mut rng = Xorshift(0x9E37_79B9_7F4A_7C15);
+        let mut near_sections = 0;
+        assert!(
+            !reaches([0.5; 3], 0.0, bounds(&[])),
+            "an empty section reaches nobody"
+        );
+        for _ in 0..20_000 {
+            let at: [f64; 3] = std::array::from_fn(|_| (rng.unit() - 0.5) * 200.0);
+            let slack = rng.unit() * 16.0;
+            // Blocks out to the reach of `near` and a little past it, on every side.
+            let span = 2.0 * (4.5 + slack + 2.0);
+            let count = 1 + (rng.next_u64() % 16) as usize;
+            let mut positions = Vec::with_capacity(count);
+            for _ in 0..count {
+                let b: [i32; 3] =
+                    std::array::from_fn(|i| (at[i] + (rng.unit() - 0.5) * span).floor() as i32);
+                positions.push((b[0], b[1], b[2]));
+            }
+            if positions
+                .iter()
+                .any(|&(x, y, z)| near(at, [x, y, z], slack))
+            {
+                near_sections += 1;
+                assert!(
+                    reaches(at, slack, bounds(&positions)),
+                    "rejected {at:?} with slack {slack} and {positions:?}"
+                );
+            }
+        }
+        assert!(
+            near_sections > 1_000,
+            "only {near_sections} sections were near"
+        );
+    }
+
+    /// Every single block around a viewer, one at a time, on the edge of the reach included.
+    #[test]
+    fn reach_box_keeps_every_block_on_the_edge() {
+        let mut rng = Xorshift(0xD1B5_4A32_D192_ED03);
+        let mut near_blocks = 0;
+        for _ in 0..60 {
+            let at: [f64; 3] = std::array::from_fn(|_| (rng.unit() - 0.5) * 64.0);
+            let slack = rng.unit() * 16.0;
+            let base = at.map(|v| v.floor() as i32);
+            let span = (4.5 + slack).ceil() as i32 + 2;
+            for dx in -span..=span {
+                for dy in -span..=span {
+                    for dz in -span..=span {
+                        let b = (base[0] + dx, base[1] + dy, base[2] + dz);
+                        if near(at, [b.0, b.1, b.2], slack) {
+                            near_blocks += 1;
+                            assert!(
+                                reaches(at, slack, bounds(&[b])),
+                                "rejected {at:?} with slack {slack} and {b:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(near_blocks > 1_000, "only {near_blocks} blocks were near");
     }
 }
