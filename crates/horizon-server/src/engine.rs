@@ -326,9 +326,9 @@ impl Control {
         Ok(control)
     }
 
-    /// One request: the endpoint reads a line per request, so a line break would make the rest
-    /// a request of its own. Refused before anything is sent.
     pub fn ask(&mut self, line: &str) -> std::io::Result<serde_json::Value> {
+        // One request: the endpoint reads a line per request, so a line break would make the
+        // rest a request of its own. Refused before anything is sent.
         if line.contains(['\n', '\r']) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
