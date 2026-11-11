@@ -100,14 +100,17 @@ impl DynamicResolution {
         if let Some(gpu) = gpu_ms {
             self.gpu.push(gpu);
         }
-        if self.window_ms < pace.window_ms() {
+        // A window lasts its time and holds enough timed frames: a slow scene (or timestamps that
+        // arrive with gaps) keeps gathering past the time rather than starting over with too few,
+        // which would never judge the scenes that most need a lower scale. A GPU that can't be
+        // timed gathers nothing and so leaves the scale alone.
+        if self.window_ms < pace.window_ms() || self.gpu.len() < MIN_TIMED {
             return None;
         }
         self.window_ms = 0.0;
         let timed = std::mem::take(&mut self.gpu);
-        // At or above 100% there is nothing to vary; a GPU that can't be timed leaves nothing
-        // to go by; a change still settling isn't judged yet.
-        if floor >= 100 || timed.len() < MIN_TIMED || self.since_change_ms < pace.settle_ms() {
+        // At or above 100% there is nothing to vary; a change still settling isn't judged yet.
+        if floor >= 100 || self.since_change_ms < pace.settle_ms() {
             return None;
         }
         let gpu = median(timed);
@@ -182,6 +185,17 @@ mod tests {
         assert_eq!(d.scale(70), 100);
         // 25 ms against 16.7: down a step at a time, to the floor and no further.
         run(&mut d, 60_000.0, 25.0, 25.0, 70, Pace::Quick);
+        assert_eq!(d.scale(70), 70);
+    }
+
+    #[test]
+    fn a_slow_scene_still_steps_down() {
+        let mut d = DynamicResolution::new();
+        run(&mut d, 30_000.0, 8.0, 8.0, 70, Pace::Quick);
+        assert_eq!(d.scale(70), 100);
+        // 10 FPS: five frames in a 500 ms window, fewer than a verdict needs; the window keeps
+        // gathering until it has them.
+        run(&mut d, 60_000.0, 100.0, 100.0, 70, Pace::Quick);
         assert_eq!(d.scale(70), 70);
     }
 
