@@ -4,12 +4,18 @@
 //! the block sound, attacker knockback (`blockedByItem`) and axes disabling
 //! the shield (`Player.blockUsingItem`, `BlocksAttacks.disable`).
 use super::Game;
+use super::creatures::source_damage_type;
 use horizon_client::{
     health::{BlockOutcome, Blocking, HurtSource},
     items::ItemStack,
+    mobs::{Damage, Who},
 };
 use horizon_core::random::RandomSource;
 use horizon_world::blocking_rules::{BlockingRules, DamageReduction, ItemDamageFunction};
+
+#[cfg(test)]
+#[path = "shield_ram_tests.rs"]
+mod ram_tests;
 
 /// `Inventory.SLOT_OFFHAND`: the `using` slot of an off-hand item.
 pub(super) const OFFHAND_SLOT: usize = 40;
@@ -112,6 +118,52 @@ impl Game<'_> {
             pierce,
             angle,
         })
+    }
+    /// `LivingEntity.knockback` of the player by a mob event. A ram
+    /// (`RamTarget.tick`) names its hit's damage: `applyItemBlocking` runs a
+    /// second time for it, and `blockingFactor` halves the power when it
+    /// blocked part of it. What follows that block is the hurt's too
+    /// (`hurtBlockingItem`, `blockedByItem`), but not its sound: `onBlocked`
+    /// belongs to `hurtServer`.
+    pub(super) fn mob_pushes_player(
+        &mut self,
+        mut power: f64,
+        x: f64,
+        z: f64,
+        source: Damage,
+        ram_damage: Option<f32>,
+    ) {
+        let damage_type = source_damage_type(source);
+        let attacker = match source.attacker {
+            Some(Who::Mob(id)) => Some(id),
+            _ => None,
+        };
+        if let Some(damage) = ram_damage
+            && let Some(blocking) = self.player_blocking(source.from, damage_type, false)
+            && let blocked = blocking.blocked(damage)
+            && blocked > 0.0
+        {
+            let outcome = BlockOutcome {
+                blocked,
+                fully_blocked: blocked >= damage,
+                ..Default::default()
+            };
+            let hurt = HurtSource {
+                damage_type,
+                causing: attacker.map_or(0, |id| id as i32),
+                direct: 0,
+            };
+            self.after_block(outcome, (attacker, false), hurt);
+            power *= 0.5;
+        }
+        // A player's source names no melee attacker, as its damage's doesn't.
+        let _attacker = self.knockback_scope(attacker.map_or(0, |id| id as i32));
+        let source = HurtSource {
+            damage_type,
+            causing: 0,
+            direct: 0,
+        };
+        self.knock_back_player(power, x, z, source);
     }
     /// After a hurt with the shield raised: `hurtBlockingItem`, `onBlocked`
     /// and, for melee from a mob, `blockUsingItem`. `source` is the hit's.

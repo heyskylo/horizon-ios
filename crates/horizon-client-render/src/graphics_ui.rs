@@ -8,7 +8,8 @@ use crate::{
     gfx::EffectiveOutput,
     graphics::{
         EntityCullingMode, FarDetail, FrameGeneration, GpuCullingMode, GraphicsApi, HdrMode,
-        LeafCullingMode, Overlay, Pacing, ParticleCullingMode, PresentMode, Preset, Upscaling,
+        HdrSetup as Setup, LeafCullingMode, Overlay, Pacing, ParticleCullingMode, PresentMode,
+        Preset, Upscaling,
     },
     graphics_style::Cost,
     lang,
@@ -675,28 +676,9 @@ const LOD_STEPS: [u32; 24] = [
     crate::lod::MAX_CHUNKS,
 ];
 
-/// Whether the system set HDR up for the display, and whether the player kept it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Setup {
-    /// The system says nothing: the player calibrates.
-    Unknown,
-    /// Peak Brightness and Paper White follow the system.
-    Automatic,
-    /// The system said, and the player changed them anyway.
-    Changed,
-}
 /// `out`: the output of the renderer the settings are shown for, with what its display reports.
 fn setup(s: &Settings, out: &EffectiveOutput) -> Setup {
-    setup_of(&s.horizon, out.reported.is_some())
-}
-fn setup_of(g: &crate::graphics::Graphics, reported: bool) -> Setup {
-    if !reported {
-        Setup::Unknown
-    } else if g.hdr_peak == 0 && g.hdr_paper_white == 0 {
-        Setup::Automatic
-    } else {
-        Setup::Changed
-    }
+    s.horizon.hdr_setup(out.reported)
 }
 /// What the HDR page says while HDR output is held back on this window's graphics driver
 /// (`EffectiveOutput::held`): picking a mode tries again (`H::cycle`).
@@ -714,13 +696,19 @@ fn description(
         (Item::Horizon(H::HdrCalibrate), Setup::Unknown) => {
             "Your display didn't say how bright it gets: calibrate to set it up."
         }
+        (Item::Horizon(H::HdrCalibrate), Setup::Guessed) => {
+            "Auto uses the peak Windows reports. Calibrate if highlights look clipped."
+        }
         (Item::Horizon(H::HdrCalibrate), Setup::Automatic) => {
             "Already set up for your display. Only calibrate if HDR looks wrong."
         }
         (Item::Horizon(H::HdrCalibrate), Setup::Changed) => {
             "Puts Peak Brightness and Paper White back to your display's setup."
         }
-        (Item::Horizon(H::HdrPeak | H::HdrPaperWhite), Setup::Automatic | Setup::Changed) => {
+        // A peak of unknown source isn't said to be set up; paper white is the player's own.
+        (Item::Horizon(h @ (H::HdrPeak | H::HdrPaperWhite)), Setup::Automatic | Setup::Changed)
+            if h == H::HdrPaperWhite || out.reported.is_some_and(|r| !r.peak_guessed) =>
+        {
             "Set up for your display. Leave on Auto unless it looks wrong."
         }
         (Item::Horizon(H::GpuCulling), _) if s.horizon.gpu_culling == GpuCullingMode::Auto => {
@@ -944,7 +932,7 @@ impl H {
             H::FrameGeneration => labelled("Frame Generation", g.frame_generation.label()),
             H::Hdr => labelled("HDR", g.hdr.label()),
             H::HdrCalibrate => Text::literal(lang::get(match setup(s, out) {
-                Setup::Unknown => "Calibrate...",
+                Setup::Unknown | Setup::Guessed => "Calibrate...",
                 Setup::Automatic => "Calibrate Anyway...",
                 Setup::Changed => "Use Automatic Setup",
             })),
@@ -1122,7 +1110,8 @@ impl Item {
     /// active; saved values wait for it. Translucent Batching switches where the device can batch
     /// (`graphics::translucent_batching_offered`), its saved value waiting for one that can,
     /// Smooth Gradients only where it can draw the 16-bit frame, the same way, and GPU Culling
-    /// only where it is offered (`graphics::gpu_culling_offer`), with the reason it isn't.
+    /// only where it is offered (`graphics::gpu_culling_offer`), with the reason it isn't. HDR
+    /// Lighting has nothing to switch where the running shader pack lights the world itself.
     fn blocked(self, s: &Settings, out: &EffectiveOutput) -> Option<&'static str> {
         if !self.available() {
             return Some("This feature is not yet available in Horizon.");
@@ -1153,6 +1142,9 @@ impl Item {
             } else {
                 "Turn HDR on to use it."
             }),
+            Item::Horizon(H::HdrLighting) if out.pack_lights => {
+                Some("The shader pack lights the world itself.")
+            }
             Item::Horizon(H::TranslucentBatching)
                 if !crate::graphics::translucent_batching_offered() =>
             {
@@ -1227,10 +1219,13 @@ impl Item {
     }
     pub fn label(self, s: &Settings, out: &EffectiveOutput) -> Text {
         match self {
-            Item::Vanilla(Opt::RenderDistance) if s.horizon.lod_distance > 0 => labelled(
-                "Full Detail Distance",
-                lang::tr("%s chunks", &[&s.render_distance]),
-            ),
+            // Far terrain renames the row; its value stays vanilla's `options.chunks`.
+            Item::Vanilla(Opt::RenderDistance) if s.horizon.lod_distance > 0 => {
+                Text::option_name_value(
+                    Text::literal(lang::get("Full Detail Distance")),
+                    Text::tr("options.chunks", &[&s.render_distance]),
+                )
+            }
             Item::Vanilla(o) => o.label(s),
             Item::Horizon(h) => h.label(s, out),
             Item::Extra(e) => Text::option_name_value(
@@ -1326,7 +1321,11 @@ impl Item {
 
 /// Whether a setting is on the screen now: Upscaling only while TAA is, which does it.
 fn shown(item: Item, s: &Settings) -> bool {
-    item != Item::Horizon(H::Upscaling) || s.horizon.taa
+    match item {
+        Item::Horizon(H::Upscaling) => s.horizon.taa,
+        Item::Extra(crate::extras::Item::Fullbright) => !s.fullbright_held,
+        _ => true,
+    }
 }
 /// A control's label as its name and its value ("Render Distance" and "12 chunks").
 fn parts(item: Item, s: &Settings, out: &EffectiveOutput) -> (String, Option<String>) {
@@ -1438,7 +1437,7 @@ impl Screen for GraphicsScreen {
             g::gpu_culling_offer(),
             g::reduced_far_detail_suggested(),
         );
-        shell::stamp_of(&(read(s), offers))
+        shell::stamp_of(&(read(s), s.fullbright_held, offers))
     }
     fn sheets(&self, s: &Settings) -> Vec<Sheet<Page, Item>> {
         let sheet = |(page, groups): (Page, Vec<(&'static str, Vec<Setting>)>)| Sheet {
@@ -1998,6 +1997,31 @@ mod tests {
         assert_eq!(key(&mut ui, &mut s, K::Escape), [Output::Done]);
     }
 
+    /// On another's server Fullbright's row is gone and the screen draws again; its choice is
+    /// kept for the next world that allows it (#3823).
+    #[test]
+    fn fullbright_row_is_hidden_while_held_and_keeps_its_choice() {
+        let mut s = Settings::default();
+        s.extras.fullbright = true;
+        let screen = GraphicsScreen::default();
+        let listed = |s: &Settings, item| {
+            let sheets = screen.sheets(s);
+            let groups = sheets.into_iter().flat_map(|sheet| sheet.groups);
+            groups.flat_map(|group| group.rows).any(|r| r.id == item)
+        };
+        let fullbright = Item::Extra(crate::extras::Item::Fullbright);
+        let lights = Item::Extra(crate::extras::Item::DynamicLights);
+        assert!(listed(&s, fullbright));
+        let free = screen.stamp(&s);
+        s.fullbright_held = true;
+        assert!(!listed(&s, fullbright));
+        assert!(listed(&s, lights));
+        assert_ne!(screen.stamp(&s), free);
+        assert!(s.extras.fullbright);
+        s.fullbright_held = false;
+        assert!(listed(&s, fullbright));
+    }
+
     /// The strip says what a row does, what its chosen value does where that differs, and why a
     /// greyed row can't be used; the search finds a row by what it does.
     #[test]
@@ -2118,10 +2142,36 @@ mod tests {
         assert_eq!(item.slider(&s), Some(13.0 / 23.0));
         s.horizon.lod_distance = 12;
         assert_eq!(item.slider(&s), Some(1.0 / 23.0));
-        assert_eq!(
-            Item::Vanilla(Opt::RenderDistance).label(&s, &NONE).plain(),
-            format!("Full Detail Distance: {near} chunks")
-        );
+    }
+
+    /// With far terrain on, Render Distance reads "Full Detail Distance" but keeps vanilla's
+    /// `options.chunks` value: it was Horizon's "%s chunks", so "12 Chunks" became "12 chunks"
+    /// (#14880).
+    #[test]
+    fn full_detail_distance_keeps_the_vanilla_chunk_count() {
+        struct Vanilla;
+        impl lang::ResourceSource for Vanilla {
+            fn read(&self, path: &str) -> Option<Vec<u8>> {
+                (path == "assets/minecraft/lang/en_us.json").then(|| {
+                    serde_json::to_vec(&serde_json::json!({
+                        "options.renderDistance": "Render Distance",
+                        "options.chunks": "%s Chunks",
+                        "options.generic_value": "%s: %s"
+                    }))
+                    .unwrap()
+                })
+            }
+        }
+        let mut s = Settings::default();
+        let near = s.render_distance;
+        let render = Item::Vanilla(Opt::RenderDistance);
+        let ((off, on), _) = lang::scoped(lang::Language::load(&[&Vanilla], "en_us"), || {
+            let off = render.label(&s, &NONE).plain();
+            s.horizon.lod_distance = 256;
+            (off, render.label(&s, &NONE).plain())
+        });
+        assert_eq!(off, format!("Render Distance: {near} Chunks"));
+        assert_eq!(on, format!("Full Detail Distance: {near} Chunks"));
     }
 
     #[test]

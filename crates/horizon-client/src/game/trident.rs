@@ -577,17 +577,11 @@ impl Game<'_> {
         let (v, on_ground) = self.player.as_ref().map_or((Vec3::ZERO, true), |p| {
             (self.known_player_movement(), p.ground.on_ground)
         });
-        projectile.shoot_from_rotation(
-            &mut self.world.random,
-            self.pitch,
-            self.yaw,
-            0.0,
-            2.5,
-            1.0,
-            v,
-            on_ground,
-        );
+        projectile.shoot_from_rotation(self.pitch, self.yaw, 0.0, 2.5, 1.0, v, on_ground);
         let id = self.take_entity_id();
+        if let Some(uuid) = projectile.uuid {
+            self.persist.uuids.insert(id, uuid);
+        }
         let owner_uuid = self.acting_player_uuid();
         self.tridents.push(ThrownTrident {
             join: Default::default(),
@@ -956,9 +950,9 @@ impl Game<'_> {
                         }
                     }
                 }
-                // Boats and minecarts are pickable too (`VehicleEntity.isPickable`).
+                // Boats, minecarts and primed TNT are pickable too (`isPickable`).
                 if !t.dealt_damage {
-                    for (who, b) in self.vehicle_targets() {
+                    for (who, b) in self.pickable_object_targets() {
                         if let Who::Mob(id) = who
                             && let Some(d) = segment_box(t.position, t.velocity, b.inflate(grow))
                             && hit_mob.is_none_or(|(_, best)| d < best)

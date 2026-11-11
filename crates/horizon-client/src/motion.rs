@@ -2148,18 +2148,16 @@ impl MotionWorld<'_, '_, '_> {
         let gravity = living_motion::effective_gravity(self)?;
         self.player.velocity = fall_flying_movement(v, self.player.pitch, self.player.yaw, gravity);
         let movement = self.player.velocity;
-        let before = self.player.position;
         self.move_self(movement)?;
         // LivingEntity.handleFallFlyingCollisions: the fall-damage sound plays
         // on both sides (a glider's own travel is client-side, and the sound
         // must reach its own ears, #8906), only the server hurts, and it
-        // compares the delta before the move with the one after it, which
-        // `Entity.move` leaves as the movement it resolved. `move_entity` does
-        // not write that back, so the distance actually travelled stands in.
+        // compares the horizontal speed before `updateFallFlyingMovement`
+        // with the delta `Entity.move` leaves (the collided axes zeroed).
         if self.player.collision.horizontal {
-            let travelled = self.player.position.subtract(before);
-            let new_h = (travelled.x * travelled.x + travelled.z * travelled.z).sqrt();
-            let dmg = fly_into_wall_damage(move_h, new_h);
+            let v = self.player.velocity;
+            let after_h = (v.x * v.x + v.z * v.z).sqrt();
+            let dmg = fly_into_wall_damage(move_h, after_h);
             if dmg > 0.0 {
                 let first = self.player.events.len();
                 // getFallDamageSound((int) dmg)
@@ -2902,7 +2900,7 @@ impl LivingAirWorld for MotionWorld<'_, '_, '_> {
             == "minecraft:scaffolding")
     }
     fn suppressing_ladder_slide(&mut self) -> Result<bool> {
-        Ok(self.player.shift_key_down)
+        Ok(self.player.shift_key_down && !(self.player.client_side && self.player.flying))
     }
     fn is_player_class(&self) -> bool {
         true
@@ -3148,6 +3146,7 @@ mod tests {
         assert_eq!(fly_into_wall_damage(0.3, 0.0), 0.0);
         assert!((fly_into_wall_damage(0.5, 0.1) - 1.0).abs() < 1e-5);
         assert!((fly_into_wall_damage(1.2, 0.0) - 9.0).abs() < 1e-5);
+        assert!(fly_into_wall_damage(0.01, 0.0) < 0.0);
     }
 
     use super::*;
@@ -4195,17 +4194,16 @@ mod tests {
             health: &resources.health,
         };
         w.travel_fall_flying().unwrap();
-        assert!(
-            w.player.events.iter().any(|e| matches!(
+        let is_fall = |e: &_| {
+            matches!(
                 e,
-                MotionEvent::Fall(crate::landing::FallEvent::Sound {
-                    sound: crate::landing::SceneSound::SmallFall,
-                    ..
-                })
-            )),
-            "{:?}",
-            w.player.events
-        );
+                MotionEvent::Fall(crate::landing::FallEvent::Sound { .. })
+            )
+        };
+        assert_eq!(w.player.events.iter().filter(|e| is_fall(e)).count(), 1);
+        // The sound must play only once on impact, not repeat on subsequent ticks (#12304):
+        w.travel_fall_flying().unwrap();
+        assert_eq!(w.player.events.iter().filter(|e| is_fall(e)).count(), 1);
         assert!(
             !w.player
                 .hurt_log
@@ -6267,6 +6265,53 @@ mod tests {
             .controlled_simulation_tick(Default::default())
             .unwrap();
             assert_eq!(player.velocity.y, want, "client_side={client_side}");
+        }
+    }
+    /// `LocalPlayer.isSuppressingSlidingDownLadder` is `!abilities.flying && super...()`, where
+    /// `LivingEntity`'s is `isShiftKeyDown()`: a flying player on the client keeps sliding down a
+    /// ladder whether it sneaks or not. The server's player (`ServerPlayer` has no override) only
+    /// looks at the sneak.
+    #[test]
+    fn a_flying_client_does_not_stop_sliding_down_a_ladder_by_sneaking() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let binding = crate::collisions::load(&root, assets.registry).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        // (client_side, flying, sneaking, suppressing)
+        for (client_side, flying, sneaking, want) in [
+            (true, false, true, true),
+            (true, false, false, false),
+            (true, true, true, false),
+            (true, true, false, false),
+            (false, false, true, true),
+            (false, true, true, true),
+            (false, true, false, false),
+        ] {
+            let mut scene = World::test_scene(&assets, &render, 2).unwrap();
+            let mut player = PlayerMotion::new(&resources, Vec3::new(0.5, 64.0, 0.5)).unwrap();
+            player.client_side = client_side;
+            player.flying = flying;
+            player.shift_key_down = sneaking;
+            let mut w = MotionWorld {
+                entities: &[],
+                player: &mut player,
+                scene: &mut scene,
+                assets: &assets,
+                collision_binding: &binding,
+                resources: &resources,
+                health: &resources.health,
+            };
+            assert_eq!(
+                w.suppressing_ladder_slide().unwrap(),
+                want,
+                "client_side={client_side} flying={flying} sneaking={sneaking}"
+            );
         }
     }
 }

@@ -1592,7 +1592,6 @@ dependencies = [
  "horizon-optifine",
  "horizon-polytone",
  "horizon-protocol",
- "horizon-render-pipeline",
  "horizon-shader-api",
  "horizon-shaders",
  "horizon-system",
@@ -1649,6 +1648,15 @@ dependencies = [
  "serde",
  "serde_json",
  "ureq",
+]
+
+[[package]]
+name = "horizon-discord"
+version = "0.1.0"
+dependencies = [
+ "horizon-platform",
+ "log",
+ "serde_json",
 ]
 
 [[package]]
@@ -1794,12 +1802,23 @@ dependencies = [
 name = "horizon-official"
 version = "0.1.0"
 dependencies = [
+ "horizon-discord",
  "horizon-friends",
  "horizon-game",
  "horizon-heartbeat",
+ "horizon-official-servers",
  "horizon-platform",
  "log",
  "winresource",
+]
+
+[[package]]
+name = "horizon-official-servers"
+version = "0.1.0"
+dependencies = [
+ "horizon-addresses",
+ "horizon-platform",
+ "log",
 ]
 
 [[package]]
@@ -1894,10 +1913,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-render-pipeline"
-version = "0.1.0"
-
-[[package]]
 name = "horizon-server"
 version = "0.1.0"
 dependencies = [
@@ -1932,6 +1947,7 @@ name = "horizon-server-files"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "getrandom 0.3.4",
  "horizon-core",
  "horizon-protocol",
  "horizon-world",
@@ -1959,7 +1975,6 @@ version = "0.1.0"
 dependencies = [
  "half",
  "horizon-core",
- "horizon-render-pipeline",
  "naga",
  "png",
  "zip",

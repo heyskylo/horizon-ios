@@ -413,7 +413,13 @@ pub fn custom_server_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEven
             let mut found: Vec<i32> = w
                 .others
                 .iter()
-                .filter(|s| s.alive && s.id != m.id && !undead(s.species) && near(s.position))
+                .filter(|s| {
+                    s.alive
+                        && s.id != m.id
+                        && !undead(s.species)
+                        && near(s.position)
+                        && m.sees(w, Who::Mob(s.id))
+                })
                 .map(|s| s.id as i32)
                 .collect();
             if let Some(pl) = &w.player
@@ -421,6 +427,7 @@ pub fn custom_server_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEven
                 && !pl.creative
                 && !pl.spectator
                 && near(pl.position)
+                && m.sees(w, Who::Player)
             {
                 found.push(-1);
             }
@@ -755,5 +762,78 @@ mod tests {
             effect.len(),
             rolls.iter().filter(|roll| **roll == 0).count()
         );
+    }
+    /// `WitherBoss.customServerAiStep` finds its side heads' targets with
+    /// `TARGETING_CONDITIONS`, whose `TargetingConditions` checks line of
+    /// sight. A cow behind a wall is not picked.
+    #[test]
+    fn a_withers_side_head_does_not_pick_through_a_wall() {
+        use crate::mobs::world::with_built_test_world;
+        use crate::mobs::{Mob, Species, sensor_scan_tests::kind};
+        use horizon_core::geometry::Vec3;
+        use std::sync::Arc;
+        let run = |wall: bool| -> Option<bool> {
+            let mut found = None;
+            if !with_built_test_world(
+                &[],
+                move |world, registry| {
+                    for (cx, cz) in [
+                        (-1, -1),
+                        (-1, 0),
+                        (-1, 1),
+                        (0, -1),
+                        (0, 0),
+                        (0, 1),
+                        (1, -1),
+                        (1, 0),
+                        (1, 1),
+                    ] {
+                        world
+                            .chunks
+                            .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
+                    }
+                    let stone = registry.default_state("minecraft:stone").unwrap();
+                    for x in -8..17 {
+                        for z in -8..9 {
+                            world.set(x, 64, z, stone).unwrap();
+                        }
+                    }
+                    if wall {
+                        for x in 3..5 {
+                            for y in 65..68 {
+                                for z in -3..4 {
+                                    world.set(x, y, z, stone).unwrap();
+                                }
+                            }
+                        }
+                    }
+                },
+                |w, _| {
+                    let mut wither_kind = (*kind()).clone();
+                    wither_kind.species = Species::Wither;
+                    let mut wither =
+                        Mob::new(1, Arc::new(wither_kind), Vec3::new(0.5, 65.0, 0.5), 0.0);
+                    let mut cow_kind = (*kind()).clone();
+                    cow_kind.species = Species::Cow;
+                    let cow = Mob::new(2, Arc::new(cow_kind), Vec3::new(5.5, 65.0, 0.5), 0.0);
+                    let seen = [cow.seen(None)];
+                    let world = crate::mobs::MobWorld {
+                        others: &seen,
+                        ..w.clone()
+                    };
+                    let mut events = Vec::new();
+                    custom_server_ai_step(&mut wither, &world, &mut events);
+                    found = Some(wither.extra.ints[0] != 0);
+                },
+            ) {
+                return None;
+            }
+            found
+        };
+        let (Some(open), Some(walled)) = (run(false), run(true)) else {
+            return;
+        };
+        assert!(open, "the sighted cow is picked");
+        assert!(!walled, "the cow behind the wall is not picked");
     }
 }

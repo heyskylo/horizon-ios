@@ -6,15 +6,17 @@ use horizon_client::mobs::Who;
 use horizon_core::geometry::{Aabb, Vec3};
 
 impl Game<'_> {
-    /// The boats, minecarts and item frames a projectile can strike.
-    pub(in crate::game) fn vehicle_targets(&self) -> Vec<(Who, Aabb)> {
+    /// The boats, minecarts, primed TNT and item frames a projectile can strike
+    /// (`VehicleEntity.isPickable`, `PrimedTnt.isPickable`,
+    /// `BlockAttachedEntity.isPickable`).
+    pub(in crate::game) fn pickable_object_targets(&self) -> Vec<(Who, Aabb)> {
         let mut targets: Vec<(Who, Aabb)> = self
             .boats
             .iter()
             .map(|b| (Who::Mob(b.id), b.bounds()))
             .collect();
         targets.extend(self.carts.iter().map(|c| (Who::Mob(c.id), c.bounds())));
-        // Item frames are pickable too (`BlockAttachedEntity.isPickable`).
+        targets.extend(self.tnts.iter().map(|t| (Who::Mob(t.id), t.bounds())));
         targets.extend(self.item_frames.iter().map(|f| {
             let (lo, hi) = f.bounds();
             (
@@ -47,9 +49,9 @@ impl Game<'_> {
                 .into_iter()
                 .map(|(id, b)| (Who::Mob(id), b)),
         );
-        // Boats, minecarts (`VehicleEntity.isPickable`) and item frames are
-        // pickable for every projectile, so every kind shares this one list.
-        targets.extend(self.vehicle_targets());
+        // Boats, minecarts, primed TNT and item frames are pickable for every
+        // projectile, so every kind shares this one list.
+        targets.extend(self.pickable_object_targets());
         targets
     }
 }
