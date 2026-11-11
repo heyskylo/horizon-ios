@@ -604,7 +604,11 @@ impl Projectile {
     fn fire_tick(&mut self, w: &impl ProjectileWorld, client_side: bool) {
         if !(self.is_thrown()
             || self.kind == ProjectileKind::ExperienceBottle
-            || self.is_fireball())
+            || self.is_fireball()
+            || matches!(
+                self.kind,
+                ProjectileKind::WindCharge | ProjectileKind::BreezeWindCharge
+            ))
         {
             return;
         }
@@ -1972,6 +1976,18 @@ mod tests {
         client.synced_fire = server.synced_fire;
         client.tick_remote(&air);
         assert!(client.on_fire());
+    }
+
+    #[test]
+    fn restored_wind_charge_fire_counts_down_and_syncs_visual_fire() {
+        for kind in [ProjectileKind::WindCharge, ProjectileKind::BreezeWindCharge] {
+            let mut p = Projectile::new(kind, Vec3::ZERO, None);
+            p.fire_ticks = 20;
+            p.has_visual_fire = true;
+            p.tick(&Empty(vec![]));
+            assert_eq!(p.fire_ticks, 19, "{:?}", p.kind);
+            assert!(p.synced_fire, "{:?}", p.kind);
+        }
     }
 
     #[test]
