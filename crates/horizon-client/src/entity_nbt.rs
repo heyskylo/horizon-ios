@@ -7397,11 +7397,11 @@ mod sheep_nbt_tests {
         assert_eq!(number(tag.get("InWaterTime")), Some(300));
         assert_eq!(number(tag.get("DrownedConversionTime")), Some(-1));
         assert_eq!((back.extra.counter, back.extra.counter2), (300, 0));
-        (zombie.extra.counter, zombie.extra.counter2) = (600, 300);
+        (zombie.extra.counter, zombie.extra.counter2) = (600, 301);
         let (back, tag) = round_trip(&zombie);
         assert_eq!(number(tag.get("InWaterTime")), Some(600));
-        assert_eq!(number(tag.get("DrownedConversionTime")), Some(299));
-        assert_eq!((back.extra.counter, back.extra.counter2), (600, 300));
+        assert_eq!(number(tag.get("DrownedConversionTime")), Some(300));
+        assert_eq!((back.extra.counter, back.extra.counter2), (600, 301));
         // A skeleton outside powder snow is not afflicted: -1 whatever the
         // counter holds, as with a fresh or NoAI one.
         let (_, tag) = round_trip(&new("minecraft:skeleton"));
