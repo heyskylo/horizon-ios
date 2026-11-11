@@ -66,6 +66,25 @@ pub struct Rider {
     pub client: bool,
 }
 
+/// The coat and markings a horse's `Variant` int shows: `Horse.getVariant`
+/// is `Variant.byId(typeVariant & 255)` and `getMarkings`
+/// `Markings.byId((typeVariant & 0xFF00) >> 8)`, both
+/// `OutOfBoundsStrategy.WRAP` over 7 coats and 5 markings.
+pub fn horse_look(type_variant: i32) -> (u8, u8) {
+    (
+        ((type_variant & 0xFF) % 7) as u8,
+        (((type_variant >> 8) & 0xFF) % 5) as u8,
+    )
+}
+/// `Horse.addAdditionalSaveData` writes `typeVariant` as it is: the int the
+/// horse was loaded with while it still shows this coat and these markings
+/// (9 stays 9, not 2), otherwise the two ids packed.
+pub fn saved_variant(loaded: Option<i32>, coat: u8, markings: u8) -> i32 {
+    loaded
+        .filter(|v| horse_look(*v) == (coat, markings))
+        .unwrap_or(i32::from(coat) | i32::from(markings) << 8)
+}
+
 pub fn is_equine(s: Species) -> bool {
     matches!(
         s,
@@ -189,7 +208,7 @@ pub fn register(m: &mut Mob) {
     let rears = can_rear(species);
     let stand_interval = m.kind.ambient_interval;
     let g = &mut m.ai.goals;
-    g.add(1, RunAroundLikeCrazy);
+    g.add(1, RunAroundLikeCrazy::new());
     g.add(2, Breed::new(1.0));
     g.add(4, FollowParent::new(1.0));
     g.add(6, Stroll::avoiding_water(0.7));
@@ -372,7 +391,15 @@ fn mob_controlled_rider(m: &Mob) -> bool {
 /// `RunAroundLikeCrazyGoal`: an untamed horse with a rider bolts about until
 /// it is tamed (temper) or throws the rider off.
 #[derive(Clone, Debug)]
-pub(super) struct RunAroundLikeCrazy;
+pub(super) struct RunAroundLikeCrazy {
+    /// The spot `canUse` picked, which `start` walks to.
+    pos: Option<[f64; 3]>,
+}
+impl RunAroundLikeCrazy {
+    pub(super) fn new() -> Self {
+        Self { pos: None }
+    }
+}
 impl Goal for RunAroundLikeCrazy {
     goal_clone!();
     fn flags(&self) -> u8 {
@@ -384,18 +411,15 @@ impl Goal for RunAroundLikeCrazy {
         if m.extra.tame || mob_controlled_rider(m) || !is_vehicle(m) {
             return false;
         }
-        let r = &mut m.random;
-        let (dx, dz) = (
-            r.next_int_bound(11).unwrap_or(5) - 5,
-            r.next_int_bound(11).unwrap_or(5) - 5,
-        );
-        let dy = r.next_int_bound(9).unwrap_or(4) - 4;
-        let t = [
-            m.position.x + f64::from(dx),
-            m.position.y + f64::from(dy),
-            m.position.z + f64::from(dz),
-        ];
-        m.nav_move_to(cx.w, t, 1.2)
+        // `DefaultRandomPos.getPos(horse, 5, 4)`: ten filtered attempts, the
+        // best walk-target value wins.
+        self.pos = m.default_random_pos(cx.w, 5, 4);
+        self.pos.is_some()
+    }
+    fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
+        if let Some(t) = self.pos {
+            m.nav_move_to(cx.w, t, 1.2);
+        }
     }
     fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         // `canContinueToUse` has no `isMobControlled` check (RunAroundLikeCrazyGoal:47).
@@ -1193,12 +1217,12 @@ mod tests {
                     let seed = (0..10_000)
                         .find(|&seed| LegacyRandom::new(seed).next_int_bound(50).unwrap() == 0)
                         .unwrap();
-                    m.random = LegacyRandom::new(seed);
+                    m.random.set_seed(seed);
                     let mut expected = m.random.clone();
                     assert_eq!(expected.next_int_bound(50).unwrap(), 0);
                     expected.next_int_bound(max).unwrap();
                     let (mut lr, mut events) = (LegacyRandom::new(1), Vec::new());
-                    RunAroundLikeCrazy.tick(
+                    RunAroundLikeCrazy::new().tick(
                         &mut m,
                         &mut Cx {
                             w,
@@ -1477,7 +1501,7 @@ mod tests {
                     events: &mut events,
                 };
                 for m in [&mut horse, &mut zombie] {
-                    m.ai.goals.add(1, RunAroundLikeCrazy);
+                    m.ai.goals.add(1, RunAroundLikeCrazy::new());
                     let mut goals = std::mem::take(&mut m.ai.goals);
                     goals.tick(m, &mut cx);
                     outcomes.push(goals.is_running("RunAroundLikeCrazy"));
@@ -1642,3 +1666,7 @@ mod follow_mommy_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "bolt_pos_tests.rs"]
+mod bolt_pos_tests;

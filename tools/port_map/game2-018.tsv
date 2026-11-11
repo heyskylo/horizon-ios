@@ -23,6 +23,7 @@ StructureBlockEntity.getRenderableBox	port	crates/horizon-client-render/src/stru
 TestInstanceBlockEntity.Data.withSize	skip:java		record copy-with builder; no behaviour of its own
 TestInstanceBlockEntity.Data.withStatus	port	crates/horizon-client/src/game/game_tests.rs::Game::set_test_status	setRunning and setSuccess write the status through it and mark the block entity updated; a new status clears the error message
 TestInstanceBlockEntity.Data.withError	port	crates/horizon-client/src/game/game_tests.rs::Game::set_test_status	setErrorMessage carries the text as the block entity's error_message, which the next status change clears
+TheEndGatewayBlockEntity.portalTick	port	crates/horizon-client/src/game/block_entity_anims.rs::Game::tick_end_gateway	the server ticker: the age, the cooldown and the 2400-tick block event; a moved age marks the chunk (`setChanged`)
 TheEndGatewayBlockEntity.beamAnimationTick	port	crates/horizon-client-render/src/block_entity_anim.rs::EndGateway::tick	client ticker: age goes up and the teleport cooldown goes down
 TheEndGatewayBlockEntity.getSpawnPercent	inline	crates/horizon-client-render/src/block_entity_render.rs::gateway_beam	spawn percent is (age + partial) / 200, clamped, inside the beam function
 TheEndGatewayBlockEntity.getCooldownPercent	inline	crates/horizon-client-render/src/block_entity_render.rs::gateway_beam	cooldown percent is one minus the clamped cooldown over 40, inside the beam function
