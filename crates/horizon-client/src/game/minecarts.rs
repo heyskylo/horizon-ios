@@ -136,6 +136,9 @@ pub(super) struct Minecart {
     pub damage: f32,
     /// `Entity.noGravity` (`NoGravity` in its save).
     pub no_gravity: bool,
+    /// `Entity.ticksFrozen` (`TicksFrozen` in its save): powder snow builds
+    /// it up (`InsideBlockEffectType.FREEZE`), a cart never melts it.
+    pub ticks_frozen: i32,
     pub items: Vec<Option<ItemStack>>,
     /// Furnace minecarts: fuel ticks and `MinecartFurnace.push`. Its y part
     /// stays between ticks (it sets the push's length), only saving drops it.
@@ -354,6 +357,7 @@ impl Minecart {
             hurt_dir: 1,
             damage: 0.0,
             no_gravity: false,
+            ticks_frozen: 0,
             items: vec![None; kind.slots()],
             fuel: 0,
             push: Vec3::ZERO,
@@ -1275,20 +1279,31 @@ impl Game<'_> {
         ) {
             c.fall_distance = 0.0;
         }
+        // PowderSnowBlock's FREEZE contact is counted here too.
         // WebBlock.entityInside: makeStuckInBlock(0.25, 0.05, 0.25) for every
         // cobweb the box (deflated by 1.0E-5) is in; it resets the fall distance.
         let b = c.bounds().deflate(Vec3::new(1e-5, 1e-5, 1e-5));
         let (lo, hi) = (b.min_position(), b.max_position());
         let facts = self.res.facts();
+        let mut froze = false;
         for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
             for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
                 for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
-                    if &*facts.get(self.world.block(x, y, z)).name == "minecraft:cobweb" {
+                    let name = &*facts.get(self.world.block(x, y, z)).name;
+                    if name == "minecraft:powder_snow" {
+                        froze = true;
+                    }
+                    if name == "minecraft:cobweb" {
                         c.fall_distance = 0.0;
                         c.stuck = Vec3::new(0.25, f64::from(0.05_f32), 0.25);
                     }
                 }
             }
+        }
+        if froze {
+            // InsideBlockEffectType.FREEZE: once per applyEffectsFromBlocks.
+            c.ticks_frozen = (c.ticks_frozen + 1)
+                .min(horizon_client::motion::PlayerMotion::TICKS_REQUIRED_TO_FREEZE);
         }
     }
     /// Runs `push_from_cart` for the cart being ticked (`c` is a copy of the
@@ -2027,8 +2042,8 @@ impl Game<'_> {
         } else {
             (left, forward)
         };
-        let r = self.yaw.to_radians();
-        let (s, co) = (f64::from(r.sin()), f64::from(r.cos()));
+        let r = f64::from(self.yaw * 0.017_453_292);
+        let (s, co) = (f64::from(trig::sin(r)), f64::from(trig::cos(r)));
         let intent = [left * co - forward * s, forward * co + left * s];
         let mut c = self.carts[i].clone();
         let alive = self.tick_cart(&mut c, intent, i, &mut CartIndex::default());

@@ -80,7 +80,7 @@ impl Game<'_> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     Generic,
-    /// The saved decorated-pot slot, exposed only to hopper insertion.
+    /// The saved decorated-pot slot: hopper insertion and the comparator signal.
     Pot,
     /// `AbstractFurnaceBlockEntity` (a `WorldlyContainer`).
     Furnace,
@@ -362,23 +362,27 @@ impl Containers<'_> {
             container: None,
         })
     }
-    /// `HopperBlockEntity.getBlockContainer` at its insertion target only.
-    /// Pots keep their authoritative slot in the chunk's saved tag. Pending
-    /// loot is deliberately left to its existing path, without unpacking it.
-    fn hopper_insertion_view(&self, pos: Pos) -> Option<View> {
-        self.view(pos, false).or_else(|| {
-            if self.name(self.world.block(pos.0, pos.1, pos.2)) != "minecraft:decorated_pot"
-                || spill::saved_entity(self.world, [pos.0, pos.1, pos.2])
-                    .is_some_and(|tag| matches!(tag.get("LootTable"), Some(Tag::String(_))))
-            {
-                return None;
-            }
-            Some(View {
-                parts: vec![(pos, 1)],
-                kind: Kind::Pot,
-                container: None,
-            })
+    /// The saved decorated-pot slot as a container: `DecoratedPotBlockEntity`
+    /// is a `ContainerSingleItem`, but Horizon keeps pots out of generic
+    /// container discovery (`world.block_entities`), so this is built on demand.
+    /// A pot with pending loot is left to its existing unpacking path.
+    fn saved_pot_view(&self, pos: Pos) -> Option<View> {
+        if self.name(self.world.block(pos.0, pos.1, pos.2)) != "minecraft:decorated_pot"
+            || spill::saved_entity(self.world, [pos.0, pos.1, pos.2])
+                .is_some_and(|tag| matches!(tag.get("LootTable"), Some(Tag::String(_))))
+        {
+            return None;
+        }
+        Some(View {
+            parts: vec![(pos, 1)],
+            kind: Kind::Pot,
+            container: None,
         })
+    }
+    /// `HopperBlockEntity.getBlockContainer` at its insertion target only.
+    /// Pots keep their authoritative slot in the chunk's saved tag.
+    fn hopper_insertion_view(&self, pos: Pos) -> Option<View> {
+        self.view(pos, false).or_else(|| self.saved_pot_view(pos))
     }
     /// The `ContainerSingleItem` slot for hopper insertion: only a saved pot
     /// needs an owned decode. Existing modeled containers stay borrowed.
@@ -519,8 +523,9 @@ impl Containers<'_> {
         }
         let mut total = 0.0f32;
         for i in 0..view.len() {
-            if let Some(s) = self.get(view, i) {
-                total += s.count as f32 / self.max_stack(s) as f32;
+            // `insertion_item` decodes a saved pot's slot; every other kind is `get`.
+            if let Some(s) = self.insertion_item(view, i) {
+                total += s.count as f32 / self.max_stack(&s) as f32;
             }
         }
         total /= view.len().max(1) as f32;
@@ -653,6 +658,7 @@ pub(super) fn container_signal(level: &super::GameLevel<'_>, pos: BlockPos) -> i
     };
     c.view((pos.x, pos.y, pos.z), true)
         .filter(|v| !matches!(v.kind, Kind::Composter(_)))
+        .or_else(|| c.saved_pot_view((pos.x, pos.y, pos.z)))
         .map_or(0, |v| c.signal(&v))
 }
 
@@ -2424,6 +2430,10 @@ mod pot_hopper_insertion_tests {
         assert!(tag.get("item").is_none(), "the pot is empty");
     }
 }
+
+#[cfg(test)]
+#[path = "machines_pot_signal_tests.rs"]
+mod pot_signal_tests;
 
 #[cfg(test)]
 mod tests {
