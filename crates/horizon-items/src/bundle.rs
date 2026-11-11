@@ -469,4 +469,14 @@ mod tooltip_tests {
         let dirt = ItemStack::new("minecraft:dirt", 1);
         assert!(tooltip_layout(&items, &dirt, 0.0, 0.0, 96.0, 2).is_none());
     }
+    /// `getEmptyBundleBackgroundHeight`: the description's wrapped height (9 a
+    /// line) plus the bar's 13 and the tooltip's 8, not a fixed two lines.
+    #[test]
+    fn an_empty_bundles_height_follows_its_description_lines() {
+        let Some(items) = items() else { return };
+        let layout = tooltip_layout(&items, &bundle_with(&[]), 4.0, 8.0, 96.0, 3).unwrap();
+        assert_eq!(layout.height, 3.0 * 9.0 + 13.0 + 8.0);
+        assert_eq!(layout.bar, [4.0, 8.0 + 3.0 * 9.0 + 4.0]);
+        assert_eq!(layout.empty_description, Some([4.0, 8.0]));
+    }
 }
