@@ -15,8 +15,8 @@ use std::{
 
 /// Saved chunks being read at once, all players together.
 const ASKED: usize = 32;
-/// Far chunks a player's batch looks at, closest first: a ring waiting on its reads is not scanned
-/// to the end each tick.
+/// Far chunks a player's batch looks at before resuming at the next entry on its next tick.
+/// Waiting or missing chunks cannot block the rest of the ring.
 pub const LOOKS: usize = 2 * ASKED;
 /// The bodies kept for players coming back: this many bytes, this long.
 const KEPT_BYTES: usize = 96 << 20;
@@ -93,7 +93,7 @@ impl Far {
         )
     }
 
-    fn reading(max: i32, read_one: Reader) -> Self {
+    pub(super) fn reading(max: i32, read_one: Reader) -> Self {
         let (jobs, asked) = mpsc::channel::<(Key, Arc<Source>)>();
         let (read, done) = mpsc::channel();
         let asked = Arc::new(Mutex::new(asked));
@@ -250,6 +250,7 @@ impl Far {
         let Some(level) = self.here else {
             return;
         };
+        self.missing.remove(&(level, x, z));
         if let Some((_, body)) = self.levels[level].bodies.remove(&(x, z)) {
             self.bytes -= body.len();
         }
@@ -407,6 +408,18 @@ mod tests {
         far.forget_level();
         assert!(matches!(far.saved(4, 1), Saved::Waiting));
         assert_eq!(far.bytes, 0);
+    }
+
+    #[test]
+    fn an_expired_missing_entry_can_deliver_a_saved_body() {
+        let mut far = far(Arc::default());
+        let key = (far.here.unwrap(), 4, 1);
+        let now = Instant::now();
+        far.missing.insert(key, now);
+        assert!(matches!(far.saved(4, 1), Saved::Missing));
+        // Advance only this entry's clock, without making the test wait 30 seconds.
+        far.missing.insert(key, now - MISSING_FOR);
+        assert!(matches!(read(&mut far, 4, 1), Saved::Body(b) if *b == [4]));
     }
 
     /// A read that a change overtook is not kept.
