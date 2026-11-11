@@ -13,6 +13,7 @@
 //! game rules) is kept from the loaded files and written back unchanged.
 //! Worlds saved by older Horizon builds (`region/`, `DIM-1/`, `Player` in
 //! `level.dat`) are migrated on open.
+mod backpressure;
 mod respawn;
 
 use crate::{
@@ -2541,6 +2542,7 @@ pub struct SaveDir {
     /// (installed where `SavedOldWorld` is made for this same folder).
     blending_lookup: OnceLock<BlendingLookup>,
 }
+
 fn is_forced_ticket(ticket: &Tag) -> bool {
     matches!(ticket.get("type"), Some(Tag::String(t)) if *t == JavaString::from("minecraft:forced"))
 }
@@ -3186,12 +3188,7 @@ impl SaveDir {
         registry: &'static BlockRegistry,
         biomes: &Arc<Biomes>,
     ) -> Result<usize> {
-        let encoding = Arc::new(Encoding {
-            registry,
-            biomes: biomes.clone(),
-            tables: self.tables.get().cloned(),
-            shape: self.shape,
-        });
+        let encoding = self.encoding_for_save_later(chunks, registry, biomes)?;
         let records = chunks
             .iter()
             .map(|c| {
