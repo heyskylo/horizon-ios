@@ -868,7 +868,7 @@ impl Game<'_> {
             b.lectern_update_below(level, ticks, p, state);
         });
     }
-    /// `LecternBlock.setHasBook`: the property with the block change event.
+    /// `LecternBlock.resetBookState`: the property with the block change event.
     fn set_lectern_has_book(&mut self, key: (i32, i32, i32), has_book: bool, who: Option<Who>) {
         // `LecternBlock.resetBookState`: `setBlockAndUpdate` writes the state and
         // the `block_change` post follows unconditionally, not only when the
@@ -2077,7 +2077,7 @@ mod tests {
     use super::*;
     use crate::game::native_machines::tests::server_game;
 
-    /// `LecternBlock.setHasBook`: the book coming off a lectern clears
+    /// `LecternBlock.resetBookState`: the book coming off a lectern clears
     /// `has_book` and posts `block_change` at it.
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
@@ -2128,6 +2128,7 @@ mod tests {
     }
 }
 
+#[cfg(test)]
 mod link_cursor_tests {
     use super::link_cursor;
     use horizon_client::text::{ClickEvent, Style, Text};
