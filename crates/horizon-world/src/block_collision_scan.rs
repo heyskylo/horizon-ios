@@ -162,6 +162,8 @@ pub struct BlockCollisionScan<'w, 'c, W: BlockCollisionWorld> {
     /// the unit cube (finite bounds always make one).
     entity_shape: Option<VoxelShape>,
     only_suffocating: bool,
+    /// A boolean collision query does not need translated full-cube geometry.
+    presence_only: bool,
     start: BlockPos,
     sizes: [usize; 3],
     index: usize,
@@ -206,6 +208,7 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
             bounds,
             entity_shape: None,
             only_suffocating,
+            presence_only: false,
             start,
             sizes: sizes.map(|s| s as usize),
             index: 0,
@@ -219,6 +222,21 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
             missing_stays,
             failed: false,
         })
+    }
+
+    /// Boolean collision query with the same cursor, budget, and callback order
+    /// as the ordinary iterator. Avoid constructing translated geometry for a
+    /// full collision cube, since the caller only needs to know whether one exists.
+    pub fn any_collision(
+        world: &'w mut W,
+        context: CollisionContext<'c>,
+        bounds: Aabb,
+        only_suffocating: bool,
+        candidate_budget: usize,
+    ) -> Result<bool, CollisionScanError<W::Error>> {
+        let mut scan = Self::new(world, context, bounds, only_suffocating, candidate_budget)?;
+        scan.presence_only = true;
+        Ok(scan.find_next()?.is_some())
     }
 
     /// The cells after the current one (cell `x` of its row, block x `block_x`) that are in the
@@ -429,7 +447,11 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
                 if !self.bounds.intersects_corners(offset, top) {
                     continue;
                 }
-                shape.moved(offset)
+                if self.presence_only {
+                    VoxelShape::block()
+                } else {
+                    shape.moved(offset)
+                }
             } else {
                 // Shapes whose bounds miss the box share no volume with it:
                 // joinIsNotEmpty(AND) is false without moving them.
