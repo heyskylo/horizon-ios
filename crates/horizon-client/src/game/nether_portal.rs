@@ -755,6 +755,17 @@ impl Game<'_> {
             })
             .unwrap_or(ENTITY_DELAY)
     }
+    /// `Entity.saveWithoutId` writes the live `PortalCooldown`: the countdown
+    /// `Entity.processPortalCooldown` ticks down, not the value the entity was
+    /// loaded with. Every entity that can stand in a portal takes it from the
+    /// portal state, as the projectile writer does. An entity the portal
+    /// state does not know is not on a cooldown, and writes 0.
+    pub(super) fn save_portal_cooldown(&self, id: u32, tag: &mut Tag) {
+        horizon_client::nether_portal::put_portal_cooldown(
+            tag,
+            horizon_client::nether_portal::portal_cooldown(&self.portals.entities, id),
+        );
+    }
     /// `Entity.saveWithoutId`: the modeled non-arrow projectile codecs
     /// share the live cooldown between command reads and chunk writes.
     pub(super) fn save_projectile_portal_cooldown(
