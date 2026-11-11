@@ -1098,6 +1098,17 @@ pub fn anim(m: &Mob, s: &State, p: &mut Poses) {
     }
 }
 
+/// The `horse_body` texture of a horse armour item (its id without the
+/// namespace): the item's `equippable.asset_id`, which names the
+/// `equipment/<asset>.json` whose `horse_body` layer is drawn. Only the golden
+/// armour's asset (`gold`) is not its item's material word.
+pub fn horse_armor_asset(item: &str) -> Option<&str> {
+    match item.strip_suffix("_horse_armor")? {
+        "golden" => Some("gold"),
+        material => Some(material),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1106,6 +1117,44 @@ mod tests {
     use crate::mobs::sensor_scan_tests::kind;
     use horizon_core::geometry::Vec3;
     use std::sync::Arc;
+
+    /// Every vanilla horse armour item draws the `horse_body` texture its
+    /// `equippable.asset_id` equipment names (`items.json`, `equipment/*.json`).
+    #[test]
+    fn horse_armor_draws_its_equipment_asset_texture() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client/26.3");
+        let Ok(items) = std::fs::read(root.join("items.json")) else {
+            return;
+        };
+        let items: serde_json::Value = serde_json::from_slice(&items).unwrap();
+        let mut seen = 0;
+        for (id, components) in items.as_object().unwrap() {
+            let Some(item) = id
+                .strip_prefix("minecraft:")
+                .filter(|i| i.ends_with("_horse_armor"))
+            else {
+                continue;
+            };
+            let asset = components["minecraft:equippable"]["asset_id"]
+                .as_str()
+                .unwrap();
+            let asset = asset.strip_prefix("minecraft:").unwrap();
+            let file = root.join(format!("assets/minecraft/equipment/{asset}.json"));
+            let equipment: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+            let texture = equipment["layers"]["horse_body"][0]["texture"]
+                .as_str()
+                .unwrap();
+            assert_eq!(
+                horse_armor_asset(item),
+                texture.strip_prefix("minecraft:"),
+                "{id}"
+            );
+            seen += 1;
+        }
+        assert!(seen >= 6, "the vanilla horse armours: {seen}");
+    }
 
     fn horse(species: Species) -> Mob {
         let mut kind = crate::mobs::sensor_scan_tests::kind();

@@ -786,6 +786,19 @@ impl Game<'_> {
         }
         if self.mobs[index].species() == Species::Allay && self.mobs[index].alive() {
             self.allay_listen(index, event, pos, ctx);
+            // Allay.JukeboxListener, its own listener beside the vibrations'.
+            let playing = match event {
+                "minecraft:jukebox_play" => Some(true),
+                "minecraft:jukebox_stop_play" => Some(false),
+                _ => None,
+            };
+            let m = &mut self.mobs[index];
+            if let Some(playing) = playing
+                && allay::hears_jukebox(m, pos)
+            {
+                let at = pos.map(|v| v.floor() as i32);
+                allay::set_jukebox_playing(m, at, playing);
+            }
         }
     }
     /// A game event at a block (`Level.gameEvent(source, event, pos)`).
@@ -1087,6 +1100,23 @@ impl Game<'_> {
                 if let Some((info, travel)) = tick.started {
                     let source = PositionSource::Block([key.0, key.1, key.2]);
                     self.vibration_particle(source, info.pos, center(key), travel);
+                }
+                if let Some((info, travel)) = tick.resumed {
+                    let source = PositionSource::Block([key.0, key.1, key.2]);
+                    let dest = center(key);
+                    let initial = info.distance.floor() as i32;
+                    // `tryReloadVibrationParticle` works in doubles.
+                    let alpha = if initial > 0 {
+                        1.0 - f64::from(travel) / f64::from(initial)
+                    } else {
+                        0.0
+                    };
+                    let current_pos = [
+                        info.pos[0] + (dest[0] - info.pos[0]) * alpha,
+                        info.pos[1] + (dest[1] - info.pos[1]) * alpha,
+                        info.pos[2] + (dest[2] - info.pos[2]) * alpha,
+                    ];
+                    self.vibration_particle(source, current_pos, dest, travel);
                 }
                 if let Some(info) = tick.received {
                     self.sculk_receive(key, info)?;
@@ -2230,8 +2260,9 @@ impl Game<'_> {
             == horizon_client::blocks::Fluid::Water
     }
     /// `Entity.checkSupportingBlock`: the block under this box closest to the
-    /// entity. Everything but the player works it out when it asks.
-    fn supporting_block(&self, position: Vec3, bounds: Aabb) -> Option<BlockPos> {
+    /// entity. Everything but the player works it out when it asks (`Breeze`'s
+    /// ground dust too).
+    pub(super) fn supporting_block(&self, position: Vec3, bounds: Aabb) -> Option<BlockPos> {
         let (min, max) = (bounds.min_position(), bounds.max_position());
         let foot = Aabb::new(
             Vec3::new(min.x, min.y - 1.0e-6, min.z),
