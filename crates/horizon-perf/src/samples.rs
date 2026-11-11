@@ -302,7 +302,7 @@ impl<'a> Samples<'a> {
                 kinds.iter().any(|k| k.source() == SampleSource::Wall)
             }
             Select::Alloc => kinds.iter().any(|k| k.source() == SampleSource::Alloc),
-            Select::Live => false,
+            Select::Live => kinds.iter().any(|k| k.source() == SampleSource::Live),
         }
     }
 
@@ -316,6 +316,7 @@ impl<'a> Samples<'a> {
             (Select::Waiting, SampleSource::Wall) => state == StateName::Waiting,
             (Select::Wall, SampleSource::Wall) => state != StateName::Cpu,
             (Select::Alloc, SampleSource::Alloc) => true,
+            (Select::Live, SampleSource::Live) => true,
             _ => false,
         }
     }
@@ -627,9 +628,12 @@ impl Samples<'_> {
     }
 }
 
-/// The unit a reply over `select` is measured in.
+/// The unit a reply over `select` is measured in; live bytes are a total, not a rate.
 pub fn out_unit(select: Select, slow: bool, ticks: TickUnit) -> Unit {
     let frame = ticks == TickUnit::Frame;
+    if select == Select::Live {
+        return Unit::Bytes;
+    }
     match (select == Select::Alloc, slow, frame) {
         (false, false, false) => Unit::MsPerTick,
         (false, false, true) => Unit::MsPerFrame,

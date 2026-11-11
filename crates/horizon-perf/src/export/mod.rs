@@ -169,6 +169,7 @@ pub(crate) fn select_of(source: SampleSource) -> Option<Select> {
         SampleSource::Cpu => Some(Select::Cpu),
         SampleSource::Wall => Some(Select::Wall),
         SampleSource::Alloc => Some(Select::Alloc),
+        SampleSource::Live => Some(Select::Live),
         SampleSource::Unspecified => None,
     }
 }

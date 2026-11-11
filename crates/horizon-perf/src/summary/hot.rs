@@ -164,3 +164,47 @@ pub(super) fn top_function(view: &View, side: Side, options: &SummaryOptions) ->
         })
         .map(|at| s.functions[at].id.clone())
 }
+
+const HEAP_ROWS: usize = 3;
+const MIB: f64 = 1024.0 * 1024.0;
+
+/// Sampled heap bytes of every thread: live at the end and allocated during the capture, with the functions that hold the most.
+pub(super) fn heap(view: &View, side: Side) -> Vec<Line> {
+    let Some(samples) = Samples::new(view, side).filter(|s| s.has_kind(Select::Live)) else {
+        return Vec::new();
+    };
+    let pick = |select| Pick {
+        thread: None,
+        select,
+        slow: false,
+        contexts: None,
+        window: Window::ALL,
+    };
+    let live = samples.function_times(&pick(Select::Live));
+    let allocated = samples.function_times(&pick(Select::Alloc)).grand_ms;
+    let mut ranked: Vec<usize> = (0..samples.functions.len())
+        .filter(|&at| live.own[at].0 > 0.0)
+        .collect();
+    ranked.sort_by(|&a, &b| live.own[b].0.total_cmp(&live.own[a].0));
+    let top: Vec<String> = ranked
+        .into_iter()
+        .take(HEAP_ROWS)
+        .map(|at| {
+            let name: String = samples.functions[at]
+                .name
+                .chars()
+                .take(NAME_WIDTH_CAP)
+                .collect();
+            format!("{name} {:.1}", live.own[at].0 / MIB)
+        })
+        .collect();
+    let mut text = format!(
+        "heap    live {:.1} MiB, allocated {:.1} MiB (sampled, all threads)",
+        live.grand_ms / MIB,
+        allocated / MIB
+    );
+    if !top.is_empty() {
+        text.push_str(&format!(" · held by {}", top.join(" · ")));
+    }
+    vec![Line::body(text)]
+}

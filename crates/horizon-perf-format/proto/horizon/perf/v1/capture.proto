@@ -383,6 +383,10 @@ message Overhead {
   float mob_timing_ms_per_tick = 8;
   // Share of the tick thread.
   float mob_timing_share = 9;
+  // Allocations the heap sampler recorded, process-wide.
+  uint64 heap_samples = 10;
+  // Time the allocating threads spent recording them.
+  uint64 heap_sample_ns = 11;
 }
 
 // Per thread, per block of block_s (default 5 s); span[i] ran under parent[i] (string ids, 0 for a root).
@@ -574,6 +578,8 @@ enum SampleSource {
   SAMPLE_SOURCE_CPU = 1;
   SAMPLE_SOURCE_WALL = 2;
   SAMPLE_SOURCE_ALLOC = 3;
+  // Sampled heap bytes still allocated when the capture stopped, at their allocation's time block.
+  SAMPLE_SOURCE_LIVE = 4;
 }
 
 enum SampleUnit {

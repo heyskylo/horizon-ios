@@ -201,6 +201,7 @@ vocab! {
         BytesPerFrame = "bytes_per_frame",
         BytesPerSlowTick = "bytes_per_slow_tick",
         BytesPerSlowFrame = "bytes_per_slow_frame",
+        Bytes = "bytes",
         KibPerS = "kib_per_s",
         Count = "count",
         Series = "series",

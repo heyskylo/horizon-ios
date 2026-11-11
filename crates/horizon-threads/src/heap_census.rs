@@ -65,7 +65,7 @@ fn slot(name: &'static str) -> u32 {
 
 /// The OS name of the calling thread, read without allocating.
 #[cfg(all(not(miri), any(target_vendor = "apple", target_os = "linux")))]
-fn thread_name(buf: &mut [u8; 64]) -> &[u8] {
+pub(crate) fn thread_name(buf: &mut [u8; 64]) -> &[u8] {
     // SAFETY: writes at most `buf.len()` bytes, NUL included, into `buf`.
     let ok = unsafe {
         libc::pthread_getname_np(libc::pthread_self(), buf.as_mut_ptr().cast(), buf.len())
@@ -85,7 +85,7 @@ fn thread_name(buf: &mut [u8; 64]) -> &[u8] {
 /// `BUSY` guard in [`thread_tag`] answers the nested call `UNTAGGED` rather
 /// than recursing, as the module's note on naming allocations says.
 #[cfg(any(miri, not(any(target_vendor = "apple", target_os = "linux"))))]
-fn thread_name(buf: &mut [u8; 64]) -> &[u8] {
+pub(crate) fn thread_name(buf: &mut [u8; 64]) -> &[u8] {
     let current = std::thread::current();
     let Some(name) = current.name() else {
         return &[];

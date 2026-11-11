@@ -220,12 +220,20 @@ pub struct WriterThread<W> {
 
 impl<W: Write + Send + 'static> WriterThread<W> {
     pub fn spawn(out: W) -> io::Result<Self> {
+        Self::spawn_with(out, || {})
+    }
+
+    /// [`WriterThread::spawn`], running `on_start` on the writer thread first.
+    pub fn spawn_with(out: W, on_start: impl FnOnce() + Send + 'static) -> io::Result<Self> {
         let (tx, rx) = mpsc::sync_channel::<Item>(CHANNEL_CAPACITY);
         let dropped = Arc::new(Dropped::default());
         let counts = Arc::clone(&dropped);
         let handle = thread::Builder::new()
             .name(WRITER_THREAD_NAME.into())
-            .spawn(move || run(out, rx, &counts))?;
+            .spawn(move || {
+                on_start();
+                run(out, rx, &counts)
+            })?;
         Ok(Self {
             sender: FieldSender { tx, dropped },
             handle,

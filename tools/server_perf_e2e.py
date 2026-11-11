@@ -32,6 +32,11 @@ PROPERTIES = {
 }
 
 
+PROFILER_THREADS = ('horizon-profile', 'horizon-perf')
+PROFILER_CODE = ('horizon_threads::sampler', 'horizon_threads::profile', 'horizon_threads::heap_sample',
+                 'horizon_perf_format', 'framehop', 'gimli')
+
+
 class Failed(Exception):
     pass
 
@@ -43,8 +48,8 @@ def perf(bins, *args):
     return done.stdout
 
 
-def rows(bins, op, capture, *filters):
-    reply = json.loads(perf(bins, 'query', op, capture, *filters))
+def rows(bins, op, capture, *flags):
+    reply = json.loads(perf(bins, 'query', op, capture, *flags))
     if not reply.get('ok'):
         raise Failed(f'query {op}: {reply.get("error")}')
     return reply['rows']
@@ -111,13 +116,26 @@ def check(bins, scratch, out):
     world = rows(bins, 'world', path)
     if sum(row['entities'] for row in world) < 1:
         raise Failed(f'the world rows count no entity: {world}')
+    by_thread = rows(bins, 'split', path, '--by', 'thread', '--select', 'live')
+    if sum(row['value'] for row in by_thread) <= 0:
+        raise Failed(f'the capture holds no live heap samples: {by_thread}')
+    profiler = [row for row in by_thread if row['label'].startswith(PROFILER_THREADS)]
+    if profiler:
+        raise Failed(f'the profiler\'s own threads hold sampled heap: {profiler}')
+    live = []
+    for row in by_thread:
+        live += rows(bins, 'hot', path, '--select', 'live', '--thread', row['label'])
+    top = max(live, key=lambda row: row['self'])
+    if top['full'].startswith(PROFILER_CODE):
+        raise Failed(f'the most live heap is the profiler\'s own: {top}')
     snapshot = {row['path']: row['value'] for row in rows(bins, 'memory', path, '--limit', 5000)}
     missing = [key for key in ('players.count', 'entities.count', 'unattributed_mb') if key not in snapshot]
     if missing or snapshot['players.count'] != 2 or snapshot['entities.count'] < 1:
         raise Failed(f'the stop snapshot lacks players, entities or unattributed_mb ({missing}): {sorted(snapshot)[:40]}')
     perf(bins, 'summary', path)
     print(f'read back: {len(spans)} spans, {total["players"]} players, {total["out_bytes"]} bytes out, '
-          f'{sum(row["chunks"] for row in world)} chunks')
+          f'{sum(row["chunks"] for row in world)} chunks, {len(live)} functions holding sampled heap on '
+          f'{len(by_thread)} threads, most in {top["name"]}')
 
 
 def main():
@@ -129,6 +147,8 @@ def main():
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
     os.environ.update(lab.game_env())
+    # A 4 s capture of a small world allocates little that stays: sample often enough to hold some of it.
+    os.environ['HORIZON_HEAP_SAMPLE_KIB'] = '64'
     with tempfile.TemporaryDirectory(prefix='server-perf-e2e-') as scratch:
         try:
             check(bins, Path(scratch), out)

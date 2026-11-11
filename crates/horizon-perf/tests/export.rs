@@ -501,7 +501,7 @@ fn folded_selects_slow_wall_and_running_samples() {
     let running = text(&[&path, "--folded", "--select", "running"]);
     assert_eq!(running, format!("{level} 12\n"));
     assert!(failure(&[&path, "--folded", "--select", "alloc"]).contains("no alloc samples"));
-    assert!(failure(&[&path, "--folded", "--select", "live"]).contains("not a kind of sample"));
+    assert!(failure(&[&path, "--folded", "--select", "live"]).contains("no live samples"));
 }
 
 #[test]

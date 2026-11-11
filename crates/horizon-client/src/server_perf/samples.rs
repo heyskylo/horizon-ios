@@ -25,13 +25,15 @@ pub use other::{Sampling, Stopped};
 mod linux {
     use super::*;
     use horizon_client_render::perf_capture;
+    use horizon_threads::heap_sample::{self, HeapProfile};
     use horizon_threads::profile::{self, Profile, SymbolQuality};
     use horizon_threads::sampler;
 
-    pub struct Sampling(profile::Session);
+    /// The CPU sampler, and the process's heap session when this capture was the first to start one.
+    pub struct Sampling(profile::Session, Option<heap_sample::Session>);
 
     /// A stopped session, not yet converted: the part that can take seconds.
-    pub struct Stopped(Profile);
+    pub struct Stopped(Profile, Option<HeapProfile>);
 
     impl Sampling {
         /// Samples the calling thread, which must be the one `thread` names, until [`Sampling::stop`].
@@ -63,7 +65,10 @@ mod linux {
                 ..profile::Config::default()
             };
             match profile::start(config) {
-                Ok(session) => Some(Self(session)),
+                Ok(session) => Some(Self(
+                    session,
+                    heap_sample::start(heap_sample::Config::from_env(block_s(window_s))),
+                )),
                 Err(e) => {
                     log::warn!(
                         "Horizon: could not start the sampler ({e}); capturing without samples"
@@ -87,8 +92,9 @@ mod linux {
 
         /// Cancels the timers and drains what is left; quick.
         pub fn stop(self) -> Option<Stopped> {
+            let heap = self.1.and_then(heap_sample::Session::stop);
             match self.0.stop() {
-                Ok(profile) => Some(Stopped(profile)),
+                Ok(profile) => Some(Stopped(profile, heap)),
                 Err(e) => {
                     log::warn!("Horizon: the sampler failed ({e}); the capture has no samples");
                     None
@@ -108,8 +114,15 @@ mod linux {
         ) -> Finished {
             let name = |id: u16| block_names.get(usize::from(id)).cloned();
             Finished {
-                samples: perf_capture::sample_profile(&self.0, side, unit, &name, strings),
-                overhead: perf_capture::overhead(&self.0),
+                samples: perf_capture::sample_profile(
+                    &self.0,
+                    self.1.as_ref(),
+                    side,
+                    unit,
+                    &name,
+                    strings,
+                ),
+                overhead: perf_capture::overhead(&self.0, self.1.as_ref()),
             }
         }
     }

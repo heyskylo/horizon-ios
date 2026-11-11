@@ -121,6 +121,7 @@ pub fn start(config: Config) -> io::Result<Session> {
     let writer = thread::Builder::new()
         .name("horizon-profile".into())
         .spawn(move || {
+            crate::heap_sample::ignore_this_thread();
             let cpu0 = sampler::thread_cpu_ns();
             let mut agg = Aggregate::new(slow_ns);
             let in_block = |agg: &mut Aggregate| {

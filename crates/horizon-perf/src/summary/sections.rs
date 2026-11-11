@@ -37,6 +37,7 @@ pub(super) fn all(
         net(view, side),
         gpu(view, side),
         memory(view, side),
+        super::hot::heap(view, side),
         world(view, side),
         workers(view, side),
         cost(view, side),
@@ -514,6 +515,13 @@ fn cost(view: &View, side: Side) -> Vec<Line> {
         parts.push(format!(
             "writer {} of a core",
             pct(overhead.writer_core_share)
+        ));
+    }
+    if overhead.heap_samples > 0 {
+        parts.push(format!(
+            "heap sampler {} samples, {:.1} ms",
+            thousands(overhead.heap_samples),
+            overhead.heap_sample_ns as f64 / 1e6
         ));
     }
     parts.push(format!(

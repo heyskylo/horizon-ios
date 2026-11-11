@@ -24,6 +24,9 @@ pub(super) struct Run<'a> {
 impl Run<'_> {
     /// A weight as a rate over the ticks or frames of the selection.
     pub fn per_unit(&self, value: f64) -> f64 {
+        if self.pick.select == Select::Live {
+            return value;
+        }
         value / self.units.count.max(1) as f64
     }
 
@@ -45,7 +48,7 @@ impl Run<'_> {
         if hits == 0 {
             out.push("no samples match the selection".to_string());
         }
-        if self.units.count == 0 {
+        if self.units.count == 0 && self.pick.select != Select::Live {
             out.push("the selection covers no ticks or frames; values are totals".to_string());
         }
         if self.units.estimated {

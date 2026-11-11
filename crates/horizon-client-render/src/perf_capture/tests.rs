@@ -109,6 +109,7 @@ fn convert(profile: &Profile) -> Converted {
     let mut interner = Interner::default();
     let samples = sample_profile(
         profile,
+        None,
         Side::Server,
         Unit::Tick,
         &|id| (id == 7).then(|| "minecraft:hopper".to_owned()),
@@ -424,7 +425,7 @@ fn overhead_counts_lost_samples_and_the_writers_share_of_a_core() {
     profile.stats.samples = 1000;
     profile.stats.handler_ns = Some(2_000.0);
     profile.writer_cpu_ns = 50_000_000;
-    let o = overhead(&profile);
+    let o = overhead(&profile, None);
     assert_eq!(o.dropped_samples, 7);
     assert!((o.sampler_share_of_thread - 0.0002).abs() < 1e-7);
     assert!((o.writer_core_share - 0.005).abs() < 1e-6);
@@ -545,4 +546,104 @@ fn a_converted_profile_written_to_a_file_reads_back_through_the_queries() {
         .collect();
     assert_eq!(values, [(Some("t:worker".to_owned()), 30.0)]);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn heap_samples_share_the_tables_without_the_allocators_own_frames() {
+    let mut cpu = Aggregate::new(50_000_000);
+    cpu.add(
+        "tick",
+        &record(
+            Kind::Cpu,
+            Context::default(),
+            0,
+            &[at(alpha, 4), at(gamma, 3)],
+        ),
+    );
+    cpu.finish();
+    let mut heap = Aggregate::new(0);
+    let inside = HeapProfile::bytes as *const () as usize + 4;
+    let on_tick = heap.thread_index("tick");
+    let key = heap.stack_key(
+        on_tick,
+        profile::State::Alloc,
+        &Context::default(),
+        &[inside, at(beta, 4), at(gamma, 3)],
+    );
+    heap.add_weight(key, 3000);
+    heap.add_weight(
+        profile::Key {
+            state: profile::State::Live,
+            ..key
+        },
+        1000,
+    );
+    let on_worker = heap.thread_index("worker");
+    let key = heap.stack_key(
+        on_worker,
+        profile::State::Live,
+        &Context::default(),
+        &[inside, at(alpha, 4)],
+    );
+    heap.add_weight(key, 500);
+    let heap = HeapProfile {
+        agg: heap,
+        interval: 4096,
+        samples: 3,
+        live_samples: 2,
+        sample_ns: 0,
+        freed: 2000,
+        elapsed: Duration::from_secs(10),
+    };
+    let mut interner = Interner::default();
+    let samples = sample_profile(
+        &profile_of(cpu, Config::default()),
+        Some(&heap),
+        Side::Server,
+        Unit::Tick,
+        &|_| None,
+        &mut interner,
+    );
+    let c = Converted {
+        samples,
+        strings: interner.take_new(Side::Server),
+    };
+    let sources: Vec<_> = c
+        .samples
+        .kinds
+        .iter()
+        .map(|k| (k.source(), k.period))
+        .collect();
+    assert_eq!(
+        sources,
+        [
+            (SampleSource::Cpu, 4.0),
+            (SampleSource::Alloc, 1.0),
+            (SampleSource::Live, 1.0)
+        ]
+    );
+    let names: Vec<_> = c.samples.threads.iter().map(|t| c.text(t.name)).collect();
+    assert_eq!(names, ["tick", "worker"]);
+    let w = c.samples.weights.as_ref().unwrap();
+    let mut rows: Vec<_> = (0..w.node.len())
+        .map(|i| {
+            let path: Vec<_> = c.path(w.node[i]).into_iter().map(short).collect();
+            (w.kind[i], w.thread[i], path.join(">"), w.count[i])
+        })
+        .collect();
+    rows.sort();
+    assert_eq!(
+        rows,
+        [
+            (0, 0, "gamma>alpha".to_owned(), 1),
+            (1, 0, "gamma>beta".to_owned(), 3000),
+            (2, 0, "gamma>beta".to_owned(), 1000),
+            (2, 1, "alpha".to_owned(), 500),
+        ]
+    );
+    let o = overhead(
+        &profile_of(Aggregate::new(0), Config::default()),
+        Some(&heap),
+    );
+    assert_eq!(o.heap_samples, 3);
 }

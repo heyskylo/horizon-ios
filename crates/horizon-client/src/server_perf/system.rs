@@ -75,6 +75,7 @@ impl BackgroundProbe {
         let worker = std::thread::Builder::new()
             .name("horizon-perf-gauges".into())
             .spawn(move || {
+                super::profiler_thread();
                 let mut probe = SystemProbe::default();
                 for (t, counts) in wanted {
                     let gauges = probe.read(t, counts);
