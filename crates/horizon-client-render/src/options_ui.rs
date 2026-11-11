@@ -20,6 +20,10 @@ use crate::{
 
 mod shell_pages;
 
+#[path = "options_ui_wheel.rs"]
+mod wheel;
+pub(crate) use wheel::slider_unsnapped;
+
 fn tr(key: &str) -> Text {
     Text::translate(key, &[])
 }
@@ -365,7 +369,7 @@ impl Opt {
             ),
             Opt::SimulationDistance => unit(s.simulation_distance as f32, 5.0, 32.0),
             Opt::Sensitivity => Kind::Slider(s.sensitivity),
-            Opt::WheelSensitivity => unit(s.mouse_wheel_sensitivity, 0.01, 10.0),
+            Opt::WheelSensitivity => wheel::kind(s.mouse_wheel_sensitivity),
             Opt::Volume(i) => Kind::Slider(if i == 0 {
                 s.master_volume
             } else {
@@ -916,7 +920,7 @@ impl Opt {
             }
             Opt::SimulationDistance => s.simulation_distance = step(5.0, 32.0) as i32,
             Opt::Sensitivity => s.sensitivity = v,
-            Opt::WheelSensitivity => s.mouse_wheel_sensitivity = 0.01 + v * 9.99,
+            Opt::WheelSensitivity => s.mouse_wheel_sensitivity = wheel::from_slider(v),
             Opt::Volume(0) => s.master_volume = v,
             Opt::Volume(i) => s.volumes[i] = v,
             Opt::Gamma => s.gamma = v,
@@ -1603,23 +1607,6 @@ pub struct MusicGroup {
     pub label: String,
     /// The rows, in `sounds.json` order.
     pub tracks: Vec<MusicTrack>,
-}
-/// `SliderableValueSet.applyValueImmediately`: these apply 600 ms after
-/// the last change (`OptionInstanceSliderButton.delayedApplyAt`).
-fn delays_apply(opt: Opt) -> bool {
-    matches!(
-        opt,
-        Opt::RenderDistance | Opt::SimulationDistance | Opt::BiomeBlend | Opt::WheelSensitivity
-    )
-}
-/// Whether a slider still shows its own position: while held, or for a
-/// delayed one until its value applies (both then `resetValue`).
-fn slider_unsnapped(opt: Opt, held: bool, moved: Instant) -> bool {
-    if delays_apply(opt) {
-        moved.elapsed().as_millis() < 600
-    } else {
-        held
-    }
 }
 pub struct OptionsUi {
     pub stack: Vec<Page>,
