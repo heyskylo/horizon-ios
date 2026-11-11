@@ -21,7 +21,7 @@ BrushableBlockEntity.getUpdateTag	port	crates/horizon-client/src/lan/chunks.rs::
 BrushableBlockEntity.loadAdditional	skip:other		no own code: the raw saved tag (spill::saved_entity) keeps item and LootTable
 BrushableBlockEntity.saveAdditional	skip:other		no own code: the raw saved tag (spill::saved_entity) keeps item and LootTable
 CalibratedSculkSensorBlockEntity.VibrationUser.canReceiveVibration	port	crates/horizon-client/src/game/sculk.rs::Game::sculk_listen	calibrated back-signal frequency filter
-CampfireBlockEntity.markUpdated	port	crates/horizon-client/src/game/campfire.rs::Game::tick_campfire	gap: minor: placing food (use_on_campfire) sends no block update
+CampfireBlockEntity.markUpdated	port	crates/horizon-client/src/game/campfire.rs::Game::tick_campfire	`use_on_campfire` marks the block entity updated (chunk modified, clients synced) and `tick_campfire` marks a moved timer, as `setChanged` + `sendBlockUpdated` do
 CampfireBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::place	container components applied when the item's data is placed
 CampfireBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::collect	container component collected from Items
 ChestBlockEntity.loadAdditional	port	crates/horizon-client/src/save.rs::decode_block_entity	Items (or loot table, via the chunk)
@@ -36,6 +36,7 @@ ChiseledBookShelfBlockEntity.canTakeItem	port	crates/horizon-client/src/game/mac
 ChiseledBookShelfBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::place	Items as container component
 ChiseledBookShelfBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::collect	Items as container component
 CommandBlockEntity.onModeSwitch	port	crates/horizon-client/src/game/command_blocks.rs::Game::apply_command_block	mode switch; the AUTO schedule follows the setAutomatic step
+CommandBlockEntity.onUpdated	port	crates/horizon-client/src/game/command_blocks.rs::Game::apply_command_block	sends the edited block entity to clients and marks the chunk dirty
 CommandBlockEntity.isConditional	port	crates/horizon-client/src/game/command_blocks.rs::conditional	
 CommandBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::place	custom name component
 CommandBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::collect	custom name component
