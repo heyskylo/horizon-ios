@@ -961,17 +961,27 @@ pub fn encode_components(stack: &ItemStack) -> Option<Tag> {
 /// Context-free callers and the live `components_tag` view stay unchanged.
 pub fn encode_components_with_items(stack: &ItemStack, items: &crate::items::Items) -> Option<Tag> {
     let mut components = encode_components(stack)?;
+    let Some(prototype) = items.get(&stack.item) else {
+        return Some(components);
+    };
     // PatchedDataComponentMap.set removes values equal to the prototype.
-    if let Some(prototype) = items.get(&stack.item)
-        && prototype
-            .components
-            .iter()
-            .any(|id| id == "minecraft:max_stack_size")
+    let same_stack_size = prototype
+        .components
+        .iter()
+        .any(|id| id == "minecraft:max_stack_size")
         && matches!(components.get("minecraft:max_stack_size"), Some(Tag::Int(size))
-            if *size > 0 && *size as u32 == prototype.max_stack)
-        && let Tag::Compound(entries) = &mut components
-    {
-        entries.remove(&JavaString::from("minecraft:max_stack_size"));
+            if *size > 0 && *size as u32 == prototype.max_stack);
+    // A durable prototype carries DAMAGE 0 (`Item.Properties.durability`), so the
+    // explicit zero `components_tag` keeps for a stack-declared MAX_DAMAGE equals it.
+    let same_damage =
+        prototype.max_damage > 0 && matches!(components.get("minecraft:damage"), Some(Tag::Int(0)));
+    if let Tag::Compound(entries) = &mut components {
+        if same_stack_size {
+            entries.remove(&JavaString::from("minecraft:max_stack_size"));
+        }
+        if same_damage {
+            entries.remove(&JavaString::from("minecraft:damage"));
+        }
         if entries.is_empty() {
             return None;
         }
@@ -981,12 +991,15 @@ pub fn encode_components_with_items(stack: &ItemStack, items: &crate::items::Ite
 /// `encode_components` from the damage value and extra components.
 pub fn components_tag(damage: u32, data: Option<&StackData>) -> Option<Tag> {
     let mut entries: Vec<(&str, Tag)> = Vec::new();
-    // A custom max damage can make zero DAMAGE a meaningful saved component.
-    if damage > 0
-        || data.is_some_and(|data| {
-            data.explicit_zero_damage && data.other("minecraft:max_damage").is_some()
-        })
-    {
+    // A patch keeps an explicit DAMAGE that differs from the prototype. A
+    // durable item's prototype already supplies the component, so an explicit
+    // zero equals it and vanilla's `fromPatch` drops it; a normally
+    // non-durable item declares MAX_DAMAGE on the stack and has no prototype
+    // DAMAGE, so its `damage: 0` is part of the patch (`explicit_zero_damage`)
+    // and must survive saving or the stack comes back non-damageable.
+    let own_capacity =
+        data.is_some_and(|d| d.explicit_zero_damage && d.other("minecraft:max_damage").is_some());
+    if damage > 0 || own_capacity {
         entries.push(("minecraft:damage", Tag::Int(damage as i32)));
     }
     if let Some(d) = data {
