@@ -198,7 +198,11 @@ impl Game<'_> {
                     } else {
                         format!("minecraft:{name}")
                     };
-                    let ids = r.registries.dialog_tags.get(&name).into_iter().flatten();
+                    let ids = r
+                        .registries
+                        .tag("minecraft:dialog", &name)
+                        .into_iter()
+                        .flatten();
                     ids.filter_map(|&i| list?.get(usize::try_from(i).ok()?)?.1.clone())
                         .collect()
                 };

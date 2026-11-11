@@ -225,6 +225,19 @@ impl Game<'_> {
             self.tick_scheduled()?;
         }
         self.with_level(|b, level, ticks| {
+            // The masks the random ticks will read, built on helper threads first while the
+            // parallel tick is on (`HORIZON_PARALLEL_TICK`): the draws and ticks don't depend on them.
+            if !debug && horizon_client::parallel::lanes() > 1 {
+                horizon_client::spans::time("random_tick_masks", || {
+                    let chunks = &level.world.chunks;
+                    level.random_tick_sections.prepare_masks(
+                        &scratch.ticking,
+                        |key| chunks.get(&key).cloned(),
+                        level.facts,
+                        &|id| b.random_tick_candidate(BlockStateId(id)),
+                    );
+                });
+            }
             horizon_client::spans::time("random_ticks", || {
                 for (x, z) in scratch.ticking.drain(..).filter(|_| !debug) {
                     // The last answer, asked from Y `from` at a world revision:
