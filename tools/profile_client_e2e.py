@@ -146,7 +146,7 @@ def check_ctl(bins, resources, official=False):
         assert ctl('profile', 'status')['capturing'] is False
         print(f'PASS: /profiler saved {next(iter(new)).name}')
         lines = ' '.join(ctl('chat-log', '10')['chat'])
-        assert 'Saved' in lines and 'reports' in lines, lines
+        assert 'Profile saved' in lines and '[Folder]' in lines, lines
         assert ('[Open]' in lines and '[Share]' in lines) == official, (official, lines)
         if not official:
             ctl('chat', '/profiler open')
