@@ -225,7 +225,7 @@ pub enum HostEvent {
         text: String,
         /// The hit's number in the filter's window.
         count: u32,
-        action: horizon_chat_filter::Action,
+        action: horizon_server_files::chat_guard::Action,
     },
     /// A server log warning (ServerGamePacketListenerImpl's LOGGER.warn).
     Warn(String),
@@ -350,7 +350,7 @@ pub struct Hub {
     /// The anticheat, when `server.toml` turns it on (dedicated servers).
     pub anticheat: Option<Box<super::anticheat::Anticheat>>,
     /// The chat filter, when `server.toml` turns it on (dedicated servers).
-    pub chat_filter: Option<Box<horizon_chat_filter::Guard>>,
+    pub chat_filter: Option<Box<dyn horizon_server_files::chat_guard::ChatGuard>>,
     /// The far ring, when `server.toml`'s `max_view_distance` turns it on (dedicated servers).
     pub far: Option<super::far::Far>,
     /// The `immediate_respawn` game rule, as the players were last told.
