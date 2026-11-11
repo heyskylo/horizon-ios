@@ -47,6 +47,10 @@ fn terrain_shader() -> String {
     include_str!("hdr_light.wgsl").to_owned() + include_str!("terrain.wgsl")
 }
 
+fn border_shader() -> String {
+    include_str!("hdr_light.wgsl").to_owned() + include_str!("border.wgsl")
+}
+
 /// The static block-entity vertex entry point shares entity shading but lives
 /// in its own source file and pipeline.
 fn static_entity_shader() -> String {
@@ -212,7 +216,12 @@ pub use screenshot_save::Saved as SavedScreenshot;
 pub mod block_light;
 mod custom_sky;
 mod displace;
+mod frame_policy;
 pub mod lightning;
+mod linear_blend;
+#[cfg(test)]
+use frame_policy::frame_format;
+use frame_policy::{frame_configuration, horizon_tone_curve, overlay_format};
 mod lod;
 mod native_material;
 mod native_pack;
@@ -2174,74 +2183,6 @@ fn draws_frame(format: wgpu::TextureFormatFeatures) -> bool {
 /// survive from the world to the tonemap and the HDR pass.
 const LINEAR_FRAME: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
-/// What a renderer's frame is drawn in: `LINEAR_FRAME` under the switch where the device draws
-/// it, for a 0.2 pack, or for the layered HDR frame where the surface offers HDR output
-/// (`linear`: `(a 0.2 pack picked, the layered HDR frame, the device draws it)`); else
-/// `WIDE_FRAME` when it is made with HDR on and Smooth Gradients (`wide_frame`,
-/// `output::resolve_frame`), the surface offering HDR output (`hdr_offered`) and the device
-/// drawing it (`draws_wide_frame`): an 8-bit frame's steps band in dark gradients, and HDR
-/// shows them. Else the swapchain's 8-bit format, as without HDR.
-fn frame_format(
-    wide_frame: bool,
-    hdr_offered: bool,
-    device_draws_it: bool,
-    swapchain: wgpu::TextureFormat,
-    linear: (bool, bool, bool),
-) -> wgpu::TextureFormat {
-    if linear.2 && (linear.0 || linear.1 && hdr_offered) {
-        LINEAR_FRAME
-    } else if wide_frame && hdr_offered && device_draws_it {
-        WIDE_FRAME
-    } else {
-        swapchain.remove_srgb_suffix()
-    }
-}
-
-/// The frame's format, and whether it is the layered HDR frame (HUD coverage): for HDR on
-/// under the switch (`hdr_float`), with no pack or a 0.2 one, where the device keeps the HUD
-/// on a layer of its own.
-fn frame_configuration(
-    wide_frame: bool,
-    device: (bool, bool, bool, bool),
-    swapchain: wgpu::TextureFormat,
-    linear_pack: bool,
-    hdr_float: bool,
-) -> (wgpu::TextureFormat, bool) {
-    let (hdr_offered, wide_ok, linear_ok, coverage_ok) = device;
-    let layered = hdr_float && hdr_offered && linear_ok && coverage_ok;
-    (
-        frame_format(
-            wide_frame,
-            hdr_offered,
-            wide_ok,
-            swapchain,
-            (linear_pack, layered, linear_ok),
-        ),
-        layered,
-    )
-}
-
-/// What the hand, the camera overlays and the HUD draw on: the frame, except for a 0.2 pack's
-/// float frame without the HUD's layer, which is SDR: the pack's picture finishes on the
-/// swapchain's 8-bit format first, so they clip and blend per draw as on vanilla's frame.
-fn overlay_format(
-    frame: wgpu::TextureFormat,
-    layered: bool,
-    swapchain: wgpu::TextureFormat,
-) -> wgpu::TextureFormat {
-    if frame == LINEAR_FRAME && !layered {
-        swapchain.remove_srgb_suffix()
-    } else {
-        frame
-    }
-}
-
-/// Whether Horizon's tone curve (`Hdr::tonemap`) runs on this frame: on the layered frame's
-/// world, unless a 0.2 pack's `[tonemap]` already mapped it. One tone mapping, never two.
-fn horizon_tone_curve(layered: bool, world: bool, pack_tonemap: bool) -> bool {
-    layered && world && !pack_tonemap
-}
-
 /// Opens a device on the first of `backend_order`'s backends that gives one.
 /// Offscreen rendering needs no surface, so it can use a GPU the window's
 /// display cannot present from (a headless compositor).
@@ -2911,6 +2852,7 @@ impl Renderer {
         let frame = output::resolve_frame(settings, request, output_caps, display, config.format);
         let (frame_format, hud_coverage, overlay_format) =
             (frame.format, frame.hud_layer, frame.overlay_format);
+        let linear_light = frame.linear_light;
         if previous.is_none() {
             startup_step(format_args!("creating the pipelines"));
         }
@@ -3066,9 +3008,10 @@ impl Renderer {
                              blend: Option<wgpu::BlendState>,
                              hud: Option<bool>| {
             let mut constants = constants.to_vec();
-            constants.push((
-                "HDR_WRITE_LIGHT",
-                f64::from(u8::from(frame_format == LINEAR_FRAME)),
+            // The debug crosshair draws with the HUD, in gamma.
+            constants.extend(linear_blend::frame_constants(
+                frame_format,
+                linear_light && hud.is_none(),
             ));
             let desc = wgpu::RenderPipelineDescriptor {
                 label: Some(label),
@@ -3881,8 +3824,12 @@ impl Renderer {
                     },
                 )],
             });
-        let weather =
-            weather::Weather::new(&device, frame_format, &entity_bindings, &entity_shader);
+        let weather = weather::Weather::new(
+            &device,
+            (frame_format, linear_light),
+            &entity_bindings,
+            &entity_shader,
+        );
         let atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Atlas"),
             ..Default::default()
@@ -4048,6 +3995,7 @@ impl Renderer {
         ];
         #[allow(clippy::too_many_arguments)]
         let entity_pipeline_in = |format,
+                                  linear,
                                   label,
                                   cull_mode,
                                   depth_write,
@@ -4086,10 +4034,7 @@ impl Renderer {
                     module: &entity_shader,
                     entry_point: Some(fragment),
                     compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: &[(
-                            "HDR_WRITE_LIGHT",
-                            f64::from(u8::from(frame_format == LINEAR_FRAME)),
-                        )],
+                        constants: &linear_blend::frame_constants(frame_format, linear),
                         ..Default::default()
                     },
                     targets: &[Some(wgpu::ColorTargetState {
@@ -4107,6 +4052,7 @@ impl Renderer {
             |label, cull_mode, depth_write, compare, bias, blend, clouds, fragment, write_mask| {
                 entity_pipeline_in(
                     frame_format,
+                    linear_light,
                     label,
                     cull_mode,
                     depth_write,
@@ -4246,8 +4192,12 @@ impl Renderer {
             "fs_entity_unmarked",
             wgpu::ColorWrites::ALL,
         );
-        let world_text_pipeline =
-            world_text::pipeline(&device, Some(&entity_layout), &entity_shader, frame_format);
+        let world_text_pipeline = world_text::pipeline(
+            &device,
+            Some(&entity_layout),
+            &entity_shader,
+            (frame_format, linear_light),
+        );
         // RenderPipelines.ENTITY_SOLID: a surface of an entity that is coplanar with
         // terrain wins the tie in vanilla (the boat's floor over the trapdoor on the
         // ground it is stopped by, #5950). Terrain and entities are separate draw
@@ -4270,10 +4220,12 @@ impl Renderer {
             alpha_blend,
             false,
         );
-        // The hand as `entity_pipeline` draws it, in the overlays' format.
-        let overlay_hand = (overlay_format != frame_format).then(|| {
+        // The hand as `entity_pipeline` draws it, in the overlays' format and gamma: it draws
+        // after a 0.2 pack's tonemap.
+        let overlay_hand = (overlay_format != frame_format || linear_light).then(|| {
             entity_pipeline_in(
                 overlay_format,
+                false,
                 "First-person hand",
                 None,
                 true,
@@ -4307,7 +4259,10 @@ impl Renderer {
                 fragment: Some(wgpu::FragmentState {
                     module: &static_entity_shader,
                     entry_point: Some("fs_entity_unmarked"),
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &linear_blend::frame_constants(frame_format, linear_light),
+                        ..Default::default()
+                    },
                     targets: &[Some(wgpu::ColorTargetState {
                         format: frame_format,
                         // fs_entity's discard handles binary cutout alpha. Any
@@ -4414,10 +4369,7 @@ impl Renderer {
                 module: &entity_shader,
                 entry_point: Some("fs_celestial"),
                 compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &[(
-                        "HDR_WRITE_LIGHT",
-                        f64::from(u8::from(frame_format == LINEAR_FRAME)),
-                    )],
+                    constants: &linear_blend::frame_constants(frame_format, linear_light),
                     ..Default::default()
                 },
                 targets: &[Some(wgpu::ColorTargetState {
@@ -4512,10 +4464,7 @@ impl Renderer {
                 module: &entity_shader,
                 entry_point: Some("fs_sky_celestial"),
                 compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &[(
-                        "HDR_WRITE_LIGHT",
-                        f64::from(u8::from(frame_format == LINEAR_FRAME)),
-                    )],
+                    constants: &linear_blend::frame_constants(frame_format, linear_light),
                     ..Default::default()
                 },
                 targets: &[Some(wgpu::ColorTargetState {
@@ -4654,7 +4603,7 @@ impl Renderer {
         });
         let border_shader = kept.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon world border"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("border.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(border_shader().into()),
         });
         let border_attributes = wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x2];
         // RenderPipelines.WORLD_BORDER: BlendFunction.OVERLAY, no culling,
@@ -4691,7 +4640,10 @@ impl Renderer {
             fragment: Some(wgpu::FragmentState {
                 module: &border_shader,
                 entry_point: Some("fs_border"),
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &linear_blend::frame_constants(frame_format, linear_light),
+                    ..Default::default()
+                },
                 targets: &[Some(wgpu::ColorTargetState {
                     format: frame_format,
                     blend: Some(wgpu::BlendState {
@@ -4917,6 +4869,7 @@ impl Renderer {
             entity: entity_bindings.clone(),
             static_entity: static_entity_bindings.clone(),
             format: frame_format,
+            linear: linear_light,
             sprite_constants,
             hdr_output: hdr_output.is_some(),
         });
@@ -4927,7 +4880,13 @@ impl Renderer {
                 log::info!(
                     "Horizon: solid terrain through a visibility buffer (HORIZON_VISBUFFER)"
                 );
-                visbuffer::Visbuffer::new(&device, &bindings, f, frame_format, &sprite_constants)
+                visbuffer::Visbuffer::new(
+                    &device,
+                    &bindings,
+                    f,
+                    (frame_format, linear_light),
+                    &sprite_constants,
+                )
             });
         let multi_draw = device
             .features()
@@ -5008,8 +4967,8 @@ impl Renderer {
         let world_post = world_post::Post::new(&device, frame_format);
         let uploads = upload::Uploads::new(&device);
         let section_uploads = upload::Uploads::with_chunk(&device, SECTION_UPLOAD_CHUNK);
-        let stars = stars::Stars::new(&device, frame_format);
-        let custom_sky = custom_sky::CustomSky::new(&device, frame_format);
+        let stars = stars::Stars::new(&device, (frame_format, linear_light));
+        let custom_sky = custom_sky::CustomSky::new(&device, (frame_format, linear_light));
         let entity_outline = entity_outline::EntityOutline::new(
             &device,
             (&entity_shader, &entity_layout, &entity_vertex),
@@ -5037,7 +4996,8 @@ impl Renderer {
                 on_off(gpu_timer.is_some()),
             ));
         }
-        let world_primitives = world_primitives::WorldPrimitives::new(&device, frame_format);
+        let world_primitives =
+            world_primitives::WorldPrimitives::new(&device, (frame_format, linear_light));
         let screenshot_saves = screenshot_save::Saves::new(&device);
         Ok(Self {
             display: None,
@@ -5442,6 +5402,8 @@ impl Renderer {
     /// outline, or the built-in one.
     pub fn set_lines_shader(&mut self, program: Option<&crate::core_shader::CoreProgram>) {
         let format = self.output.frame.format;
+        // A pack's GLSL writes vanilla's gamma: a frame of linear light keeps the built-in one.
+        let program = program.filter(|_| !self.output.frame.linear_light);
         self.core_lines =
             program.and_then(|program| core_lines::CoreLines::new(&self.device, format, program));
     }
@@ -5452,6 +5414,9 @@ impl Renderer {
         disc: Option<&crate::core_shader::CoreProgram>,
         stars: Option<&crate::core_shader::CoreProgram>,
     ) {
+        // As `set_lines_shader`: not on a frame of linear light.
+        let keep = !self.output.frame.linear_light;
+        let (disc, stars) = (disc.filter(|_| keep), stars.filter(|_| keep));
         self.core_sky = core_sky::CoreSky::new(&self.device, self.output.frame.format, disc, stars);
     }
     /// LevelRenderer.submitBlockOutline: the buffer holds `edges` per stroke, the black
@@ -7511,6 +7476,7 @@ impl Renderer {
             flat: self.flat.as_ref().map(|f| &f.draw_layout),
             sprites: self.terrain_sprites,
             format: self.output.frame.format,
+            linear: self.output.frame.linear_light,
             sprite_tags: &sprite_tags,
             sprite_materials: &sprite_materials,
             entities: &self.entity_bindings,
@@ -10211,6 +10177,7 @@ impl Renderer {
                 a: 1.0,
             }
         };
+        let clear = linear_blend::stored_clear(clear, self.output.frame.linear_light);
         let sky_visible = sky_open(frame);
         laps.lap("r_world_pass");
         // One of Horizon's own packs: this frame's inputs; in a timed frame its sky draws in a
@@ -12962,142 +12929,10 @@ fn frustum(m: Mat4) -> [Vec4; 6] {
 }
 
 #[cfg(test)]
+mod frame_policy_tests;
+
+#[cfg(test)]
 mod tests {
-    #[test]
-    fn float_frames_never_schedule_light_mark_passes() {
-        use super::{LINEAR_FRAME, WIDE_FRAME, light_marks};
-        use wgpu::TextureFormat::{Bgra8Unorm, Rgb10a2Unorm, Rgba8Unorm};
-        for hdr in [false, true] {
-            assert!(!light_marks(LINEAR_FRAME, hdr));
-            for format in [WIDE_FRAME, Bgra8Unorm, Rgba8Unorm, Rgb10a2Unorm] {
-                assert_eq!(light_marks(format, hdr), hdr);
-            }
-        }
-    }
-
-    #[test]
-    fn frame_policy_keeps_compatibility_frames_and_requires_layering_for_float_hdr() {
-        use super::{LINEAR_FRAME, WIDE_FRAME, frame_configuration};
-        use wgpu::TextureFormat::{Bgra8Unorm, Bgra8UnormSrgb};
-
-        for bits in 0..128 {
-            let hdr = bits & 1 != 0;
-            let offered = bits & 2 != 0;
-            let wide_ok = bits & 4 != 0;
-            let float_ok = bits & 8 != 0;
-            let coverage_ok = bits & 16 != 0;
-            let switch = bits & 32 != 0;
-            let smooth = bits & 64 != 0;
-            for pack in ["none", "0.1", "0.2", "shaders"] {
-                let float_hdr = matches!(pack, "none" | "0.2");
-                let expected = if switch && float_ok && float_hdr && hdr && offered && coverage_ok {
-                    (LINEAR_FRAME, true)
-                } else if switch && float_ok && pack == "0.2" {
-                    (LINEAR_FRAME, false)
-                } else if hdr && smooth && offered && wide_ok {
-                    (WIDE_FRAME, false)
-                } else {
-                    (Bgra8Unorm, false)
-                };
-                assert_eq!(
-                    frame_configuration(
-                        hdr && smooth,
-                        (offered, wide_ok, float_ok, coverage_ok),
-                        Bgra8UnormSrgb,
-                        switch && pack == "0.2",
-                        switch && hdr && float_hdr,
-                    ),
-                    expected,
-                    "bits {bits}, pack {pack}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn float_hdr_falls_back_for_each_missing_hud_layer_requirement() {
-        use super::{LINEAR_FRAME, WIDE_FRAME, frame_configuration, hud_coverage};
-        use wgpu::{DownlevelFlags as D, TextureFormat as F, TextureFormatFeatureFlags as Fl};
-        use wgpu::{TextureFormatFeatures, TextureUsages as U};
-
-        let usages = U::RENDER_ATTACHMENT | U::TEXTURE_BINDING;
-        for (attachments, flags, allowed_usages, format_flags) in [
-            (1, D::INDEPENDENT_BLEND, usages, Fl::BLENDABLE),
-            (2, D::empty(), usages, Fl::BLENDABLE),
-            (2, D::INDEPENDENT_BLEND, U::TEXTURE_BINDING, Fl::BLENDABLE),
-            (2, D::INDEPENDENT_BLEND, U::RENDER_ATTACHMENT, Fl::BLENDABLE),
-            (2, D::INDEPENDENT_BLEND, usages, Fl::empty()),
-        ] {
-            let coverage = hud_coverage::supported(
-                attachments,
-                flags,
-                TextureFormatFeatures {
-                    allowed_usages,
-                    flags: format_flags,
-                },
-            );
-            let device = (true, true, true, coverage);
-            assert_eq!(
-                frame_configuration(true, device, F::Bgra8Unorm, false, true),
-                (WIDE_FRAME, false)
-            );
-            assert_eq!(
-                frame_configuration(false, device, F::Bgra8Unorm, false, true),
-                (F::Bgra8Unorm, false)
-            );
-            assert_eq!(
-                frame_configuration(true, device, F::Bgra8Unorm, true, false),
-                (LINEAR_FRAME, false)
-            );
-            // A 0.2 pack keeps its float frame, without the layer: SDR.
-            assert_eq!(
-                frame_configuration(true, device, F::Bgra8Unorm, true, true),
-                (LINEAR_FRAME, false)
-            );
-        }
-    }
-
-    #[test]
-    fn a_0_2_pack_without_the_hud_layer_finishes_on_the_swapchains_8_bits() {
-        use super::{LINEAR_FRAME, WIDE_FRAME, overlay_format};
-        use wgpu::TextureFormat::{Bgra8Unorm, Bgra8UnormSrgb, Rgba8Unorm};
-        assert_eq!(
-            overlay_format(LINEAR_FRAME, false, Bgra8UnormSrgb),
-            Bgra8Unorm
-        );
-        assert_eq!(overlay_format(LINEAR_FRAME, false, Rgba8Unorm), Rgba8Unorm);
-        // Everything else draws its overlays on its frame: the layered frame's light, the
-        // 16-bit frame, the 8-bit frame.
-        for (frame, layered) in [
-            (LINEAR_FRAME, true),
-            (WIDE_FRAME, false),
-            (Bgra8Unorm, false),
-        ] {
-            assert_eq!(overlay_format(frame, layered, Bgra8UnormSrgb), frame);
-        }
-    }
-
-    #[test]
-    fn one_tone_curve_runs_on_the_layered_world() {
-        use super::horizon_tone_curve;
-        // No pack, or a 0.2 pack without `[tonemap]`: Horizon's curve.
-        assert!(horizon_tone_curve(true, true, false));
-        // A pack's `[tonemap]` mapped it already; never both.
-        assert!(!horizon_tone_curve(true, true, true));
-        // No world (the title screen), or no layered frame (SDR, the compatibility frames).
-        assert!(!horizon_tone_curve(true, false, false));
-        assert!(!horizon_tone_curve(false, true, false));
-    }
-
-    #[test]
-    fn only_a_no_pack_layered_world_applies_hdr_gain() {
-        use super::no_pack_hdr_gain;
-        assert!(no_pack_hdr_gain(true, false, true));
-        assert!(!no_pack_hdr_gain(false, false, true));
-        assert!(!no_pack_hdr_gain(true, true, true));
-        assert!(!no_pack_hdr_gain(true, false, false));
-    }
-
     #[test]
     fn taa_culling_covers_jittered_view_edges_but_still_rejects_behind_the_camera() {
         use super::*;
@@ -13874,6 +13709,8 @@ mod tests {
                 || name == "entity.wgsl"
                 || name == "stars.wgsl"
                 || name == "custom_sky.wgsl"
+                || name == "border.wgsl"
+                || name == "world_primitives.wgsl"
             {
                 let base = include_str!("hdr_light.wgsl").to_owned() + &text;
                 sources.push((path, crate::overlay::wgsl_constants() + &base));
@@ -13891,7 +13728,7 @@ mod tests {
                 // Appended to terrain.wgsl (gfx/visbuffer.rs).
                 sources.push((path, super::terrain_shader() + &text));
             } else if name == "oit_border.wgsl" {
-                let base = include_str!("border.wgsl").to_owned() + include_str!("oit.wgsl");
+                let base = super::border_shader() + include_str!("oit.wgsl");
                 sources.push((path, base + &text));
             } else if name == "oit_clouds.wgsl" {
                 let base = super::entity_shader() + include_str!("oit.wgsl");
