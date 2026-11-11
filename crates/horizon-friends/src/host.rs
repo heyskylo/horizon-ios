@@ -296,7 +296,14 @@ impl Host {
         for t in self.threads.drain(..) {
             let _ = t.join();
         }
-        if let Some(r) = self.shared.reach.lock().unwrap().as_mut() {
+        // A panic on a sharing thread must not crash the game at stop.
+        if let Some(r) = self
+            .shared
+            .reach
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
             r.release();
         }
     }
@@ -357,13 +364,27 @@ fn share(shared: Arc<Shared>, port: u16) {
     // Renew the router mapping at half-lease until stopped.
     while !shared.stopped() {
         std::thread::sleep(Duration::from_millis(100));
-        let mut reach = shared.reach.lock().unwrap();
-        if let Some(m) = reach.as_mut().and_then(|r| r.mapping.as_mut())
-            && m.due()
-            && m.renew().is_err()
-        {
-            // Try again in a minute rather than hammering the router.
-            m.renewed = Instant::now() - m.lifetime / 2 + Duration::from_secs(60);
+        // Renewed without the lock: the router may be slow, and stop() waits for this thread
+        // anyway before it releases the mapping, so it is always back by then.
+        let due = shared
+            .reach
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+            .and_then(|r| r.mapping.take_if(|m| m.due()));
+        if let Some(mut m) = due {
+            if m.renew().is_err() {
+                // Try again in a minute rather than hammering the router.
+                m.renewed = Instant::now() - m.lifetime / 2 + Duration::from_secs(60);
+            }
+            if let Some(r) = shared
+                .reach
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_mut()
+            {
+                r.mapping = Some(m);
+            }
         }
     }
     if let Some(t) = relay {
