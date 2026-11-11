@@ -290,7 +290,7 @@ fn elastic_pull_with_distance(
     Some((force, torque))
 }
 /// `Entity.checkFallDistanceAccumulation`.
-fn check_fall_distance(m: &mut Mob) {
+pub(super) fn check_fall_distance(m: &mut Mob) {
     if m.velocity.y > -0.5 && m.fall_distance > 1.0 {
         m.fall_distance = 1.0;
     }

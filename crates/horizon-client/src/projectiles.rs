@@ -11,6 +11,17 @@ use horizon_core::{
     random::RandomSource,
 };
 
+/// `AbstractArrow.startFalling`'s per-axis random velocity damping.
+pub fn start_falling_velocity(
+    velocity: Vec3,
+    random: &mut horizon_core::random::LegacyRandom,
+) -> Vec3 {
+    let x = f64::from(random.next_float() * 0.2);
+    let y = f64::from(random.next_float() * 0.2);
+    let z = f64::from(random.next_float() * 0.2);
+    Vec3::new(velocity.x * x, velocity.y * y, velocity.z * z)
+}
+
 /// a content mod's thrown item projectile, a copy of `Snowball` that deals
 /// `damage` and flies as its `item`.
 #[derive(Debug, PartialEq)]
@@ -303,6 +314,12 @@ pub trait ProjectileWorld {
     /// `Entity.isInWater` as `updateFluidInteraction` sets it: some water
     /// block's surface reaches the bottom of the box (deflated by 0.001).
     fn in_water(&self, bounds: Aabb) -> bool;
+    /// `velocity` after the currents of the water and the lava the box
+    /// touches (`EntityFluidInteraction.applyCurrentTo`): a projectile is
+    /// pushed by fluids like any entity (`Entity.isPushedByFluid`).
+    fn pushed_by_currents(&self, _bounds: Aabb, velocity: Vec3) -> Vec3 {
+        velocity
+    }
     fn targets(&self) -> &[(Who, Aabb)];
     /// Server-only mod-block contacts along the completed movement.
     fn block_contacts(&self, _entity: i32, _kind: &str, _from: Vec3, _to: Vec3, _bounds: Aabb) {}
@@ -850,11 +867,59 @@ impl Projectile {
         self.previous_yaw = self.yaw;
         self.previous_pitch = self.pitch;
     }
+    /// The kinds whose tick turns them with `Projectile.updateRotation`: a
+    /// `ThrowableProjectile` (the thrown kinds and the experience bottle) and
+    /// llama spit.
+    fn turns_with_update_rotation(&self) -> bool {
+        self.is_thrown() || self.kind == ProjectileKind::ExperienceBottle
+    }
+    /// `Projectile.updateRotation`: a fifth of the way (`lerpRotation`) from
+    /// the rotation the tick started with toward the motion's direction.
+    fn turn_towards_movement(&mut self) {
+        use horizon_core::geometry::trig::atan2_degrees;
+        let v = self.velocity;
+        let x_rot = atan2_degrees(v.y, v.horizontal_distance());
+        let y_rot = atan2_degrees(v.x, v.z);
+        self.pitch = crate::arrows::lerp_rotation(self.previous_pitch, x_rot);
+        self.yaw = crate::arrows::lerp_rotation(self.previous_yaw, y_rot);
+    }
     /// `Entity.setOldPosAndRot`: where the renderer interpolates from.
     pub fn set_old_pos_and_rot(&mut self) {
         self.previous = self.position;
         self.previous_yaw = self.yaw;
         self.previous_pitch = self.pitch;
+    }
+    /// `Entity.move(PISTON)`: the position only; `release_after_piston` follows
+    /// (`AbstractArrow.move`).
+    pub fn move_by_piston(&mut self, movement: Vec3) {
+        self.position = self.position.add_vector(movement);
+        self.needs_sync = true;
+    }
+    pub fn piston_release_bounds(&self) -> Option<Aabb> {
+        let arrow = self.arrow.as_ref()?;
+        if !arrow.in_ground || arrow.no_physics {
+            return None;
+        }
+        Some(Aabb::new(self.position, self.position).inflate(Vec3::new(0.06, 0.06, 0.06)))
+    }
+    pub fn release_after_piston(&mut self, no_block_collision: bool) {
+        let Some(arrow) = self.arrow.as_mut() else {
+            return;
+        };
+        if arrow.in_ground && !arrow.no_physics && no_block_collision {
+            self.velocity = start_falling_velocity(self.velocity, &mut arrow.random);
+            arrow.in_ground = false;
+            arrow.life = 0;
+            self.stuck = false;
+            self.needs_sync = true;
+        }
+    }
+    /// `PistonMovingBlockEntity.moveCollidedEntities` on a slime block: the
+    /// velocity along the axis. The piston's move after it (`AbstractArrow.move`)
+    /// is what takes a stuck arrow out, with `startFalling`'s random damping.
+    pub fn piston_slime_bounce(&mut self, movement: Direction) {
+        self.velocity = horizon_world::piston_push::bounce_velocity(movement, self.velocity);
+        self.needs_sync = true;
     }
     /// `ShulkerBullet.<init>(level, owner, target, invalidStartAxis)`: a
     /// shulker's bullet at `at`, the centre of its owner's box
@@ -1130,7 +1195,7 @@ impl Projectile {
     /// through (`applyEffectsFromBlocks`), bubble columns among them:
     /// `ThrowableProjectile`, `AbstractHurtingProjectile` and `ShulkerBullet`.
     /// Arrows push themselves (`arrows::tick`); llama spit applies none.
-    fn applies_block_effects(&self) -> bool {
+    pub fn applies_block_effects(&self) -> bool {
         self.is_throwable_projectile()
             || matches!(
                 self.kind,
@@ -1180,6 +1245,17 @@ impl Projectile {
     /// the blocks the box swept through from `from`, each once, pushing when
     /// the move was long or the final box (deflated by 1e-5F) is inside it.
     fn bubble_columns_along(&mut self, w: &impl ProjectileWorld, from: Vec3) {
+        self.bubble_columns_since(from, |p| w.bubble_column(p));
+    }
+    /// [`bubble_columns_along`](Self::bubble_columns_along) with the bubble
+    /// columns read by `column`, for a move made by something else: a
+    /// piston's push applies the block effects too (`moveEntityByPiston`'s
+    /// `applyEffectsFromBlocks`).
+    pub fn bubble_columns_since(
+        &mut self,
+        from: Vec3,
+        column: impl Fn([i32; 3]) -> Option<(bool, bool)>,
+    ) {
         let to = self.position;
         let eps = f64::from(1.0e-5_f32);
         let deflated = self.bounds().deflate(Vec3::new(eps, eps, eps));
@@ -1221,7 +1297,7 @@ impl Projectile {
             if cells[..i].contains(&p) {
                 continue;
             }
-            let Some((drag, surface)) = w.bubble_column([p.x, p.y, p.z]) else {
+            let Some((drag, surface)) = column([p.x, p.y, p.z]) else {
                 continue;
             };
             let cell = Aabb::new(
@@ -1372,6 +1448,11 @@ impl Projectile {
                 );
             }
         }
+        // ThrowableProjectile.tick and LlamaSpit.tick turn with this move's
+        // motion, hit or not (a spit's drag and gravity come after).
+        if self.turns_with_update_rotation() {
+            self.turn_towards_movement();
+        }
         let from = self.position;
         let to = Vec3::new(
             from.x + self.velocity.x,
@@ -1465,15 +1546,18 @@ impl Projectile {
                 self.velocity.y * drag - self.get_gravity(),
                 self.velocity.z * drag,
             );
-            self.update_rotation();
             return (self.position.y > -128.0 && self.age < 6000, spit_hit);
         }
         self.position = to;
-        if !self.is_fireball() {
+        // Wind charges still face their motion at once; vanilla turns every
+        // `AbstractHurtingProjectile` gradually (#14466).
+        if !self.is_fireball() && !self.turns_with_update_rotation() {
             self.update_rotation();
         }
-        // Entity.baseTick's updateFluidInteraction, after the move.
+        // Entity.baseTick's updateFluidInteraction, after the move: the fluids
+        // it touches now, and their currents push it.
         self.touching_water = w.in_water(self.bounds());
+        self.velocity = w.pushed_by_currents(self.bounds(), self.velocity);
         let alive =
             self.position.y > -128.0 && self.age < if self.is_fireball() { 1200 } else { 6000 };
         (alive, Hit::None)
@@ -1726,6 +1810,38 @@ mod tests {
         p.tick_remote(&Empty(vec![]));
         assert_eq!(p.velocity.y, -0.03 * f64::from(0.8_f32));
     }
+    #[test]
+    fn piston_move_releases_a_stuck_arrow_with_start_falling_velocity() {
+        let mut p = Projectile::new(
+            ProjectileKind::Arrow {
+                base_damage: 2.0,
+                critical: false,
+                effect: None,
+            },
+            Vec3::new(0.5, 100.0, 0.5),
+            None,
+        );
+        p.velocity = Vec3::new(1.0, -2.0, 3.0);
+        p.stuck = true;
+        p.arrow.as_mut().unwrap().in_ground = true;
+        let mut random = p.arrow.as_ref().unwrap().random.clone();
+        let expected = start_falling_velocity(p.velocity, &mut random);
+
+        p.move_by_piston(Vec3::new(0.5, 0.0, 0.0));
+        assert!(p.piston_release_bounds().is_some());
+        p.release_after_piston(false);
+        assert!(p.arrow.as_ref().unwrap().in_ground);
+        assert_eq!(p.velocity, Vec3::new(1.0, -2.0, 3.0));
+
+        p.release_after_piston(true);
+        let arrow = p.arrow.as_ref().unwrap();
+        assert!(!arrow.in_ground);
+        assert_eq!(p.velocity, expected);
+        assert!(!p.stuck);
+        assert!(p.needs_sync);
+        assert!(p.piston_release_bounds().is_none());
+    }
+
     #[test]
     fn first_tick_shoot_event_uses_base_tick_position_and_saved_flag() {
         let w = Empty(vec![]);

@@ -421,6 +421,16 @@ impl Game<'_> {
                     // random (Entity.random) goes on, as a spawn egg's entity
                     // data finds it.
                     slot.random = old.random.clone();
+                    // Entity.load keeps the unsaved Allay.jukeboxPos and
+                    // DATA_DANCING of the entity it loads into.
+                    if slot.species() == horizon_client::mobs::Species::Allay {
+                        slot.extra.flag = old.extra.flag;
+                        if let (Some(st), Some(was)) =
+                            (slot.extra.allay.as_mut(), old.extra.allay.as_ref())
+                        {
+                            st.jukebox = was.jukebox;
+                        }
+                    }
                     if keep_liked_player {
                         slot.extra.tame = old.extra.tame;
                         slot.extra.owner = old.extra.owner;
@@ -461,10 +471,10 @@ impl Game<'_> {
                     // Wolf.readAdditionalSaveData initializes persistent anger at
                     // the live level clock, just as load_mob does on admission.
                     if slot.species() == horizon_client::mobs::Species::Wolf {
-                        slot.extra.anger = horizon_client::mobs::anger_left(
-                            slot.extra.anger_end,
-                            self.world.game_time,
-                        );
+                        horizon_client::mobs::adopt_anger_end(slot, self.world.game_time);
+                    } else {
+                        // `readPersistentAngerSaveData` set the end time as written.
+                        slot.extra.anger_stamp = Some((slot.extra.anger, slot.age));
                     }
                 }
             }
@@ -506,9 +516,11 @@ impl Game<'_> {
                     new.glow = old.glow;
                     // ItemFrame.readAdditionalSaveData: ItemStack.matches includes
                     // count, item and components, before adopting the new stack.
+                    // It compares the stack as read; setItem keeps one of it
+                    // only after, as `new.item` already does.
+                    let read = tag.get("Item").and_then(save::item_from_nbt);
                     if old.item.as_ref().is_some_and(|a| {
-                        new.item
-                            .as_ref()
+                        read.as_ref()
                             .is_none_or(|b| a.count != b.count || !a.same_item_same_components(b))
                     }) {
                         let old = old.clone();

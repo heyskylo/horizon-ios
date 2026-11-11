@@ -22,6 +22,9 @@ pub struct Environment {
     pub water_fog_brightening: f32,
     /// `water_fog_brightening_time`: the ticks under water it takes (vanilla's 600).
     pub water_fog_brightening_time: f32,
+    /// `horizon_height`: below it the sky draws its dark disc (vanilla's 63; flat worlds keep
+    /// their floor).
+    pub horizon_height: f32,
 }
 
 impl Default for Environment {
@@ -33,6 +36,113 @@ impl Default for Environment {
             boss_fog_distance: 96.0,
             water_fog_brightening: 1.0,
             water_fog_brightening_time: 600.0,
+            horizon_height: 63.0,
+        }
+    }
+}
+
+/// A `biome_colors` entry: what replaces one of vanilla's biome colour functions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BiomeColor {
+    /// A flat colour (RGB).
+    Flat(u32),
+    /// A colormap id (`polytone/colormaps/<path>`).
+    Colormap(String),
+}
+
+/// A fluid modifier's fog (`fluid_modifiers`): `fog_colormap` as a flat colour (RGB), and the
+/// `fog_radius` and `fog_fade` multipliers (1 is vanilla).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FluidFog {
+    pub color: Option<u32>,
+    pub radius: f32,
+    pub fade: f32,
+}
+
+/// The fog the packs' fluid modifiers give water and lava, read with the colours.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FluidFogs {
+    pub water: Option<FluidFog>,
+    pub lava: Option<FluidFog>,
+}
+
+impl FluidFogs {
+    /// Every `assets/<namespace>/polytone/fluid_modifiers/**.json` under a pack overlay root that
+    /// sets a fog field and targets `minecraft:water` or `minecraft:lava` (still or flowing). A
+    /// colormap id or an expression isn't read (a warning names it).
+    pub fn read(root: &Path) -> Self {
+        let mut fogs = Self::default();
+        for namespace in std::fs::read_dir(root.join("assets"))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let mut stack = vec![namespace.path().join("polytone/fluid_modifiers")];
+            while let Some(dir) = stack.pop() {
+                for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        stack.push(path);
+                    } else if path.extension().is_some_and(|e| e == "json") {
+                        fogs.add(root, &path);
+                    }
+                }
+            }
+        }
+        fogs
+    }
+
+    fn add(&mut self, root: &Path, path: &Path) {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let Ok(json) = serde_json::from_str::<Json>(&text) else {
+            return;
+        };
+        let relative = path.strip_prefix(root).unwrap_or(path).to_string_lossy();
+        let number = |key: &str| match json.get(key) {
+            None => Some(1.0),
+            Some(Json::Number(n)) => n.as_f64().map(|v| v as f32),
+            Some(Json::String(s)) => s.trim().parse().ok().or_else(|| {
+                log::warn!("{relative}: {key} expressions aren't read yet");
+                None
+            }),
+            _ => None,
+        };
+        let color = match json.get("fog_colormap") {
+            None => None,
+            Some(value) => match parse_color(value) {
+                Some(c) => Some(c & 0xFF_FFFF),
+                None => {
+                    log::warn!("{relative}: only flat fog colours are read");
+                    None
+                }
+            },
+        };
+        let fog = FluidFog {
+            color,
+            radius: number("fog_radius").unwrap_or(1.0),
+            fade: number("fog_fade").unwrap_or(1.0),
+        };
+        if fog
+            == (FluidFog {
+                color: None,
+                radius: 1.0,
+                fade: 1.0,
+            })
+        {
+            return;
+        }
+        let implicit = crate::implicit_id(&relative, "fluid_modifiers");
+        let Ok(targets) = crate::Targets::parse(json.get("targets"), implicit.as_deref()) else {
+            return;
+        };
+        let aims = |id: &str| targets.matches(id, |_| false);
+        if aims("minecraft:water") || aims("minecraft:flowing_water") {
+            self.water = Some(fog);
+        }
+        if aims("minecraft:lava") || aims("minecraft:flowing_lava") {
+            self.lava = Some(fog);
         }
     }
 }
@@ -43,6 +153,8 @@ pub struct PackColors {
     entries: BTreeMap<String, Json>,
     /// [`Self::environment`], read once with the packs: the fog reads it every frame.
     pub env: Environment,
+    /// The packs' fluid modifiers' fog.
+    pub fluid_fog: FluidFogs,
 }
 
 impl PackColors {
@@ -70,6 +182,7 @@ impl PackColors {
             }
         }
         colors.env = colors.environment();
+        colors.fluid_fog = FluidFogs::read(root);
         colors
     }
 
@@ -207,7 +320,24 @@ impl PackColors {
                 vanilla.water_fog_brightening_time,
             )
             .max(1.0),
+            horizon_height: number("horizon_height", vanilla.horizon_height),
         }
+    }
+
+    /// `biome_colors.<function>` (`grass`, `foliage`, `dry_foliage`, `water`): a colormap id or
+    /// a flat colour. Inline colormaps aren't read.
+    pub fn biome_color(&self, function: &str) -> Option<BiomeColor> {
+        let value = self.entries.get(&format!("biome_colors.{function}"))?;
+        if let Json::String(s) = value {
+            let s = s.trim();
+            if s.contains(':') {
+                return Some(BiomeColor::Colormap(s.to_owned()));
+            }
+            if parse_color(value).is_none() {
+                return Some(BiomeColor::Colormap(format!("minecraft:{s}")));
+            }
+        }
+        parse_color(value).map(|c| BiomeColor::Flat(c & 0xFF_FFFF))
     }
 
     /// `entity_shadows`: false hides every entity's round shadow, whatever the video option says.
@@ -325,6 +455,50 @@ mod tests {
             (e.water_fog_brightening, e.water_fog_brightening_time),
             (1.0, 200.0)
         );
+    }
+
+    #[test]
+    fn biome_colours_are_colormaps_or_flat() {
+        let mut c = PackColors::default();
+        c.add_json(
+            "",
+            &json!({"biome_colors": {"grass": "my_pack:grass", "foliage": "0x0000ff", "water": "lake"}}),
+        );
+        assert_eq!(
+            c.biome_color("grass"),
+            Some(BiomeColor::Colormap("my_pack:grass".into()))
+        );
+        assert_eq!(c.biome_color("foliage"), Some(BiomeColor::Flat(0x0000ff)));
+        assert_eq!(
+            c.biome_color("water"),
+            Some(BiomeColor::Colormap("minecraft:lake".into()))
+        );
+        assert_eq!(c.biome_color("dry_foliage"), None);
+    }
+
+    #[test]
+    fn fluid_modifiers_give_water_and_lava_their_fog() {
+        let root = std::env::temp_dir().join(format!("fluid-fog-{}", std::process::id()));
+        let dir = root.join("assets/minecraft/polytone/fluid_modifiers");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("water.json"),
+            r#"{"targets": ["minecraft:water", "minecraft:flowing_water"], "fog_colormap": "ff0000", "fog_radius": 0.3}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("lava.json"), r#"{"fog_fade": "0"}"#).unwrap();
+        std::fs::write(dir.join("honey.json"), r#"{"colormap": "foliage_color"}"#).unwrap();
+        let fogs = FluidFogs::read(&root);
+        let fog = |color, radius, fade| {
+            Some(FluidFog {
+                color,
+                radius,
+                fade,
+            })
+        };
+        assert_eq!(fogs.water, fog(Some(0xff0000), 0.3, 1.0));
+        assert_eq!(fogs.lava, fog(None, 1.0, 0.0));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

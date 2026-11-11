@@ -11,9 +11,9 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-mod generated {
-    include!(concat!(env!("OUT_DIR"), "/native_render_generated.rs"));
-}
+/// The hooks' trait and dispatch, made from `native-hooks.json` by `cargo run -p xtask -- mod-api`;
+/// the game's build checks that the file is current.
+mod generated;
 pub use generated::{
     HandDrawnEvent, RenderHooks, RenderNeedsEvent, WorldDrawnEvent, WorldWarpEvent,
 };

@@ -47,6 +47,15 @@ pub fn open_vulkan_device(
     Some(unsafe { adapter.create_device_from_hal(open, desc) })
 }
 
+/// wgpu's opt-in to its `EXPERIMENTAL_*` features, which the crates that forbid unsafe code
+/// can't give: hardware ray queries, asked for only when the player turns ray tracing on
+/// (`gfx/ray_query.rs` in horizon-client-render).
+pub fn experimental_features() -> wgpu::ExperimentalFeatures {
+    // Safety: wgpu warns that its experimental features may have bugs that reach undefined
+    // behaviour through safe calls. Horizon accepts that only on request, for ray queries.
+    unsafe { wgpu::ExperimentalFeatures::enabled() }
+}
+
 /// Tells the compositor, through `VK_EXT_hdr_metadata`, that the swapchain's
 /// content is BT.709, peaks at `peak` nits and is no darker than `black`. Needs a
 /// device from `open_vulkan_device` and a configured surface; does nothing otherwise.

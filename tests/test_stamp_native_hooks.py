@@ -191,6 +191,17 @@ class StampTests(unittest.TestCase):
         self.assertFalse(stamp.stamp(False))
         self.assertEqual(path.read_text(), "/// Since API 8.\n")
 
+    def test_stamped_files_are_read_and_written_as_utf8(self):
+        # ” is UTF-8 that Windows' code page cannot decode (0x9d), as in files the repository's fragments stamp.
+        self.git("add", ".")
+        self.git("commit", "-qm", "base")
+        self.fragment("quote")
+        path = self.root / stamp.MOD_API
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes("/// “Since” API @API:quote@.\n".encode())
+        self.assertFalse(stamp.stamp(False))
+        self.assertEqual(path.read_text(encoding="utf-8"), "/// “Since” API 8.\n")
+
     def test_stamping_leaves_stale_generated_copies_alone(self):
         # Old checkouts may still have these files; only the generator's inputs are stamped now.
         generated = (
@@ -226,7 +237,8 @@ class StampTests(unittest.TestCase):
         # succeed and leave no marker, or the stamp workflow fails or ships unnumbered docs.
         repo = self.original
         fragments = [p.relative_to(repo) for p in (repo / stamp.FRAGMENTS).glob("*.json")]
-        comments = {Path(c) for p in fragments for c in json.loads((repo / p).read_text()).get("comments", [])}
+        comments = {Path(c) for p in fragments
+                    for c in json.loads((repo / p).read_text(encoding="utf-8")).get("comments", [])}
         stamped = [stamp.SOURCE, stamp.DOCS, stamp.MOD_API, *comments]
         for path in [stamp.CATALOG, *stamped, *fragments]:
             if (repo / path).exists():
@@ -235,7 +247,7 @@ class StampTests(unittest.TestCase):
         self.git("add", ".")
         self.git("commit", "-qm", "base")
         self.assertFalse(stamp.stamp(False))
-        left = {str(p): re.findall(r"@API:\w+@", (self.root / p).read_text())
+        left = {str(p): re.findall(r"@API:\w+@", (self.root / p).read_text(encoding="utf-8"))
                 for p in stamped if (self.root / p).exists()}
         self.assertEqual({p: m for p, m in left.items() if m}, {})
 
