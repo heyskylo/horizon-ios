@@ -34,13 +34,14 @@ class ParityMainTests(unittest.TestCase):
             self.assertEqual(parity_main.base(runs=[]), parent, "no green run yet: the last merge")
             self.assertEqual(parity_main.base(runs=[head]), head)
 
-    def bisect(self, broken_from):
-        """Run bisect over 4 merges where each harness of broken_from fails from that merge's index on (None: never;
-        0: at the base too). Returns the exit code and the pull requests commented on."""
+    def bisect(self, broken_from, merges=4, budgets=None):
+        """Run bisect over merges where each harness of broken_from fails from that merge's index on (None: never;
+        0: at the base too). Returns the exit code and the pull requests commented on; with budgets, one run after
+        another on the same runner, each as (exit code, comments, commits it ran harnesses at, what it reported)."""
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(parity_main, "ROOT", Path(tmp)):
             git = lambda *arguments: parity_main.git(*arguments).stdout.strip()
             git("init", "-q")
-            for n in range(4):
+            for n in range(merges):
                 git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty",
                     "-m", f"Merge pull request #{n} from x/y")
             commits = git("rev-list", "--reverse", "HEAD").split()
@@ -48,20 +49,27 @@ class ParityMainTests(unittest.TestCase):
             last_run.parent.mkdir(parents=True)
             last_run.write_text(json.dumps({"failed": list(broken_from)}))
             real_run = parity_main.subprocess.run
-            comments = []
+            comments, ran, reported = [], [], []
             # git runs for real in the scratch repo; a `gh pr comment` is only recorded, never sent.
-            fake_run = lambda command, **kwargs: (comments.append(command) if command[0] == "gh"
-                                                  else real_run(command, **kwargs))
+            fake_run = lambda command, **kwargs: (comments.append(command) or mock.Mock(returncode=0)
+                                                  if command[0] == "gh" else real_run(command, **kwargs))
             at = lambda: commits.index(git("rev-parse", "HEAD"))
-            run = lambda names, timeout: [name for name in names
-                                          if broken_from[name] is not None and at() >= broken_from[name]]
+            run = lambda names, timeout: ran.append(at()) or [
+                name for name in names if broken_from[name] is not None and at() >= broken_from[name]]
+            runs = []
             with mock.patch.object(parity_main, "LAST_RUN", last_run), \
+                 mock.patch.object(parity_main, "BISECT", last_run.with_name("bisect.json")), \
                  mock.patch.object(parity_main, "run_harnesses", run), \
                  mock.patch.object(parity_main.subprocess, "run", fake_run), \
-                 mock.patch("builtins.print"):
-                code = parity_main.bisect(commits[0], 60, comment=True)
-            self.assertEqual(git("rev-parse", "HEAD"), commits[-1], "HEAD checked out again")
-            return code, [(command[3], command[-1].split("breaks ")[1].split(" on main")[0]) for command in comments]
+                 mock.patch("builtins.print", lambda *lines, **kwargs: reported.extend(lines)):
+                for budget in budgets or [90]:
+                    del comments[:], ran[:], reported[:]
+                    code = parity_main.bisect(commits[0], 60, comment=True, budget=budget)
+                    self.assertEqual(git("rev-parse", "HEAD"), commits[-1], "HEAD checked out again")
+                    runs.append((code, [(command[3], command[-1].split("breaks ")[1].split(" on main")[0])
+                                        for command in comments], list(ran), [line[len("parity-main: "):]
+                                        for line in reported if line.startswith("parity-main: ")]))
+            return runs if budgets else runs[0][:2]
 
     def test_bisect_names_a_merge_only_when_head_fails_and_the_base_passes(self):
         self.assertEqual(self.bisect({"music": None}), (0, []), "0 only when the failures pass again at HEAD")
@@ -74,6 +82,26 @@ class ParityMainTests(unittest.TestCase):
                          (1, [("2", "`music`, `sound`")]))
         # Two merges broke two harnesses: each is named.
         self.assertEqual(self.bisect({"music": 3, "sound": 1}), (1, [("1", "`sound`"), ("3", "`music`")]))
+
+    def test_a_search_out_of_time_says_how_far_it_got_and_the_next_run_goes_on(self):
+        # 2026-11-09 to 11-11: seven runs searched up to 1,500 merges until the job's limit, and named nothing.
+        first, second, third = self.bisect({"music": 11}, merges=16, budgets=[0, 90, 90])
+        code, comments, ran, reported = first
+        self.assertEqual((code, comments, ran), (1, [], [15, 0]), "HEAD and the base, then no time for the search")
+        self.assertIn("ended with 15 merges left. The next run goes on from there.", reported[0])
+        code, comments, ran, _ = second
+        self.assertEqual((code, comments), (1, [("11", "`music`")]))
+        self.assertEqual(ran[:1], [15], "HEAD runs again")
+        self.assertNotIn(0, ran, "the base is not run again")
+        code, comments, ran, reported = third
+        self.assertEqual((code, comments, ran), (1, [], [15]), "a merge already named is not commented on again")
+        self.assertIn("music first fail at", reported[0])
+
+    def test_a_search_goes_on_between_the_merges_an_earlier_one_tried(self):
+        # Finding sound's merge (2) tried merges 7, 3 and 1, where music passed: music's search starts above 7.
+        code, comments, ran, _ = self.bisect({"sound": 2, "music": 11}, merges=16, budgets=[90])[0]
+        self.assertEqual(comments, [("2", "`sound`"), ("11", "`music`")])
+        self.assertEqual(ran, [15, 0, 7, 3, 1, 2, 11, 9, 10])
 
     def test_a_harness_a_commit_does_not_have_cannot_fail_there(self):
         with mock.patch.object(parity_main.subprocess, "run") as run:
