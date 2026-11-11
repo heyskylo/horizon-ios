@@ -1,6 +1,6 @@
 Fox.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	gap: minor: the type and the flags byte are synced; the two trusted-entity slots are not
 Fox.canEat	inline	crates/horizon-client/src/mobs/fox.rs::ai_step	held food (eats), no target, on the ground and awake, tested in the eating block of ai_step
-Fox.populateDefaultEquipmentSlots	port	crates/horizon-client/src/mobs/fox.rs::populate_default_equipment	called for a live spawn by spawning.rs::finalize and for a structure mob by Ctx::populate: one fox in five (nextFloat below 0.2) holds, by a second draw, an emerald (below 0.05), egg (0.2), rabbit foot or hide (0.4, by nextBoolean), wheat (0.6), leather (0.8) or feather
+Fox.populateDefaultEquipmentSlots	port	crates/horizon-client/src/mobs/fox.rs::populate_default_equipment	called for a live spawn by spawning.rs::finalize; Ctx::populate has its own copy of the same draws for a structure mob: one fox in five (nextFloat below 0.2) holds, by a second draw, an emerald (below 0.05), egg (0.2), rabbit foot or hide (0.4, by nextBoolean), wheat (0.6), leather (0.8) or feather
 Fox.handleEntityEvent	port	crates/horizon-client/src/mobs/fox.rs::ai_step	ticked in #3512; `Fox.handleEntityEvent` is cited at crates/horizon-client/src/mobs/fox.rs:227 (in a comment, so `where` names the enclosing fn)
 Fox.createAttributes	skip:data		attributes come from entity-types.json
 Fox.checkFoxSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	foxes_spawnable_on below and bright enough
@@ -80,13 +80,13 @@ Goat.playEatingSound	port	crates/horizon-client/src/mobs/ai.rs::eating_sound	scr
 Goat.getAmbientSound	port	crates/horizon-client/src/mobs/ai.rs::voice_sounds	screaming ambient event selected by IsScreamingGoat
 Goat.getHurtSound	port	crates/horizon-client/src/mobs/ai.rs::voice_sounds	screaming hurt event selected by IsScreamingGoat
 Goat.getDeathSound	port	crates/horizon-client/src/mobs/ai.rs::voice_sounds	screaming death event selected by IsScreamingGoat
-Goat.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::goat_spawn	called for a live spawn by spawning.rs::finalize and by Ctx::finalize: the ram and long jump cooldowns, screaming when nextDouble is below 0.02, ageBoundaryReached, and for an adult a lost horn one time in ten (nextFloat below 0.1, the side by nextBoolean)
+Goat.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::goat_spawn	called for a live spawn by spawning.rs::finalize; Ctx::finalize has its own arm with the same draws for a structure mob: the ram and long jump cooldowns, screaming when nextDouble is below 0.02, ageBoundaryReached, and for an adult a lost horn one time in ten (nextFloat below 0.1, the side by nextBoolean)
 Goat.getDefaultDimensions	port	crates/horizon-client/src/mobs/living.rs::Mob::dims	baby box (0.45 x 0.65, eye 0.59375) from the species table; no long jump pose scale since there is no long jump
 Goat.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	IsScreamingGoat, HasLeftHorn, HasRightHorn
 Goat.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	IsScreamingGoat and both horn flags (default true)
 Goat.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	gap: minor: the two horn flags are synced; the screaming flag is not
 Goat.checkGoatSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	goats_spawnable_on below and bright enough
-GoatAi.initMemories	port	crates/horizon-client/src/mobs/finalize.rs::goat_init_memories	the long jump cooldown uniform 600 to 1200 and the ram cooldown uniform 600 to 6000 (TIME_BETWEEN_LONG_JUMPS, TIME_BETWEEN_RAMS); set by goat_spawn for a spawn and by creatures.rs::breed for a baby, as Goat.getBreedOffspring calls initMemories
+GoatAi.initMemories	port	crates/horizon-client/src/mobs/finalize.rs::goat_init_memories	the long jump cooldown uniform 600 to 1200 and the ram cooldown uniform 600 to 6000 (TIME_BETWEEN_LONG_JUMPS, TIME_BETWEEN_RAMS); Ctx::finalize and creatures.rs::breed (a baby, as Goat.getBreedOffspring calls initMemories) call it, and goat_spawn draws the same two values for a live spawn
 GoatAi.initCoreActivity	inline	crates/horizon-client/src/mobs/ai.rs::generic	Float (swim), Panic 2.0 and the cooldown count in goat.rs::tick
 GoatAi.initIdleActivity	inline	crates/horizon-client/src/mobs/ai.rs::generic	Breed, Tempt 1.25 with goat_food, FollowParent 1.25, stroll, look at player 6; no walk-to-look-target or do-nothing options
 GoatAi.initLongJumpActivity	port	crates/horizon-client/src/mobs/goat.rs::register	ticked in #3512; `GoatAi.initLongJumpActivity` is cited at crates/horizon-client/src/mobs/goat.rs:61 (in a comment, so `where` names the enclosing fn)
