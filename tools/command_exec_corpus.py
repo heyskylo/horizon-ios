@@ -5279,7 +5279,8 @@ def sulfur_cube_size_attributes():
         for uuid in uuids:
             ops += reads(uuid)
     ops += [cmd(f'/attribute {uuid} minecraft:movement_speed get 1000') for uuid in uuids]
-    ops += setup('/kill @e[type=sulfur_cube]', f'/forceload remove {x} {z}')
+    ops += setup(SHRINK_SULFUR_CUBES.format('@e[type=sulfur_cube]'), '/kill @e[type=sulfur_cube]',
+                 f'/forceload remove {x} {z}')
     # A real bucket release, looking down at the floor (the bucket's own use, not useOn).
     ops += setup('/forceload add 0 0 15 15', '/fill 0 199 0 12 210 12 air', '/fill 0 199 0 12 199 12 stone',
                  '/gamemode survival', '/tp @s 4.5 200 4.5 0 90',
@@ -5287,7 +5288,8 @@ def sulfur_cube_size_attributes():
     ops.append({'op': 'settle'})
     ops.append({'op': 'use_item', 'sequence': 1, 'yaw': 0.0, 'pitch': 90.0})
     ops += reads('@e[type=sulfur_cube,limit=1]')
-    ops += setup('/kill @e[type=sulfur_cube]', '/fill 0 199 0 12 199 12 air', '/gamemode creative', '/clear @s',
+    ops += setup(SHRINK_SULFUR_CUBES.format('@e[type=sulfur_cube]'), '/kill @e[type=sulfur_cube]',
+                 '/fill 0 199 0 12 199 12 air', '/gamemode creative', '/clear @s',
                  '/tp @s 8.5 230 8.5', '/forceload remove 0 0 15 15')
     return ops
 
