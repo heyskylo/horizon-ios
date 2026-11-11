@@ -120,6 +120,7 @@ Rabbit.RaidGardenGoal.canUse	port	crates/horizon-client/src/mobs/rabbit.rs::Raid
 Rabbit.RaidGardenGoal.tick	port	crates/horizon-client/src/mobs/rabbit.rs::RaidGarden::tick	looks at the crop, one age off the carrot (air at age 0), then 40 moreCarrotTicks and a 10-tick delay
 Rabbit.RaidGardenGoal.isValidTarget	port	crates/horizon-client/src/mobs/rabbit.rs::raid_target	a crop-supporting block under a carrot at its maximum age, while the rabbit wants more food and found none
 Sheep.registerGoals	port	crates/horizon-client/src/mobs/farm.rs::register	Species::Sheep arm: float, panic, breed, tempt, follow parent, eat block, stroll, look
+Sheep.readAdditionalSaveData	inline	crates/horizon-client/src/mobs/farm.rs::saved_color	Color uses DyeColor.LEGACY_ID_CODEC: an id outside 0..=15 is white; Sheared through entity_nbt::mob_from_nbt
 Sheep.aiStep	inline	crates/horizon-client/src/mobs/ai.rs::species_ai_step	the eat animation counter (anim_ticks) counts down each tick
 Sheep.handleEntityEvent	port	crates/horizon-client/src/mobs/sync.rs::entity_event	ticked in #3512; `Sheep.handleEntityEvent` is cited at crates/horizon-client/src/mobs/sync.rs:132 (in a comment, so `where` names the enclosing fn)
 Sheep.getHeadEatPositionScale	inline	crates/horizon-client/src/mobs/anim.rs::setup	Anim::Sheep arm: head drops by 9 times the scale (halved for a lamb)

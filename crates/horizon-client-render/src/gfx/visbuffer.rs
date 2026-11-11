@@ -57,7 +57,7 @@ impl Visbuffer {
         device: &wgpu::Device,
         terrain_layout: &wgpu::BindGroupLayout,
         flat: &Flat,
-        color: wgpu::TextureFormat,
+        (color, linear): (wgpu::TextureFormat, bool),
         constants: &[(&str, f64)],
     ) -> Self {
         let flat_layout = &flat.draw_layout;
@@ -65,13 +65,8 @@ impl Visbuffer {
         let resolve_constants: Vec<(&str, f64)> = constants
             .iter()
             .copied()
-            .chain([
-                ("VIS_BLOCKS_PER_PAGE", blocks_per_page as f64),
-                (
-                    "HDR_WRITE_LIGHT",
-                    f64::from(u8::from(color == super::LINEAR_FRAME)),
-                ),
-            ])
+            .chain([("VIS_BLOCKS_PER_PAGE", blocks_per_page as f64)])
+            .chain(super::linear_blend::frame_constants(color, linear))
             .collect();
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon visibility buffer"),

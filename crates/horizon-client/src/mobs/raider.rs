@@ -871,7 +871,7 @@ mod tests {
                 k.id = "minecraft:pillager".into();
                 k.species = Species::Pillager;
                 let mut m = Mob::new(1, Arc::new(k), Vec3::ZERO, 0.0);
-                m.random = LegacyRandom::new(seed);
+                m.random.set_seed(seed);
                 m.extra.raider = Some(Box::default());
                 if riding {
                     m.extra.mount = Some(9);
