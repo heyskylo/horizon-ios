@@ -59,7 +59,16 @@ pub(crate) fn offer_for(file: &Path, viewer: &str, timeout: Duration) -> Result<
     let flag = stop.clone();
     let thread = std::thread::Builder::new()
         .name("perf-open".into())
-        .spawn(move || serve(&listener, &token, &origin, &bytes, timeout, &flag))
+        .spawn(move || {
+            serve(
+                || listener.accept().map(|(stream, _)| stream),
+                &token,
+                &origin,
+                &bytes,
+                timeout,
+                &flag,
+            )
+        })
         .map_err(|e| e.to_string())?;
     Ok(Offer { url, stop, thread })
 }
@@ -70,9 +79,9 @@ fn token() -> Result<String, String> {
     Ok(raw.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// Whether the capture was handed over before the timeout or a stop.
+/// Whether the capture was handed over before the timeout or a stop; a failed accept (an aborted connection, a full file table) is retried until then.
 fn serve(
-    listener: &TcpListener,
+    mut accept: impl FnMut() -> io::Result<TcpStream>,
     token: &str,
     origin: &str,
     bytes: &[u8],
@@ -81,16 +90,13 @@ fn serve(
 ) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline && !stop.load(Ordering::Relaxed) {
-        match listener.accept() {
-            Ok((stream, _)) => {
+        match accept() {
+            Ok(stream) => {
                 if answer(stream, token, origin, bytes).unwrap_or(false) {
                     return true;
                 }
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(_) => return false,
+            Err(_) => std::thread::sleep(Duration::from_millis(10)),
         }
     }
     false
@@ -278,6 +284,33 @@ mod tests {
             "HTTP/1.1 200 OK"
         );
         assert!(offer.wait());
+    }
+
+    #[test]
+    fn an_aborted_connection_does_not_end_the_offer() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let token = "t".repeat(32);
+        let server = std::thread::spawn(move || {
+            let mut failures =
+                [io::ErrorKind::ConnectionAborted, io::ErrorKind::Interrupted].into_iter();
+            let accept = || match failures.next() {
+                Some(kind) => Err(kind.into()),
+                None => listener.accept().map(|(stream, _)| stream),
+            };
+            serve(
+                accept,
+                &"t".repeat(32),
+                ORIGIN,
+                b"bytes",
+                Duration::from_secs(30),
+                &AtomicBool::new(false),
+            )
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(status(&send(port, &get(&token, ""))), "HTTP/1.1 200 OK");
+        assert!(server.join().unwrap());
     }
 
     #[test]
