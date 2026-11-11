@@ -17,7 +17,7 @@ The accepted-hit fact is the pig's own: `HurtTime` is 10 on the tick after a hit
 read too, but each hit's amount is the hoglin's damage roll (`attack / 2 + nextInt(attack)`).
 
 Label classes, declared before any native run: `target-` rows are the hit pen's pig `HurtTime` every
-tick and the pig at the end; `rand-` rows are recorded and compared, but hold a random amount (the hit
+tick and the pig at the end; `rand-` rows are recorded and reported, not compared: they hold a random amount (the hit
 pen's and the near pen's pig Health); `diag-` rows are recorded diagnostics (positions, raw bodies, clock); every other row
 is a setup admission or a control (the still pen, the hits, the near pen's HurtTime and end).
 """

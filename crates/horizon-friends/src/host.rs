@@ -296,7 +296,14 @@ impl Host {
         for t in self.threads.drain(..) {
             let _ = t.join();
         }
-        if let Some(r) = self.shared.reach.lock().unwrap().as_mut() {
+        // A panic on a sharing thread must not crash the game at stop.
+        if let Some(r) = self
+            .shared
+            .reach
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
             r.release();
         }
     }
@@ -357,13 +364,27 @@ fn share(shared: Arc<Shared>, port: u16) {
     // Renew the router mapping at half-lease until stopped.
     while !shared.stopped() {
         std::thread::sleep(Duration::from_millis(100));
-        let mut reach = shared.reach.lock().unwrap();
-        if let Some(m) = reach.as_mut().and_then(|r| r.mapping.as_mut())
-            && m.due()
-            && m.renew().is_err()
-        {
-            // Try again in a minute rather than hammering the router.
-            m.renewed = Instant::now() - m.lifetime / 2 + Duration::from_secs(60);
+        // Renewed without the lock: the router may be slow, and stop() waits for this thread
+        // anyway before it releases the mapping, so it is always back by then.
+        let due = shared
+            .reach
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+            .and_then(|r| r.mapping.take_if(|m| m.due()));
+        if let Some(mut m) = due {
+            if m.renew().is_err() {
+                // Try again in a minute rather than hammering the router.
+                m.renewed = Instant::now() - m.lifetime / 2 + Duration::from_secs(60);
+            }
+            if let Some(r) = shared
+                .reach
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_mut()
+            {
+                r.mapping = Some(m);
+            }
         }
     }
     if let Some(t) = relay {
@@ -382,19 +403,20 @@ fn route_inbound(listeners: Vec<TcpListener>, shared: Arc<Shared>) {
             if shared.handshakes.load(Ordering::Relaxed) >= MAX_HANDSHAKES {
                 continue;
             }
-            shared.handshakes.fetch_add(1, Ordering::Relaxed);
+            // Given back however the handshake ends, a failed spawn included: a slot lost each
+            // time would close the direct port after MAX_HANDSHAKES of them.
+            let slot = Handshake::take(&shared);
             let shared = shared.clone();
             let _ = std::thread::Builder::new()
                 .name("horizon-friends-inbound".into())
                 .spawn(move || {
                     let _ = s.set_nonblocking(false);
                     let Ok(deadline) = crate::deadline(&s, HANDSHAKE) else {
-                        shared.handshakes.fetch_sub(1, Ordering::Relaxed);
                         return;
                     };
                     match direct::read_hello(&mut s) {
                         Ok(direct::Hello::Relayed(session)) => {
-                            shared.handshakes.fetch_sub(1, Ordering::Relaxed);
+                            drop(slot);
                             let route = {
                                 let mut routes = shared.routes.lock().unwrap();
                                 routes.retain(|_, (_, until)| *until > Instant::now());
@@ -407,11 +429,9 @@ fn route_inbound(listeners: Vec<TcpListener>, shared: Arc<Shared>) {
                             }
                         }
                         Ok(direct::Hello::Code(session)) => {
-                            serve_code(&shared, s, session, deadline)
+                            serve_code(&shared, s, session, deadline, slot)
                         }
-                        Err(_) => {
-                            shared.handshakes.fetch_sub(1, Ordering::Relaxed);
-                        }
+                        Err(_) => {}
                     }
                 });
         }
@@ -424,7 +444,27 @@ fn route_inbound(listeners: Vec<TcpListener>, shared: Arc<Shared>) {
 /// A guest who dialled an endpoint from the code: agree on the key from
 /// the code's secret, then carry the session (`deadline` bounds the
 /// handshake, not the game).
-fn serve_code(shared: &Arc<Shared>, mut s: TcpStream, session: u64, deadline: crate::Deadline) {
+/// One of the [`MAX_HANDSHAKES`], given back when dropped.
+struct Handshake(Arc<Shared>);
+impl Handshake {
+    fn take(shared: &Arc<Shared>) -> Self {
+        shared.handshakes.fetch_add(1, Ordering::Relaxed);
+        Self(shared.clone())
+    }
+}
+impl Drop for Handshake {
+    fn drop(&mut self) {
+        self.0.handshakes.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+fn serve_code(
+    shared: &Arc<Shared>,
+    mut s: TcpStream,
+    session: u64,
+    deadline: crate::Deadline,
+    slot: Handshake,
+) {
     let secret = shared
         .invite
         .lock()
@@ -438,7 +478,7 @@ fn serve_code(shared: &Arc<Shared>, mut s: TcpStream, session: u64, deadline: cr
         session::secure(s, &key, Role::Host)
     })();
     drop(deadline);
-    shared.handshakes.fetch_sub(1, Ordering::Relaxed);
+    drop(slot);
     match secured {
         Ok(secure) => carry(shared, session, secure, true),
         Err(e) if crypto::is_wrong_code(&e) => {
