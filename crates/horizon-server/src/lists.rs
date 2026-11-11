@@ -68,6 +68,7 @@ fn edit_locked(
                     level: 4,
                     bypasses_player_limit: false,
                 });
+                saved(&ops)?;
                 (true, format!("Made {name} a server operator"))
             }
         }
@@ -75,6 +76,7 @@ fn edit_locked(
             let mut ops = load(OpList::new(ops_path))?;
             let user = listed(ops.entries().iter().map(|e| &e.user), name);
             if user.is_some_and(|user| ops.remove(&user)) {
+                saved(&ops)?;
                 (true, format!("Made {name} no longer a server operator"))
             } else {
                 (
@@ -90,6 +92,7 @@ fn edit_locked(
                 (false, "Player is already whitelisted".to_owned())
             } else {
                 white.add(WhiteEntry { user });
+                saved(&white)?;
                 (true, format!("Added {name} to the whitelist"))
             }
         }
@@ -97,6 +100,7 @@ fn edit_locked(
             let mut white = load(WhiteList::new(white_path))?;
             let user = listed(white.entries().iter().map(|e| &e.user), name);
             if user.is_some_and(|user| white.remove(&user)) {
+                saved(&white)?;
                 (true, format!("Removed {name} from the whitelist"))
             } else {
                 (false, "Player is not whitelisted".to_owned())
@@ -147,6 +151,7 @@ fn edit_locked(
                 None,
                 reason.clone(),
             )) {
+                saved(&bans)?;
                 (
                     true,
                     format!(
@@ -165,6 +170,7 @@ fn edit_locked(
             let mut bans = load(BanList::new(dir.join("banned-players.json")))?;
             let user = listed(bans.entries().iter().map(|e| &e.user), name);
             if user.as_ref().is_some_and(|user| bans.remove(user)) {
+                saved(&bans)?;
                 (true, format!("Unbanned {name}"))
             } else {
                 (false, "Nothing changed. The player isn't banned".to_owned())
@@ -182,6 +188,7 @@ fn edit_locked(
                 None,
                 reason.clone(),
             )) {
+                saved(&bans)?;
                 (
                     true,
                     format!(
@@ -202,6 +209,7 @@ fn edit_locked(
             }
             let mut bans = load(IpBanList::new(dir.join("banned-ips.json")))?;
             if bans.remove(&(*ip).to_owned()) {
+                saved(&bans)?;
                 (true, format!("Unbanned IP {ip}"))
             } else {
                 (false, "Nothing changed. That IP isn't banned".to_owned())
@@ -259,6 +267,15 @@ fn listed<'a>(mut users: impl Iterator<Item = &'a NameAndId>, name: &str) -> Opt
 }
 
 /// A list from its file; a missing file is an empty list, a broken one an error (vanilla would replace it).
+/// The list as it now is, on disk: `add` and `remove` save it but only log a failed save, and the
+/// operator must not be told a ban or a deop happened when the file still says otherwise.
+fn saved<E: horizon_platform::server_files::user_lists::Entry>(
+    list: &horizon_platform::server_files::user_lists::UserList<E>,
+) -> Result<(), String> {
+    list.save()
+        .map_err(|e| format!("{}: {e}", list.file.display()))
+}
+
 fn load<E: horizon_platform::server_files::user_lists::Entry>(
     mut list: horizon_platform::server_files::user_lists::UserList<E>,
 ) -> Result<horizon_platform::server_files::user_lists::UserList<E>, String> {
