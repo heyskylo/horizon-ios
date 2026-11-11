@@ -378,6 +378,28 @@ impl Game<'_> {
         self.audio.play(sound, Some(feet), 1.0, 1.0);
         Some(fall)
     }
+    /// What a server's guest does after their hit landed on another player:
+    /// the weapon's side, the exhaustion and the sprint a knockback stops.
+    /// Returns the attacker's motion when a smash set it, which
+    /// `MaceItem.hurtEnemy` sends at once (`ClientboundSetEntityMotionPacket`),
+    /// not at the end of the tick after gravity (#8246). The mark from before
+    /// the hit stays.
+    pub(super) fn pvp_hit_after(
+        &mut self,
+        victim_on_ground: bool,
+        stops_sprint: bool,
+    ) -> Option<Vec3> {
+        let p = self.player.as_mut()?;
+        let marked = std::mem::take(&mut p.health.sync_velocity);
+        self.weapon_hit_player(victim_on_ground);
+        let p = self.player.as_mut()?;
+        let sent = std::mem::replace(&mut p.health.sync_velocity, marked).then_some(p.velocity);
+        self.pvp_exhaustion();
+        if stops_sprint {
+            self.stop_sprint_after_extra_knockback();
+        }
+        sent
+    }
     /// `Player.itemAttackInteraction` after the player's hit hurt another
     /// player: the weapon's side of it, as `weapon_hit` does for a mob. A
     /// smash stops the fall and its Wind Burst (a `post_attack` explosion on

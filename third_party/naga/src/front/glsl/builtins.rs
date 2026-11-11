@@ -1189,8 +1189,15 @@ fn inject_standard_builtins(
         | "subgroupShuffle"
         | "subgroupShuffleXor"
         | "subgroupShuffleUp"
-        | "subgroupShuffleDown" => {
-            let indexed = name != "subgroupBroadcastFirst";
+        | "subgroupShuffleDown"
+        | "subgroupQuadSwapHorizontal"
+        | "subgroupQuadSwapVertical"
+        | "subgroupQuadSwapDiagonal" => {
+            // GL_KHR_shader_subgroup_quad: the quad swaps take only the value.
+            let indexed = !matches!(
+                gather_kind(name),
+                GatherKind::BroadcastFirst | GatherKind::QuadSwap(_)
+            );
             for scalar in [Scalar::F32, Scalar::I32, Scalar::U32, Scalar::BOOL] {
                 for size in [None, Some(VectorSize::Bi), Some(VectorSize::Tri), Some(VectorSize::Quad)] {
                     let ty = match size {
@@ -1292,6 +1299,7 @@ pub enum GatherKind {
     ShuffleXor,
     ShuffleUp,
     ShuffleDown,
+    QuadSwap(crate::Direction),
 }
 
 fn gather_kind(name: &str) -> GatherKind {
@@ -1301,6 +1309,9 @@ fn gather_kind(name: &str) -> GatherKind {
         "subgroupShuffle" => GatherKind::Shuffle,
         "subgroupShuffleXor" => GatherKind::ShuffleXor,
         "subgroupShuffleUp" => GatherKind::ShuffleUp,
+        "subgroupQuadSwapHorizontal" => GatherKind::QuadSwap(crate::Direction::X),
+        "subgroupQuadSwapVertical" => GatherKind::QuadSwap(crate::Direction::Y),
+        "subgroupQuadSwapDiagonal" => GatherKind::QuadSwap(crate::Direction::Diagonal),
         _ => GatherKind::ShuffleDown,
     }
 }
@@ -2433,6 +2444,7 @@ impl MacroCall {
                     GatherKind::ShuffleXor => G::ShuffleXor(args[1]),
                     GatherKind::ShuffleUp => G::ShuffleUp(args[1]),
                     GatherKind::ShuffleDown => G::ShuffleDown(args[1]),
+                    GatherKind::QuadSwap(direction) => G::QuadSwap(direction),
                 };
                 ctx.emit_end();
                 let result = ctx.add_expression(Expression::SubgroupOperationResult { ty }, meta)?;

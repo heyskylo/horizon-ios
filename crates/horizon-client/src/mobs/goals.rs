@@ -21,7 +21,7 @@ pub struct Cx<'a, 'w> {
     pub lr: &'a mut LegacyRandom,
     pub events: &'a mut Vec<MobEvent>,
 }
-pub trait Goal: std::fmt::Debug {
+pub trait Goal: std::fmt::Debug + Send + Sync {
     fn flags(&self) -> u8;
     /// A goal that draws its first start delay in its constructor (a schooling fish's
     /// `FollowFlockLeaderGoal`): the delay again, when the mob's random is seeded afterwards.
@@ -189,26 +189,9 @@ impl GoalSelector {
 
 // --- random positions (DefaultRandomPos / LandRandomPos / RandomPos) -------
 
-/// RandomPos.moveUpToAboveSolid: out of the solid blocks, then up to
-/// `above` more blocks of air.
-fn move_up_to_above_solid(w: &MobWorld, mut p: [i32; 3], above: i32) -> [i32; 3] {
-    if !w.solid(p[0], p[1], p[2]) {
-        return p;
-    }
-    p[1] += 1;
-    while p[1] < w.world.top_y() && w.solid(p[0], p[1], p[2]) {
-        p[1] += 1;
-    }
-    let first = p[1];
-    while p[1] < w.world.top_y() && p[1] - first < above {
-        p[1] += 1;
-        if w.solid(p[0], p[1], p[2]) {
-            p[1] -= 1;
-            break;
-        }
-    }
-    p
-}
+#[path = "random_pos.rs"]
+mod random_pos;
+use random_pos::move_up_to_above_solid;
 #[path = "home.rs"]
 mod home;
 pub use home::within_home;
@@ -2219,6 +2202,8 @@ impl Goal for Breed {
                     // AbstractHorse.canParent of the partner.
                     && (!(equine || camel) || s.tame && !s.ridden && s.health >= s.stats[0] as f32)
                     && (!sniffer || super::sniffer::can_mate_state(s.variant))
+                    // BreedGoal.getFreePartner: `!potentialPartner.isPanicking()`.
+                    && !s.panicking
             })
             .find(|s| m.distance_sqr(s.position) <= 64.0)
             .map(|s| s.id);
@@ -2227,7 +2212,8 @@ impl Goal for Breed {
     fn can_continue(&mut self, _: &mut Mob, cx: &mut Cx) -> bool {
         self.partner
             .and_then(|p| cx.w.seen(p))
-            .is_some_and(|s| s.alive && s.in_love)
+            // BreedGoal.canContinueToUse: `!this.partner.isPanicking()`.
+            .is_some_and(|s| s.alive && s.in_love && !s.panicking)
             && self.love_time < 60
     }
     fn stop(&mut self, _: &mut Mob, _: &mut Cx) {
@@ -3426,6 +3412,72 @@ mod hurt_by_anger_tests {
             outcomes,
             Some(vec![true, false]),
             "a hit is retaliated with the rule off and left to the anger goals with it on"
+        );
+    }
+}
+
+#[cfg(test)]
+mod breed_continue_tests {
+    use super::*;
+    use crate::mobs::world::with_test_world;
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    /// `BreedGoal.canContinueToUse` refuses a partner that is panicking. The
+    /// goal starts with a calm partner and must stop when the partner panics.
+    #[test]
+    fn a_breed_goal_stops_when_the_partner_panics() {
+        let mut kind = None;
+        if !with_test_world(&[], |_, types| {
+            kind = Some(Arc::new(types.types["minecraft:cow"].clone()));
+        }) {
+            return;
+        }
+        let Some(kind) = kind else { return };
+        let mut partner = Mob::new(2, kind.clone(), Vec3::new(2.5, 64.0, 0.5), 0.0);
+        partner.extra.in_love = 600;
+        let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+        m.extra.in_love = 600;
+        m.ai.goals.add(1, Breed::new(1.0));
+        let mut started = None;
+        let calm = [partner.seen(None)];
+        if !with_test_world(&calm, |w, _| {
+            let mut lr = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w,
+                lr: &mut lr,
+                events: &mut events,
+            };
+            let mut goals = std::mem::take(&mut m.ai.goals);
+            goals.tick(&mut m, &mut cx);
+            started = Some(goals.is_running("Breed"));
+            m.ai.goals = goals;
+        }) {
+            return;
+        }
+        partner.ai.panicking = true;
+        let panicking = [partner.seen(None)];
+        let mut stopped = None;
+        if !with_test_world(&panicking, |w, _| {
+            let mut lr = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w,
+                lr: &mut lr,
+                events: &mut events,
+            };
+            let mut goals = std::mem::take(&mut m.ai.goals);
+            goals.tick(&mut m, &mut cx);
+            stopped = Some(!goals.is_running("Breed"));
+            m.ai.goals = goals;
+        }) {
+            return;
+        }
+        assert_eq!(
+            (started, stopped),
+            (Some(true), Some(true)),
+            "the breed goal starts for a calm partner and stops when it panics"
         );
     }
 }
