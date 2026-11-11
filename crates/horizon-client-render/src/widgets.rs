@@ -430,6 +430,18 @@ mod cursor_tests {
     use super::*;
 
     #[test]
+    fn a_dragged_slider_asks_for_the_horizontal_resize_cursor() {
+        let _ = take_cursor();
+        slider_cursor(false, true, true);
+        assert_eq!(take_cursor(), Cursor::Arrow);
+        slider_cursor(true, true, true);
+        assert_eq!(take_cursor(), Cursor::ResizeEw);
+        slider_cursor(true, true, false);
+        assert_eq!(take_cursor(), Cursor::PointingHand);
+        slider_cursor(true, false, true);
+        assert_eq!(take_cursor(), Cursor::NotAllowed);
+    }
+    #[test]
     fn hovered_widgets_ask_for_the_hand_or_not_allowed() {
         let _ = take_cursor();
         widget_cursor(false, true);
