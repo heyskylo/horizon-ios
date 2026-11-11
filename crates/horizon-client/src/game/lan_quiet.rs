@@ -36,13 +36,21 @@ impl Game<'_> {
         let batch = match quiet::decode(data) {
             Ok(b) => b,
             Err(e) => {
-                super::dedicated::log(
-                    "WARN",
-                    &format!("{name} sent quiet commands that were refused: {e}"),
-                );
+                // Once a connection: a client sending refused payloads by the hundred a tick must
+                // not fill the log.
+                if host.quiet_refused.insert(conn) {
+                    super::dedicated::log(
+                        "WARN",
+                        &format!("{name} sent quiet commands that were refused: {e}"),
+                    );
+                }
                 return;
             }
         };
+        // Nothing to run, nothing to log: an empty batch would only be a summary line.
+        if batch.lines.is_empty() {
+            return;
+        }
         let waiting: usize = host
             .quiet
             .iter()
@@ -51,6 +59,13 @@ impl Game<'_> {
             .sum();
         let room = PENDING.saturating_sub(waiting);
         let dropped = batch.lines.len().saturating_sub(room);
+        // No room at all: counted on the player's last waiting batch, not a new (logged) one.
+        if room == 0
+            && let Some(last) = host.quiet.iter_mut().rev().find(|b| b.conn == conn)
+        {
+            last.dropped += dropped;
+            return;
+        }
         host.quiet.push_back(QuietBatch {
             conn,
             mod_id: batch.mod_id,
