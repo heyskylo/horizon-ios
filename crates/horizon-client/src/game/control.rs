@@ -441,6 +441,15 @@ impl Game<'_> {
                 }
                 Ok(Some(json!({ "ok": true, "flat": r.flat_draws() })))
             }
+            "section-layout" => {
+                let r = self.renderer.as_mut().ok_or("no renderer")?;
+                let compact = match words.get(1).copied() {
+                    Some("compact") => r.set_packed_layout(true),
+                    Some("wide") => r.set_packed_layout(false),
+                    _ => return Err("section-layout compact|wide".into()),
+                };
+                Ok(Some(json!({ "ok": true, "compact": compact })))
+            }
             "section-cull" => {
                 let r = self.renderer.as_mut().ok_or("no renderer")?;
                 match words.get(1).copied() {
@@ -633,6 +642,26 @@ impl Game<'_> {
                 }
                 ok()
             }
+            // The real event, so focus loss reaches all that a window's does (the radial menu
+            // cancels, held keys go).
+            "pad" if words.get(1) == Some(&"focus") => {
+                let focused = match arg(2)? {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err("pad focus true|false".into()),
+                };
+                let id = self
+                    .window
+                    .as_ref()
+                    .map_or_else(winit::window::WindowId::dummy, |w| w.id());
+                self.handle_window_event(
+                    event_loop,
+                    id,
+                    winit::event::WindowEvent::Focused(focused),
+                    super::input_trace::InputOrigin::Agent,
+                );
+                ok()
+            }
             "pad" => Ok(Some(self.pad_command(&words)?)),
             "key" => {
                 let key = key_code(arg(1)?).ok_or_else(|| format!("unknown key {}", words[1]))?;
@@ -645,6 +674,8 @@ impl Game<'_> {
                 }
                 if arg(2)? != "up" {
                     self.input_keyboard_used();
+                    // As a window's key press: the radial menu closes, and the key goes on.
+                    self.pad_radial_cancel();
                 }
                 // The command confirmation takes the keys; none go past it.
                 if self.command_prompt.is_some() {
@@ -828,6 +859,10 @@ impl Game<'_> {
                         self.screen_name()
                     )
                     .into());
+                }
+                // As a window's click: the radial menu closes, and the click goes on.
+                if arg(2)? != "up" {
+                    self.pad_radial_cancel();
                 }
                 match arg(2)? {
                     "down" => {
@@ -1039,6 +1074,7 @@ impl Game<'_> {
                     path: path.trim().into(),
                     size: None,
                     scaled: false,
+                    background: false,
                 });
                 self.pending_screenshot = Some(reply.clone());
                 Ok(None)
@@ -1102,6 +1138,7 @@ impl Game<'_> {
                     "keybinds" => Page::KeyBinds,
                     "controller" => Page::Controller,
                     "controller-binds" => Page::PadBinds,
+                    "controller-radial" => Page::ControllerRadial,
                     "mouse" => Page::Mouse,
                     "chat" => Page::Chat,
                     "accessibility" => Page::Accessibility,

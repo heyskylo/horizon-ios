@@ -247,6 +247,11 @@ pub(super) trait Entity: EntityRules {
     fn portal_size(&self) -> Option<(f32, f32)> {
         None
     }
+    /// Whether [`Self::portal_size`] is Some, without working the size out (a
+    /// mob's depends on its age, scale and pose).
+    fn sweeps_portals(&self) -> bool {
+        self.portal_size().is_some()
+    }
     /// `Entity.canUsePortal(false)` for a kind in `portal_size`. A kind that
     /// cannot stays tracked, so its cooldown and process run out.
     fn can_use_portal(&self, _game: &Game<'_>) -> bool {
@@ -260,6 +265,10 @@ pub(super) trait Entity: EntityRules {
     /// `Entity.getDimensionChangingDelay`, overridden by vehicles and projectiles.
     fn dimension_changing_delay(&self) -> i32 {
         horizon_client::nether_portal::ENTITY_DELAY
+    }
+    /// Whether movement applies portal block effects before Entity's base tick.
+    fn portal_after_move(&self) -> bool {
+        false
     }
     /// Where it stood at the start of its tick, for the kinds that store it
     /// (None: `portals.before` has it).
@@ -322,7 +331,14 @@ impl RenderEntityBounds for Mob {
             self.species(),
             Species::Guardian | Species::ElderGuardian | Species::Phantom
         ) {
-            let radius = width.max(height) * 2.5 + 3.0;
+            // The model's root scales its appendages too (the elder guardian
+            // uses 2.35), so the margin must grow along with the model.
+            let root_scale = self.kind.model.pose[6..]
+                .iter()
+                .copied()
+                .map(f32::abs)
+                .fold(1.0, f32::max);
+            let radius = width.max(height) * 2.5 + 3.0 * f64::from(root_scale * self.model_scale());
             return Aabb::of_size(at, Vec3::new(radius * 2.0, radius * 2.0, radius * 2.0));
         }
 
@@ -1109,6 +1125,9 @@ impl Entity for Mob {
     fn portal_size(&self) -> Option<(f32, f32)> {
         Some((self.width(), self.height()))
     }
+    fn sweeps_portals(&self) -> bool {
+        true
+    }
     fn can_use_portal(&self, game: &Game<'_>) -> bool {
         game.mob_can_use_portal(self)
     }
@@ -1725,6 +1744,13 @@ impl Entity for FallingBlock {
 }
 
 impl Entity for Projectile {
+    fn portal_after_move(&self) -> bool {
+        !matches!(
+            self.kind,
+            horizon_client::projectiles::ProjectileKind::LlamaSpit
+                | horizon_client::projectiles::ProjectileKind::ShulkerBullet { .. }
+        )
+    }
     fn dimension_changing_delay(&self) -> i32 {
         2
     }
@@ -1918,6 +1944,9 @@ impl Entity for Rocket {
 }
 
 impl Entity for ThrownTrident {
+    fn portal_after_move(&self) -> bool {
+        true
+    }
     fn dimension_changing_delay(&self) -> i32 {
         2
     }

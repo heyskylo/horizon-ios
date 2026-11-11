@@ -1,0 +1,6 @@
+Frame
+TonemapInput
+frame
+linear_sampler
+nearest_sampler
+previous

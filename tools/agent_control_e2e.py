@@ -336,7 +336,7 @@ def ui_scenario(d, out):
     if 'game' not in widgets(d):  # with no worlds, Singleplayer opens Create New World itself
         d('click', id='create-new-world')
     tree = widgets(d)
-    assert tree['game']['kind'] == 'button' and any(w['kind'] == 'field' for w in tree.values()), tree
+    assert tree['game']['kind'] == 'tab' and any(w['kind'] == 'field' for w in tree.values()), tree
     d('type', field='name', replace=True, text='UI World')
     d('click', id='create-new-world')
     d('wait_for', condition='loaded', timeout=400)  # a few frames later, as in the survival scenario
@@ -404,9 +404,12 @@ def options_scenario(d, out):
     # The options screen shows it: FOV 90 sits at (90 - 30) / 80 of its slider.
     d('click', id='options')
     assert abs(widgets(d)['fov']['value'] - 0.75) < 0.01
-    # Applied at once: a GUI scale of 2 on the 1280x720 window makes the GUI 640x360.
+    # Applied at once: a GUI scale of 2 halves the GUI of scale 1, which is the window's pixels
+    # (1280x720 at 100 % display scaling, 1600x900 at 125 %).
+    d('options_set', key='guiScale', value='1')
+    full = d('ui')['gui_size']
     d('options_set', key='guiScale', value='2')
-    assert d('ui')['gui_size'] == [640, 360], 'the GUI scale did not apply'
+    assert d('ui')['gui_size'] == [(n + 1) // 2 for n in full], 'the GUI scale did not apply'
     d('options_set', key='guiScale', value='0')
     return {'options': len(options)}
 
@@ -937,7 +940,7 @@ def manage_scenario(d, out):
     d('xp', levels=5)
     assert d('lan', action='status') is not None
     d('options', page='horizon')
-    assert 'graphics' in widgets(d), widgets(d).keys()
+    assert 'ai-agent' in widgets(d), widgets(d).keys()
     d('close')
     d('pause')
     d('click', id='save-and-quit-to-title')
@@ -1023,7 +1026,7 @@ def no_ai_check(mode, ctl, resources):
                 assert r.returncode == 4 and reply == {'error': REFUSAL, 'kind': 'denied'}, (r.returncode, reply)
             client = ctl.with_name('horizon-client')
             args = [str(client), '--control-socket', str(socket), '--world', 'NoAi', '--world-frames', '30']
-            if sys.platform == 'darwin':
+            if sys.platform == 'darwin' or os.environ.get('HORIZON_E2E_HEADLESS'):
                 args.append('--offscreen')
             r = subprocess.run(args, cwd=work, env=env, capture_output=True, text=True, timeout=600)
             text = r.stdout + r.stderr + ''.join(

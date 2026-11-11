@@ -1,12 +1,47 @@
-//! Horizon's own entries in the multiplayer list (docs/layers.md: Horizon layer): the official
-//! server, added once at the top, and the withdrawn partner server, taken back out once. Behind
-//! `horizon-extras` (docs/forking.md), so a plain build adds no server and holds no Horizon
-//! address. It reads and writes servers.dat only through `horizon_protocol::servers`, ready to
-//! leave the engine crates for a Horizon crate.
-use horizon_protocol::servers::{self, ServerEntry};
+//! Horizon's own entries in the multiplayer list: the official server, added once at the top,
+//! and the withdrawn partner server, taken back out once. And where the game started without its
+//! prepared files sends the player: Horizon's launcher, on its website ([`GET_THE_GAME`]).
+//!
+//! A Horizon crate (docs/layers.md): it plugs into the game through the platform's hooks
+//! ([`HOOKS`], when the game starts), which the official executable (`horizon-official`)
+//! registers, and reads servers.dat through `horizon_platform::servers`. horizon-client's plain
+//! executable adds no server. Its addresses are in `horizon-addresses`.
+#![forbid(unsafe_code)]
+
+use horizon_platform::hooks::{GetTheGame, Hooks, Started};
+use horizon_platform::servers::{self, ServerEntry};
 use std::path::Path;
 
-/// At startup of a player's game: the official server into the list in `game_dir` and the
+/// The server list's hooks, for `horizon_platform::hooks::register`.
+pub static HOOKS: OfficialServers = OfficialServers;
+
+pub struct OfficialServers;
+
+impl Hooks for OfficialServers {
+    /// Someone is playing (not a server, a benchmark or an automated run): their list, once.
+    fn started(&self, game: &Started<'_>) {
+        update(game.game_dir);
+    }
+
+    fn get_the_game(&self) -> Option<GetTheGame> {
+        Some(GET_THE_GAME)
+    }
+}
+
+/// The game started by hand without its prepared files: start it from the launcher, downloaded
+/// from Horizon's website.
+pub const GET_THE_GAME: GetTheGame = GetTheGame {
+    address: horizon_addresses::WEBSITE,
+    title: "horizon.get_the_game.title",
+    paragraphs: &[
+        "horizon.get_the_game.about",
+        "horizon.get_the_game.minecraft",
+        "horizon.get_the_game.download",
+    ],
+    button: "horizon.get_the_game.button",
+};
+
+/// At the start of a player's game: the official server into the list in `game_dir` and the
 /// withdrawn partner server out of it, a failure only logged.
 pub fn update(game_dir: &Path) {
     if let Err(e) = add_official_server(game_dir) {
@@ -17,12 +52,8 @@ pub fn update(game_dir: &Path) {
     }
 }
 
-/// Horizon's official survival server: a name and an address like any entry. The address is
-/// `horizon_telemetry::server_status::OFFICIAL_ADDRESS`, the one place it is kept.
-pub const OFFICIAL_SERVER: (&str, &str) = (
-    "Horizon Official",
-    horizon_telemetry::server_status::OFFICIAL_ADDRESS,
-);
+/// Horizon's official survival server: a name and an address like any entry.
+pub const OFFICIAL_SERVER: (&str, &str) = ("Horizon Official", horizon_addresses::OFFICIAL_SERVER);
 /// Beside servers.dat once the official server was offered, so a player who
 /// deletes it never gets it back: the address offered, so a new one moves the
 /// list once. The launcher writes the same file.
@@ -55,7 +86,7 @@ pub fn add_official_server(game_dir: &Path) -> std::io::Result<()> {
     let file = game_dir.join("servers.dat");
     let _guard = servers::lock();
     let mut list = servers::load(&file);
-    let previous = horizon_telemetry::server_status::OFFICIAL_PREVIOUS;
+    let previous = horizon_addresses::OFFICIAL_SERVER_PREVIOUS;
     if move_official(&mut list, address, previous) {
         servers::save(&file, &list)?;
     }
@@ -71,7 +102,10 @@ pub fn add_official_server(game_dir: &Path) -> std::io::Result<()> {
 
 /// Afri-Network, which the game added once below the official server (#9299) until the
 /// partnership ended: the name and address the game gave its entry.
-const WITHDRAWN_PARTNER: (&str, &str) = ("Afri-Network (South Africa)", "afri-network.co.za");
+const WITHDRAWN_PARTNER: (&str, &str) = (
+    "Afri-Network (South Africa)",
+    horizon_addresses::WITHDRAWN_PARTNER_SERVER,
+);
 /// Beside servers.dat: the partner addresses the game offered, one per line (#9299).
 const PARTNER_MARKER: &str = "horizon_partner_servers.txt";
 

@@ -173,7 +173,7 @@ impl Goal for CopyOwnerTarget {
                 .find(|s| s.id == owner)
                 .and_then(|s| s.target)
         });
-        seen.is_some_and(|t| t != Who::Mob(m.id))
+        seen.is_some_and(|t| t != Who::Mob(m.id) && copyable(cx.w, t))
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.target_info(cx.w).is_some_and(|t| t.alive)
@@ -185,6 +185,14 @@ impl Goal for CopyOwnerTarget {
                 .find(|s| s.id == owner)
                 .and_then(|s| s.target)
         });
+    }
+}
+/// `TargetingConditions.test` for the owner's target: `canBeSeenByAnyone`
+/// leaves out the dead and spectators.
+fn copyable(w: &crate::mobs::MobWorld, t: Who) -> bool {
+    match t {
+        Who::Player => w.player.as_ref().is_some_and(|p| p.alive && !p.spectator),
+        Who::Mob(id) => w.seen(id).is_some_and(|s| s.alive),
     }
 }
 /// `VexMoveControl`: accelerate straight at the wanted point.
@@ -432,5 +440,52 @@ mod owner_save_tests {
         loose.extra.counter2 = 0;
         let saved = mob_to_nbt(&loose, [0; 4], Some(&stale), None, |_| None);
         assert_eq!(saved.get("owner"), None, "no owner, no key");
+    }
+    /// `VexCopyOwnerTargetGoal.canUse` runs the owner's target through
+    /// `TargetingConditions.forNonCombat()`, whose `canBeSeenByAnyone` drops a
+    /// dead target. A dead target is not copied.
+    #[test]
+    fn a_vex_does_not_copy_a_dead_owners_target() {
+        use crate::mobs::world::with_test_world;
+        let mut outcomes = Vec::new();
+        if !with_test_world(&[], |w, _| {
+            for alive in [true, false] {
+                let mut owner_kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+                owner_kind.species = Species::Evoker;
+                let mut owner = Mob::new(2, Arc::new(owner_kind), Vec3::new(1.5, 64.0, 0.5), 0.0);
+                owner.ai.target = Some(Who::Mob(3));
+                let mut target_kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+                target_kind.species = Species::Cow;
+                let mut target = Mob::new(3, Arc::new(target_kind), Vec3::new(2.5, 64.0, 0.5), 0.0);
+                target.health = if alive { target.health } else { 0.0 };
+                let seen = [owner.seen(None), target.seen(None)];
+                let world = crate::mobs::MobWorld {
+                    others: &seen,
+                    ..w.clone()
+                };
+                let mut vex = vex();
+                vex.position = Vec3::new(0.5, 64.0, 0.5);
+                vex.extra.counter2 = 2;
+                vex.ai.targets.add(2, CopyOwnerTarget);
+                let mut lr = horizon_core::random::LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &world,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut vex.ai.targets);
+                goals.tick(&mut vex, &mut cx);
+                outcomes.push(goals.is_running("CopyOwnerTarget"));
+                vex.ai.targets = goals;
+            }
+        }) {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            vec![true, false],
+            "an alive target is copied; a dead one is not"
+        );
     }
 }

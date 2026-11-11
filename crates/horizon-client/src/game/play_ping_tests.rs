@@ -266,7 +266,6 @@ fn server_ping_client_pong_keeps_the_existing_prediction_route() {
         .hub
         .guest_mut(1)
         .unwrap()
-        .anticheat
         .record
         .as_deref_mut()
         .expect("existing client Pong updates prediction");
