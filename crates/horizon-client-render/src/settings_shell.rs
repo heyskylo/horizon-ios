@@ -504,7 +504,12 @@ pub(crate) fn row(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, y: f32
         let lit = [rect[0] + 2.0, y + 1.0, rect[2] - 4.0, style::ROW - 2.0];
         style::fill(batch, atlas, lit, style::hover());
     }
-    crate::widgets::widget_cursor(hover, live);
+    // AbstractSliderButton.handleCursor: a dragged slider resizes, buttons point.
+    if slider.is_some() {
+        crate::widgets::slider_cursor(hover, live, held);
+    } else {
+        crate::widgets::widget_cursor(hover, live);
+    }
     // The control socket's widget tree, the narrator and a controller's focus.
     let kind = match slider {
         Some(value) => crate::widgets::Kind::Slider {

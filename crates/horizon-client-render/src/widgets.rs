@@ -18,6 +18,8 @@ pub enum Cursor {
     NotAllowed,
     /// `CursorTypes.RESIZE_NS`: a scroller held vertically (`MerchantScreen`).
     ResizeNs,
+    /// `CursorTypes.RESIZE_EW`: a slider held horizontally.
+    ResizeEw,
 }
 
 thread_local! {
@@ -38,6 +40,19 @@ pub fn widget_cursor(hovered: bool, active: bool) {
             Cursor::PointingHand
         } else {
             Cursor::NotAllowed
+        });
+    }
+}
+/// `AbstractSliderButton.handleCursor`: a dragged slider resizes, a hovered
+/// one points, and an inactive one is not allowed.
+pub fn slider_cursor(hovered: bool, active: bool, dragging: bool) {
+    if hovered {
+        request_cursor(if !active {
+            Cursor::NotAllowed
+        } else if dragging {
+            Cursor::ResizeEw
+        } else {
+            Cursor::PointingHand
         });
     }
 }
@@ -436,6 +451,18 @@ mod cursor_tests {
         text_cursor(true, true);
         assert_eq!(take_cursor(), Cursor::Ibeam);
         text_cursor(true, false);
+        assert_eq!(take_cursor(), Cursor::NotAllowed);
+    }
+    #[test]
+    fn a_dragged_slider_asks_for_the_horizontal_resize_cursor() {
+        let _ = take_cursor();
+        slider_cursor(false, true, true);
+        assert_eq!(take_cursor(), Cursor::Arrow);
+        slider_cursor(true, true, true);
+        assert_eq!(take_cursor(), Cursor::ResizeEw);
+        slider_cursor(true, true, false);
+        assert_eq!(take_cursor(), Cursor::PointingHand);
+        slider_cursor(true, false, true);
         assert_eq!(take_cursor(), Cursor::NotAllowed);
     }
     #[test]
