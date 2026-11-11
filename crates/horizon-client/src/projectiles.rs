@@ -1272,6 +1272,12 @@ impl Projectile {
     fn bubble_column_push(&mut self, drag: bool, surface: bool, at: [i32; 3]) {
         if surface {
             self.bubble_surfaces.push(at);
+        } else {
+            // Projectile.onInsideBubbleColumn's resetFallDistance.
+            self.fall_distance = 0.0;
+            if let Some(arrow) = self.arrow.as_mut() {
+                arrow.fall_distance = 0.0;
+            }
         }
         self.velocity.y += match (drag, surface) {
             (true, _) => -0.03,
@@ -1282,7 +1288,7 @@ impl Projectile {
     /// `applyEffectsFromBlocks`' bubble columns (`Entity.checkInsideBlocks`):
     /// the blocks the box swept through from `from`, each once, pushing when
     /// the move was long or the final box (deflated by 1e-5F) is inside it.
-    fn bubble_columns_along(&mut self, w: &impl ProjectileWorld, from: Vec3) {
+    pub fn bubble_columns_along(&mut self, w: &impl ProjectileWorld, from: Vec3) {
         self.bubble_columns_since(from, |p| w.bubble_column(p));
     }
     /// [`bubble_columns_along`](Self::bubble_columns_along) with the bubble
