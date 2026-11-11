@@ -1104,6 +1104,34 @@ pub fn tooltip_menu(
     );
     tooltip_box(batch, atlas, lines, x as f32, y as f32, w, h);
 }
+/// `BelowOrAboveWidgetTooltipPositioner.positionTooltip`: a keyboard-focused widget's tooltip.
+pub fn tooltip_focused(batch: &mut HudBatch, atlas: &HudAtlas, lines: &[Text], rect: [f32; 4]) {
+    if lines.is_empty() {
+        return;
+    }
+    let (w, h) = tooltip_size(atlas, lines);
+    let (x, y) = focused_tooltip_position(
+        (batch.width as i32, batch.height as i32),
+        rect.map(|v| v as i32),
+        (w.ceil() as i32, h.ceil() as i32),
+    );
+    tooltip_box(batch, atlas, lines, x as f32, y as f32, w, h);
+}
+
+/// `BelowOrAboveWidgetTooltipPositioner.positionTooltip`: below, or above when it does not fit.
+fn focused_tooltip_position(screen: (i32, i32), rect: [i32; 4], size: (i32, i32)) -> (i32, i32) {
+    let [left, top, width, height] = rect;
+    let mut x = left + 3;
+    let mut y = top + height + 4;
+    if y + size.1 + 3 > screen.1 {
+        y = top - size.1 - 4;
+    }
+    if x + size.0 > screen.0 {
+        x = (left + width - size.0 - 3).max(4);
+    }
+    (x, y)
+}
+
 /// A widget's tooltip while the controller's focus is on it (Horizon's: vanilla has no gamepad
 /// input, and the hidden pointer mid-widget would put it over the widget).
 pub fn tooltip_under(batch: &mut HudBatch, atlas: &HudAtlas, lines: &[Text], rect: [f32; 4]) {
@@ -2580,6 +2608,33 @@ mod tests {
         assert!(!delete_words(&mut v, 1));
         assert_eq!(v, "stone");
     }
+    #[test]
+    fn a_keyboard_focused_tooltip_uses_vanillas_widget_edges() {
+        let screen = (320, 240);
+        assert_eq!(
+            focused_tooltip_position(screen, [7, 160, 98, 20], (170, 40)),
+            (10, 184)
+        );
+        // Exact fit below; one pixel taller goes above.
+        assert_eq!(
+            focused_tooltip_position(screen, [7, 160, 98, 20], (170, 53)),
+            (10, 184)
+        );
+        assert_eq!(
+            focused_tooltip_position(screen, [7, 160, 98, 20], (170, 54)),
+            (10, 102)
+        );
+        // Right overflow aligns against the widget's right edge, not the screen's.
+        assert_eq!(
+            focused_tooltip_position(screen, [250, 100, 60, 20], (170, 40)),
+            (137, 124)
+        );
+        assert_eq!(
+            focused_tooltip_position((120, 240), [7, 160, 98, 20], (170, 40)),
+            (4, 184)
+        );
+    }
+
     #[test]
     fn a_pad_focused_tooltip_hangs_from_its_widgets_bottom_left() {
         let screen = (427.0, 240.0);
