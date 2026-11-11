@@ -48,6 +48,7 @@ pub mod golem;
 pub mod guardian;
 pub mod happy_ghast;
 pub mod hostile;
+mod hurt_by;
 pub mod illager;
 pub mod illusioner;
 pub mod item_break;
@@ -3361,14 +3362,12 @@ pub fn entity_random(id: u32, position: Vec3) -> LegacyRandom {
     let _ = random.next_int();
     random
 }
-/// The own random (`Entity.random`) of a living entity the server makes, as
-/// `LivingEntity.<init>` leaves it: its first two draws made the UUID
-/// (`Mth.createInsecureUUID`), returned here, and the next one the yaw, which
-/// every spawn path then replaces. Constructor draws of the kind come after.
+/// The own random (`Entity.random`) of a living entity the server makes, after
+/// the UUID's two draws (`Mth.createInsecureUUID`), which are returned here.
+/// `Mob::with_random` makes the `defineSynchedData` draws and the yaw next.
 pub fn living_random() -> (LegacyRandom, [i32; 4]) {
     let mut random = crate::random_source::entity();
     let uuid = crate::save::insecure_uuid(&mut random);
-    let _yaw = random.next_float();
     (random, uuid)
 }
 impl Mob {
@@ -3498,6 +3497,8 @@ impl Mob {
         if mob.species() == Species::Salmon {
             mob.extra.variant = 1;
         }
+        // `Entity.<init>`'s order: `defineSynchedData`, then the yaw.
+        zombie_villager::constructor_draws(&mut mob);
         neutral_anger::init(&mut mob);
         // `Creeper.explosionRadius = 3` until a save or a command sets it.
         mob.extra.explosion_radius = 3;
@@ -3510,7 +3511,7 @@ impl Mob {
     /// something off its pickup cooldown, a sulfur cube with no block.
     pub fn can_pick_up_loot(&self) -> bool {
         match self.species() {
-            Species::Allay => self.extra.main_hand.is_some() && self.extra.ints[3] <= 0,
+            Species::Allay => allay::can_pick_up_loot(self),
             Species::SulfurCube => !sulfur_cube::has_body(self),
             _ => self.extra.pick_up_loot,
         }
@@ -3937,8 +3938,7 @@ impl Mob {
         self.last_damage = Some((source, i64::from(self.age)));
         self.last_direct = None;
         if let Some(who) = source.attacker {
-            self.ai.last_hurt_by = Some(who);
-            self.ai.last_hurt_by_time = self.age as i32;
+            self.ai.hurt_by(who, self.age as i32);
             if who == Who::Player {
                 self.ai.last_hurt_by_player = 100;
             }

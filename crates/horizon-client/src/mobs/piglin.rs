@@ -1159,6 +1159,46 @@ impl<G: Goal + Clone + 'static> Goal for NotRetreating<G> {
     }
 }
 
+/// A goal of the fight activity: `HoglinAi.updateActivity` runs after the
+/// brain, so a hoglin given a target fights from the next tick on (here
+/// `brain_step` runs after the goals). The goal may start a tick early, as
+/// the goal selector picks new goals every other tick only and the brain
+/// every tick, but it acts only once the activity is fight.
+#[derive(Clone, Debug)]
+struct InFight<G>(G);
+impl<G: Goal + Clone + 'static> Goal for InFight<G> {
+    goal_clone!();
+    fn flags(&self) -> u8 {
+        self.0.flags()
+    }
+    fn name(&self) -> &'static str {
+        self.0.name()
+    }
+    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        self.0.can_use(m, cx)
+    }
+    fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        self.0.can_continue(m, cx)
+    }
+    fn interruptable(&self) -> bool {
+        self.0.interruptable()
+    }
+    fn every_tick(&self) -> bool {
+        self.0.every_tick()
+    }
+    fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
+        self.0.start(m, cx)
+    }
+    fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
+        self.0.stop(m, cx)
+    }
+    fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
+        if m.extra.piglin.activity == Activity::Fight {
+            self.0.tick(m, cx)
+        }
+    }
+}
+
 /// A goal of the idle and avoid activities' movement: the ride activity has
 /// none of it (`PiglinAi.initRideHoglinActivity`), so it waits while the
 /// brain is in the ride activity.
@@ -1457,8 +1497,10 @@ pub fn register_hoglin(m: &mut Mob) {
     g.add(0, Float);
     // `HoglinAi.initRetreatActivity`: `SetWalkTargetAwayFrom.entity(AVOID_TARGET, 1.3, 15, false)`.
     g.add(1, WalkAway::retreat(1.3, 15.0, false));
-    // HoglinAi: MeleeAttack.create(40) for adults, 15 for babies.
-    g.add(2, MeleeAttack::new(1.0, true).intervals(40, 15));
+    // HoglinAi: MeleeAttack.create(40) for adults, 15 for babies, in the
+    // fight activity. Its `ATTACK_COOLING_DOWN` lives 40 brain ticks and
+    // `MemorySlot.tick` erases it on the 41st, so hits come 41 (16) apart.
+    g.add(2, InFight(MeleeAttack::new(1.0, true).intervals(41, 16)));
     g.add(3, NotRetreating(super::goals::Breed::new(1.0)));
     g.add(3, HoglinAvoidRepellent);
     // `HoglinAi.initIdleActivity`: an adult keeps away from the nearest adult
@@ -2203,6 +2245,67 @@ pub fn hoglin_anim(m: &Mob, s: &State, p: &mut Poses) {
     p.xrot("left_front_leg", (pos + PI).mcos() * 1.2 * sp);
     p.xrot("right_hind_leg", (pos + PI).mcos() * 1.2 * sp);
     p.xrot("left_hind_leg", pos.mcos() * 1.2 * sp);
+}
+
+/// `Brain.Packed`: the guarded-block live ANGRY_AT entry. The existing
+/// anger counter supplies its remaining long TTL, not an absolute timestamp.
+pub fn write_guarded_anger(m: &Mob, map: &mut horizon_world::nbt::Compound) {
+    use horizon_world::nbt::{Compound, Tag};
+    let Some(actor) = m.extra.piglin.guarded_angry_at else {
+        return;
+    };
+    let brain = map
+        .entry("Brain".into())
+        .or_insert_with(|| Tag::Compound(Compound::new()));
+    if !matches!(brain, Tag::Compound(_)) {
+        *brain = Tag::Compound(Compound::new());
+    }
+    let Tag::Compound(brain) = brain else { return };
+    let memories = brain
+        .entry("memories".into())
+        .or_insert_with(|| Tag::Compound(Compound::new()));
+    if !matches!(memories, Tag::Compound(_)) {
+        *memories = Tag::Compound(Compound::new());
+    }
+    let Tag::Compound(memories) = memories else {
+        return;
+    };
+    if let Some(uuid) = actor.filter(|_| m.extra.anger > 0) {
+        // ExpirableValue.codec: the UUID value and optional remaining Long TTL.
+        memories.insert(
+            "minecraft:angry_at".into(),
+            Tag::compound([
+                ("value", Tag::IntArray(uuid.to_vec())),
+                ("ttl", Tag::Long(i64::from(m.extra.anger))),
+            ]),
+        );
+    } else {
+        memories.remove(&"minecraft:angry_at".into());
+    }
+}
+
+/// `Piglin.readAdditionalSaveData` through `Brain.Packed`: the guarded-block
+/// `ANGRY_AT` entry is an entity UUID with the ticks left as its TTL. Vanilla
+/// reads the memory with the brain, and an expired one no longer angers the
+/// piglin; the counter is what Horizon's goals ask.
+pub fn read_guarded_anger(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
+    use horizon_world::nbt::Tag;
+    let memory = tag
+        .get("Brain")
+        .and_then(|b| b.get("memories"))
+        .and_then(|b| b.get("minecraft:angry_at"));
+    let Some(memory) = memory else { return };
+    let Some(uuid) = crate::save::uuid_from_tag(memory.get("value")) else {
+        return;
+    };
+    // The TTL is a long: one past the counter's range holds as long as it can.
+    let ttl = match memory.get("ttl") {
+        Some(Tag::Long(v)) => (*v).clamp(0, i64::from(i32::MAX)) as i32,
+        Some(t) => crate::nbt_path::int_value(t).unwrap_or(i32::MAX),
+        None => i32::MAX,
+    };
+    m.extra.anger = ttl.max(0);
+    m.extra.piglin.guarded_angry_at = Some(Some(uuid));
 }
 
 #[cfg(test)]

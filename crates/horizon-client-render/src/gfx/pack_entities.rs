@@ -125,6 +125,7 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
             op: ">",
             reference: 0.1,
         }),
+        parts: None,
         item_id_declared: false,
         far_depth: false,
         // Entities, items and block entities read the shared atlas: its own maps (paged_maps.rs).
@@ -192,6 +193,7 @@ pub fn cloud_inputs() -> horizon_shaders::GbuffersInputs {
             .collect(),
         after: String::new(),
         alpha_test: None,
+        parts: None,
         item_id_declared: false,
         far_depth: false,
         paged_maps: false,

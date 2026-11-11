@@ -60,6 +60,7 @@ mod entity_outline;
 mod fluid;
 #[cfg(test)]
 mod inter_stage_tests;
+mod section_fade;
 mod terrain_model;
 #[cfg(test)]
 pub(crate) mod test_gpu;
@@ -73,6 +74,10 @@ pub use entity_batch::{
     TRANSLUCENT_GLINT_ITEM_OVERLAY, TRANSLUCENT_ITEM_OVERLAY, TRANSLUCENT_PARTICLE_OVERLAY,
     WATER_MASK_OVERLAY, WORLD_TEXT_OVERLAY, WORLD_TEXT_POLYGON_OFFSET_OVERLAY, is_native_terrain,
     mark_oit,
+};
+use section_fade::{
+    CHUNK_VISIBILITY_THRESHOLD, FadeInputs, chunk_visibility, fade_millis, section_instance,
+    section_visibility,
 };
 pub use view::{View, ViewSet};
 
@@ -365,62 +370,6 @@ fn pack_terrain_camera(camera: DVec3) -> DVec3 {
     let whole = camera.floor();
     whole + ((camera - whole) * 65536.0).round() / 65536.0
 }
-/// A section's instance: its camera-relative origin and its UV step, negated
-/// past its fade code while it fades in over far terrain (`lod::instance`).
-fn section_instance(origin: [f32; 3], fade: u32, visibility: f32) -> [f32; 4] {
-    let step = 1.0 / crate::mesher::UV_STEPS;
-    [
-        origin[0],
-        origin[1],
-        origin[2],
-        if fade == 0 {
-            // The step is a power of two, so its mantissa is free: it holds the vanilla
-            // chunk fade-in's `1 - visibility` in 23 bits (terrain.wgsl's `instance_step` and
-            // `instance_visibility` read it back). A whole section is the bare step.
-            let faded = ((1.0 - visibility) * 8_388_608.0)
-                .round()
-                .clamp(0.0, 8_388_607.0) as u32;
-            f32::from_bits(step.to_bits() | faded)
-        } else {
-            -(fade as f32 + step)
-        },
-    ]
-}
-/// `SectionRenderDispatcher.RenderSection.getVisibility`: how far through its fade-in a section
-/// uploaded `elapsed_ms` ago is.
-fn chunk_visibility(elapsed_ms: u64, fade_ms: u64) -> f32 {
-    if elapsed_ms >= fade_ms {
-        1.0
-    } else {
-        elapsed_ms as f32 / fade_ms as f32
-    }
-}
-/// `Util.toMillis`: `Mth.floor(seconds * 1000.0)`.
-fn fade_millis(seconds: f32) -> u64 {
-    (f64::from(seconds) * 1000.0).floor().max(0.0) as u64
-}
-/// `chunk_visibility` at `now` of a section first uploaded at `uploaded`
-/// (`Renderer::section_uploaded`; none: one that fades in over far terrain, or
-/// whose column left), with the chunk fade-in `fade_ms`.
-fn section_visibility(uploaded: Option<&Instant>, fade_ms: u64, now: Instant) -> f32 {
-    uploaded.map_or(1.0, |&t| {
-        let elapsed = now.saturating_duration_since(t).as_millis() as u64;
-        chunk_visibility(elapsed, fade_ms)
-    })
-}
-/// What a section's fade depends on besides the section itself
-/// (`SectionGpu::drawn_faded`): the time, the chunk fade-in time, the sections'
-/// first uploads (`Renderer::section_uploaded`) and those held while far
-/// terrain comes in (`Renderer::lod_retiring`).
-#[derive(Clone, Copy)]
-struct FadeInputs<'a> {
-    now: Instant,
-    fade_ms: u64,
-    uploaded: &'a FxHashMap<SectionKey, Instant>,
-    retiring: &'a crate::fast_hash::FxHashSet<SectionKey>,
-}
-/// `LevelRenderer.CHUNK_VISIBILITY_THRESHOLD`: a section's block entities wait for it.
-const CHUNK_VISIBILITY_THRESHOLD: f32 = 0.3;
 /// A new value for `Renderer::block_entity_revision`.
 fn next_block_entity_revision() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1176,6 +1125,8 @@ pub struct Renderer {
     /// Sections upload their solid quads in the compact layout (`mesher::packed`): the solid
     /// passes read the arena themselves (`flat`) and no shader pack reads it as vertices.
     packed_quads: bool,
+    /// The compact layout is allowed (`HORIZON_PACKED_QUADS`, `set_packed_layout`).
+    packed_on: bool,
     /// The visibility buffer for flat frames' solid terrain (`visbuffer`,
     /// `HORIZON_VISBUFFER=1`).
     visbuf: Option<visbuffer::Visbuffer>,
@@ -1545,7 +1496,7 @@ pub struct Renderer {
     shadow_seen_scratch: crate::fast_hash::FxHashSet<SectionKey>,
     /// Shadow translucent section draws, retained between frames.
     shadow_translucent_scratch: Vec<(u64, [u32; 5], (u32, Option<u32>))>,
-    /// Lava's sprite layers, which a pack's solid terrain draws (`pack_atlas::terrain_parts`).
+    /// Lava's sprite layers, which a pack's solid terrain draws (`pack_atlas::game_terrain`).
     pack_lava_layers: Vec<u16>,
     pub hud: HudRenderer,
     /// Vanilla's menu background blur, made on first use.
@@ -4953,8 +4904,8 @@ impl Renderer {
             }
             None => (solid, solid_opaque, solid_cutout, solid_mirror),
         };
-        // The solid quads in the compact layout, while no shader pack reads the arena
-        // (`follow_packed_layout`).
+        // The solid quads in the compact layout where every pass reads it; the first world
+        // frames settle it for the picked pack (`follow_packed_layout`).
         let packed_quads = flat.is_some() && !shader_pack && packed_wanted();
         packed::pack_quads(packed_quads);
         // A native mod's world warp builds its pipelines with these layouts once it is given one.
@@ -5122,6 +5073,7 @@ impl Renderer {
             world_warps,
             flat_on: flat.is_some(),
             packed_quads,
+            packed_on: packed_wanted(),
             cull_on: cull.is_some(),
             sides_on: true,
             gpu_culling: None,
@@ -6758,13 +6710,17 @@ impl Renderer {
             flat.set_translucent_page_vertices(arena.page_vertices());
         }
     }
-    /// Uploads solid quads in the compact layout (`packed_quads`) while no shader pack runs:
-    /// a pack's terrain and shadow programs, and Horizon's own packs' stages, read the
-    /// arena's vertices as `TerrainVertex`es. Leaving it drops every section and far tile
-    /// for the game to mesh again, as `follow_translucent_layout` does.
+    /// Uploads solid quads in the compact layout (`packed_quads`) unless a pack reads the
+    /// arena's vertices as `TerrainVertex`es: Horizon's own packs' stages, and a `shaders/`
+    /// pack's terrain and shadow programs outside flat draws (flat ones unpack the records,
+    /// `pack_atlas::PULL_FLAT`). Leaving it drops every section and far tile for the game to
+    /// mesh again, as `follow_translucent_layout` does.
     fn follow_packed_layout(&mut self) {
         let pack = self.pack_post.as_ref().and_then(|p| p.1.as_ref()).is_some();
-        let want = self.flat.is_some() && !pack && self.native.is_none() && packed_wanted();
+        let want = self.flat.is_some()
+            && (!pack || self.pack_terrain_flat)
+            && self.native.is_none()
+            && self.packed_on;
         if want == self.packed_quads {
             return;
         }
@@ -6775,6 +6731,10 @@ impl Renderer {
             let waiting = self.hold.take_all();
             self.place_held(waiting);
         }
+        log::info!(
+            "Horizon: compact solid terrain {}",
+            if want { "on" } else { "off" }
+        );
         self.packed_quads = want;
         packed::pack_quads(want);
         let laid_out = self.sections.values().any(|s| s.packed)
@@ -6783,6 +6743,17 @@ impl Renderer {
             self.sections_dropped = true;
             self.clear_sections(self.layout);
         }
+    }
+    /// Allows the compact layout of solid quads or not, for A/B checks: every section and far
+    /// tile is meshed again in the layout that follows. Replies whether sections now use it.
+    pub fn set_packed_layout(&mut self, on: bool) -> bool {
+        if on != self.packed_on {
+            self.packed_on = on;
+            self.follow_packed_layout();
+            self.sections_dropped = true;
+            self.clear_sections(self.layout);
+        }
+        self.packed_quads
     }
     /// Whether every section and far tile was dropped since the last call, to be
     /// laid out again (`follow_translucent_layout`): the game meshes them again,
@@ -7226,7 +7197,8 @@ impl Renderer {
                     .as_ref()
                     .map_or([1, 1], |t| [t.width(), t.height()]),
                 terrain: self.pack_atlas.as_ref().map(|_| pack_post::Geometry {
-                    buffers: if flat { &buffers[..1] } else { &buffers },
+                    // Flat terrain programs pull their vertices (`pack_atlas::PULL_FLAT`).
+                    buffers: if flat { &[] } else { &buffers },
                     table: self.flat.as_ref().filter(|_| flat).map(|f| &f.draw_layout),
                     depth_write: true,
                     atlas: None,
@@ -7396,7 +7368,8 @@ impl Renderer {
                 lightmap,
                 gui_size,
                 terrain: terrain.then(|| pack_post::Geometry {
-                    buffers: if flat { &buffers[..1] } else { &buffers },
+                    // Flat terrain programs pull their vertices (`pack_atlas::PULL_FLAT`).
+                    buffers: if flat { &[] } else { &buffers },
                     table: table.as_ref(),
                     depth_write: true,
                     atlas: None,
@@ -7561,15 +7534,12 @@ impl Renderer {
                 );
                 horizon_shaders::GeometryInputs {
                     inputs,
-                    pull: pack_atlas::PULL.to_owned(),
+                    // Flat terrain inputs pull their own vertex (`PULL_FLAT`, `gl_VertexIndex` → `hz_vertex_index`).
+                    pull: String::new(),
                     index: "hz_indices[@]".to_owned(),
                 }
             });
         horizon_shaders::GameInputs {
-            terrain_parts: terrain
-                .as_ref()
-                .map(|t| pack_atlas::terrain_parts(t, &self.pack_lava_layers)),
-            terrain,
             terrain_geometry,
             entity_geometry: Some(pack_entities::geometry_inputs()),
             sky: Some(pack_sky::inputs()),
@@ -7579,6 +7549,7 @@ impl Renderer {
             weather: Some(pack_weather::inputs()),
             lines: Some(pack_lines::inputs()),
             hand: Some(pack_hand::inputs()),
+            ..pack_atlas::game_terrain(terrain, &self.pack_lava_layers)
         }
     }
 
@@ -15306,8 +15277,8 @@ fn log_os_reported(reported: Option<crate::graphics::Reported>) {
     });
 }
 /// What the OS reports in absolute nits, HDR output's scale (Windows: DXGI's SDR white level,
-/// the brightness slider's, as Paper White, and its `MaxLuminance`, mostly the display's EDID
-/// guess, as Peak Brightness), kept within the settings' ranges. The player's values win.
+/// the brightness slider's, as Paper White, and its `MaxLuminance`, the display's or a calibration
+/// profile's, as Peak Brightness), kept within the settings' ranges. The player's values win.
 fn os_reported(info: &wgpu::DisplayHdrInfo) -> Option<crate::graphics::Reported> {
     let luminance = info.luminance?;
     let usable = |n: f32| n.is_finite() && n > 0.0;
