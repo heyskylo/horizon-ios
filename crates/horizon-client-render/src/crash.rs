@@ -43,6 +43,11 @@ pub fn enter_native_mod(call: NativeModCall) -> NativeModGuard {
     }
 }
 
+/// The native mod call this thread is currently inside, if any.
+pub fn current_native_mod() -> Option<NativeModCall> {
+    IN_NATIVE_MOD.with(Cell::get)
+}
+
 /// Puts back the call that `enter_native_mod` found.
 #[must_use]
 pub struct NativeModGuard {
@@ -244,7 +249,7 @@ fn arch_label(build: &str, machine: &str) -> String {
 }
 
 /// `PRETTY_NAME` of /etc/os-release and the kernel, or the system's own version string.
-fn operating_system() -> String {
+pub(crate) fn operating_system() -> String {
     let arch = arch_label(std::env::consts::ARCH, machine_arch());
     let version = if cfg!(target_os = "linux") {
         let name = read("/etc/os-release").and_then(|t| {
@@ -434,20 +439,33 @@ fn deliver(home: &Path, report: Report) -> Option<PathBuf> {
     }
 }
 
-/// The report for a hung server tick, written by the watchdog thread
-/// (`ServerWatchdog`): the stuck thread's stack is not available to Rust, so
-/// the report carries none.
-pub fn report_watchdog(home: &Path, side: &'static str, message: String) -> Option<PathBuf> {
+/// The report for a hung server tick, written by the watchdog thread (`ServerWatchdog`): the
+/// stack is the server thread's, read from the watchdog (`horizon_threads::stack_dump`), as
+/// vanilla's report carries the server thread's stack; without it, the details say why.
+pub fn report_watchdog(
+    home: &Path,
+    side: &'static str,
+    message: String,
+    server_stack: Result<String, horizon_threads::stack_dump::NoStack>,
+) -> Option<PathBuf> {
+    let mut details = system_details(side);
+    let stack = match server_stack {
+        Ok(stack) => stack_lines(&stack, false),
+        Err(why) => {
+            details.push(("Server thread stack".into(), why.to_string()));
+            String::new()
+        }
+    };
     deliver(
         home,
         Report {
             time: Local::now(),
             description: "Watching Server".into(),
             error: format!("{message} (Watching Server)"),
-            stack: String::new(),
+            stack,
             thread: thread_name(side),
             side,
-            details: system_details(side),
+            details,
             log: crate::logging::recent_lines(),
         },
     )

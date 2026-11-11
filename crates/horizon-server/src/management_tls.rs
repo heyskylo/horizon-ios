@@ -5,7 +5,7 @@
 //! one instead (a self-signed certificate in `.horizon/`), so turning the protocol on is enough, and logs the
 //! certificate's fingerprint for clients to pin.
 
-use horizon_server_files::properties::{SystemEntropy, generate_secret_key};
+use horizon_platform::server_files::properties::{OsEntropy, generate_secret_key};
 use p12_keystore::{Certificate, KeyStore, KeyStoreEntry, PrivateKeyChain};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use sha2::{Digest, Sha256};
@@ -102,7 +102,7 @@ pub fn generate(dir: &Path, host: &str) -> Result<String, String> {
             [certificate],
         )),
     );
-    let password = generate_secret_key(&mut SystemEntropy::default());
+    let password = generate_secret_key(&mut OsEntropy);
     let data = store.writer(&password).write().map_err(|e| e.to_string())?;
     let file = dir.join(GENERATED);
     if let Some(parent) = file.parent() {

@@ -26,13 +26,20 @@ link to `shared-local/` in the same directory.
 """
 
 import argparse
+import functools
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+# `git merge-tree --write-tree` (the trial merge, in the object database) only exists since git 2.38.
+MIN_GIT_VERSION = (2, 38)
+# What the version is needed for, in the message a too-old git gets.
+GIT_VERSION_USE = ("this tool trial-merges the branches with `git merge-tree --write-tree`, which only exists since "
+                   "git 2.38")
 
 
 def git(*args, cwd=None, check=True):
@@ -41,6 +48,32 @@ def git(*args, cwd=None, check=True):
     if check and result.returncode:
         raise SystemExit(f"git {' '.join(args)} failed in {cwd}:\n{result.stderr.strip()}")
     return result.stdout.strip()
+
+
+def parse_git_version(text):
+    """The version numbers in `git --version` output: "git version 2.38.1" -> (2, 38, 1). Empty when there are none."""
+    match = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", text)
+    return tuple(int(part) for part in match.groups(default="0")) if match else ()
+
+
+@functools.lru_cache(maxsize=1)
+def git_version():
+    """The local git's version as numbers, e.g. (2, 38, 1); empty when it cannot be read."""
+    try:
+        result = subprocess.run(["git", "--version"], capture_output=True, text=True)
+    except OSError:
+        return ()
+    return parse_git_version(result.stdout)
+
+
+def require_git_version(use=GIT_VERSION_USE):
+    """The local git's version, or a plain failure when it is too old for what `use` needs."""
+    version = git_version()
+    if version < MIN_GIT_VERSION:
+        found = ".".join(str(part) for part in version) if version else None
+        detail = f"this git is {found}." if found else "this git's version could not be read."
+        raise SystemExit(f"git {'.'.join(str(part) for part in MIN_GIT_VERSION)} or newer is required: {use}; {detail}")
+    return version
 
 
 def worktrees():
@@ -125,6 +158,7 @@ def save(args):
 
 def trial_merge(onto, branch):
     """Merge branch onto the commit onto without touching any worktree: (merged commit or None, conflicting paths)."""
+    require_git_version()
     result = subprocess.run(["git", "merge-tree", "--write-tree", "--name-only", "--no-messages", onto, branch],
                             cwd=ROOT, capture_output=True, text=True)
     lines = result.stdout.split()

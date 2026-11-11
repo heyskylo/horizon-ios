@@ -1,8 +1,8 @@
 //! The dedicated server's chat filter (docs/chat-filter.md), without the game: `server.toml`'s
 //! `[chat_filter]`, the matcher for the slur list (`data/slurs.txt`, or the owner's `words_file`), and
 //! the escalation (a refused message, then a mute, then a temporary ban), with the mutes kept in a file
-//! so that they outlive a restart. The server's hub (`horizon_client::lan`) asks it before it relays a
-//! player's text and carries out what it decides.
+//! so that they outlive a restart. The server's hub (`horizon_client::lan`) asks it, through the engine's
+//! `horizon_server_files::chat_guard` hook, before it relays a player's text, and carries out what it decides.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -10,6 +10,11 @@ use std::path::{Path, PathBuf};
 
 mod normalise;
 
+use horizon_server_files::chat_guard::{self, ChatGuard, Loaded, Place};
+pub use horizon_server_files::chat_guard::{Action, Mute};
+pub use horizon_server_files::duration::{
+    DurationUnit, duration_parts, duration_text, now_millis, parse_duration,
+};
 pub use normalise::{Run, Text};
 
 /// The list built into the game, used when `words_file` is empty.
@@ -218,49 +223,59 @@ fn fits(entry: &[Run], runs: &[Run], whole: bool) -> bool {
         .all(|(e, r)| e.letter == r.letter && r.count >= e.count)
 }
 
-/// What a hit leads to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Action {
-    /// The text is refused, nothing more.
-    Refused,
-    /// Refused, and the player can't chat until then (epoch milliseconds).
-    Muted { until: i64 },
-    /// Refused, and the player is banned until then.
-    Banned { until: i64 },
+/// A mute as the mutes file keeps it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct SavedMute {
+    uuid: String,
+    name: String,
+    until: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
 }
 
-impl Action {
-    pub fn name(self) -> &'static str {
-        match self {
-            Action::Refused => "refused",
-            Action::Muted { .. } => "muted",
-            Action::Banned { .. } => "banned",
+impl From<SavedMute> for Mute {
+    fn from(m: SavedMute) -> Self {
+        let SavedMute {
+            uuid,
+            name,
+            until,
+            by,
+            reason,
+        } = m;
+        Mute {
+            uuid,
+            name,
+            until,
+            by,
+            reason,
         }
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Mute {
-    pub uuid: String,
-    pub name: String,
-    /// Epoch milliseconds; `None`: until `/unmute`.
-    pub until: Option<i64>,
-    /// The operator who muted them (`/mute`, `/tempmute`); `None`: the filter.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub by: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-}
-
-impl Mute {
-    pub fn active(&self, now: i64) -> bool {
-        self.until.is_none_or(|until| until > now)
+impl From<Mute> for SavedMute {
+    fn from(m: Mute) -> Self {
+        let Mute {
+            uuid,
+            name,
+            until,
+            by,
+            reason,
+        } = m;
+        SavedMute {
+            uuid,
+            name,
+            until,
+            by,
+            reason,
+        }
     }
 }
 
 #[derive(Default, Serialize, Deserialize)]
 struct MutesFile {
-    mutes: Vec<Mute>,
+    mutes: Vec<SavedMute>,
 }
 
 /// One player's hits: how many, and when the last one stops counting.
@@ -290,7 +305,7 @@ impl Guard {
         {
             for m in saved.mutes {
                 if let Some(uuid) = parse_uuid(&m.uuid) {
-                    mutes.insert(uuid, m);
+                    mutes.insert(uuid, m.into());
                 }
             }
         }
@@ -428,7 +443,7 @@ impl Guard {
         };
         let now = now_millis();
         self.mutes.retain(|_, m| m.active(now));
-        let mut mutes: Vec<Mute> = self.mutes.values().cloned().collect();
+        let mut mutes: Vec<SavedMute> = self.mutes.values().cloned().map(Into::into).collect();
         mutes.sort_by(|a, b| a.name.cmp(&b.name));
         if let Ok(text) = serde_json::to_string_pretty(&MutesFile { mutes }) {
             let tmp = file.with_extension("json.tmp");
@@ -437,6 +452,94 @@ impl Guard {
             }
         }
     }
+}
+
+impl ChatGuard for Guard {
+    fn matches(&self, text: &str) -> bool {
+        self.filter.matches(text)
+    }
+
+    fn muted(&self, uuid: u128, now: i64) -> Option<&Mute> {
+        Guard::muted(self, uuid, now)
+    }
+
+    fn mutes(&self, now: i64) -> Vec<&Mute> {
+        Guard::mutes(self, now)
+    }
+
+    fn mute(
+        &mut self,
+        uuid: u128,
+        name: &str,
+        until: Option<i64>,
+        by: &str,
+        reason: Option<String>,
+    ) {
+        Guard::mute(self, uuid, name, until, by, reason);
+    }
+
+    fn strike(&mut self, uuid: u128, name: &str, now: i64) -> (u32, Action) {
+        Guard::strike(self, uuid, name, now)
+    }
+
+    fn unmute(&mut self, name: &str) -> Option<String> {
+        Guard::unmute(self, name)
+    }
+
+    fn log(
+        &mut self,
+        now: i64,
+        name: &str,
+        uuid: u128,
+        place: Place,
+        count: u32,
+        action: Action,
+        text: &str,
+    ) -> Result<(), String> {
+        let path = &self.config.log;
+        if path.is_empty() {
+            return Ok(());
+        }
+        let line = log_line(now, name, uuid, place.name(), count, action, text);
+        append_log(Path::new(path), &line).map_err(|e| format!("{path}: {e}"))
+    }
+}
+
+/// `server.toml`'s `[chat_filter]` for the dedicated server ([`chat_guard::install`] it at startup): on
+/// by default, off (with an error logged) when the section is wrong. The mutes are kept in `dir`.
+pub fn load(server_toml: &str, dir: &Path) -> Loaded {
+    let mut loaded = Loaded::default();
+    let config = match Config::from_server_toml(server_toml) {
+        Ok(config) => config,
+        Err(e) => {
+            loaded.log.push((
+                "ERROR",
+                format!("server.toml: {e}; the chat filter stays off"),
+            ));
+            return loaded;
+        }
+    };
+    if !config.enabled {
+        return loaded;
+    }
+    let (guard, problem) = Guard::load(config, dir);
+    if let Some(problem) = problem {
+        loaded.log.push(("WARN", problem));
+    }
+    loaded.log.push((
+        "INFO",
+        format!(
+            "Chat filter on: {} words (server.toml [chat_filter]; enabled = false turns it off)",
+            guard.filter.len()
+        ),
+    ));
+    loaded.guard = Some(Box::new(guard));
+    loaded
+}
+
+/// Gives the dedicated server this chat filter.
+pub fn install() {
+    chat_guard::install(load);
 }
 
 /// One line of `logs/chat-filter.log`, without its newline.
@@ -472,61 +575,6 @@ pub fn append_log(path: &Path, line: &str) -> std::io::Result<()> {
         .append(true)
         .open(path)?;
     writeln!(f, "{line}")
-}
-
-/// `/tempmute`'s duration in milliseconds: a positive whole number and a unit, `s`, `m`, `h`, `d` or
-/// `w` (`10m`, `2h`, `1d`).
-pub fn parse_duration(text: &str) -> Option<i64> {
-    let unit = match text.chars().last()? {
-        's' => 1_000,
-        'm' => MINUTE,
-        'h' => 60 * MINUTE,
-        'd' => 24 * 60 * MINUTE,
-        'w' => 7 * 24 * 60 * MINUTE,
-        _ => return None,
-    };
-    let count: i64 = text[..text.len() - 1].parse().ok()?;
-    (count > 0).then(|| count.checked_mul(unit)).flatten()
-}
-
-/// The unit used when presenting a moderation duration to a player.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DurationUnit {
-    Minute,
-    Hour,
-    Day,
-}
-
-/// A duration's rounded count and unit, shared by logs and translated replies.
-pub fn duration_parts(millis: i64) -> (i64, DurationUnit) {
-    let (unit, kind) = if millis <= 60 * MINUTE {
-        (MINUTE, DurationUnit::Minute)
-    } else if millis <= 48 * 60 * MINUTE {
-        (60 * MINUTE, DurationUnit::Hour)
-    } else {
-        (24 * 60 * MINUTE, DurationUnit::Day)
-    };
-    (
-        millis.div_euclid(unit) + i64::from(millis.rem_euclid(unit) > 0),
-        kind,
-    )
-}
-
-/// `millis` for logs, rounded up: minutes up to an hour, hours up to two days, then days.
-pub fn duration_text(millis: i64) -> String {
-    let (count, unit) = duration_parts(millis);
-    let unit = match unit {
-        DurationUnit::Minute => "minute",
-        DurationUnit::Hour => "hour",
-        DurationUnit::Day => "day",
-    };
-    format!("{count} {unit}{}", if count == 1 { "" } else { "s" })
-}
-
-pub fn now_millis() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64)
 }
 
 /// `YYYY-MM-DDTHH:MM:SSZ` for epoch milliseconds.
