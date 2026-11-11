@@ -1940,8 +1940,8 @@ impl Title {
                     )
                     .does(crate::widgets::Action::Exit),
                 ];
-                // CommonButtons' icon buttons; Horizon's Join a Friend (an
-                // invite code) sits behind vanilla's Friends button.
+                // CommonButtons' icon buttons; Join a Friend (an invite code) sits behind
+                // vanilla's Friends button, inactive without a resolver (`net::joins_friends`).
                 for (i, (key, plain, id, icon)) in [
                     ("gui.friends.open", "Friends", 5, "friends/friends"),
                     ("options.language", "Language...", 6, "icon/language"),
@@ -1960,7 +1960,7 @@ impl Title {
                         y + 72.0,
                         20.0,
                         &lang::get_or(key, plain),
-                        true,
+                        id != 5 || crate::net::joins_friends(),
                         id,
                     );
                     button.icon = Some((icon, 15.0));
@@ -5306,6 +5306,8 @@ mod classic_tests {
 
     #[test]
     fn classic_main_menu_icons_route_language_and_accessibility() {
+        // Join a Friend needs a resolver (title/tests.rs tests the icon without one).
+        crate::net::JOINS_FRIENDS_IN_TEST.set(true);
         let mut title = Title::new(
             PathBuf::new(),
             Path::new("/nonexistent/horizon-test-resources"),

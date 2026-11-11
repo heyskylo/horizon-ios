@@ -38,6 +38,7 @@ use horizon_world::{
 };
 use std::sync::{Arc, Mutex, atomic::Ordering};
 
+mod acknowledgements;
 /// GameEvent types (ClientboundGameEventPacket).
 pub mod chat;
 pub mod chat_filter;
@@ -2416,41 +2417,6 @@ impl Hub {
         events
     }
 
-    /// Keeps, in a frozen player's inbox, the packets that answer the server
-    /// (teleport, chunk batch, loaded, keep-alive, ping, tick end, client
-    /// information) and drops the rest. A chat message or signed command is
-    /// dropped too, but the messages it says the client has seen are taken
-    /// first (`unpackAndApplyLastSeen`), and a chat acknowledgement is handled
-    /// here, in the order they came: the client counts them as acknowledged,
-    /// and its next message after the freeze would not validate otherwise.
-    pub(crate) fn keep_acknowledgements(&mut self, i: usize, events: &mut Vec<HostEvent>) {
-        let inbox = std::mem::take(&mut self.guests[i].inbox);
-        let mut bytes = 0;
-        for (packet, size) in inbox {
-            match &packet {
-                S::Chat(c) => {
-                    self.apply_last_seen(i, &c.last_seen, events);
-                }
-                S::ChatCommandSigned(c) => {
-                    self.apply_last_seen(i, &c.last_seen, events);
-                }
-                S::ChatAck(c) => self.chat_ack(i, c.offset, events),
-                S::AcceptTeleportation(_)
-                | S::PlayerLoaded(_)
-                | S::ChunkBatchReceived(_)
-                | S::ClientInformation(_)
-                | S::ClientTickEnd(_)
-                | S::KeepAlive(_)
-                | S::Pong(_) => {
-                    bytes += size;
-                    self.guests[i].inbox.push_back((packet, size));
-                }
-                _ => {}
-            }
-        }
-        self.guests[i].inbox_bytes = bytes;
-    }
-
     /// Handle the players in this level's packets (`ServerGamePacketListenerImpl`
     /// for each), before the level's scheduled block ticks so a place landed in
     /// the same tick as a falling block's schedule still sees the support
@@ -3147,7 +3113,7 @@ impl Hub {
                     // changed, so the one nearest the player stands for them.
                     for &i in &viewers {
                         let g = &mut self.guests[i];
-                        let Some(record) = g.anticheat.record.as_deref_mut() else {
+                        let Some(record) = g.record.as_deref_mut() else {
                             continue;
                         };
                         let slack = super::prediction::slack(std::array::from_fn(|i| {
@@ -3231,7 +3197,7 @@ impl Hub {
             if recording {
                 for &i in &viewers {
                     let g = &mut self.guests[i];
-                    let Some(record) = g.anticheat.record.as_deref_mut() else {
+                    let Some(record) = g.record.as_deref_mut() else {
                         continue;
                     };
                     let slack = super::prediction::slack(std::array::from_fn(|i| {
@@ -3622,7 +3588,7 @@ impl Hub {
             }));
             for at in gone.drain(..) {
                 let block = at.map(|v| v.floor() as i32);
-                if let Some(record) = g.anticheat.record.as_deref_mut()
+                if let Some(record) = g.record.as_deref_mut()
                     && super::prediction::near(g.position, block, slack)
                 {
                     record.entity_gone(ticks);
@@ -4024,7 +3990,7 @@ impl Hub {
     fn set_sprinting(&mut self, i: usize, sprinting: bool) {
         let g = &mut self.guests[i];
         g.sprinting = sprinting;
-        g.anticheat.sprinting = sprinting;
+        g.client_sprinting = sprinting;
         if let Some(m) = g.motion.as_mut() {
             let _ = m.set_sprint_modifier(sprinting);
         }
@@ -4069,7 +4035,8 @@ impl Hub {
                 | S::RecipeBookSeenRecipe(_)
                 | S::ClientTickEnd(_)
                 | S::KeepAlive(_)
-                | S::Pong(_) => false,
+                | S::Pong(_)
+                | S::PingRequest(_) => false,
                 S::MovePlayerPos(p) => self.moved_far(i, [p.x, p.y, p.z]),
                 S::MovePlayerPosRot(p) => self.moved_far(i, [p.x, p.y, p.z]),
                 S::PlayerInput(_) => self.guests[i].client_loaded(),
@@ -4111,10 +4078,7 @@ impl Hub {
                         // The prediction's replay starts again where the client now is.
                         if recording {
                             let kept = g.awaiting_keeps_motion;
-                            g.anticheat
-                                .record
-                                .get_or_insert_default()
-                                .teleported(at, kept);
+                            g.record.get_or_insert_default().teleported(at, kept);
                         }
                         let rot = (p.yaw, p.pitch);
                         self.position_change(i, [p.x, p.y, p.z], rot, 0, ctx, events);
@@ -4167,6 +4131,8 @@ impl Hub {
                     g.max_unacknowledged = 10;
                 }
                 S::Pong(p) => self.anticheat_pong(i, p.id),
+                // ServerGamePacketListenerImpl.handlePingRequest: echo on this connection.
+                S::PingRequest(p) => self.send_to(conn, &C::PongResponse(p)),
                 // handleAttack is the game's too: a move queued behind an attack would move
                 // the player (or land them on the ground, losing a falling attack's critical
                 // hit) before the game checks their reach and state.
@@ -5098,7 +5064,7 @@ impl Hub {
         // ClientPacketListener.handleRespawn without KEEP_ENTITY_DATA: the client's new player
         // starts with wasSprinting false. (A level change keeps it: the new player sprints on, or
         // says STOP.)
-        g.anticheat.sprinting = false;
+        g.client_sprinting = false;
         // The respawned player is a new one, without effects; so is the
         // client's (ClientPacketListener.handleRespawn).
         g.effects = Default::default();

@@ -189,7 +189,7 @@ impl Game<'_> {
         let (bx, bz) = (view.x.floor() as i32, view.z.floor() as i32);
         // Underground, under a roof or in the Nether: the floor around the player.
         let covered = self.world.light(bx, head, bz) >> 4 == 0;
-        let layer = if self.dim == Dim::Nether || covered {
+        let layer = if self.world.shape.has_ceiling || covered {
             Layer::Below(head)
         } else {
             Layer::Surface
@@ -273,6 +273,12 @@ impl Game<'_> {
         }
         self.draw_pvp_hud(batch, &mut corners);
         self.native_hud(batch, &mut corners);
+        // The layers crates registered (`horizon_hooks::hud`): none, no canvas.
+        let layers = horizon_hooks::hud::engine::all();
+        if !layers.is_empty() {
+            let shown = Corner::ALL.map(|corner| self.native_corner_shown(corner));
+            extras_hud::draw_layers(layers, batch, &self.gui.atlas, &mut corners, shown);
+        }
     }
     /// The height the status effect icons take at the top right
     /// (`Hud.extractEffects`: beneficial at y 1, harmful at y 26).

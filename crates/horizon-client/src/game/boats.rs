@@ -2,6 +2,7 @@
 //! paddling controls, collisions, riding (`positionRider`, `clampRotation`,
 //! dismounting), `BoatItem` placement, `VehicleEntity.hurtServer` breaking,
 //! saving and `AbstractBoatRenderer` with animated paddles.
+mod below_world;
 mod placement;
 
 use super::{Game, InteractTarget, entity::Entity, entity_culling::at, view_vector};
@@ -686,23 +687,15 @@ impl Game<'_> {
         if fall == 0.0 || length < 1.0 {
             return fall;
         }
-        let to = from.add_vector(moved.normalize().scale(moved.length().min(8.0)));
         let reset = &self.res.motion().fall_reset;
-        let fluids = &self.res.motion().fluids;
-        let hit = horizon_core::geometry::traverse_blocks(from, to, 1_000_000, |p| {
-            // A tagged block clips as a full block, not its collider.
-            let name = &self.res.facts().get(self.world.block(p.x, p.y, p.z)).name;
-            if reset.contains(&**name) && VoxelShape::block().clip(from, to, p).is_some() {
-                return Some(());
-            }
-            // The water's shape, through the shared fluid shape cache.
-            horizon_client::entities::water_clip(&self.world, fluids, from, to, p).then_some(())
-        });
-        if matches!(hit, Ok(Some(()))) {
-            0.0
-        } else {
-            fall
-        }
+        let hit = horizon_client::entities::fall_reset_hit(
+            &self.world,
+            &self.res.motion().fluids,
+            |p| reset.contains(&*self.res.facts().get(self.world.block(p.x, p.y, p.z)).name),
+            from,
+            moved,
+        );
+        if hit { 0.0 } else { fall }
     }
     /// `AbstractBoat.checkFallDamage` after a move that went `moved_y` (with
     /// `b` already where it landed): on the ground the fall resets; a move
@@ -985,7 +978,7 @@ impl Game<'_> {
                 };
                 self.boats[i].wear_off_hurt();
                 // Entity.baseTick burns it before it moves; the fire may break it.
-                if !self.boat_fire_tick(i) {
+                if !self.boat_fire_tick(i) && !self.boat_below_world(i) {
                     let b = self.boats[i].clone();
                     self.boats[i] = self.tick_boat(b, false);
                     self.boat_server_passes(id, &driven, &ticking, &round);
@@ -1475,6 +1468,13 @@ impl Game<'_> {
         }
     }
     /// `BoatItem.use`: aim at a block or the water surface.
+    /// `Entity.setYRot` on a boat just made (its old rotation moves with it).
+    pub(super) fn set_boat_yaw(&mut self, id: u32, yaw: f32) {
+        if let Some(b) = self.boats.iter_mut().find(|b| b.id == id) {
+            b.yaw = yaw;
+            b.previous_yaw = yaw;
+        }
+    }
     pub(super) fn place_boat(&mut self, stack: &ItemStack) -> bool {
         let Some(boat) = self.boat_to_place(stack) else {
             return false;
@@ -1485,7 +1485,11 @@ impl Game<'_> {
             boat.position.z.floor() as i32 >> 4,
         );
         self.world.modified.insert(key);
+        let (id, kind, yaw) = (boat.id, boat.entity_type(), boat.yaw);
         self.boats.push(boat);
+        self.apply_vehicle_stack_config(super::commands::Target::Boat(id), &kind, stack, true);
+        // BoatItem.use: setYRot(player.getYRot()) after the stack's config.
+        self.set_boat_yaw(id, yaw);
         if self.serving.is_some() || self.options.dedicated.is_some() {
             self.native_vehicle_create(
                 self.boats.last().unwrap().entity_type().as_str(),

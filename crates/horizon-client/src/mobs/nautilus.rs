@@ -90,6 +90,11 @@ pub fn is_food(m: &Mob, item: &str, taming: &[String]) -> bool {
         m.kind.food.iter().any(|t| t == item)
     }
 }
+/// `TamableAnimal.feed`'s heal: twice the food's nutrition, or 1 for an item
+/// without a food component (a fish bucket).
+pub fn feed_heal(nutrition: Option<i32>) -> f32 {
+    nutrition.map_or(1.0, |n| 2.0 * n as f32)
+}
 /// The ambient, hurt and death sounds by age and whether it is under water.
 pub fn sounds(m: &Mob) -> [&'static str; 3] {
     let under = m.fluids.eye_in_water;
@@ -572,6 +577,7 @@ impl Goal for Charge {
                 x: f64::from(horizon_core::geometry::trig::sin(yaw)),
                 z: -f64::from(horizon_core::geometry::trig::cos(yaw)),
                 source: super::Damage::mob(m.id, from),
+                apply_blocking: None,
             });
             m.velocity = Vec3::new(m.velocity.x * 0.6, m.velocity.y, m.velocity.z * 0.6);
         }
@@ -1120,5 +1126,24 @@ mod cooldown_memory_tests {
             failures.is_empty(),
             "nautilus cooldown tick/save mismatches: {failures:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod feed_heal_tests {
+    use super::feed_heal;
+
+    #[test]
+    fn heals_twice_the_nutrition_of_vanilla_foods() {
+        // Foods.java: cod 2, pufferfish 1, cooked cod 5, cooked salmon 6.
+        assert_eq!(feed_heal(Some(2)), 4.0);
+        assert_eq!(feed_heal(Some(1)), 2.0);
+        assert_eq!(feed_heal(Some(5)), 10.0);
+        assert_eq!(feed_heal(Some(6)), 12.0);
+    }
+
+    #[test]
+    fn item_without_food_component_heals_one() {
+        assert_eq!(feed_heal(None), 1.0);
     }
 }

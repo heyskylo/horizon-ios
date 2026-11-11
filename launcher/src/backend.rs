@@ -2114,8 +2114,7 @@ fn download_for_owner(
     log: &dyn Fn(String),
 ) -> Result<(), String> {
     let mut accounts = account::Accounts::load();
-    // The strict gate, never `launch_for_game`: the developer option that lets offline names
-    // play without an owner must not download the game for them.
+    // Any account that owns the game may download it (`launch`), not only the one that plays.
     let pass = account::launch(
         &account::Endpoints::live(),
         account::client_id().as_deref(),
@@ -3175,14 +3174,14 @@ pub fn client(tag: &str) -> Result<Command, String> {
 pub const SIGN_IN_HINT: &str = "Sign in with `horizon-launcher account sign-in`.";
 
 /// [`client`], playing as `who` for this launch only (`play --account`).
-pub fn client_as(tag: &str, who: Option<&account::Player>) -> Result<Command, String> {
+pub fn client_as(tag: &str, who: Option<&str>) -> Result<Command, String> {
     if let Some(error) = game_architecture_launch_error(tag) {
         return Err(error);
     }
     play_step("reading the sign-in");
     let hint = |refused: String| format!("{refused} {}", crate::i18n::tr(SIGN_IN_HINT));
     let session = match who {
-        None => account::session_for_game(&game_home(), false).map_err(|refused| {
+        None => account::session_for_game(&game_home()).map_err(|refused| {
             // A keyring that didn't answer isn't a missing sign-in (#12179).
             match refused.keyring {
                 Some(why) => why,
@@ -4512,12 +4511,6 @@ pub struct Settings {
     /// An older file's switch for the release profile, read when `native_profile` is unset.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub native_release: bool,
-    /// Developer options (hidden: seven clicks on the sidebar's launcher version reveal them):
-    /// offline names play without an account that owns the game, in the window only
-    /// (`account::Accounts::play_as_with`, `account::launch_for_game`). Never a download: the game still
-    /// comes from the player's own install. Off by default, and absent from the file while off.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub dev_offline: bool,
 }
 
 impl Settings {

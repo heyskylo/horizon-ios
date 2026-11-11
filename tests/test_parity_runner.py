@@ -1,7 +1,10 @@
 from pathlib import Path
 import json
 import os
+import subprocess
+import sys
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -238,6 +241,30 @@ class ParityRunnerTests(unittest.TestCase):
                     self.assertTrue(parity.stale("x", state, parity.Hasher(state["hashes"]), "env"))
 
 
+class TraceTests(unittest.TestCase):
+    def test_commands_are_recorded_as_argument_lists(self):
+        """On Windows the audit event carries the command line Popen built; the trace splits it back, so a harness's
+        cargo builds reach the probe prebuild and its probes' sources become dependencies there too."""
+        arguments = [sys.executable, "-c", "pass", "build", "-p", "a b", 'say "hi"', "back\\slash\\", ""]
+        with tempfile.TemporaryDirectory() as tmp:
+            script, trace = Path(tmp) / "harness.py", Path(tmp) / "trace.json"
+            script.write_text(f"import subprocess\nsubprocess.run({arguments!r})\n", encoding="utf-8")
+            subprocess.run([sys.executable, str(Path(parity.__file__)), "--trace", str(trace), str(script)], check=True)
+            commands = json.loads(trace.read_text(encoding="utf-8"))["commands"]
+        self.assertIn(arguments, commands)
+
+    @unittest.skipUnless(os.name == "nt", "Windows command lines")
+    def test_a_windows_command_line_splits_into_its_arguments(self):
+        for arguments in (["cargo", "build", "--profile", "fast"],
+                          ["C:\\Program Files\\x.exe", "a b", 'q"uote', "tail\\", ""]):
+            self.assertEqual(parity.command_line_arguments(subprocess.list2cmdline(arguments)), arguments)
+
+    def test_a_windows_probe_binary_finds_its_dep_info(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "client_probe.d").write_text(f"{tmp}/client_probe: crates/a/src/lib.rs\n", encoding="utf-8")
+            self.assertEqual(parity.dep_info(Path(tmp, "client_probe.exe")), ["crates/a/src/lib.rs"])
+
+
 class DependencyPathTests(unittest.TestCase):
     def test_traced_dependencies_use_repository_posix_paths(self):
         with tempfile.TemporaryDirectory() as temp, mock.patch.object(parity, "ROOT", Path(temp).resolve()):
@@ -421,6 +448,7 @@ class OracleReuseTests(unittest.TestCase):
         python = root / "python"
         python.mkdir()
         (python / "python3").symlink_to(sys.executable)
+        self.python = sys.executable
         self.env = dict(os.environ, PATH=f"{self.shim}:{self.bin}:{python}", PARITY_SHIM_REAL_PATH=str(self.bin),
                         PARITY_SHIM_CACHE=str(root / "cache"))
         self.subprocess = subprocess
@@ -445,6 +473,45 @@ class OracleReuseTests(unittest.TestCase):
         self.output.write_text("tampered")
         self.assertEqual(self.oracle(), 3)
         self.assertEqual(self.output.read_text(), "b")
+
+    def wrapper(self, folder, put_the_shim_back=False):
+        """A `java` that runs the first other `java` on PATH, as JDK selectors and build wrappers do. It stops
+        itself after a few rounds, so a shim that loops fails this test instead of filling the machine."""
+        folder.mkdir()
+        path = f"os.environ['PATH'] = {str(self.shim)!r} + os.pathsep + os.environ['PATH']\n" if put_the_shim_back else ""
+        (folder / "java").write_text(
+            f"#!{self.python}\nimport os, sys, shutil\nfrom pathlib import Path\n"
+            "rounds = int(os.environ.get('WRAPPER_ROUNDS') or 0)\n"
+            "if rounds > 6: sys.exit(97)\n"
+            "os.environ['WRAPPER_ROUNDS'] = str(rounds + 1)\n" + path +
+            "me = Path(__file__).resolve()\n"
+            "other = next(c for d in os.environ['PATH'].split(os.pathsep) if (c := shutil.which('java', path=d))"
+            " and Path(c).resolve() != me)\n"
+            "os.execv(other, [other, *sys.argv[1:]])\n")
+        (folder / "java").chmod(0o755)
+
+    def test_a_wrapper_that_looks_java_up_on_path_reaches_the_real_one(self):
+        wrapper = self.bin.parent / "wrapper"
+        self.wrapper(wrapper)
+        self.env["PATH"] = f"{self.shim}:{wrapper}:{self.bin}:{self.bin.parent / 'python'}"
+        self.env["PARITY_SHIM_REAL_PATH"] = f"{wrapper}:{self.bin}"
+        self.assertEqual(self.oracle(), 1)
+        self.assertEqual(self.oracle(), 1)
+
+    def test_a_wrapper_that_puts_the_shim_back_stops_with_a_reason(self):
+        wrapper = self.bin.parent / "wrapper"
+        self.wrapper(wrapper, put_the_shim_back=True)
+        # The shim's `env python3` must find a python3 on the real PATH.
+        self.env["PARITY_SHIM_REAL_PATH"] = f"{wrapper}:{self.bin}:{self.bin.parent / 'python'}"
+        result = self.subprocess.run(["java", str(self.input), str(self.output)], env=self.env, capture_output=True,
+                                     text=True, stdin=self.subprocess.DEVNULL, timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("started inside itself", result.stderr)
+
+    def test_a_real_path_that_holds_the_shim_skips_it(self):
+        from tools import parity_shim
+        with mock.patch.dict(os.environ, PARITY_SHIM_REAL_PATH=f"{self.shim}:{self.bin}"):
+            self.assertEqual(Path(parity_shim.real("java")), self.bin / "java")
 
 
 
@@ -588,6 +655,37 @@ class SoloTests(unittest.TestCase):
         self.assertTrue(solo and set(solo) <= {parity.base_name(name) for name in parity.harnesses()})
 
 
+class ClashTests(unittest.TestCase):
+    """On Windows, harnesses that build one program with different selections don't run at once."""
+    PACKAGES = {("bin", "horizon-client"): "horizon-client", ("bin", "horizon-ctl"): "horizon-client-lib",
+                ("example", "client_probe"): "horizon-client-lib"}
+    SERVER = ["bin", "horizon-client", "fast", ["-p", "horizon-client"], False]
+    BOTH = ["bins", "", "fast", ["-p", "horizon-client", "-p", "horizon-client-lib"], False]
+    PROBE = ["example", "client_probe", "dev", ["-p", "horizon-client-lib"], True]
+
+    def test_a_run_naming_every_bin_builds_those_of_its_packages(self):
+        self.assertEqual(parity.executables([self.BOTH], self.PACKAGES), {
+            ("bin", "horizon-client", "fast"): (("-p", "horizon-client", "-p", "horizon-client-lib"), False),
+            ("bin", "horizon-ctl", "fast"): (("-p", "horizon-client", "-p", "horizon-client-lib"), False)})
+
+    def test_another_selection_of_a_running_harness_program_waits(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(parity, "STATE_DIR", Path(tmp)):
+            local = parity.LocalExecutor(4, 1 << 40, 60)
+        local.builds = {name: parity.executables(built, self.PACKAGES) for name, built in {
+            "server": [self.SERVER], "same": [self.SERVER, self.PROBE], "both": [self.BOTH], "probe": [self.PROBE],
+            "python_only": []}.items()}
+        local.running = {"server": {}}
+        self.assertFalse(local.accepts("both"))  # it would relink horizon-client.exe while "server" runs it
+        self.assertTrue(local.accepts("same"))  # Cargo finds it fresh
+        self.assertTrue(local.accepts("probe"))
+        self.assertTrue(local.accepts("python_only"))
+        self.assertTrue(local.accepts("never_ran"))
+        local.running = {"both~2": {}}
+        self.assertFalse(local.accepts("server"))
+        local.running = {}
+        self.assertTrue(local.accepts("both"))
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -663,3 +761,68 @@ class WorkspaceManifestTests(unittest.TestCase):
 
     def test_without_a_base_everything_counts(self):
         self.assertEqual(parity.workspace_only_manifests({"Cargo.lock"}, None), set())
+
+
+# A harness that leaves a child behind: the child locks a file, says so, and sleeps; the harness then exits or hangs.
+# The lock frees once the child is dead, on every platform (flock, or msvcrt's byte lock).
+LEAVING_HARNESS = """
+import subprocess, sys, time
+from pathlib import Path
+held = Path(sys.argv[0]).with_name("held")
+child = subprocess.Popen([sys.executable, "-c", '''
+import sys, time
+sys.path.insert(0, sys.argv[1])
+from tools import file_lock
+handle = open(sys.argv[2], "w")
+file_lock.lock(handle)
+open(sys.argv[2] + ".ready", "w").close()
+time.sleep(120)
+''', str(Path({root!r})), str(held)], stdout=subprocess.DEVNULL)
+while not Path(str(held) + ".ready").exists():
+    time.sleep(0.05)
+if {hang!r}:
+    time.sleep(120)
+"""
+
+
+def child_released(held, seconds=30):
+    """Whether the left child's lock on held frees within seconds (it is dead)."""
+    from tools import file_lock
+    deadline = time.monotonic() + seconds
+    with open(held, "a") as handle:
+        while time.monotonic() < deadline:
+            if file_lock.lock(handle, wait=False):
+                return True
+            time.sleep(0.1)
+    return False
+
+
+class LeftProcessTests(unittest.TestCase):
+    """What a harness starts ends with it, whether it exits, crashes or times out (tools/process_tree.py)."""
+
+    def run_harness(self, hang, timeout):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            script = tmp / "test_leaving_parity.py"
+            script.write_text(LEAVING_HARNESS.format(root=str(parity.ROOT), hang=hang), encoding="utf-8")
+            with mock.patch.object(parity, "STATE_DIR", tmp / "state"), mock.patch.object(parity, "SHARED", tmp / "shared"):
+                local = parity.LocalExecutor(1, 1 << 40, timeout)
+                self.assertTrue(local.start("leaving", script, False, 0))
+                finished, deadline = [], time.monotonic() + 120
+                while not finished and time.monotonic() < deadline:
+                    finished = local.poll()
+                    time.sleep(0.1)
+                local.stop()
+            self.assertEqual([name for name, *_ in finished], ["leaving"])
+            self.assertTrue((tmp / "held.ready").exists())
+            self.assertTrue(child_released(tmp / "held"), "the harness's child outlived it")
+            return finished[0]
+
+    @unittest.skipUnless(os.name == "nt" or hasattr(os, "waitid"), "macOS before Python 3.13 has no os.waitid")
+    def test_a_finished_harness_takes_what_it_left_running(self):
+        _, _, passed, *_ = self.run_harness(hang=False, timeout=120)
+        self.assertTrue(passed)
+
+    def test_a_timed_out_harness_takes_what_it_started(self):
+        _, _, passed, *_ = self.run_harness(hang=True, timeout=5)
+        self.assertFalse(passed)

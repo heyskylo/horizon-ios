@@ -20,7 +20,7 @@ plan are in [server.md](server.md).
   takes the account's UUID when someone owns that name, as vanilla does, and that player is then refused.
 - **An offline server** (`online_mode = false`) never checks accounts: anyone who reaches it can join under
   any name. Keep it on your LAN or a tailnet (Tailscale, ZeroTier), or share it only with friends you trust.
-  A Horizon player under an offline name can join only such a server.
+  A Horizon game started without a session (no network at Play) can join only such a server.
 - **Secure chat** works as on vanilla's server: in online mode, vanilla clients and Horizon's (Nightly
   2026-11-01 and newer) sign their chat, and with `enforce-secure-profile=true` (the default) unsigned chat is
   refused. On an offline server, or for a player without a chat session, chat stays unsigned and shows as not
@@ -65,6 +65,8 @@ for Windows includes it), else against the SHA-256 GitHub publishes, and never a
 Options: `--version vX.Y.Z`, `--dir FOLDER`, `--bin FOLDER` (Windows: `-Version`, `-Dir`). Other systems,
 such as Linux on ARM, build from source: `cargo build --release -p horizon-client --bin horizon-client -p
 horizon-server` and keep both programs in one folder.
+
+On Nix and NixOS, the repository's flake builds `horizon-server` from source: [nix.md](nix.md).
 
 The Horizon launcher also installs releases. Every release folder holds `horizon-server`, so you can run it
 from there too.
@@ -618,7 +620,8 @@ Players join with any vanilla 26.3 client: only the server decides the damage.
 horizon-server service install
 ```
 
-- **Linux:** a systemd user unit (`--system` for a system unit, with sudo). To keep a user unit running while
+- **Linux:** a systemd user unit (`--system` for a system unit, with sudo from your own account: the unit runs
+  the server as that account, never as root). To keep a user unit running while
   you're logged out: `loginctl enable-linger $USER`.
 - **macOS:** a launchd agent in `~/Library/LaunchAgents`.
 - **Windows:** a task that starts at logon (a real Windows service comes later).

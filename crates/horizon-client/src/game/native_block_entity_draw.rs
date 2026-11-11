@@ -432,7 +432,7 @@ impl Game<'_> {
             light: 0,
             block: [0; 3],
             poses: Vec::new(),
-            lights: diffuse_lights(self.dim == Dim::Nether),
+            lights: diffuse_lights(self.nether_lighting()),
             vertices: std::mem::take(out),
             kept: false,
             spins: Vec::new(),

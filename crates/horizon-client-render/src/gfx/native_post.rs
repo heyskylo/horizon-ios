@@ -8,7 +8,7 @@
 
 use glam::{Mat4, Vec3};
 use horizon_shader_api::{
-    Api, Frame as FrameInputs, StageKind, check::CheckedStage, stages::GROUP,
+    Api, Frame as FrameInputs, Primaries, StageKind, check::CheckedStage, stages::GROUP,
 };
 
 use super::Frame;
@@ -338,7 +338,7 @@ pub struct NativeFrame {
     reflection_sampler: wgpu::Sampler,
     /// The shadow map the stages read, and the camera that draws it when the pack asks for one.
     pub shadow_map: super::native_shadow::ShadowMap,
-    shadow_camera: Option<horizon_render_pipeline::Shadow>,
+    shadow_camera: Option<horizon_shaders::Shadow>,
     /// Whether the pack's material reads `reflection` (`NativePack::new`): else no mirror
     /// is drawn and `has_reflection` stays 0.
     pub reflects: bool,
@@ -1497,7 +1497,7 @@ pub fn frame_inputs(
     size: [u32; 2],
     seconds: f32,
     index: u32,
-    shadow: Option<&horizon_render_pipeline::Shadow>,
+    shadow: Option<&horizon_shaders::Shadow>,
 ) -> FrameInputs {
     let aspect = size[0] as f32 / size[1].max(1) as f32;
     let view = crate::camera::view_matrix(frame.yaw, frame.pitch);
@@ -1596,7 +1596,11 @@ pub fn frame_inputs(
         paper_white: 80.0,
         peak: 80.0,
         black_level: 0.0,
-        padding: [0; 3],
+        // No pack is served another space yet (`[frame] primaries`).
+        primaries: Primaries::Bt709 as u32,
+        luminance_gap: [0; 2],
+        luminance: Primaries::Bt709.luminance(),
+        padding: 0,
     }
 }
 

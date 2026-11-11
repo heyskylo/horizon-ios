@@ -644,11 +644,14 @@ impl Game<'_> {
     /// in the level in place: where it stands up, facing the anchor (with
     /// the deplete sound) or the bed; else the point is forgotten, and the
     /// caller tells the player (`Hub::missing_respawn_block`).
-    pub(super) fn resolve_server_respawn(&mut self, config: RespawnConfig) -> Option<(Vec3, f32)> {
+    pub(super) fn resolve_server_respawn(
+        &mut self,
+        config: RespawnConfig,
+    ) -> Option<(Vec3, f32, f32)> {
         let [x, y, z] = config.pos;
         let anchor = self.is_anchor(self.world.block(x, y, z));
         match self.find_respawn_and_use(config, true) {
-            Ok(Some((at, yaw))) => {
+            Ok(Some((at, yaw, pitch))) => {
                 if !config.forced && anchor {
                     let [x, y, z] = config.pos.map(f64::from);
                     self.audio.play(
@@ -658,7 +661,7 @@ impl Game<'_> {
                         1.0,
                     );
                 }
-                Some((at, yaw))
+                Some((at, yaw, pitch))
             }
             Ok(None) | Err(_) => {
                 let mut cancel = false;
@@ -796,7 +799,10 @@ impl Game<'_> {
             let yaw = host.hub.guests[i].yaw;
             let (position, yaw) = if let Some(config) = trip.respawn {
                 match self.as_guest(host, trip.conn, |g| g.resolve_server_respawn(config)) {
-                    Some(Some(found)) => found,
+                    Some(Some((at, yaw, pitch))) => {
+                        host.hub.guests[i].pitch = pitch;
+                        (at, yaw)
+                    }
                     _ => {
                         host.hub.missing_respawn_block(trip.conn);
                         self.respawn_at_world_spawn(host, trip.conn);

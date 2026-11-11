@@ -251,12 +251,23 @@ pub fn accept(
                 for l in &listeners {
                     if let Ok((mut s, _)) = l.accept() {
                         idle = false;
-                        let _ = s.set_nonblocking(false);
-                        if read_session(&mut s).ok() == Some(session)
-                            && answer(&mut s, session).is_ok()
-                        {
-                            let _ = found.send(s);
-                        }
+                        // Each on its own thread, within one deadline: a stranger dripping a byte
+                        // at a time must not hold the only accept thread past the race.
+                        let found = found.clone();
+                        let _ = std::thread::Builder::new()
+                            .name("horizon-friends-accept-one".into())
+                            .spawn(move || {
+                                let _ = s.set_nonblocking(false);
+                                let Ok(limit) = crate::deadline(&s, Duration::from_secs(2)) else {
+                                    return;
+                                };
+                                if read_session(&mut s).ok() == Some(session)
+                                    && answer(&mut s, session).is_ok()
+                                {
+                                    drop(limit);
+                                    let _ = found.send(s);
+                                }
+                            });
                     }
                 }
                 if idle {
