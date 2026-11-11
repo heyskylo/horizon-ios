@@ -214,6 +214,11 @@ fn servers_file_of(player: Option<&Path>, saves: &Path) -> PathBuf {
         .parent()
         .map_or_else(|| PathBuf::from("servers.dat"), |p| p.join("servers.dat"))
 }
+/// `ServerData.validateIcon`: any PNG up to 1024x1024 is kept in
+/// servers.dat. Drawing still needs 64x64 (`FaviconTexture.upload`).
+fn valid_icon(png: &[u8]) -> bool {
+    crate::hud::decode_bytes(png).is_ok_and(|(w, h, _)| w <= 1024 && h <= 1024)
+}
 /// `FaviconTexture.upload`: a PNG of exactly 64x64 pixels, else no icon.
 fn icon_pixels(png: &[u8]) -> Option<Arc<Vec<u8>>> {
     crate::hud::decode_bytes(png)
@@ -277,7 +282,9 @@ fn ping_all(servers: &[ServerEntry], pings: &Pings, icons: &Icons, file: &Path) 
                                 Some(p) => icons.lock().unwrap().insert(address.clone(), p.clone()),
                                 None => icons.lock().unwrap().remove(&address),
                             };
-                            let icon = pixels.map(|_| encoded);
+                            // ServerData.validateIcon: up to 1024x1024 is kept,
+                            // though only a 64x64 icon is drawn.
+                            let icon = valid_icon(&png).then_some(encoded);
                             if icon != saved {
                                 save_icon(&file, &address, icon);
                             }
@@ -357,7 +364,7 @@ fn save_icon(file: &Path, address: &str, icon: Option<String>) {
 /// `ClientPacketListener.handleServerData`: a valid icon the joined server
 /// sends replaces the one its list entries keep.
 pub fn save_server_icon(saves: &Path, address: &str, png: &[u8]) {
-    if icon_pixels(png).is_some() {
+    if valid_icon(png) {
         save_icon(&servers_file(saves), address, Some(crate::lan::base64(png)));
     }
 }
