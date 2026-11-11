@@ -1026,8 +1026,12 @@ pub fn register_cat(m: &mut Mob) {
     // in insertion order, so it comes last.
     g.add(
         4,
-        super::goals::AvoidEntity::new(super::goals::Avoid::Player, 16.0, 0.8, 1.33)
-            .when(|m| !m.extra.tame),
+        CatAvoid(super::goals::AvoidEntity::new(
+            super::goals::Avoid::Player,
+            16.0,
+            0.8,
+            1.33,
+        )),
     );
     m.ai.targets.add(
         1,
@@ -1219,6 +1223,30 @@ fn empty_above(w: &MobWorld, p: [i32; 3]) -> bool {
 /// belongs to whoever it sees).
 pub fn is_owner_of(m: &Mob, p: &super::PlayerView) -> bool {
     m.extra.owner.is_none_or(|o| o == p.uuid)
+}
+/// `Cat.CatAvoidEntityGoal`: the player avoidance only while untamed.
+#[derive(Clone, Debug)]
+struct CatAvoid(super::goals::AvoidEntity);
+impl Goal for CatAvoid {
+    goal_clone!();
+    fn flags(&self) -> u8 {
+        self.0.flags()
+    }
+    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        !m.extra.tame && self.0.can_use(m, cx)
+    }
+    fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        !m.extra.tame && self.0.can_continue(m, cx)
+    }
+    fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
+        self.0.start(m, cx)
+    }
+    fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
+        self.0.stop(m, cx)
+    }
+    fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
+        self.0.tick(m, cx)
+    }
 }
 /// `Cat.CatRelaxOnOwnerGoal`: while the owner sleeps, the cat lies down beside
 /// them, and may leave a morning gift when they wake up.
