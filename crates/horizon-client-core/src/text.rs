@@ -202,7 +202,12 @@ impl Text {
         }
     }
     pub fn styled(s: impl Into<String>, style: Style) -> Self {
-        Self::literal(s).with_style(&style)
+        let mut text = Self::literal(s).with_style(&style);
+        // `inherit` never passes an object on, but a styled span's own style carries it.
+        for span in &mut text.spans {
+            span.style.inline_object.clone_from(&style.inline_object);
+        }
+        text
     }
     pub fn colored(s: impl Into<String>, color: u32) -> Self {
         Self::styled(s, Style::color(color))
@@ -749,6 +754,27 @@ pub fn format_translation(template: &str, args: &[Text]) -> Text {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_styled_object_span_keeps_its_object_through_append_and_slice() {
+        let object = InlineObject::Atlas {
+            atlas: "minecraft:gui".into(),
+            sprite: "horizon:gui/mark".into(),
+            fallback: "H".into(),
+        };
+        let sprite = Text::styled(
+            "\u{fffc}",
+            Style {
+                inline_object: Some(object.clone()),
+                ..Style::color(WHITE)
+            },
+        );
+        let line = Text::colored("[", DARK_GRAY)
+            .append(sprite)
+            .append(Text::colored("] ", DARK_GRAY));
+        let line = line.slice(0, 3);
+        assert_eq!(line.spans[1].style.inline_object, Some(object));
+        assert_eq!(line.plain(), "[H]");
+    }
     #[test]
     fn click_events_serialize_and_inherit_as_one_style_field() {
         for (event, json) in [

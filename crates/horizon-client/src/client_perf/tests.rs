@@ -645,19 +645,21 @@ fn the_median_of_a_second_is_the_nearest_rank_and_the_buffer_empties() {
 }
 
 #[test]
-fn the_messages_the_game_shows_are_translation_keys_with_one_argument_each() {
+fn the_messages_the_game_shows_are_translation_keys_with_the_arguments_the_code_fills() {
     let en: std::collections::HashMap<String, String> =
         serde_json::from_str(include_str!("../../assets/horizon/lang/en_us.json")).unwrap();
-    for key in [
-        "horizon.perf.saved",
-        "horizon.perf.open_failed",
-        "horizon.perf.not_found",
-        "horizon.perf.error",
+    for (key, holes) in [
+        ("horizon.perf.saved", 2),
+        ("horizon.perf.open_failed", 2),
+        ("horizon.perf.upload_failed", 2),
+        ("horizon.perf.shared", 2),
+        ("horizon.perf.not_found", 1),
+        ("horizon.perf.error", 1),
     ] {
         let text = en
             .get(key)
             .unwrap_or_else(|| panic!("{key} is not in en_us.json"));
-        assert_eq!(text.matches("%s").count(), 1, "{key}: {text}");
+        assert_eq!(text.matches("%s").count(), holes, "{key}: {text}");
     }
     assert!(en.contains_key("horizon.perf.started"));
 }
