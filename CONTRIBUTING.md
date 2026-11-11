@@ -1,7 +1,8 @@
 # Contributing to Horizon
 
 Thanks for helping. Horizon is Minecraft: Java Edition 26.3 rewritten in Rust, and the one rule that shapes
-everything is that **it plays exactly like vanilla**. This page is the short version of how we work; questions are
+everything is that **it plays like vanilla**: first exactly like it, then better where players gain from it
+([vanilla first, then better](#vanilla-first-then-better)). This page is the short version of how we work; questions are
 welcome on [Discord](https://discord.gg/playhorizon).
 
 This repository holds the game and the launcher, plus the tools, tests and docs that build, check and release them.
@@ -36,7 +37,10 @@ here.
 
 - **Launcher:** its own Cargo workspace in `launcher/` (`cd launcher && cargo run`; on NixOS, `nix-shell` first).
 
-## Vanilla first
+## Vanilla first, then better
+
+Horizon gets there in two stages. First it plays exactly like vanilla; that is what parity work is for. Then it
+improves on vanilla where players gain from it, mostly speed: FPS, TPS, loading, memory.
 
 Wherever vanilla has a feature, vanilla is the specification, down to the order of random calls. "Parity" here means
 Horizon gives the same results as the pinned 26.3 client and server for the same inputs, checked by a **harness**: a
@@ -66,6 +70,23 @@ and compares their outputs.
   `tools/check_public_tree.py` rejects them (`git config core.hooksPath .githooks` runs it before every commit).
   The pre-push hook checks the full history reachable from the branches and tags being pushed. Run
   `python3 tools/check_public_tree.py --history` to audit the history of all local refs.
+
+### When it doesn't have to be 1:1
+
+Parity is about what players and the vanilla game see, not about copying vanilla's internals. Performance work (a
+multithreaded server tick, rendering, chunk loading, memory) doesn't have to keep vanilla's internal order or its
+exact random calls. It has to work together with normal Minecraft:
+
+- **Vanilla clients and servers still work with it.** A vanilla 26.3 client plays on a Horizon server, Horizon joins
+  vanilla servers, and saves and worlds open in both, as before.
+- **The game still plays the same.** Farms, redstone, mobs and drops work the way players know from vanilla. A
+  difference may only show where no player can rely on it, such as which of two mobs ticks first or exactly which
+  random number a mob gets.
+- **Vanilla's slow paths aren't copied.** When vanilla spends a lot of FPS or TPS on something that can reach the
+  same result faster, Horizon does it faster. Copying a performance problem isn't parity.
+- **Say what changes.** The pull request names the vanilla behaviour it no longer reproduces exactly, why players
+  won't notice it or why it's worth it, and how it was checked: numbers before and after, and the harnesses that
+  still pass. A change players could notice, such as a different tick order on a busy server, goes behind a setting.
 
 ## Only original code, or code whose license allows it
 
