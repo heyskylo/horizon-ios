@@ -255,6 +255,8 @@ struct Pending {
 struct Inner {
     hosts: HashMap<String, HostEntry>,
     ended: HashMap<String, Instant>,
+    /// `ended`'s entries in the order they were added, so they expire without a scan.
+    ended_order: std::collections::VecDeque<(String, Instant)>,
     pending: HashMap<u64, Pending>,
 }
 
@@ -439,6 +441,13 @@ fn handle(state: &Arc<State>, mut stream: TcpStream, peer: SocketAddr) -> io::Re
     // not held for `first_line` with one of the relay's global slots. Behind the PROXY protocol the
     // client's address is the line the load balancer sends on connect, so it's counted after it.
     let mut _open = None;
+    // Behind the PROXY protocol only the load balancers may connect: anyone else is closed at
+    // once, before the relay holds a slot for `first_line` waiting for a line it would refuse.
+    let from_balancer =
+        |ip: std::net::IpAddr| state.config.proxy_from.iter().any(|net| net.contains(ip));
+    if state.config.proxy_protocol && !from_balancer(peer.ip()) {
+        return Ok(());
+    }
     if !state.config.proxy_protocol {
         let Some(slot) = OpenSlot::take(state, peer.ip()) else {
             return Ok(());
@@ -452,15 +461,6 @@ fn handle(state: &Arc<State>, mut stream: TcpStream, peer: SocketAddr) -> io::Re
     let _ = horizon_friends::set_tcp_keepalive(&stream);
     let mut line = wire::read_line(&mut stream)?.ok_or(io::ErrorKind::UnexpectedEof)?;
     if state.config.proxy_protocol {
-        if !state
-            .config
-            .proxy_from
-            .iter()
-            .any(|net| net.contains(peer.ip()))
-        {
-            // Not from our load balancer: its PROXY line would be the client's own say.
-            return Ok(());
-        }
         peer = proxy_line(&line)
             .map(unmap)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no PROXY line"))?;
@@ -552,9 +552,17 @@ fn host(
     let nameplate = {
         let mut inner = locked(&state.inner);
         let kept = state.config.ended_kept;
-        inner
-            .ended
-            .retain(|_, t| now.saturating_duration_since(*t) < kept);
+        // Oldest first, stopping at the first one still kept: a registration costs the entries
+        // that expired, not a scan of every nameplate ended in the last `ended_kept`.
+        while let Some((n, t)) = inner.ended_order.front().cloned() {
+            if now.saturating_duration_since(t) < kept {
+                break;
+            }
+            inner.ended_order.pop_front();
+            if inner.ended.get(&n) == Some(&t) {
+                inner.ended.remove(&n);
+            }
+        }
         let mut found = None;
         if inner.hosts.len() < state.config.max_hosts {
             for _ in 0..64 {
@@ -592,7 +600,9 @@ fn host(
             .is_some_and(|h| h.token == token)
         {
             inner.hosts.remove(&nameplate);
-            inner.ended.insert(nameplate, Instant::now());
+            let ended = Instant::now();
+            inner.ended_order.push_back((nameplate.clone(), ended));
+            inner.ended.insert(nameplate, ended);
         }
     }
     let _ = stream.shutdown(Shutdown::Both);
@@ -673,13 +683,16 @@ fn join(
 ) -> io::Result<()> {
     let now = Instant::now();
     state.joins.fetch_add(1, Ordering::Relaxed);
-    // The budgets for unknown codes (the site's, then the global one) are checked before the
-    // lookup, so a refusal says nothing about whether the nameplate exists. The site's comes
-    // first: emptying the global budget takes many sites, not the /64s of one home's /56.
+    // The site's budget for unknown codes is checked before the lookup, so its refusal says
+    // nothing about whether the nameplate exists. The relay-wide one only refuses unknown codes:
+    // a few sites can keep it empty, and a guest with a real code must still get in then. While
+    // it is spent a refusal does tell a prober a code is unknown; guessing a code's secret half
+    // stays capped by its host (five tries a code, fifty a session).
     let allowed = {
         let mut limiter = locked(&state.limiter);
         limiter.allow_join(peer.ip(), now) && limiter.site_unknown_has(peer.ip(), now)
-    } && locked(&state.global_unknown).has(now);
+    };
+    let global_spent = !locked(&state.global_unknown).has(now);
     if !allowed {
         state.rate_limited.fetch_add(1, Ordering::Relaxed);
         return refuse(&mut stream, ErrorCode::RateLimited);
@@ -730,6 +743,10 @@ fn join(
     };
     let (to_host, slot) = match lookup {
         Lookup::Found(tx, slot) => (tx, slot),
+        Lookup::Unknown if global_spent => {
+            state.rate_limited.fetch_add(1, Ordering::Relaxed);
+            return refuse(&mut stream, ErrorCode::RateLimited);
+        }
         Lookup::Unknown => {
             state.unknown.fetch_add(1, Ordering::Relaxed);
             {
