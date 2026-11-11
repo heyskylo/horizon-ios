@@ -7,8 +7,8 @@ use horizon_perf_format::v1::{
     Attachment, Capture, HealthSample, Mark, Side, Start, Stop, StopReason, WarningCode,
 };
 use horizon_perf_format::{
-    CaptureWriter, Field, MAX_PART_FIELD, MAX_PART_INFLATED, MergeError, PartMerger, ProtoMessage,
-    RawSend, WriterThread,
+    CaptureWriter, Field, MAX_PART_BYTES, MAX_PART_FIELD, MAX_PART_INFLATED, MergeError,
+    PartMerger, ProtoMessage, RawSend, WriterThread,
 };
 
 fn inflate(gz: &[u8]) -> Vec<u8> {
@@ -226,7 +226,11 @@ fn a_part_that_inflates_past_the_cap_is_refused() {
         inflated.extend_from_slice(&field);
     }
     let gz = gzip(&inflated);
-    assert!(gz.len() < 4 << 20, "a small bomb: {} bytes", gz.len());
+    assert!(
+        (gz.len() as u64) < MAX_PART_BYTES,
+        "a bomb the announced cap lets through: {} bytes",
+        gz.len()
+    );
     assert!(matches!(push_all(&gz), Err(MergeError::TooLarge)));
 }
 
