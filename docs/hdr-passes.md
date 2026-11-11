@@ -30,7 +30,9 @@ Each frame without a shader pack (`Renderer::render` in `gfx.rs`), in order:
 4. The tone curve (`Hdr::tonemap` in `gfx/hdr.rs`): the light eases into the display's peak.
 5. Camera overlays: vignette, pumpkin, powder snow, portal, nausea.
 6. The HUD and menus, on an 8-bit layer of their own, with how much of the world they cover.
-7. HDR output's last pass (`hdr.wgsl`): the HUD over the world, encoded for the display (PQ or scRGB).
+7. HDR output's last pass (`hdr.wgsl`): the HUD over the world, encoded for the display (PQ or scRGB). The HDR10
+   swapchain's 10 bits get dither there, noise of one code fixed to the pixel, so slow gradients such as a clear sky
+   don't band; a capture's HDR10 copy (the `-hdr.png`) keeps the exact codes.
 
 Under a shader pack its post passes take step 2's place. A 0.2 pack's `[tonemap]` runs at their end and takes step
 4's, so the post effects after it get a tone-mapped picture.

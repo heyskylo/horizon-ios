@@ -608,7 +608,13 @@ impl Game<'_> {
         if !host && !guest {
             return;
         }
-        let message = self.mob_death_message(m, killer);
+        let mut built = Some(self.mob_death_message(m, killer));
+        let kind = super::native_hooks::mob_kind(m);
+        horizon_client::living_death::native_living_death_message(m.id, &kind, &mut built);
+        // A native mod may have changed the message, or set it to None to tell the owner nothing.
+        let Some(message) = built else {
+            return;
+        };
         if host {
             self.system_message(message);
         } else if let Some(lan) = &self.lan {
