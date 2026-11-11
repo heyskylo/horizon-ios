@@ -5,10 +5,12 @@ CommandSelection.ALL), which the tree sent to players keeps. Brigadier keeps
 children in registration order; the data generator's commands report, which
 the sent tree is built from, sorts them.
 
-  python3 tools/generate_lan_command_order.py
+  python3 tools/generate_lan_command_order.py [--out PATH]
 """
+import argparse
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 
@@ -22,6 +24,9 @@ OUT = lab.ROOT / 'crates/horizon-client/src/lan/command_order.rs'
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--out', type=Path, default=OUT)
+    args = parser.parse_args()
     lock, jars, libraries = base.verify_artifacts()
     build = lab.LOCAL / 'lan-command-order'
     classes = build / 'classes'
@@ -56,8 +61,9 @@ def main():
     ]
     lines += [f'    ("{p}", "{n}"),' for p, n in rows]
     lines += ['];', '']
-    OUT.write_text('\n'.join(lines))
-    print(f'wrote {len(rows)} nodes to {OUT}')
+    args.out.write_text('\n'.join(lines))
+    print(f'wrote {len(rows)} nodes to {args.out}')
+    return 0
 
 
 if __name__ == '__main__':

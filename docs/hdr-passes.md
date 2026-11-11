@@ -30,7 +30,9 @@ Each frame without a shader pack (`Renderer::render` in `gfx.rs`), in order:
 4. The tone curve (`Hdr::tonemap` in `gfx/hdr.rs`): the light eases into the display's peak.
 5. Camera overlays: vignette, pumpkin, powder snow, portal, nausea.
 6. The HUD and menus, on an 8-bit layer of their own, with how much of the world they cover.
-7. HDR output's last pass (`hdr.wgsl`): the HUD over the world, encoded for the display (PQ or scRGB).
+7. HDR output's last pass (`hdr.wgsl`): the HUD over the world, encoded for the display (PQ or scRGB). The HDR10
+   swapchain's 10 bits get dither there, noise of one code fixed to the pixel, so slow gradients such as a clear sky
+   don't band; a capture's HDR10 copy (the `-hdr.png`) keeps the exact codes.
 
 Under a shader pack its post passes take step 2's place. A 0.2 pack's `[tonemap]` runs at their end and takes step
 4's, so the post effects after it get a tone-mapped picture.
@@ -44,12 +46,20 @@ the world without the hand and the HUD, and is off with HDR output until #12989 
 1. **Keep light above 1.** No `saturate`, `clamp(c, 0, 1)` or `min(c, 1)` on a colour, and no unorm target in
    between: what a pass keeps (history, mips, pyramids) is a float format, as TAA's `Rgba16Float` history is.
    Clipping cuts the sun and every light source off at paper white.
-2. **Don't assume a top of 1.** Limits written for 0..1 misbehave above it: the sharpening in `world_post.wgsl`
-   (`2.0 - hi`) eases off above 1 and stops at 2. Scale by the pixels' own range instead.
-3. **Blend frames tone-weighted.** TAA, a temporal upscaler and anything else that keeps a history blends
-   `c / (1 + m)`, where `m` is the largest of `c`'s channels, clamps the history in that space too, and turns the
-   result back with `c / (1 - m)`. Raw light lets a few very bright pixels win the history: torches and the sun's
-   edge sparkle, and smear when the camera moves.
+2. **Don't assume a top of 1.** Limits written for 0..1 misbehave above it: scale by the pixels' own range
+   instead. One such limit stays on purpose. The sharpening in `world_post.wgsl` (`2.0 - hi`) eases off above 1 and
+   stops at 2, so light far above paper white is left unsharpened. Sharpening the sun's edge as the rest multiplies
+   a temporal upscaler's frame-to-frame differences there: under Performance upscaling its flicker rose from about
+   10 to 18 PQ code values, for 1 to 6% more detail inside lit textures.
+3. **Blend linear light tone-weighted, gamma light as stored.** What counts is the encoding of the values a pass
+   accumulates, not the frame's format. Linear light is what a 0.2 pack's post passes read (`color`, `previous`,
+   `history`, under either `[frame] blend`) and what the world's frame holds under `blend = "linear"`. There TAA, a
+   temporal upscaler and anything else that keeps a history blends `c / (1 + m)`, where `m` is the largest of `c`'s
+   channels, clamps the history in that space too, and turns the result back with `c / (1 - m)`. Raw linear light
+   lets a few very bright pixels win the history: torches and the sun's edge sparkle, and smear when the camera
+   moves. Horizon's own TAA on the default frame accumulates vanilla's gamma, and blends it as stored: weighted on
+   top of the gamma, the sun scene's largest per-pixel standard deviation rose from 11 to 27 PQ code values (40
+   still captures at native resolution).
 4. **Follow a library's colour contract.** Temporal upscalers such as FSR 2 and 3 and DLSS take HDR input as
    linear light: tell them it's HDR, give them 1.0 at paper white (exposure 1), and on a gamma frame decode the 2.2
    power before and encode it again after. Any other library goes where its documentation says its input must come from, and keeps

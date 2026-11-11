@@ -173,13 +173,52 @@ fn calibration_picture(pos: vec4<f32>) -> vec4<f32> {
     return vec4(nits / 80.0, 1.0);
 }
 
-// Light in units of paper white, as the swapchain takes it: HDR10 or scRGB, the black level
-// lifted.
-fn display(light: vec3<f32>) -> vec4<f32> {
+// On for the HDR10 swapchain alone (Hdr::new): its 10 bits get dither. A screenshot's HDR10 copy
+// (Hdr::capture) keeps the exact codes, and scRGB's floats need none.
+override pq_dither: bool = false;
+
+// Three even random values in [0, 1) for `at`: PCG's 3D hash (Jarzynski and Olano, "Hash Functions
+// for GPU Rendering", JCGT 2020). Integers only, so it is the same on every GPU and at every
+// resolution, where hashes built on `fract(sin())` repeat or streak at 4K's coordinates.
+// Copyright 2020 Mark Jarzynski & Marc Olano, MIT (github.com/markjarzynski/PCG3D; the license is in
+// THIRD_PARTY_NOTICES.md).
+fn hash3(at: vec3<u32>) -> vec3<f32> {
+    var v = at * 1664525u + 1013904223u;
+    v.x += v.y * v.z;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
+    v ^= v >> vec3(16u);
+    v.x += v.y * v.z;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
+    return vec3<f32>(v >> vec3(8u)) / 16777216.0;
+}
+
+// The PQ signal `e` with dither for its 10 bits: triangular noise of one code either way, each
+// channel's own, so a slow gradient (a clear sky is a few codes tall) shows as grain a code deep
+// instead of bands, and its mean is the light meant. The noise is the pixel's alone: no frame
+// counter, so a still picture stays still. Within a code of black or of the top it shrinks to
+// what fits: the signal never leaves 0..1, and black stays exactly black (an OLED's pixel off).
+// The price is in that last code alone: the smaller noise keeps the signal's mean but not the
+// rounded one, which leans to the end (a third of a code from it shows as an eighth). Under
+// 0.00004 nits at black, that is the accepted cost of a true 0.
+fn dithered(e: vec3<f32>, pixel: vec2<f32>) -> vec3<f32> {
+    let at = vec2<u32>(pixel);
+    let noise = hash3(vec3(at, 0u)) + hash3(vec3(at, 1u)) - 1.0;
+    return e + noise * min(min(e, 1.0 - e), vec3(1.0 / 1023.0));
+}
+
+// Light in units of paper white at the pixel `pos`, as the swapchain takes it: HDR10 or scRGB,
+// the black level lifted.
+fn display(light: vec3<f32>, pos: vec4<f32>) -> vec4<f32> {
     let scrgb = light * params.paper;
     if params.pq > 0.5 {
         let e = pq(BT709_TO_BT2020 * scrgb * 80.0);
-        return vec4(select(e, lift_black(e), params.black > 0.0), 1.0);
+        let lifted = select(e, lift_black(e), params.black > 0.0);
+        if pq_dither {
+            return vec4(dithered(lifted, pos.xy), 1.0);
+        }
+        return vec4(lifted, 1.0);
     }
     if params.black > 0.0 {
         return vec4(pq_nits(lift_black(pq(scrgb * 80.0))) / 80.0, 1.0);
@@ -209,7 +248,7 @@ fn display(light: vec3<f32>) -> vec4<f32> {
     // The HUD and menus at their own brightness, by how much they cover, no brighter than the
     // peak (as `fs_hdr_layered`): UI Brightness can pass paper white.
     light = min(light * mix(1.0, params.ui, ui), vec3(params.peak));
-    return display(light);
+    return display(light, pos);
 }
 
 // The tone curve's knee: up to it light stays as it is. Where HDR lighting eased into the peak
@@ -328,5 +367,5 @@ override screenshot_shoulder: bool = true;
     if calibrating(pos) {
         return calibration_picture(pos);
     }
-    return display(min(pow(layered(vec2<i32>(pos.xy)), vec3(2.2)), vec3(params.peak)));
+    return display(min(pow(layered(vec2<i32>(pos.xy)), vec3(2.2)), vec3(params.peak)), pos);
 }
