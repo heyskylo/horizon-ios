@@ -19,9 +19,7 @@ use std::sync::Arc;
 /// Registers the hooks of the Horizon parts still in this crate (cosmetics: spec #14091 step 5
 /// moves them out). Before the hooks are sealed.
 pub(crate) fn register() {
-    if super::cosmetics::enabled()
-        && let Err(e) = horizon_hooks::register(&super::cosmetics::HOOKS)
-    {
+    if let Err(e) = super::cosmetics::register() {
         log::error!("Cosmetics: their hooks came too late: {e}");
     }
 }

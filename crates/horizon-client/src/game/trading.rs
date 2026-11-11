@@ -283,7 +283,7 @@ impl Game<'_> {
             "minecraft:{}",
             VILLAGER_TYPES[m.extra.variant as usize % VILLAGER_TYPES.len()]
         );
-        session.random = m.random.clone();
+        session.random.clone_from(&m.random);
         session.origin = [m.position.x, m.position.y, m.position.z];
         session.ambient_sound_time = m.ambient_timer;
         let (id, name) = (m.id, m.custom_name.clone());
@@ -330,7 +330,7 @@ impl Game<'_> {
             m.extra.variant3 = session.level.clamp(1, 5) as u8;
         }
         m.extra.flag2 = false;
-        m.random = session.random.clone();
+        *m.random = session.random.clone();
         m.ambient_timer = session.ambient_sound_time;
         let trade = m.extra.trade.get_or_insert_default();
         trade.xp = session.xp;
@@ -391,7 +391,7 @@ impl Game<'_> {
     /// The trading mob's random before a menu click (it ticks meanwhile).
     pub(super) fn merchant_sync_in(&self, session: &mut merchant::Session, mob: Option<u32>) {
         if let Some(m) = mob.and_then(|id| self.mobs.iter().find(|m| m.id == id)) {
-            session.random = m.random.clone();
+            session.random.clone_from(&m.random);
             session.ambient_sound_time = m.ambient_timer;
             session.origin = [m.position.x, m.position.y, m.position.z];
         }
@@ -423,7 +423,7 @@ impl Game<'_> {
         let mut traded = Vec::new();
         let (villager, origin) = (session.villager, session.origin);
         if let Some(m) = mob.and_then(|id| self.mobs.iter_mut().find(|m| m.id == id)) {
-            m.random = session.random.clone();
+            *m.random = session.random.clone();
             m.ambient_timer = session.ambient_sound_time;
             if villager {
                 m.extra.variant3 = session.level.clamp(1, 5) as u8;
