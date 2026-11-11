@@ -239,12 +239,23 @@ impl Recipes {
                         }
                     }
                     // A template outside the synced/known set has no fabricated trim result.
+                    let (base_display, addition_display) = (base.display(), addition.display());
+                    // Every pattern copies both ingredients' displays: an old server's ingredient
+                    // of 65 536 stacks made each 4-byte stack about 18 copies of 80-byte nodes.
+                    let each = base_display
+                        .weight()
+                        .saturating_add(addition_display.weight());
+                    if patterns.len().saturating_mul(each)
+                        > crate::packets::recipes::MAX_TRIM_PREVIEW
+                    {
+                        return Err(Error::new("legacy trim preview too large"));
+                    }
                     SlotDisplay::Composite(
                         patterns
                             .into_iter()
                             .map(|pattern| SlotDisplay::SmithingTrim {
-                                base: Box::new(base.display()),
-                                material: Box::new(addition.display()),
+                                base: Box::new(base_display.clone()),
+                                material: Box::new(addition_display.clone()),
                                 pattern: TrimPattern::Id(pattern),
                             })
                             .collect(),
@@ -584,6 +595,32 @@ mod tests {
         let (id, payload) = session.next_incoming().unwrap();
         assert_eq!(id, cb::RECIPE_BOOK_ADD);
         RecipeBookAdd::read(&mut Reader::new(&payload)).unwrap()
+    }
+
+    #[test]
+    fn a_trim_recipe_whose_previews_would_balloon_is_refused() {
+        // One smithing_trim recipe (serializer 21) with the fixture's template and addition, and
+        // a base ingredient of `stacks` netherite chestplates.
+        let packet = |stacks: usize| {
+            let mut hex =
+                String::from("011a686f72697a6f6e5f776972653a736d697468696e675f7472696d15");
+            hex += "0101f6090000";
+            let mut w = Writer::new();
+            w.varint(stacks as i32);
+            hex += &w
+                .data
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>();
+            hex += &"01e4060000".repeat(stacks);
+            hex += "0101af060000";
+            bytes(&hex)
+        };
+        let session = Session::new(ServerVersion::V1_21_1);
+        session.trim_patterns.lock().unwrap().insert(1580, 7);
+        assert!(clientbound(&session, cb::UPDATE_RECIPES, &packet(40)).is_ok());
+        let err = clientbound(&session, cb::UPDATE_RECIPES, &packet(5000)).unwrap_err();
+        assert!(err.to_string().contains("trim preview too large"), "{err}");
     }
 
     #[test]

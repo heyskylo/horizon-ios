@@ -2027,8 +2027,8 @@ impl Game<'_> {
         } else {
             (left, forward)
         };
-        let r = self.yaw.to_radians();
-        let (s, co) = (f64::from(r.sin()), f64::from(r.cos()));
+        let r = f64::from(self.yaw * 0.017_453_292);
+        let (s, co) = (f64::from(trig::sin(r)), f64::from(trig::cos(r)));
         let intent = [left * co - forward * s, forward * co + left * s];
         let mut c = self.carts[i].clone();
         let alive = self.tick_cart(&mut c, intent, i, &mut CartIndex::default());
