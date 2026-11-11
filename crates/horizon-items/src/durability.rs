@@ -6,7 +6,7 @@ use crate::items::{ItemStack, Items};
 /// `ItemStack.getMaxDamage` when `ItemStack.isDamageableItem`, else 0:
 /// MAX_DAMAGE present, no UNBREAKABLE and DAMAGE present. A durable
 /// prototype supplies the last; a normally non-durable item type carries
-/// it on the stack, and `StackData::explicit_zero_damage` keeps an explicit
+/// it on the stack, and `explicit_zero_damage` keeps an explicit
 /// zero apart from no component at all.
 pub fn stack_max_damage(items: &Items, stack: &ItemStack) -> u32 {
     if stack.count == 0 || &*stack.item == "minecraft:air" {

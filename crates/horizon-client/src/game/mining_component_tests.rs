@@ -209,6 +209,11 @@ fn a_custom_durable_stick_wears_while_mining() {
         assert_eq!(game.destroy_progress(pos), 50.0 / 1.5 / 30.0);
         game.break_block(pos).unwrap();
         assert_eq!(game.held().unwrap().damage, 3);
+        // Even an already-max-damaged stack survives a zero effective loss:
+        // ItemStack.hurtAndBreak returns before applyDamage in that case.
+        game.held_mut().as_mut().unwrap().damage = 20;
+        game.damage_held(0);
+        assert_eq!(game.held().unwrap().damage, 20);
         assert!(
             game.dropped
                 .iter()
