@@ -181,7 +181,18 @@ impl Game<'_> {
                 .shulkers
                 .get_mut(&pos)
                 .map(|shulker| shulker.tick(pos, facing));
-            if let Some(push) = tick.and_then(|tick| tick.push) {
+            let Some(tick) = tick else { continue };
+            // `ShulkerBoxBlockEntity.doNeighborUpdates` at the start and the
+            // end of an opening or closing lid: the box's collision shape
+            // moved, so the neighbours' shapes and their redstone updates run.
+            for _ in 0..tick.neighbor_updates {
+                let state = self.world.block(pos[0], pos[1], pos[2]);
+                let at = BlockPos::new(pos[0], pos[1], pos[2]);
+                self.with_level(|b, level, ticks| {
+                    b.shulker_neighbor_updates(level, ticks, at, state)
+                });
+            }
+            if let Some(push) = tick.push {
                 pushes.push((pos, facing, push));
             }
         }

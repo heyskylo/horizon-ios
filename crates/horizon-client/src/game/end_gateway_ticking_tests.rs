@@ -108,7 +108,12 @@ fn a_ticking_gateway_counts_its_age_in_its_block_entity() {
     game.world
         .chunks
         .insert((2, 0), Arc::new(Chunk::empty(2, 0)));
-    assert!(game.run_command("setblock 40 64 8 minecraft:end_gateway{Age:0L}"));
+    // A dedicated server with nobody on it: the console runs the command, on
+    // the command registries (as block_entity_anims' gateway test does).
+    game.build_registries();
+    assert!(
+        game.as_console(|game| game.run_command("setblock 40 64 8 minecraft:end_gateway{Age:0L}"))
+    );
     game.update_chunk_tickets();
     assert!(game.block_ticking_area()(40, 8));
     // What `/data get block` and the chunk save encode (`TheEndGatewayBlockEntity.saveAdditional`).

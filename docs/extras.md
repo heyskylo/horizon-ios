@@ -54,6 +54,10 @@ in Controls, and adding one would put a non-vanilla mapping into `options.txt`.
 - Displays blocks and entities with a fully bright lightmap, including in dark caves.
 - Turning it off restores the normal lightmap using the current brightness,
   time of day and effects. The brightness slider keeps its normal range.
+- Held off on another's server (#3823): a multiplayer server or another player's LAN world draws the normal
+  lightmap and the graphics screen hides the row, while the saved choice stays for the next world. Single
+  player, a LAN host, a splitscreen seat in P1's world and Replay Studio keep it (`fullbright_held`,
+  `game/options.rs`).
 
 ### Dynamic lights (`dynamicLights`, default off)
 - A light source held by a player or mob (main or off hand), dropped as an item, or an entity on

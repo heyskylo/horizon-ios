@@ -303,7 +303,8 @@ turn the switch off.
   - `set ID VALUE` moves a slider.
   - `type` types into the focused field.
 
-  After a click, the next `ui`, `click` or `set` waits for a redrawn frame.
+  After a click, the next `ui`, `click` or `set` waits for a redrawn frame. Right after
+  `launch`, they and `screen` and `click-button` wait for the first one.
 - **No new code paths in screens.** The tree is built from what the draw functions already
   register for controller navigation (`widgets.rs`).
 
