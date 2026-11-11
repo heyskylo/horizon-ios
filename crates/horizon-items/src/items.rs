@@ -4063,4 +4063,26 @@ mod villager_food_tests {
         assert_eq!(villager_food("minecraft:bread"), Some(4));
         assert_eq!(villager_food("minecraft:apple"), Some(0));
     }
+
+    #[test]
+    fn weapon_disable_blocking_comes_from_the_stack() {
+        let items = Items::for_tests(HashMap::new());
+        let mut sword = ItemStack::new("minecraft:diamond_sword", 1);
+        sword.data_mut().set_other(
+            "minecraft:weapon",
+            Some(horizon_world::nbt::Tag::compound([(
+                "disable_blocking_for_seconds",
+                horizon_world::nbt::Tag::Float(1.5f32.to_bits()),
+            )])),
+        );
+        assert_eq!(items.weapon_disable_blocking(&sword), 1.5);
+        sword.data_mut().set_other(
+            "!minecraft:weapon",
+            Some(horizon_world::nbt::Tag::compound(Vec::<(
+                &str,
+                horizon_world::nbt::Tag,
+            )>::new())),
+        );
+        assert_eq!(items.weapon_disable_blocking(&sword), 0.0);
+    }
 }
