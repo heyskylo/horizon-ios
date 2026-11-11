@@ -198,7 +198,7 @@ fn fetch_to(link: &str, target: &Path, progress: &DownloadProgress) -> Result<()
         .unwrap_or(0);
     progress.begin_file(total);
     let mut reader = response.into_reader();
-    let mut file = File::create(target).map_err(DownloadError::failed)?;
+    let mut file = create_private(target).map_err(DownloadError::failed)?;
     let mut buffer = [0u8; 64 * 1024];
     loop {
         if progress.is_cancelled() {
@@ -242,10 +242,33 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn temp_path(prefix: &str, suffix: &str) -> PathBuf {
+/// A new file only this account can read, never one that was already there (another local user
+/// could plant one, or a link, at a name in the shared temp folder).
+pub(super) fn create_private(path: &Path) -> io::Result<File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)
+}
+
+/// A name in the temp folder no one else can work out: the process, a counter and a per-process
+/// random key.
+pub(super) fn unguessable(prefix: &str, suffix: &str) -> PathBuf {
+    use std::hash::{BuildHasher, Hasher};
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("{prefix}-{}-{n}{suffix}", std::process::id()))
+    let mut key = std::collections::hash_map::RandomState::new().build_hasher();
+    key.write_u64(n);
+    std::env::temp_dir().join(format!(
+        "{prefix}-{}-{n}-{:016x}{suffix}",
+        std::process::id(),
+        key.finish()
+    ))
+}
+
+fn temp_path(prefix: &str, suffix: &str) -> PathBuf {
+    unguessable(prefix, suffix)
 }
 
 /// `FileDownload.untarGzipArchive`: the archive into `saves/<free name>`, then
@@ -636,7 +659,8 @@ fn pax_path_of(data: &[u8]) -> Option<String> {
     while !rest.is_empty() {
         let space = rest.iter().position(|byte| *byte == b' ')?;
         let length: usize = std::str::from_utf8(&rest[..space]).ok()?.parse().ok()?;
-        if length == 0 || length > rest.len() {
+        // The length counts its own digits, the space and the record: it must reach past them.
+        if length <= space + 1 || length > rest.len() {
             return None;
         }
         let record = &rest[space + 1..length];
@@ -654,6 +678,33 @@ fn pax_path_of(data: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pax_record_shorter_than_its_own_prefix_is_not_a_panic() {
+        assert_eq!(pax_path_of(b"1 x"), None);
+        assert_eq!(pax_path_of(b"2 x"), None);
+        assert_eq!(
+            pax_path_of(b"16 path=a/b.txt\n").as_deref(),
+            Some("a/b.txt")
+        );
+    }
+
+    #[test]
+    fn a_download_never_writes_into_a_file_that_was_there() {
+        let path = unguessable("horizon-realms-test", ".bin");
+        assert_ne!(path, unguessable("horizon-realms-test", ".bin"));
+        std::fs::write(&path, b"planted").unwrap();
+        assert!(create_private(&path).is_err());
+        std::fs::remove_file(&path).unwrap();
+        drop(create_private(&path).unwrap());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "{mode:o}");
+        }
+        std::fs::remove_file(&path).unwrap();
+    }
     use crate::realms::upload::{UploadProgress, pack_world};
 
     fn scratch(name: &str) -> PathBuf {

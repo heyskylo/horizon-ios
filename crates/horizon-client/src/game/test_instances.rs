@@ -621,7 +621,7 @@ impl Game<'_> {
             BlockPos::new(bounds.max[0], bounds.max[1], bounds.max[2]),
         );
         self.block_ticks.blocks.clear_area(area);
-        self.block_ticks.block_events.retain(|e| {
+        self.block_ticks.retain_block_events(|e| {
             !(bounds.min[0]..=bounds.max[0]).contains(&e.pos.x)
                 || !(bounds.min[1]..=bounds.max[1]).contains(&e.pos.y)
                 || !(bounds.min[2]..=bounds.max[2]).contains(&e.pos.z)

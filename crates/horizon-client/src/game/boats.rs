@@ -85,6 +85,9 @@ pub(super) struct Boat {
     /// `Entity.remainingFireTicks` (`Fire` in its save): burning while
     /// positive, a fire block's cooldown while negative.
     pub fire_ticks: i32,
+    /// `Entity.ticksFrozen` (`TicksFrozen` in its save): powder snow builds
+    /// it up (`InsideBlockEffectType.FREEZE`); only a living entity melts it.
+    pub ticks_frozen: i32,
     /// `Entity.noGravity` (`NoGravity` in its save).
     pub no_gravity: bool,
     pub paddles: [f32; 2],
@@ -164,6 +167,18 @@ fn snowflake_velocity(known: Vec3, random: &mut impl RandomSource) -> Option<[f6
 pub(super) fn saved_fire(tag: &Tag) -> i32 {
     i32::from(horizon_client::save::number(tag.get("Fire")).unwrap_or(0) as i16)
 }
+/// `Entity.load`'s `TicksFrozen` (an int; 0 when absent).
+pub(super) fn saved_ticks_frozen(tag: &Tag) -> i32 {
+    horizon_client::save::number(tag.get("TicksFrozen")).unwrap_or(0) as i32
+}
+/// `Entity.saveWithoutId`: `TicksFrozen` is written only while positive.
+pub(super) fn put_ticks_frozen(map: &mut horizon_world::nbt::Compound, ticks: i32) {
+    if ticks > 0 {
+        map.insert("TicksFrozen".into(), Tag::Int(ticks));
+    } else {
+        map.remove(&"TicksFrozen".into());
+    }
+}
 pub(super) const WIDTH: f64 = 1.375;
 pub(super) const HEIGHT: f64 = 0.5625;
 /// `AbstractBoat.controlBoat`'s push along the boat's yaw:
@@ -229,6 +244,7 @@ impl Boat {
             hurt_dir: 1,
             damage: 0.0,
             fire_ticks: 0,
+            ticks_frozen: 0,
             no_gravity: false,
             paddles: [0.0; 2],
             paddling: [false; 2],
@@ -281,6 +297,7 @@ impl Boat {
         horizon_client::entity_nbt::write_saved_flags(&mut tag, self.on_ground, self.no_gravity);
         if let Tag::Compound(map) = &mut tag {
             map.insert("Fire".into(), Tag::Short(self.fire_ticks as i16));
+            put_ticks_frozen(map, self.ticks_frozen);
         }
         tag
     }
@@ -1295,6 +1312,7 @@ impl Game<'_> {
         let rain = self.in_rain(at, top);
         for _ in 0..2 {
             let before = self.boats[i].fire_ticks;
+            let mut in_snow = false;
             let mut seen = Vec::new();
             for &bounds in &steps {
                 let cells = powder_snow_cells(bounds, |p| !seen.contains(&p));
@@ -1324,6 +1342,7 @@ impl Game<'_> {
                     .copied()
                     .filter(|&p| self.is_powder_snow(p))
                     .collect();
+                in_snow |= !snow.is_empty();
                 if self.boats[i].fire_ticks > 0 && self.ui.rules.bool("mob_griefing") {
                     for &cell in &snow {
                         self.powder_snow_melt(BlockPos::new(cell[0], cell[1], cell[2]));
@@ -1334,6 +1353,12 @@ impl Game<'_> {
                     let fire = &mut self.boats[i].fire_ticks;
                     *fire = (*fire).min(0);
                 }
+            }
+            if in_snow {
+                // InsideBlockEffectType.FREEZE, once per applyEffectsFromBlocks.
+                let frozen = &mut self.boats[i].ticks_frozen;
+                *frozen = (*frozen + 1)
+                    .min(horizon_client::motion::PlayerMotion::TICKS_REQUIRED_TO_FREEZE);
             }
             let fire = &mut self.boats[i].fire_ticks;
             if rain {
@@ -1709,10 +1734,10 @@ impl Game<'_> {
         if chest && hurt == Some(true) && !self.creative && self.ui.rules.bool("entity_drops") {
             self.anger_piglins(true);
         }
-        self.vehicle_attack_sounds(area, magic.then_some(id));
         if damage > 0.0
             && let Some(destroyed) = hurt
         {
+            self.vehicle_attack_sounds(area, magic.then_some(id));
             let (knockback, _) = self.extra_knockback(&kind, scale);
             if knockback > 0.0 {
                 // Player.causeExtraKnockback uses Entity.push for a boat,
@@ -1723,12 +1748,9 @@ impl Game<'_> {
                     self.boats[i].velocity.y += 0.1;
                     self.boats[i].velocity.z += f64::from(-(z as f32) * knockback);
                 }
-                if let Some(player) = self.player.as_mut() {
-                    player.velocity.x *= horizon_client::attack_strength::ATTACKER_SLOWDOWN;
-                    player.velocity.z *= horizon_client::attack_strength::ATTACKER_SLOWDOWN;
-                }
-                self.stop_sprint_after_extra_knockback();
+                self.special_attack_slowdown(knockback);
             }
+            self.special_attack_exhaustion();
         }
         // Player.onAttack: the hit starts the attack strength again.
         self.attack_ticks = 0;
@@ -2085,6 +2107,23 @@ mod tests {
         assert_eq!(b.take_movement(), Vec3::new(0.0, 0.1, 1.0), "spent");
     }
 
+    /// `Entity.saveWithoutId` writes `TicksFrozen` only while positive; `Entity.load` reads it.
+    #[test]
+    fn a_boat_saves_and_loads_ticks_frozen() {
+        let mut b = Boat::new(
+            1,
+            std::sync::Arc::from("oak"),
+            Vec3::new(0.0, 64.0, 0.0),
+            0.0,
+        );
+        assert_eq!(b.to_nbt([0; 4], None).get("TicksFrozen"), None);
+        b.ticks_frozen = 6;
+        let saved = b.to_nbt([0; 4], None);
+        assert_eq!(saved.get("TicksFrozen"), Some(&Tag::Int(6)));
+        assert_eq!(saved_ticks_frozen(&saved), 6);
+        b.ticks_frozen = 0;
+        assert_eq!(b.to_nbt([0; 4], Some(&saved)).get("TicksFrozen"), None);
+    }
     /// `PowderSnowBlock.entityInside`'s snowflake: only for an entity that moved sideways, and
     /// then only when a coin falls so.
     #[test]
