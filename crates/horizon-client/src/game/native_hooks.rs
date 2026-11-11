@@ -10771,11 +10771,11 @@ impl Game<'_> {
             _ => return None,
         };
         if dim == self.dim {
-            Some(&mut self.world.random)
+            Some(&mut *self.world.random)
         } else {
             self.levels
                 .parked_world_mut(dim)
-                .map(|world| &mut world.random)
+                .map(|world| &mut *world.random)
         }
     }
     /// The item entities of the server level `dimension` whose box meets

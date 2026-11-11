@@ -15,6 +15,7 @@ pub mod process_memory;
 pub mod profile;
 #[cfg(target_os = "linux")]
 pub mod sampler;
+pub mod stack_dump;
 pub mod unwind;
 pub mod work;
 

@@ -975,7 +975,7 @@ mod tests {
         );
         let border = stages("border");
         validate(
-            &(include_str!("../border.wgsl").to_owned()
+            &(super::super::border_shader()
                 + include_str!("../oit.wgsl")
                 + include_str!("../oit_border.wgsl")),
             &border.iter().map(String::as_str).collect::<Vec<_>>(),

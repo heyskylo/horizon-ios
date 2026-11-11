@@ -41,7 +41,7 @@ struct QuadOut {
     if in.wrap.y > 0.0 { uv.y = in.wrap.x + fract(in.uv.y) * in.wrap.y; }
     let color = textureSample(atlas, atlas_sampler, uv) * in.color;
     if color.a <= 0.0 { discard; }
-    return color;
+    return frame_stored(color);
 }
 
 struct LineOut {
@@ -73,5 +73,5 @@ struct LineOut {
 }
 
 @fragment fn fs_line(in: LineOut) -> @location(0) vec4<f32> {
-    return in.color;
+    return frame_stored(in.color);
 }

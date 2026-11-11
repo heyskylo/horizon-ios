@@ -131,6 +131,7 @@ impl Game<'_> {
         // Items move between passes: the columns hold for this one only.
         self.item_columns = None;
         self.pass_mobs = None;
+        self.tick_sign_editors();
         self.update_song_volumes();
         self.scan_for_hearts();
         // The client ticks (particles, sounds, the turning mob) are for a

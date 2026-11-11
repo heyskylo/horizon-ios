@@ -1535,6 +1535,12 @@ impl Game<'_> {
                 "gpu_culling": r.gpu_culling(),
                 "gpu_culling_mode": self.settings.horizon.gpu_culling.name(),
                 "gpu_culling_auto": self.gpu_culling_auto.state(),
+                // The world's resolution scale in percent, Dynamic Resolution's where it is on.
+                "resolution_scale": super::frame_autotune::world_scale(
+                    &self.settings.horizon,
+                    &self.dynamic_resolution
+                ),
+                "dynamic_resolution": self.settings.horizon.dynamic_resolution,
                 "gpu_frame": r.gpu_frame(),
                 "gpu_fading": r.gpu_fading(),
                 "gpu_culling_offer": format!("{:?}", r.gpu_culling_offer()),

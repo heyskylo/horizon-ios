@@ -158,7 +158,7 @@ impl Game<'_> {
             self.clear_lod();
             self.all_sections_changed();
         }
-        horizon_client::spans::time("uw_prepare_lod", || self.prepare_lod());
+        horizon_client::spans::time("prepare_lod", || self.prepare_lod());
         // The columns the single-player server changed in bulk without sending them, which far terrain still drew
         // as this window last saw them: summarized again (taken every tick, far terrain on or off, so none waits).
         if self.remote.is_some() {
@@ -198,7 +198,7 @@ impl Game<'_> {
                 (p.position.z.floor() as i32) >> 4,
             );
         }
-        horizon_client::spans::time("uw_pregen", || self.tick_pregen());
+        horizon_client::spans::time("tick_pregen", || self.tick_pregen());
         // A headless game has nothing to draw sections with: like a server's, they aren't
         // meshed while it has no renderer.
         if self.options.headless {
@@ -213,9 +213,9 @@ impl Game<'_> {
         let (uploads, unloaded) =
             horizon_client::spans::time("streaming", || self.streaming.update(&mut self.world));
         self.streaming.extra.truncate(areas);
-        horizon_client::spans::time("uw_spawn_fresh", || self.spawn_fresh_chunks());
+        horizon_client::spans::time("spawn_fresh_chunks", || self.spawn_fresh_chunks());
         // Before the unloaded chunks' block entities are written and dropped.
-        horizon_client::spans::time("uw_native_changed", || {
+        horizon_client::spans::time("mods_chunks_changed", || {
             self.native_chunks_changed(&unloaded)
         });
         if let Some(lod) = &mut self.lod {
@@ -252,7 +252,7 @@ impl Game<'_> {
         let modified = horizon_client::spans::time("with_entities", || self.with_entities(&dirty));
         horizon_client::spans::time("unload_entities", || self.unload_entities(&unloaded));
         if !unloaded.is_empty() {
-            let _unload = horizon_client::spans::guard("uw_unload_be");
+            let _span = horizon_client::spans::guard("unload_block_entities");
             let gone: horizon_client::fast_hash::FxHashSet<(i32, i32)> =
                 unloaded.iter().map(|c| (c.x, c.z)).collect();
             self.world
@@ -275,10 +275,10 @@ impl Game<'_> {
         // it, even in a frozen level that runs no world tick. The unloaded
         // chunks above were saved with their ticks first.
         if self.remote.is_none() {
-            self.sync_tick_chunks();
+            horizon_client::spans::time("sync_tick_chunks", || self.sync_tick_chunks());
         }
         let (far_distance, far_reduced) =
-            horizon_client::spans::time("uw_far_choice", || self.far_terrain_choice());
+            horizon_client::spans::time("far_terrain_choice", || self.far_terrain_choice());
         // Terrain still on its way from the server (single player's integrated one
         // too): the view's outermost columns not all in, or its events not all handled.
         let radius = match &self.remote {
@@ -289,7 +289,10 @@ impl Game<'_> {
         let view = (self.streaming.center, radius);
         let has = |column: (i32, i32)| self.world.chunks.contains_key(&column);
         let now = Instant::now();
-        let arriving = self.view_arrival.arriving(view, now, has) || self.remote_backlog() > 0;
+        let arriving = {
+            let _span = horizon_client::spans::guard("view_arrival");
+            self.view_arrival.arriving(view, now, has) || self.remote_backlog() > 0
+        };
         // Which far tiles a zoom magnifies (`lod::ZoomAim`), read before
         // `self.renderer.as_mut()` below borrows self mutably for the rest of
         // this function. Cheap: trigonometry on one angle, or None when the
@@ -383,7 +386,7 @@ impl Game<'_> {
                     AUTO_UPLOAD_TIME
                 };
                 let started = Instant::now();
-                let upload_span = horizon_client::spans::guard("uw_upload_q");
+                let upload_span = horizon_client::spans::guard("upload_queue");
                 while let Some((_, mesh)) = pending.last() {
                     if auto && count > 0 && started.elapsed() >= auto_time {
                         break;
