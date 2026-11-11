@@ -2951,3 +2951,8 @@ mod shriek_capture_tests {
         }
     }
 }
+
+// Milking and shearing farm animals; lives here for `TEST_POSTED_EVENTS`.
+#[cfg(test)]
+#[path = "farm_animal_interaction_tests.rs"]
+mod farm_animal_interaction_tests;

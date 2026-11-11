@@ -1,57 +1,121 @@
-use super::super::Game;
+//! `Entity.checkBelowWorld` for boats and minecarts: one more than 64 blocks
+//! under its level's floor is discarded (`onBelowWorld`) before it moves.
+//! `AbstractBoat.tick` reaches it through `Entity.baseTick`, after the fire;
+//! `AbstractMinecart.tick` calls it itself, after its hurt and damage wear off.
+//! A discard is a destroying removal: the riders get off where they are and a
+//! chest boat or container minecart spills its slots
+//! (`AbstractChestBoat.remove`, `AbstractMinecartContainer.remove`), but no
+//! ENTITY_DIE and no item of the vehicle itself.
+use super::super::{minecarts::cart_at, native_ticks::TickRound};
+use super::Game;
+
+/// `Entity.checkBelowWorld`: `getY() < level.getMinY() - 64`.
+pub(super) fn below_world(y: f64, min_y: i32) -> bool {
+    y < f64::from(min_y - 64)
+}
 
 impl Game<'_> {
-    /// `Entity.checkBelowWorld` / `onBelowWorld`, reached by `AbstractBoat.tick`
-    /// through `Entity.baseTick`: discard below the dimension floor minus 64.
-    /// `DISCARDED` destroys the container and lead, without a hull or death event.
-    pub(super) fn boat_below_world(&mut self, i: usize) -> bool {
-        if self.remote.is_some()
-            || self.boats[i].position.y >= f64::from(self.world.shape.min_y) - 64.0
-        {
+    /// `Entity.checkBelowWorld` for the boat at `i`: true when it fell out of
+    /// the world and is gone.
+    pub(in crate::game) fn boat_below_world(&mut self, i: usize) -> bool {
+        if !below_world(self.boats[i].position.y, self.world.bottom_y()) {
             return false;
         }
         self.eject_boat_mobs(i, true);
-        self.release_vehicle_container(self.boats[i].id);
+        let id = self.boats[i].id;
+        self.release_vehicle_container(id);
         let b = self.boats.remove(i);
-        self.drop_vehicle_contents([b.position.x, b.position.y, b.position.z], &b.items);
+        self.drop_vehicle_contents(b.position.components(), &b.items);
         self.boat_removed(&b);
         true
+    }
+
+    /// The minecart `id` at or after `slot`, unless `AbstractMinecart.tick`'s
+    /// `checkBelowWorld` discards it: then its tick is over and the round's
+    /// post hook runs for it.
+    pub(in crate::game) fn cart_in_world(
+        &mut self,
+        id: u32,
+        slot: usize,
+        round: &TickRound,
+        kind: &str,
+    ) -> Option<usize> {
+        let i = cart_at(&self.carts, id, slot)?;
+        if !below_world(self.carts[i].position.y, self.world.bottom_y()) {
+            return Some(i);
+        }
+        self.eject_cart_mobs(i);
+        self.release_vehicle_container(id);
+        let c = self.carts.remove(i);
+        self.drop_vehicle_contents(c.position.components(), &c.items);
+        self.native_tick_post_one(round, id, kind);
+        None
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::Boat;
-    use crate::game::native_machines::tests::server_game;
-    use horizon_client::{chunk::Chunk, motion::PlayerMotion};
-    use horizon_core::geometry::Vec3;
-    use horizon_world::nbt::Tag;
+    use super::below_world;
 
+    /// The line is 64 under the floor and the vehicle must be below it:
+    /// -128 in the overworld (floor -64), -64 in the Nether and the End.
+    #[test]
+    fn a_vehicle_falls_out_of_the_world_64_blocks_under_the_floor() {
+        assert!(!below_world(-128.0, -64));
+        assert!(below_world(-128.001, -64));
+        assert!(!below_world(-100.0, -64));
+        assert!(!below_world(-64.0, 0));
+        assert!(below_world(-64.5, 0));
+    }
+
+    /// A tick discards the boat and the chest minecart under -128 in the
+    /// overworld, before they move, and spills the cart's slots; the two on
+    /// the line or above it stay, whatever their fall this tick.
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-    fn falling_boats_are_discarded_on_the_tick_after_crossing_the_void_line() {
-        let mut g = server_game();
-        g.player = Some(PlayerMotion::new(g.motion, Vec3::new(0.5, 64.0, 0.5)).unwrap());
-        g.update_chunk_tickets();
-        for min_y in [-64, 0] {
-            g.world.shape.min_y = min_y;
-            let line = f64::from(min_y) - 64.0;
-            let mut b = Boat::new(1, "oak".into(), Vec3::new(0.5, line, 0.5), 0.0);
-            b.velocity.y = -0.5;
-            g.boats.push(b);
-            g.tick_boats();
-            assert_eq!(g.boats.len(), 1, "the threshold itself survives baseTick");
-            assert!(g.boats[0].position.y < line);
-            g.tick_boats();
-            assert!(g.boats.is_empty());
-            assert!(g.dropped.is_empty(), "discard has no boat item drop");
+    fn a_tick_discards_the_vehicles_under_the_world() {
+        use horizon_client::chunk::Chunk;
+        use horizon_core::position::ChunkPos;
+        let mut g = crate::game::native_machines::tests::server_game();
+        g.build_registries();
+        g.set_allow_commands(true);
+        g.world
+            .chunks
+            .insert((0, 0), std::sync::Arc::new(Chunk::empty(0, 0)));
+        g.block_ticks.add_empty_chunk(ChunkPos::new(0, 0)).unwrap();
+        assert!(g.run_command("forceload add 0 0"));
+        for summon in [
+            "summon oak_boat 0.5 -128 0.5",
+            "summon oak_boat 4.5 -128.5 4.5",
+            "summon minecart 6.5 -127 6.5",
+            "summon chest_minecart 2.5 -129 2.5 {Items:[{Slot:0b,id:\"minecraft:diamond\",count:3}]}",
+        ] {
+            assert!(g.run_command(summon), "{summon}");
         }
+        g.sync_tick_chunks();
+        g.tick_boats();
+        g.tick_carts();
+        let boats: Vec<f64> = g.boats.iter().map(|b| b.position.x).collect();
+        assert_eq!(boats, [0.5]);
+        let carts: Vec<f64> = g.carts.iter().map(|c| c.position.x).collect();
+        assert_eq!(carts, [6.5]);
+        let spilled: u32 = g
+            .dropped
+            .iter()
+            .filter(|i| &*i.stack.item == "minecraft:diamond")
+            .map(|i| i.stack.count)
+            .sum();
+        assert_eq!(spilled, 3);
     }
 
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn saved_deep_end_boat_loads_then_is_discarded_and_extreme_scans_terminate() {
-        let mut g = server_game();
+        use super::super::Boat;
+        use horizon_client::{chunk::Chunk, motion::PlayerMotion};
+        use horizon_core::geometry::Vec3;
+        use horizon_world::nbt::Tag;
+        let mut g = crate::game::native_machines::tests::server_game();
         g.world.shape.min_y = 0;
         let doubles = |v: &[f64]| Tag::List(v.iter().map(|d| Tag::Double(d.to_bits())).collect());
         let tag = Tag::compound([

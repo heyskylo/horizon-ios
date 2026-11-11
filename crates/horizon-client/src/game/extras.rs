@@ -189,7 +189,7 @@ impl Game<'_> {
         let (bx, bz) = (view.x.floor() as i32, view.z.floor() as i32);
         // Underground, under a roof or in the Nether: the floor around the player.
         let covered = self.world.light(bx, head, bz) >> 4 == 0;
-        let layer = if self.dim == Dim::Nether || covered {
+        let layer = if self.world.shape.has_ceiling || covered {
             Layer::Below(head)
         } else {
             Layer::Surface
