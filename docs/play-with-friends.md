@@ -53,7 +53,8 @@ router that opened the port, or with a forwarded port, that's it: no server took
 (`horizon_hooks::tunnel`, `horizon_platform::hooks::tunnel` for the Horizon layer): the resolver a hook offers
 reads codes and opens the tunnel, which the join (`net.rs`) then reaches on a loopback port like any server.
 horizon-friends' `game` side offers it, and the official executable (`horizon-official`) registers it;
-horizon-client's own executable has none, so there a `friend:` address is refused. Hosting needs no hook: the
+horizon-client's own executable has none, so there a `friend:` address is refused and the title screen's
+Friends icon, which opens Join a Friend, is inactive (`net::joins_friends`). Hosting needs no hook: the
 host end connects to the world's LAN port over loopback, so tunnelled guests are LAN guests. It still lives in
 horizon-client (`game/friends.rs`, `game/friends/screen.rs`, the `friends` feature, which comes with
 `horizon-extras`) until the pause menu and `horizon-ctl` offer entries to crates above the engine.
@@ -115,8 +116,8 @@ run at once there, and each must finish within 10 seconds however slowly its byt
 
 Like LAN, and like vanilla's `IntegratedServer`: a host signed in with a Microsoft account runs the world
 in online mode, so each guest signs in through Mojang's session servers and arrives with their own
-UUID, skin and cape. A host playing under an offline name runs it in offline mode, where a guest joins
-with the name their game uses. Either way the host's own profile is reserved. Every tunnelled guest
+UUID, skin and cape. A host playing without a session (the services couldn't be reached at Play) runs it in
+offline mode, where a guest joins with the name their game uses. Either way the host's own profile is reserved. Every tunnelled guest
 reaches the integrated server from `127.0.0.1`.
 
 ## Relays (optional)

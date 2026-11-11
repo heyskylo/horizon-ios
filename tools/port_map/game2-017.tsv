@@ -28,7 +28,7 @@ ChestBlockEntity.loadAdditional	port	crates/horizon-client/src/save.rs::decode_b
 ChestBlockEntity.saveAdditional	port	crates/horizon-client/src/save.rs::encode_block_entity	Items
 ChestBlockEntity.stopOpen	port	crates/horizon-client/src/game/block_entity_anims.rs::Game::container_opener_event	opener count down (close side), spectators excluded
 ChestBlockEntity.swapContents	missing		only `UpgradeData.BlockFixers` (the old-world upgrade of a double chest) asks for it, and the chunk upgrade does not swap chest halves
-ChestBlockEntity.recheckOpen	missing		only the copper golems' openers are rechecked, every five ticks (`recheck_golem_openers`); a player's openers are counted at open and close (`container_openers_changed`) and never when the block beside the chest changes
+ChestBlockEntity.recheckOpen	port	crates/horizon-world/src/level/tick.rs::Sim::tick_block	the chest's scheduled tick (ContainerOpenersCounter.scheduleRecheck, every five ticks while someone has it open) recounts its openers through `recheck_container_openers`, broadcasts the lid block event and updates a trapped chest's neighbours when the count changes
 ChestLidController.tickLid	port	crates/horizon-client-render/src/block_entity_anim.rs::ChestLid::tick	lid openness step of 0.1 per tick
 ChiseledBookShelfBlockEntity.removeItem	port	crates/horizon-client/src/game/machines.rs::Game::take_one	removes one item from the slot
 ChiseledBookShelfBlockEntity.setItem	port	crates/horizon-client/src/game/chiseled_bookshelf.rs::Game::use_chiseled_bookshelf	player insert path; slot update via chiseled_bookshelf_update_state
@@ -51,7 +51,7 @@ CrafterBlockEntity.canPlaceItem	port	crates/horizon-client/src/game/machines.rs:
 CrafterBlockEntity.smallerStackExist	port	crates/horizon-client-render/src/containers.rs::Crafter::can_place	the smaller-stack check later in the slots
 CrafterBlockEntity.saveAdditional	port	crates/horizon-client/src/save.rs::encode_block_entity	crafter arm: items, disabled slots, triggered, ticks
 CrafterBlockEntity.isEmpty	port	crates/horizon-client/src/game/machines.rs::Containers::is_empty	
-CrafterBlockEntity.fillStackedContents	missing		no crafter case in the recipe book: `recipe_book` and `crafting` fill a crafting grid, never a crafter's slots
+CrafterBlockEntity.fillStackedContents	port	crates/horizon-client/src/menu/place.rs::Menu::stacked_contents	the crafter's nine slots are the menu's MAIN container (`CrafterMenu.addSlots`), accounted like a grid (`accountSimpleStack`) for the recipe book's craftable check
 CrafterBlockEntity.addDisabledSlots	port	crates/horizon-client/src/save.rs::encode_block_entity	disabled_slots in the crafter arm
 CrafterBlockEntity.slotCanBeDisabled	port	crates/horizon-client-render/src/containers.rs::Crafter::slot_can_be_disabled	
 CreakingHeartBlockEntity.updateCreakingState	inline	crates/horizon-client/src/mobs/creaking_heart.rs::server_tick	creaking_heart_state set in server_tick
@@ -70,7 +70,7 @@ DispenserBlockEntity.loadAdditional	port	crates/horizon-client/src/save.rs::deco
 DispenserBlockEntity.saveAdditional	port	crates/horizon-client/src/save.rs::encode_block_entity	Items (9 slots)
 EnderChestBlockEntity.startOpen	port	crates/horizon-client/src/game/block_entity_anims.rs::Game::container_opener_event	opener count up (open side)
 EnderChestBlockEntity.stopOpen	port	crates/horizon-client/src/game/block_entity_anims.rs::Game::container_opener_event	opener count down (close side)
-EnderChestBlockEntity.recheckOpen	missing		no player opener recount when the block beside an ender chest changes: the openers are counted at open and close only (`container_openers_changed`)
+EnderChestBlockEntity.recheckOpen	port	crates/horizon-world/src/level/tick.rs::Sim::tick_block	the ender chest's scheduled tick recounts its openers through `recheck_container_openers` and broadcasts the lid block event; the tick re-schedules itself while anyone has it open
 HopperBlockEntity.loadAdditional	port	crates/horizon-client/src/save.rs::decode_block_entity	gap: minor: TransferCooldown is not saved (transient state in machines.rs)
 HopperBlockEntity.saveAdditional	port	crates/horizon-client/src/save.rs::encode_block_entity	gap: minor: TransferCooldown is not saved (transient state in machines.rs)
 HopperBlockEntity.setItem	port	crates/horizon-client/src/game/machines.rs::Game::try_move_in_item	gap: minor: unpackLootTable(null) on set is not done here
@@ -83,7 +83,7 @@ HopperBlockEntity.getSourceContainer	port	crates/horizon-client/src/game/machine
 HopperBlockEntity.getItemsAtAndAbove	port	crates/horizon-client/src/game/machines.rs::Game::suck_item_entities	item entities in the suck box
 HopperBlockEntity.entityInside	inline	crates/horizon-client/src/game/machines.rs::Game::suck_item_entities	item entering the hopper is polled each tick instead
 JigsawBlockEntity.generate	port	crates/horizon-client/src/game/jigsaw_blocks.rs::Game::generate_jigsaw_block	
-JukeboxBlockEntity.notifyItemChangedInJukebox	port	crates/horizon-client/src/game/jukebox.rs::Game::set_has_record	gap: minor: no BLOCK_CHANGE game event
+JukeboxBlockEntity.notifyItemChangedInJukebox	port	crates/horizon-client/src/game/jukebox.rs::Game::set_has_record	the `has_record` state with update flag 2, and `minecraft:block_change` at the box (the sculk sensors hear a disc coming or going)
 JukeboxBlockEntity.getComparatorOutput	port	crates/horizon-client/src/game/jukebox.rs::jukebox_signals	comparator value of the song
 JukeboxBlockEntity.loadAdditional	port	crates/horizon-client/src/save.rs::decode_block_entity	RecordItem and ticks
 JukeboxBlockEntity.saveAdditional	port	crates/horizon-client/src/save.rs::encode_block_entity	RecordItem and ticks
@@ -110,12 +110,12 @@ SculkShriekerBlockEntity.VibrationUser.onReceiveVibration	port	crates/horizon-cl
 ShelfBlockEntity.loadAdditional	skip:other		no own code: the raw saved tag keeps Items (shelf_signal reads it)
 ShelfBlockEntity.saveAdditional	skip:other		no own code: the raw saved tag keeps Items (shelf_signal reads it)
 ShelfBlockEntity.getUpdateTag	port	crates/horizon-client/src/lan/chunks.rs::entity_tag	the Shelf arm: Items and align_items_to_bottom
-ShelfBlockEntity.setChanged	inline	crates/horizon-client/src/game/machines.rs::Containers::container_changed	the shelf's own arm marks the block entity updated so clients see the swap
+ShelfBlockEntity.setChanged	inline	crates/horizon-client/src/game/machines.rs::Game::view_changed	the shelf's own arm marks the block entity updated so clients see the swap, and a container's slot write posts `block_activate` (the no-argument `setChanged()`)
 ShelfBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::place	Items as container component
 ShelfBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::collect	Items as container component
 ShulkerBoxBlockEntity.updateAnimation	port	crates/horizon-client-render/src/block_entity_anim.rs::Shulker::tick	lid progress
 ShulkerBoxBlockEntity.moveCollidedEntities	inline	crates/horizon-client/src/game/piston_push.rs::Game::push_shulker_entities	the sweeping lid box moves every body it meets out along the facing by the box's size plus 0.01 (`Entity.move(MoverType.SHULKER_BOX, …)`), through the piston push machinery
-ShulkerBoxBlockEntity.doNeighborUpdates	missing		the lid tick counts the calls (`ShulkerTick::neighbor_updates`) and both tick paths (`tick_shulkers`, the client's `Ticker::Shulker`) drop them: no `open` block state and no neighbour or shape update around the box
+ShulkerBoxBlockEntity.doNeighborUpdates	port	crates/horizon-world/src/level/mod.rs::Behaviours::shulker_neighbor_updates	the four points of `ShulkerBoxBlockEntity.tick` where a lid starts or finishes moving: `state.updateNeighbourShapes(level, pos, 3)` then `level.updateNeighborsAt(pos, block)`, once per `ShulkerTick.neighbor_updates`
 ShulkerBoxBlockEntity.saveAdditional	port	crates/horizon-client/src/save.rs::encode_block_entity	shulker box uses the chest arm (27 slots)
 ShulkerBoxBlockEntity.loadFromTag	port	crates/horizon-client/src/block_entity_item.rs::place	contents from the item's data
 SignBlockEntity.getText	skip:other		accessor; SignData keeps front and back sides as fields

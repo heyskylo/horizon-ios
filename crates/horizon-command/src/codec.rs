@@ -1,6 +1,8 @@
 //! ResourceOrIdArgument and the data-fixer-upper decoding of inline values
 //! commands accept (loot predicates, item modifiers, slot sources, context
 //! providers, dialogs), reproducing the codec error messages vanilla reports.
+mod slot_sources;
+
 use super::args::{Registries, is_id_char, parse_identifier, slot_ranges};
 use super::{CmdResult, CommandError, Reader};
 use horizon_world::nbt::{Compound, JavaString, Tag};
@@ -296,41 +298,7 @@ pub fn decode(registry: &str, t: &Tag, reg: &Registries) -> Result<(), String> {
         "minecraft:item_modifier" => element_or_list(t, &|x| {
             dispatch(x, reg, "minecraft:loot_function_type", &|_, _, _| Ok(()))
         }),
-        "minecraft:slot_source" => element_or_list(t, &|x| {
-            dispatch(x, reg, "minecraft:slot_source_type", &|id, map, t| {
-                if id == "minecraft:contents" {
-                    require(map, t, &["component"])?;
-                    let value = get(map, "component").expect("required component");
-                    let name = as_string(value).ok_or_else(|| "Not a string".to_owned())?;
-                    let component = parse_identifier(&name)
-                        .ok_or_else(|| format!("Not a valid resource location: {name}"))?;
-                    let known = reg.ids("minecraft:data_component_type");
-                    if !known.is_empty() && !known.contains(&component) {
-                        return Err(format!(
-                            "Unknown registry key in ResourceKey[minecraft:root / minecraft:data_component_type]: {component}"
-                        ));
-                    }
-                    if !matches!(
-                        component.as_str(),
-                        "minecraft:container"
-                            | "minecraft:bundle_contents"
-                            | "minecraft:charged_projectiles"
-                    ) {
-                        return Err("No items in component".into());
-                    }
-                } else if id == "minecraft:slot_range" {
-                    // RangeSlotSource.MAP_CODEC uses the global SlotRanges.CODEC,
-                    // independently of the eventual target inventory's size.
-                    require(map, t, &["slots"])?;
-                    let value = get(map, "slots").expect("required slots");
-                    let name = as_string(value).ok_or_else(|| "Not a string".to_owned())?;
-                    if !slot_ranges().iter().any(|(known, _)| known == &name) {
-                        return Err(format!("Unknown element name:{name}"));
-                    }
-                }
-                Ok(())
-            })
-        }),
+        "minecraft:slot_source" => slot_sources::decode(t, reg),
         // Dialog types: CommonDialogData's title, then each type's own.
         "minecraft:dialog" => dispatch(t, reg, "minecraft:dialog_type", &|id, map, t| {
             let own: &[&str] = match id {

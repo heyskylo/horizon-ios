@@ -168,6 +168,7 @@ impl Game<'_> {
             full_water_vision: self.settings.extras.pvp.tweaks.clear_water,
             night_vision: self.fog_night_vision(),
             environment: self.pack.polytone_colors.env,
+            fluid_fog: self.pack.polytone_colors.fluid_fog,
         };
         let mut fog = horizon_client::fog::setup_fog(tables, &self.fog, &input);
         if !self.settings.horizon.fog {
@@ -425,6 +426,7 @@ impl Game<'_> {
     /// flicker whenever the game is not paused, frozen or not, while `TextureManager.tick`
     /// needs the level running normally. `HORIZON_STILL` keeps both with the world.
     pub(super) fn tick_frame_visuals(&mut self, running: bool) {
+        self.hold_fullbright();
         if running || !self.clock.still() {
             self.fog.tick_flicker();
         }

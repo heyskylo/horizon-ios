@@ -136,3 +136,19 @@ fn editing_a_command_block_marks_its_chunk() {
         "the edited command block's chunk is dirty"
     );
 }
+
+/// `TestBlock.ownSignal` reads the block state's `mode`, not the block
+/// entity's saved copy: a `start` state with a powered block entity answers
+/// 15 even when `/data merge` left a different mode in the entity.
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_test_block_reads_the_state_mode_for_its_own_signal() {
+    let mut game = game();
+    run(&mut game, &["setblock 5 100 2 test_block[mode=start]"]);
+    assert!(game.run_command("data merge block 5 100 2 {mode:\"fail\",powered:1b}"));
+    let pos = BlockPos::new(5, 100, 2);
+    let state = game.world.block(5, 100, 2);
+    let signal =
+        game.with_level(|_, level, _| level.block_entity_signal(pos, state, Direction::North));
+    assert_eq!(signal, 15, "the state says start and the entity is powered");
+}
