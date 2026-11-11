@@ -3798,19 +3798,7 @@ pub fn armor_stand_to_nbt(a: &ArmorStand, uuid: [i32; 4], raw: Option<&Tag>) -> 
             ("AbsorptionAmount", Tag::Float(0)),
             ("FallFlying", Tag::Byte(0)),
             ("current_impulse_context_reset_grace_time", Tag::Int(0)),
-            // AttributeMap.pack: the movement_speed instance the stand's first
-            // tick makes (removeFrost), at the registry default.
-            (
-                "attributes",
-                Tag::List(if a.speed_instance {
-                    vec![Tag::compound([
-                        ("id", string(SPEED_ATTRIBUTE)),
-                        ("base", Tag::Double(0.7f64.to_bits())),
-                    ])]
-                } else {
-                    Vec::new()
-                }),
-            ),
+            ("attributes", Tag::List(Vec::new())),
             (
                 "Brain",
                 Tag::compound([("memories", Tag::Compound(Compound::new()))]),
@@ -3819,6 +3807,18 @@ pub fn armor_stand_to_nbt(a: &ArmorStand, uuid: [i32; 4], raw: Option<&Tag>) -> 
             ("Pose", Tag::Compound(Compound::new())),
         ] {
             map.entry(key.into()).or_insert(value);
+        }
+        // `removeFrost`'s first-tick movement_speed, over a saved list without it.
+        if a.speed_instance
+            && let Some(Tag::List(list)) = map.get_mut(&"attributes".into())
+            && !list
+                .iter()
+                .any(|t| text(t.get("id")).as_deref() == Some(SPEED_ATTRIBUTE))
+        {
+            list.push(Tag::compound([
+                ("id", string(SPEED_ATTRIBUTE)),
+                ("base", Tag::Double(0.7f64.to_bits())),
+            ]));
         }
     }
     tag
@@ -5838,6 +5838,43 @@ mod tests {
         assert_eq!(attributes(&stand), speed);
         let saved = armor_stand_to_nbt(&stand, [0; 4], None);
         assert_eq!(attributes(&armor_stand_from_nbt(&saved, 1).unwrap()), speed);
+    }
+    #[test]
+    fn a_loaded_stand_gains_the_speed_instance_its_first_tick_makes() {
+        // Vanilla 26.3: `/summon armor_stand ~ ~ ~ {attributes:[]}` saves `[]` until the
+        // first tick, whose removeFrost makes movement_speed (base 0.7d); a saved
+        // instance of another attribute stays in front of it.
+        let ids = |stand: &ArmorStand, raw: &Tag| match armor_stand_to_nbt(stand, [0; 4], Some(raw))
+            .get("attributes")
+        {
+            Some(Tag::List(attrs)) => attrs
+                .iter()
+                .map(|a| (text(a.get("id")).unwrap(), a.get("base").cloned()))
+                .collect::<Vec<_>>(),
+            other => panic!("attributes: {other:?}"),
+        };
+        let health = (
+            "minecraft:max_health".to_owned(),
+            Some(Tag::Double(20f64.to_bits())),
+        );
+        let speed = (
+            "minecraft:movement_speed".to_owned(),
+            Some(Tag::Double(0.7f64.to_bits())),
+        );
+        let empty = Tag::compound([("attributes", Tag::List(Vec::new()))]);
+        let saved = Tag::compound([(
+            "attributes",
+            Tag::List(vec![Tag::compound([
+                ("id", string("minecraft:max_health")),
+                ("base", Tag::Double(20f64.to_bits())),
+            ])]),
+        )]);
+        let mut stand = ArmorStand::new(1, Vec3::ZERO, 0.0);
+        assert_eq!(ids(&stand, &empty), []);
+        assert_eq!(ids(&stand, &saved), std::slice::from_ref(&health));
+        stand.speed_instance = true;
+        assert_eq!(ids(&stand, &empty), std::slice::from_ref(&speed));
+        assert_eq!(ids(&stand, &saved), [health, speed]);
     }
     #[test]
     fn summoned_trident_defaults_are_not_pickable_or_already_shot() {
