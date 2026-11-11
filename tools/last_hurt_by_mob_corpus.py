@@ -10,7 +10,11 @@ The world is frozen; ticks are stepped. A NoAI pig (`victim`) and two NoAI cows 
 UUIDs, in one loaded chunk. The pig takes no hit, then `generic` damage (no entity), then a hit from `a`,
 then one from `b`, 20 ticks apart (past the damage cooldown), then 110 ticks pass. A second NoAI pig
 (`echo`) is summoned with `last_hurt_by_mob` naming `a` already in its data: a value read back from the
-summon, not from a hit, then ages past 100 ticks.
+summon, not from a hit, then ages past 100 ticks. A third pig (`ghost`) is summoned naming a UUID that
+no entity has: the reference does not resolve, so `baseTick` does not end it and it stays, aging; when an
+entity with that UUID arrives, it resolves, is past 100 ticks, and ends. A fourth pig (`self`) is summoned
+naming its own UUID: `EntityReference.getEntity` resolves any matching living entity, the holder
+included, so it is kept like `echo`'s and ends after 100 ticks.
 
 Label classes, declared before any native run: `target-` rows are the precise `last_hurt_by_mob` and
 `ticks_since_last_hurt_by_mob` reads after each action; `body-` rows are the victim's full saved body
@@ -25,7 +29,7 @@ def uuid(n):
     return f'00006094-0000-0000-0000-{n:012x}'
 
 
-VICTIM, A, B, ECHO = uuid(1), uuid(2), uuid(3), uuid(4)
+VICTIM, A, B, ECHO, GHOST, SELF = uuid(1), uuid(2), uuid(3), uuid(4), uuid(5), uuid(6)
 
 
 def last_hurt_by_mob(full=False):
@@ -64,9 +68,11 @@ def last_hurt_by_mob(full=False):
     cmd(f'/fill 0 {Y} 0 15 {Y + 3} 15 air', 'clear', admission=False)
     cmd('/kill @e[type=!player]', 'clear-entities', admission=False, diagnostic=True)
     actors = [('victim', 'pig', 1, 4.5, ''), ('a', 'cow', 2, 8.5, ''), ('b', 'cow', 3, 12.5, ''),
-              ('echo', 'pig', 4, 4.5, ',last_hurt_by_mob:[I;24724,0,0,2]')]
+              ('echo', 'pig', 4, 4.5, ',last_hurt_by_mob:[I;24724,0,0,2]'),
+              ('ghost', 'pig', 5, 8.5, ',last_hurt_by_mob:[I;24724,0,0,99],ticks_since_last_hurt_by_mob:7'),
+              ('self', 'pig', 6, 1.5, ',last_hurt_by_mob:[I;24724,0,0,6]')]
     for name, kind, n, x, extra in actors:
-        z = 12.5 if name == 'echo' else 4.5
+        z = 12.5 if name in ('echo', 'ghost', 'self') else 4.5
         cmd(f'/summon {kind} {x} {Y} {z} {{NoAI:1b,PersistenceRequired:1b,Silent:1b,Health:10f,'
             f'Rotation:[0f,0f],Motion:[0d,0d,0d],UUID:[I;24724,0,0,{n}]{extra}}}', f'{name}-summon',
             admission=False)
@@ -78,8 +84,12 @@ def last_hurt_by_mob(full=False):
         admission=False, diagnostic=True)
     read('none')
     read('echo-0', ECHO)
+    read('ghost-0', GHOST)
+    read('self-0', SELF)
     step(1, 'settle')
     read('echo-1', ECHO)
+    read('ghost-1', GHOST)
+    read('self-1', SELF)
     cmd(f'/damage {VICTIM} 1 minecraft:generic', 'generic-hit', admission=False)
     read('generic')
     step(20, 'after-generic')
@@ -90,10 +100,23 @@ def last_hurt_by_mob(full=False):
     step(10, 'after-a-more')
     cmd(f'/damage {VICTIM} 1 minecraft:mob_attack by {B}', 'b-hit', admission=False)
     read('b')
-    step(110, 'after-b')
+    step(59, 'after-b')
+    read('echo-100', ECHO)
+    read('self-100', SELF)
+    step(1, 'after-b-100')
+    read('echo-101', ECHO)
+    read('self-101', SELF)
+    step(50, 'after-b-more')
     read('b-110')
     read('echo-end', ECHO)
+    read('ghost-end', GHOST)
+    read('self-end', SELF)
+    # The entity the reference names arrives: it resolves, is past 100 ticks, and ends.
+    cmd(f'/summon pig 12.5 {Y} 12.5 {{NoAI:1b,PersistenceRequired:1b,Silent:1b,Health:10f,'
+        f'UUID:[I;24724,0,0,99]}}', 'named-summon', admission=False)
+    step(1, 'after-named')
+    read('ghost-resolved', GHOST)
     cmd('/execute store result score #now lh run time query gametime', 'diag-clock-now', admission=False,
         diagnostic=True)
-    cmd('/scoreboard players operation #now lh -= #start lh', 'clock', 151)
+    cmd('/scoreboard players operation #now lh -= #start lh', 'clock', 152)
     return ops

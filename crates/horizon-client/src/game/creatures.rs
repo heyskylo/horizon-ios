@@ -123,6 +123,8 @@ pub(super) struct Creatures {
     /// what the passes after the loop do for a mob's `aiStep`, goals or brain
     /// (pickups, item searches) is for these alone.
     pub ticked: horizon_client::fast_hash::FxHashSet<u32>,
+    /// While the mob loop's own events are handled (`catch_up_countdowns`).
+    pub deferred_hits: bool,
     /// The wandering trader spawner's clock.
     pub trader: super::wandering_trader::Spawner,
     /// When each player last put a parrot on a shoulder (`timeEntitySatOnShoulder`).
@@ -1127,17 +1129,7 @@ impl Game<'_> {
         self.refresh_gear_knockback_resistance();
         self.tick_leads();
         // Vanilla's spawning and raids run before ChunkMap.tick.
-        let from = self.lan_synced_from();
-        horizon_client::spans::time("spawn_natural", || self.spawn_natural());
-        // ServerChunkCache.tickChunks: the custom spawners tick only with spawn_mobs.
-        if self.ui.rules.bool("spawn_mobs") {
-            self.tick_wandering_trader();
-            self.tick_patrol_spawner();
-            self.tick_cat_spawner();
-            self.tick_village_siege();
-        }
-        self.tick_raids();
-        self.lan_synced_since(from);
+        self.tick_spawners();
         let ticked =
             horizon_client::spans::time("tick_creature_entities", || self.tick_creature_entities());
         self.dismount_underwater_mob_riders();
@@ -1146,8 +1138,8 @@ impl Game<'_> {
     /// `DistanceManager.inEntityTickingRange` in an entity-ticking chunk
     /// (block coordinates), from every player's tickets (`update_chunk_tickets`).
     pub(super) fn entity_ticking_area(&self) -> impl Fn(i32, i32) -> bool + use<> {
-        self.tickets
-            .entity_ticking_area(&self.world.chunks, self.remote.is_none())
+        let levels = self.tickets.levels();
+        move |x, z| levels.entity_ticking_at(x, z)
     }
     /// The entity phase of `tick_creatures`: every mob's tick, deaths, and the
     /// projectiles and effects that follow from them.
@@ -1166,6 +1158,9 @@ impl Game<'_> {
             self.died.insert(m.id);
             self.mob_died(&m);
         }
+        // A `last_hurt_by_mob` read from a save names its attacker once that
+        // entity is here, before the mobs' `baseTick`s.
+        self.resolve_last_hurt_by_refs();
         // Their victims have been looted and mourned: no charged creeper is
         // waiting any more.
         self.combat.charged_exploders.clear();
@@ -1610,7 +1605,9 @@ impl Game<'_> {
             let bounds = m.bounds();
             self.effects_on_death(&names, bounds, false, Some(m.id), Some(&mut m.random));
         }
+        self.creatures.deferred_hits = true;
         let event_result = self.handle_mob_events_reusable(&mut events);
+        self.creatures.deferred_hits = false;
         self.creatures.event_buf = events;
         event_result?;
         self.lan_guest_mob_events(guest_events);
@@ -2124,18 +2121,6 @@ impl Game<'_> {
         }
     }
     /// `Mob.doHurtTarget` and the other melee callers of post-attack effects.
-    fn mob_attacks_mob(&mut self, target: u32, amount: f32, source: Damage) -> bool {
-        let hurt = self.mob_hits_mob(target, amount, source);
-        if hurt {
-            self.mob_post_attack(
-                target,
-                source.attacker,
-                None,
-                Some(damage_type(source.kind, false)),
-            );
-        }
-        hurt
-    }
     /// Melee or ranged damage to another mob; whether the hit landed.
     pub(super) fn mob_hits_mob(&mut self, target: u32, amount: f32, mut source: Damage) -> bool {
         if source.attacker_species.is_none()
@@ -2146,12 +2131,19 @@ impl Game<'_> {
         let mut killed = false;
         let mut hurt = false;
         let mut infested = Vec::new();
+        let catch_up = self.catch_up_countdowns(source.attacker, target);
         let aim = self.attacker_aim(source.attacker);
         // So `living_knockback_v2` sees who hit and what they hold.
         let _attacker = self.knockback_scope_for(source.attacker);
         if let Some(t) = self.mobs.iter_mut().find(|m| m.id == target) {
+            let previous_invulnerable = t.invulnerable;
             let hit = t.damage_aimed(amount, source, aim);
             hurt = hit;
+            if hit && catch_up && t.invulnerable > previous_invulnerable {
+                // `LivingEntity.baseTick`'s countdowns, run after the hit in vanilla.
+                t.hurt_time = (t.hurt_time - 1).max(0);
+                t.invulnerable = (t.invulnerable - 1).max(0);
+            }
             if hit {
                 killed = !t.alive();
                 // The hurt or death sound the mob raised.
@@ -2222,22 +2214,6 @@ impl Game<'_> {
             Some(who) => self.last_hurt_by_player.insert(victim, who),
             None => self.last_hurt_by_player.remove(&victim),
         };
-    }
-    /// The player in the world with `uuid` (`EntityReference.getPlayer`), as
-    /// `last_hurt_by_player` keeps them: None for the player in place, else the
-    /// guest's connection.
-    fn player_with_uuid(&self, uuid: [i32; 4]) -> Option<Option<u32>> {
-        if self.player.is_some()
-            && horizon_client::mobs::tame::owned_by(Some(uuid), self.acting_uuid())
-        {
-            return Some(self.lan_acting);
-        }
-        let uuid = horizon_client::lan::playerdata::ints_uuid(uuid);
-        self.lan
-            .iter()
-            .flat_map(|h| h.hub.guests.iter())
-            .find(|g| g.placed && g.uuid == uuid)
-            .map(|g| Some(g.conn))
     }
     /// `LivingEntity.dropFromGiftLootTable`: the gift table from its random
     /// sequence with the mob as `this` (a chicken's egg depends on its
@@ -2661,20 +2637,9 @@ impl Game<'_> {
                     x,
                     z,
                     source,
+                    apply_blocking,
                 } => match target {
-                    // A player's source names no melee attacker, as its damage's doesn't.
-                    Who::Player => {
-                        let _attacker = self.knockback_scope(match source.attacker {
-                            Some(Who::Mob(id)) => id as i32,
-                            _ => 0,
-                        });
-                        let source = HurtSource {
-                            damage_type: source_damage_type(source),
-                            causing: 0,
-                            direct: 0,
-                        };
-                        self.knock_back_player(power, x, z, source);
-                    }
+                    Who::Player => self.mob_pushes_player(power, x, z, source, apply_blocking),
                     Who::Mob(id) => {
                         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                             m.knockback(power, x, z, &source);
@@ -6580,7 +6545,7 @@ impl Game<'_> {
         let mut equip_event: Option<bool> = None;
         let mut consume = false;
         let mut give: Option<&str> = None;
-        let mut sound: Option<&str> = None;
+        let mut sound: Option<(&str, f32, f32)> = None;
         // Sounds played as vanilla plays them: (event, volume, pitch) at the feet.
         let mut eat: Option<(&'static str, f32, f32)> = None;
         let feet = [m.position.x, m.position.y, m.position.z];
@@ -6613,17 +6578,18 @@ impl Game<'_> {
             Species::Cow | Species::Mooshroom if item == "minecraft:bucket" && !m.is_baby() => {
                 give = Some("minecraft:milk_bucket");
                 consume = true;
-                sound = Some("entity.cow.milk");
+                sound = Some(("entity.cow.milk", 1.0, 1.0));
             }
             // Goat.mobInteract: a bucket on an adult gives milk.
             Species::Goat if item == "minecraft:bucket" && !m.is_baby() => {
                 give = Some("minecraft:milk_bucket");
                 consume = true;
-                sound = Some(if m.extra.screaming {
+                let milk = if m.extra.screaming {
                     "entity.goat.screaming.milk"
                 } else {
                     "entity.goat.milk"
-                });
+                };
+                sound = Some((milk, 1.0, 1.0));
             }
             // MushroomCow.mobInteract: a bowl gives back what a flower left as
             // a suspicious stew, or plain stew when it holds no effects.
@@ -6638,7 +6604,7 @@ impl Game<'_> {
                     }
                     None => {
                         give = Some("minecraft:mushroom_stew");
-                        sound = Some("entity.mooshroom.milk");
+                        sound = Some(("entity.mooshroom.milk", 1.0, 1.0));
                     }
                 }
             }
@@ -6650,10 +6616,7 @@ impl Game<'_> {
                     "minecraft:red_mushroom"
                 };
                 drops.push((mushroom.into(), 5));
-                shear_puff = Some((
-                    [m.position.x, m.position.y, m.position.z],
-                    f64::from(m.height()),
-                ));
+                shear_puff = Some((feet, f64::from(m.height())));
                 self.audio.play_bound(
                     "minecraft:entity.mooshroom.shear",
                     7,
@@ -6675,6 +6638,8 @@ impl Game<'_> {
                     at: pos,
                     setup,
                 }])?;
+                let ctx = self.who_context(Some(horizon_client::mobs::Who::Player), None);
+                self.post_game_event("minecraft:shear", feet, ctx);
                 self.damage_held_tool();
             }
             // MushroomCow.mobInteract: a brown adult takes the flower's effects
@@ -6710,6 +6675,8 @@ impl Game<'_> {
                 );
                 drops.extend(stacks.into_iter().map(|s| (s.item.to_string(), s.count)));
                 wool = true;
+                let ctx = self.who_context(Some(horizon_client::mobs::Who::Player), None);
+                self.post_game_event("minecraft:shear", feet, ctx);
                 self.damage_held_tool();
             }
             // Entity.interact: shears take a tamed wolf's armor off for its owner.
@@ -7157,11 +7124,9 @@ impl Game<'_> {
             }])?;
         }
         self.swing_arm();
-        if let Some(s) = sound {
-            let pitch =
-                (self.world.random.next_float() - self.world.random.next_float()) * 0.2 + 1.0;
+        if let Some((s, volume, pitch)) = sound {
             self.audio
-                .play(&format!("minecraft:{s}"), Some(center), 1.0, pitch);
+                .play(&format!("minecraft:{s}"), Some(center), volume, pitch);
         }
         if let Some((s, volume, pitch)) = eat {
             let event = format!("minecraft:{s}");
