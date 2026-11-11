@@ -4,6 +4,8 @@
 //!
 //! The pack's GLSL (26.3's `#include` or the older `#moj_import`, with explicit locations or
 //! without) is written again as the Vulkan-flavoured GLSL 450 naga reads:
+//! - GLSL vanilla's GL compiler takes and naga doesn't is rewritten first ([`glsl_fixups`]: a
+//!   helper taking the `sampler2D` it reads, an array sized by its initializer only);
 //! - includes are inlined, each file once (as `GlslPreprocessor` imported them), from `include`;
 //! - vanilla's uniform blocks get the bindings of [`BLOCKS`], and each of [`SAMPLERS`] is split
 //!   into a texture and a sampler object, combined again where the sampler is named;
@@ -17,6 +19,8 @@ use std::fmt::Write;
 use naga::ShaderStage;
 use naga::front::glsl::{Frontend, Options};
 use naga::valid::{Capabilities, ValidationFlags, Validator};
+
+mod glsl_fixups;
 
 /// Vanilla's uniform blocks (`shaders/include/*.glsl`) and their bindings in set 0.
 pub const BLOCKS: [(&str, u32); 4] = [
@@ -64,8 +68,8 @@ pub fn translate_core(
     glue: &Glue,
 ) -> Result<CoreProgram, String> {
     const CORE: &str = "minecraft:shaders/core/";
-    let vertex_text = strip_comments(&expand(vertex, CORE, include)?);
-    let fragment_text = strip_comments(&expand(fragment, CORE, include)?);
+    let vertex_text = glsl_fixups::fixups(&strip_comments(&expand(vertex, CORE, include)?));
+    let fragment_text = glsl_fixups::fixups(&strip_comments(&expand(fragment, CORE, include)?));
     let mut names = Names::default();
     let vertex_code = rewrite(&vertex_text, ShaderStage::Vertex, glue, &mut names)
         .map_err(|e| format!("vertex shader: {e}"))?;
