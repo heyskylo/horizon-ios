@@ -577,17 +577,11 @@ impl Game<'_> {
         let (v, on_ground) = self.player.as_ref().map_or((Vec3::ZERO, true), |p| {
             (self.known_player_movement(), p.ground.on_ground)
         });
-        projectile.shoot_from_rotation(
-            &mut self.world.random,
-            self.pitch,
-            self.yaw,
-            0.0,
-            2.5,
-            1.0,
-            v,
-            on_ground,
-        );
+        projectile.shoot_from_rotation(self.pitch, self.yaw, 0.0, 2.5, 1.0, v, on_ground);
         let id = self.take_entity_id();
+        if let Some(uuid) = projectile.uuid {
+            self.persist.uuids.insert(id, uuid);
+        }
         let owner_uuid = self.acting_player_uuid();
         self.tridents.push(ThrownTrident {
             join: Default::default(),

@@ -48,6 +48,7 @@ pub mod golem;
 pub mod guardian;
 pub mod happy_ghast;
 pub mod hostile;
+mod hurt_by;
 pub mod illager;
 pub mod illusioner;
 pub mod item_break;
@@ -1434,31 +1435,6 @@ impl Extra {
     }
 }
 
-/// `DeathProtection.TOTEM_EFFECTS`: clear, then regeneration II, absorption II
-/// and fire resistance.
-fn totem_death_effects() -> Vec<crate::items::ConsumeEffect> {
-    use crate::items::{ConsumeEffect, ConsumeEffectSpec};
-    let spec = |id: &str, duration, amplifier| ConsumeEffectSpec {
-        id: id.to_owned(),
-        duration,
-        amplifier,
-        ambient: false,
-        show_particles: true,
-        show_icon: true,
-    };
-    vec![
-        ConsumeEffect::ClearAllEffects,
-        ConsumeEffect::ApplyEffects {
-            effects: vec![
-                spec("minecraft:regeneration", 900, 1),
-                spec("minecraft:absorption", 100, 1),
-                spec("minecraft:fire_resistance", 800, 0),
-            ],
-            probability: 1.0,
-        },
-    ]
-}
-
 /// How far the boxes of a set of mobs reach from their positions: the widest reach sideways, below
 /// and above among them, worked out from each mob's real box ([`Mob::bounds`]: a shulker's grows
 /// toward its open lid, sideways or below its position). A box query over many mobs (a vehicle's,
@@ -2083,14 +2059,14 @@ pub enum MobEvent {
     StabDismount {
         target: Who,
     },
-    /// `LivingEntity.knockback(power, x, z, source)`: pushed away from the
-    /// direction.
+    /// `LivingEntity.knockback(power, x, z, source)`; a ram's blocked again first (`RamTarget.tick`).
     Knockback {
         target: Who,
         power: f64,
         x: f64,
         z: f64,
         source: Damage,
+        apply_blocking: Option<f32>,
     },
     /// Set another mob's attack target (HurtByTargetGoal alerts).
     SetTarget {
@@ -2598,6 +2574,9 @@ pub struct Seen {
     pub delay: i32,
     /// `getLastHurtByMob` and its timestamp.
     pub hurt_by: Option<(Who, i32)>,
+    /// `PathfinderMob.isPanicking`: a running panic goal or the brain's
+    /// `IS_PANICKING` memory.
+    pub panicking: bool,
     /// A raider in an active raid.
     pub active_raid: bool,
     /// A copper golem's `openedChestPos` (`ContainerUser.hasContainerOpen`).
@@ -2608,8 +2587,6 @@ pub struct Seen {
     pub vehicle: Option<u32>,
     /// `LivingEntity.getHitbox`: the box, cut below the seat when riding.
     pub hitbox: Aabb,
-    /// A villager's reputation of the player (`getPlayerReputation`).
-    pub player_rep: i32,
     /// `isPushable` and pushed by others (`Entity.push(Entity)` moves it).
     pub pushable: bool,
     /// A sleeping villager, wandering trader or fox vetoes its own `push(Entity)`.
@@ -2792,11 +2769,11 @@ impl Mob {
         self.ticks_frozen >= crate::motion::PlayerMotion::TICKS_REQUIRED_TO_FREEZE
     }
 
-    /// What other mobs see of this one this tick (`player`: the player's
-    /// UUID, which villagers' reputation is keyed by). Inline: the game's
-    /// snapshot of every mob writes each one in its slot, not through a copy.
+    /// What other mobs see of this one this tick (`_player` is unused: it keyed the villager
+    /// reputation that nothing read). Inline: the game's snapshot of every mob writes each one in
+    /// its slot, not through a copy.
     #[inline]
-    pub fn seen(&self, player: Option<[i32; 4]>) -> Seen {
+    pub fn seen(&self, _player: Option<[i32; 4]>) -> Seen {
         let m = self;
         let villager = m.species() == Species::Villager;
         Seen {
@@ -2837,14 +2814,11 @@ impl Mob {
             section: (m.extra.section, m.extra.section_seq),
             delay: m.extra.ints[5],
             hurt_by: m.ai.last_hurt_by.map(|w| (w, m.ai.last_hurt_by_time)),
+            panicking: m.ai.panicking,
             active_raid: raider::has_active_raid(m),
             opened_chest: m.extra.opened_chest,
             passenger: m.extra.mount.is_some(),
             vehicle: m.extra.mount,
-            player_rep: match (villager, player) {
-                (true, Some(uuid)) => villager::ext(m).map_or(0, |e| e.gossips.reputation(uuid)),
-                _ => 0,
-            },
             pushable: m.pushable(),
             sleeping: villager::sleeping(m)
                 || (m.species() == Species::Fox && fox::flag(m, fox::SLEEPING)),
@@ -3510,7 +3484,7 @@ impl Mob {
     /// something off its pickup cooldown, a sulfur cube with no block.
     pub fn can_pick_up_loot(&self) -> bool {
         match self.species() {
-            Species::Allay => self.extra.main_hand.is_some() && self.extra.ints[3] <= 0,
+            Species::Allay => allay::can_pick_up_loot(self),
             Species::SulfurCube => !sulfur_cube::has_body(self),
             _ => self.extra.pick_up_loot,
         }
@@ -3937,8 +3911,7 @@ impl Mob {
         self.last_damage = Some((source, i64::from(self.age)));
         self.last_direct = None;
         if let Some(who) = source.attacker {
-            self.ai.last_hurt_by = Some(who);
-            self.ai.last_hurt_by_time = self.age as i32;
+            self.ai.hurt_by(who, self.age as i32);
             if who == Who::Player {
                 self.ai.last_hurt_by_player = 100;
             }
@@ -4361,7 +4334,7 @@ impl Mob {
         let (main, off) = match self.extra.hand_protection.clone() {
             Some(h) => (h.main, h.off),
             None => {
-                let totem = || Some(totem_death_effects());
+                let totem = || Some(living::totem_death_effects());
                 (
                     (self.extra.main_hand.as_deref() == Some(TOTEM))
                         .then(totem)

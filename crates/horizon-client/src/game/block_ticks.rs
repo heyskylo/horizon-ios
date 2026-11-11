@@ -26,21 +26,7 @@ impl Game<'_> {
         self.sync_tick_chunks();
         self.start_ticking_chunks();
         laps.lap("tb_tickets");
-        let levels = self.tickets.levels();
-        let bounds = levels.random_tick_bounds();
-        // Keep the world map's chunk order, including empty chunks
-        // (tick_chunk_random still draws for precipitation in those).
-        scratch.ticking.clear();
-        scratch
-            .ticking
-            .extend(self.world.chunks.keys().copied().filter(|&(x, z)| {
-                if let Some((min_x, min_z, max_x, max_z)) = bounds
-                    && (x < min_x || x > max_x || z < min_z || z > max_z)
-                {
-                    return false;
-                }
-                levels.random_ticking(x, z) && ticking_chunk(&self.world, x, z)
-            }));
+        self.random_tick_chunks(&mut scratch.ticking);
         laps.lap("tb_chunks");
         // Entity.checkInsideBlocks for the plates, tripwires, detector rails and
         // buttons under the players (the host and the LAN guests), the minecarts
@@ -287,6 +273,30 @@ impl Game<'_> {
         Ok(sent)
     }
 
+    /// `ChunkMap.forEachBlockTickingChunk`: the chunks that random tick this
+    /// tick, empty ones included (`tickChunk` still draws for precipitation in
+    /// those).
+    ///
+    /// Vanilla walks the simulation tracker's own table, whose order doesn't
+    /// follow chunk loading. The world map's order does: it is filled as the
+    /// streaming workers finish, so the level random's draws landed on other
+    /// blocks from one run of a world to the next (#15164). Chunk position
+    /// order is the same every run; vanilla's exact order is its fastutil
+    /// table's slot order, which follows that table's whole history.
+    pub(super) fn random_tick_chunks(&self, out: &mut Vec<(i32, i32)>) {
+        let levels = self.tickets.levels();
+        let bounds = levels.random_tick_bounds();
+        out.clear();
+        out.extend(self.world.chunks.keys().copied().filter(|&(x, z)| {
+            if let Some((min_x, min_z, max_x, max_z)) = bounds
+                && (x < min_x || x > max_x || z < min_z || z > max_z)
+            {
+                return false;
+            }
+            levels.random_ticking(x, z) && ticking_chunk(&self.world, x, z)
+        }));
+        out.sort_unstable();
+    }
     /// Track which chunks are ticking (Ticks needs chunk load/unload).
     pub(super) fn sync_tick_chunks(&mut self) {
         if !self.tick_chunks.synchronize(&self.world.chunks) {
@@ -360,3 +370,6 @@ impl Game<'_> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod random_order_tests;
