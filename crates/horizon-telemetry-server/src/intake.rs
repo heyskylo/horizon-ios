@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS hub_queue (
     state TEXT NOT NULL DEFAULT 'new', issue TEXT NOT NULL DEFAULT '', body TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS hub_queue_kind ON hub_queue (kind, state, id);
+-- A report the server was filing when it stopped (Store::claim) is filed again.
+UPDATE hub_queue SET state = 'new' WHERE state = 'filing';
 ";
 
 /// Days the upkeep keeps trying to open a report's issue.
@@ -134,6 +136,25 @@ impl Store {
         rows.collect()
     }
 
+    /// Takes a report for filing: true for exactly one caller, while it is `new`. A second identical
+    /// request (a double click) finds the row with no issue yet while the first waits on GitHub, and
+    /// the upkeep looks at the same `new` rows; without the claim each opened an issue of its own.
+    pub fn claim(&mut self, id: i64) -> rusqlite::Result<bool> {
+        Ok(self.db.execute(
+            "UPDATE hub_queue SET state = 'filing' WHERE id = ?1 AND state = 'new'",
+            [id],
+        )? == 1)
+    }
+
+    /// Gives a claimed report back after GitHub refused it, for the upkeep to try again.
+    pub fn release(&mut self, id: i64) -> rusqlite::Result<()> {
+        self.db.execute(
+            "UPDATE hub_queue SET state = 'new' WHERE id = ?1 AND state = 'filing'",
+            [id],
+        )?;
+        Ok(())
+    }
+
     /// Marks a report as opened: `issue` is its URL.
     pub fn filed(&mut self, id: i64, issue: &str) -> rusqlite::Result<()> {
         self.db.execute(
@@ -172,10 +193,15 @@ impl App {
         let since = (self.today)().saturating_sub(RETRY_DAYS);
         let pending = self.store().unfiled(since).unwrap_or_default();
         for (id, fields) in pending {
+            // A report a request is filing right now is its own.
+            if !self.store().claim(id).unwrap_or(false) {
+                continue;
+            }
             match filer(&github::issue(&fields)) {
                 Ok(url) => self.mark_filed(id, &url),
                 Err(e) => {
                     eprintln!("horizon-telemetry-server: report {id} still not opened: {e}");
+                    let _ = self.store().release(id);
                     return;
                 }
             }
@@ -272,6 +298,18 @@ pub async fn report(State(app): State<Arc<App>>, req: Request) -> Response {
             json!({ "id": id, "issue": issue }),
         );
     }
+    // Only one request (or the upkeep) files a report: a second identical one while the first waits
+    // on GitHub is answered as queued.
+    let claimed = crate::blocking(&app, move |app| app.store().claim(id).unwrap_or(false))
+        .await
+        .unwrap_or(false);
+    if !claimed {
+        return answer(
+            &app,
+            StatusCode::ACCEPTED,
+            json!({ "id": id, "issue": null }),
+        );
+    }
     let opened = tokio::task::spawn_blocking(move || filer(&github::issue(&fields)))
         .await
         .map_err(|e| e.to_string())
@@ -285,6 +323,7 @@ pub async fn report(State(app): State<Arc<App>>, req: Request) -> Response {
         }
         Err(e) => {
             eprintln!("horizon-telemetry-server: report {id} not opened yet: {e}");
+            let _ = crate::blocking(&app, move |app| app.store().release(id)).await;
             answer(
                 &app,
                 StatusCode::ACCEPTED,

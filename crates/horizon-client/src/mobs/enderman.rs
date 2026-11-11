@@ -275,10 +275,19 @@ pub fn teleport_chance(m: &mut Mob, source: &Damage) {
         m.extra.counter2 = 1;
     }
 }
-/// Enderman.aiStep: never jumps; the teleports a hurt left run.
+/// Enderman.aiStep: never jumps; the teleports a hurt left run; then
+/// `updatePersistentAnger(level, true)`: holding a target names it and keeps
+/// 20 to 39 seconds of anger running, which outlast a lost target (a daylight
+/// teleport, a reload).
 pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     m.ai.jumping = false;
     run_pending_teleports(m, w, events);
+    super::tame::update_persistent_anger(m, w);
+}
+/// `EndermanLookForPlayerGoal.isAngerInducing`: a player staring at it, or one
+/// it is angry at (`NeutralMob.isAngryAt`).
+fn anger_inducing(m: &Mob, w: &MobWorld) -> bool {
+    stared_at(m, w) || super::tame::angry_at_player(m, w)
 }
 /// The teleports `hurtServer` asked for (`teleport()`, or
 /// `repeatedlyTryToTeleport`: up to 64 tries).
@@ -363,7 +372,9 @@ impl Goal for LookForPlayer {
             && !p.creative
             && !p.spectator
             && m.distance_sqr(p.position) <= m.attrs.follow_range.powi(2)
-            && stared_at(m, cx.w);
+            && anger_inducing(m, cx.w)
+            // startAggroTargetConditions is forCombat(): in sight (a stare is).
+            && m.sees(cx.w, Who::Player);
         self.pending
     }
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
@@ -381,17 +392,15 @@ impl Goal for LookForPlayer {
             return false;
         };
         if self.pending {
-            if !stared_at(m, cx.w) {
+            if !anger_inducing(m, cx.w) {
                 return false;
             }
             m.turn_to(p.eye, 10.0, 10.0);
             return true;
         }
-        p.alive
-            && !p.creative
-            && !p.spectator
-            && m.ai.target == Some(Who::Player)
-            && m.distance_sqr(p.position) <= m.attrs.follow_range.powi(2)
+        // continueAggroTargetConditions: forCombat().ignoreLineOfSight(),
+        // which has no range: the target is kept however far it goes.
+        p.alive && !p.creative && !p.spectator && m.ai.target == Some(Who::Player)
     }
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(p) = cx.w.player.clone() else { return };
@@ -563,6 +572,9 @@ pub fn carried_block_drops(
         .collect()
 }
 
+#[cfg(test)]
+#[path = "enderman_anger_tests.rs"]
+mod anger_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
