@@ -64,6 +64,8 @@ use winit::{event::MouseButton, keyboard::KeyCode};
 mod abilities;
 #[path = "remote_poll.rs"]
 mod poll;
+#[path = "remote_tables.rs"]
+mod tables;
 
 type BuiltinCache = Vec<(std::path::PathBuf, Arc<Builtin>)>;
 static BUILTIN: std::sync::Mutex<BuiltinCache> = std::sync::Mutex::new(Vec::new());
@@ -541,9 +543,8 @@ pub(super) struct Remote {
     pub(super) builtin: Arc<Builtin>,
     lang: Arc<Language>,
     pub(super) registries: Arc<Dynamic>,
-    /// The game's enchantments and the server's that it lacks (a data
-    /// pack's), from their synced data; `None` when the server has none.
-    pub(super) enchantments: Option<Arc<horizon_client::enchant::Enchantments>>,
+    /// The game's tables with what the server's synced data puts over them.
+    pub(super) tables: tables::ServerTables,
     pub(super) joined: bool,
     /// `ServerReconfigScreen` is up since this tick.
     pub(super) reconfiguring: Option<u64>,
@@ -1161,7 +1162,7 @@ impl Game<'_> {
                 .unwrap_or_else(|| "Connecting to the server...".into()),
             lang,
             registries: Arc::new(Dynamic::default()),
-            enchantments: None,
+            tables: Default::default(),
             joined: false,
             reconfiguring: None,
             logged_in: false,
@@ -1391,7 +1392,7 @@ impl Game<'_> {
             status: "Playing Studio Replay".into(),
             lang,
             registries: Arc::new(Dynamic::default()),
-            enchantments: None,
+            tables: Default::default(),
             joined: false,
             reconfiguring: None,
             logged_in: true,
@@ -2261,25 +2262,9 @@ impl Game<'_> {
                     .collect()
             })
             .unwrap_or_default();
-        let entries: Vec<(&str, serde_json::Value)> = registries
-            .registries
-            .get("minecraft:enchantment")
-            .into_iter()
-            .flatten()
-            .filter_map(|(name, data)| {
-                Some((
-                    name.as_str(),
-                    horizon_client::scoreboard::tag_to_json(data.as_ref()?),
-                ))
-            })
-            .collect();
-        let enchantments = self
-            .stations()
-            .enchantments
-            .with_entries(entries.iter().map(|(n, v)| (*n, v)))
-            .map(Arc::new);
+        let tables = self.server_tables(&registries);
         if let Some(r) = self.remote.as_mut() {
-            r.enchantments = enchantments;
+            r.tables = tables;
             let bits = ceil_log2(biomes.len());
             let column = r.chunk_format.layout();
             r.chunk_format =
@@ -5300,6 +5285,7 @@ impl Game<'_> {
                 self.remote_server_data(p.icon.as_deref());
             }
             C::MapItemData(p) => self.remote_map_item_data(&p),
+            C::UpdateTags(p) => self.remote_update_tags(&p),
             // handleTickingState / handleTickingStep: the level's TickRateManager.
             C::TickingState(p) => {
                 self.clock.set_rate(p.rate);

@@ -372,6 +372,7 @@ thread_local! {
     /// inside itself (`LootContext.pushVisitedElement`).
     static NESTED_ROLLS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
+#[derive(Clone)]
 pub struct Items {
     pub items: HashMap<Arc<str>, ItemInfo>,
     /// Default `minecraft:mob_visibility` by item id, with the `equippable`
@@ -396,6 +397,32 @@ pub struct Items {
     /// (`EnchantWithLevelsFunction`, `EnchantRandomlyFunction`), and the
     /// station menus share this copy.
     pub enchantments: Arc<crate::enchant::Enchantments>,
+}
+impl Items {
+    /// This table with a server's block and item tags in place of its own
+    /// (`ClientboundUpdateTagsPacket`): each tag's members in the order sent,
+    /// which is `TagLoader`'s. `None` keeps this table's tags of that kind.
+    pub fn with_tags(
+        &self,
+        block_tags: Option<HashMap<String, Vec<String>>>,
+        item_tags: Option<HashMap<String, Vec<String>>>,
+    ) -> Self {
+        let mut items = self.clone();
+        if let Some(tags) = block_tags {
+            items.block_tags = tags
+                .into_iter()
+                .map(|(name, members)| (name, members.into_iter().collect()))
+                .collect();
+        }
+        if let Some(tags) = item_tags {
+            items.item_tags = tags
+                .iter()
+                .map(|(name, members)| (name.clone(), members.iter().cloned().collect()))
+                .collect();
+            items.item_tag_order = tags;
+        }
+        items
+    }
 }
 /// A `JukeboxSong`.
 #[derive(Clone, Debug)]
