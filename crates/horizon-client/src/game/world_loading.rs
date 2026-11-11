@@ -889,6 +889,11 @@ pub(super) fn make_streaming(
             })?;
         inner.add_mod_signs(res.facts());
         let inner = Arc::new(inner);
+        // The first mob a fresh chunk generates needs the mob data: read it now,
+        // off the server's tick (#13857). The End's chunks generate none.
+        if dim != Dim::End {
+            inner.load_structure_mobs_behind();
+        }
         if dim == Dim::Overworld && structures {
             inner.search_rings_behind();
         }
