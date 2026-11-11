@@ -55,11 +55,11 @@ thread_local! {
     static DEFLATER: RefCell<Option<Compress>> = const { RefCell::new(None) };
 }
 
-/// `body` as one zlib stream at the default level, appended to `out`: the
+/// `body` as one zlib stream at level 2, appended to `out`: the
 /// bytes a new `ZlibEncoder` writes for it, from a reset compressor.
 fn deflate_into(body: &[u8], out: &mut Vec<u8>) -> Result<()> {
     DEFLATER.with_borrow_mut(|deflater| {
-        let z = deflater.get_or_insert_with(|| Compress::new(Compression::default(), true));
+        let z = deflater.get_or_insert_with(|| Compress::new(Compression::new(2), true));
         z.reset();
         let start = z.total_in();
         // ZlibEncoder's calls: the whole input without a flush, then finish.
@@ -201,7 +201,7 @@ mod tests {
     fn fresh_contents(body: &[u8]) -> Vec<u8> {
         let mut v = Vec::new();
         write_varint(&mut v, body.len() as i32);
-        let mut z = ZlibEncoder::new(v, Compression::default());
+        let mut z = ZlibEncoder::new(v, Compression::new(2));
         z.write_all(body).unwrap();
         z.finish().unwrap()
     }

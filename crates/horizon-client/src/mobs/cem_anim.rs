@@ -683,7 +683,7 @@ fn params(m: &Mob, s: &State, frame: &Frame, rule_index: f32, slots: &mut [f32])
                 super::Species::Fox => super::fox::flag(m, super::fox::SITTING),
                 super::Species::Panda => super::panda::is_sitting(m),
                 super::Species::Camel | super::Species::CamelHusk => super::camel::sitting(m),
-                _ => m.extra.sitting,
+                _ => m.extra.sitting_pose,
             }),
             Tamed => flag(m.extra.tame),
             Sprinting => flag(m.extra.sprinting),
@@ -990,7 +990,7 @@ mod tests {
     fn the_flags_come_from_the_synced_mob_fields() {
         let mut m = mob();
         m.ai.aggressive = true;
-        m.extra.sitting = true;
+        m.extra.sitting_pose = true;
         m.extra.tame = true;
         m.extra.sprinting = true;
         m.extra.crouching = true;
