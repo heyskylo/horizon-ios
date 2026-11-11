@@ -258,9 +258,6 @@ pub(super) struct LanHost {
     pub commands: Vec<super::lan_actions::GuestCommand>,
     /// Mods' quiet commands waiting to run a few a tick (game/lan_quiet.rs).
     pub quiet: std::collections::VecDeque<super::lan_quiet::QuietBatch>,
-    /// Connections whose refused quiet commands were logged once already: not again, however many
-    /// they send.
-    pub quiet_refused: std::collections::HashSet<u32>,
     /// Far terrain sampled for Horizon clients (game/lan_far.rs); None when
     /// `horizon-lod-distance` is 0.
     pub far: Option<horizon_client::lod_net::Service>,
@@ -1472,7 +1469,6 @@ impl Game<'_> {
             border_sent: None,
             commands: Vec::new(),
             quiet: std::collections::VecDeque::new(),
-            quiet_refused: Default::default(),
             far,
             native_commands: None,
             native_usages: Vec::new(),
@@ -3768,7 +3764,6 @@ mod tests {
             border_sent: None,
             commands: Default::default(),
             quiet: Default::default(),
-            quiet_refused: Default::default(),
             far: None,
             native_commands: None,
             native_usages: Vec::new(),
