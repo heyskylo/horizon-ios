@@ -323,9 +323,7 @@ impl Game<'_> {
             Dest::Own { file, .. } => file.write_all(chunk).map_err(|e| e.to_string())?,
         }
         if last {
-            std::mem::take(&mut incoming.merger)
-                .finish()
-                .map_err(|e| e.to_string())?;
+            incoming.merger.finish().map_err(|e| e.to_string())?;
             incoming.whole = true;
         }
         self.settle_part()

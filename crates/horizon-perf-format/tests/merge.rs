@@ -278,3 +278,17 @@ fn a_part_holding_another_sides_field_is_refused() {
     }
     assert!(push_all(&written(server_fields())).is_ok());
 }
+
+#[test]
+fn a_part_whose_last_chunk_fails_to_finish_is_still_closed_with_a_stop() {
+    let server_gz = written(server_fields());
+    let mut merger = PartMerger::new();
+    let mut raw = merger.push(&server_gz[..server_gz.len() / 2]).unwrap();
+    assert!(merger.finish().is_err());
+    for field in merger.cut_short(9.5) {
+        raw.extend_from_slice(&inflate(&written(vec![field]))[2..]);
+    }
+    let capture = Capture::decode(raw.as_slice()).unwrap();
+    assert_eq!(capture.stop.len(), 1);
+    assert_eq!(capture.stop[0].reason(), StopReason::Disconnected);
+}

@@ -145,8 +145,8 @@ impl PartMerger {
         Ok(out)
     }
 
-    /// Checks the part was whole: its gzip trailer arrived and no half field is left.
-    pub fn finish(mut self) -> Result<(), MergeError> {
+    /// Checks the part was whole: its gzip trailer arrived and no half field is left. The merger stays, for [`Self::cut_short`] if it was not.
+    pub fn finish(&mut self) -> Result<(), MergeError> {
         let finished = self.gz.try_finish();
         if self.gz.get_ref().over {
             return Err(MergeError::TooLarge);
