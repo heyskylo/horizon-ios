@@ -7,6 +7,9 @@ pub mod boot_paint;
 pub mod heap_census;
 pub mod jobs;
 pub mod process_memory;
+/// Alt+Space and a bare Alt never open the window's system menu, as in GLFW.
+#[cfg(target_os = "windows")]
+pub mod system_menu;
 
 use std::sync::{
     OnceLock,

@@ -119,6 +119,10 @@ impl Loading {
             }
         };
         horizon_client::window::settle_created_fullscreen(&window, fullscreen);
+        #[cfg(target_os = "windows")]
+        if let Some(hwnd) = hwnd(&window) {
+            horizon_threads::system_menu::suppress(hwnd);
+        }
         drop(window_step);
         horizon_client::telemetry::note_display(&window);
         // The renderer takes seconds to build and winit's window sits white
