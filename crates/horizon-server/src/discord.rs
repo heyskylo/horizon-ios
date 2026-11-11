@@ -382,6 +382,8 @@ fn retry_after(response: ureq::Response) -> Duration {
 fn secs(value: Option<&str>) -> Duration {
     let s = value
         .and_then(|v| v.trim().parse::<f64>().ok())
+        // "NaN" parses, stays NaN through clamp, and from_secs_f64 panics on it.
+        .filter(|s| s.is_finite())
         .unwrap_or(2.0);
     Duration::from_secs_f64(s.clamp(0.0, 60.0))
 }
@@ -511,6 +513,13 @@ fn render(lines: &[Line], font: &FontRef, glyphs: &mut HashMap<char, Glyph>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_nan_rate_limit_waits_the_default() {
+        assert_eq!(secs(Some("NaN")), Duration::from_secs(2));
+        assert_eq!(secs(Some("inf")), Duration::from_secs(2));
+        assert_eq!(secs(Some("1.5")), Duration::from_secs_f64(1.5));
+    }
 
     #[test]
     fn nothing_posted_can_ping() {

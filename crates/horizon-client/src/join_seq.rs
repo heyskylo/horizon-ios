@@ -165,6 +165,22 @@ impl<T: Joined> JoinList<T> {
             self.push(entity);
         }
     }
+    /// An entity that never left its level keeps its place in
+    /// `EntityTickList`: one a pass took out and puts back (an arrow bouncing
+    /// off) goes back before the first entity that joined after it. One that
+    /// has not joined yet is appended and numbered, as by `push`.
+    pub fn put_back(&mut self, entity: T) {
+        let seq = entity.join_seq();
+        let at = if seq.is_joined() {
+            self.list
+                .iter()
+                .position(|q| q.join_seq() > seq)
+                .unwrap_or(self.list.len())
+        } else {
+            self.list.len()
+        };
+        self.insert(at, entity);
+    }
 }
 
 impl<'a, T> IntoIterator for &'a JoinList<T> {
@@ -192,6 +208,33 @@ impl<T> IntoIterator for JoinList<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug)]
+    struct E {
+        join: JoinSeq,
+    }
+    crate::impl_joined!(E);
+
+    /// A numbered entity put back lands by its join number; a new one goes last.
+    #[test]
+    fn put_back_keeps_the_join_order() {
+        let mut list = JoinList::default();
+        for _ in 0..3 {
+            list.push(E {
+                join: JoinSeq::UNJOINED,
+            });
+        }
+        let first = list.remove(0);
+        let first_seq = first.join;
+        list.put_back(first);
+        assert_eq!(list[0].join, first_seq, "back before the later joins");
+        list.put_back(E {
+            join: JoinSeq::UNJOINED,
+        });
+        let seqs: Vec<_> = list.iter().map(|e| e.join).collect();
+        assert!(seqs.windows(2).all(|w| w[0] < w[1]), "{seqs:?}");
+        assert_eq!(seqs.len(), 4);
+    }
 
     /// Whatever can change a list changes its stamp; only reading leaves it.
     #[test]

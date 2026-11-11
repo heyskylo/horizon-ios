@@ -3,7 +3,7 @@
 //! Every question has a flag, so it also runs unattended (Docker, scripts).
 
 use crate::{config, config::Config, engine};
-use horizon_server_files::{
+use horizon_platform::server_files::{
     eula,
     java_properties::now_millis,
     user_lists::{OpEntry, OpList, WhiteEntry, WhiteList},
@@ -246,7 +246,10 @@ fn add_players(
 ) -> Result<(), String> {
     if !players.is_empty() {
         let mut white = WhiteList::new(dir.join("whitelist.json"));
-        let _ = white.load();
+        // A list it can't read would be replaced by only these players: stop instead.
+        white.load().map_err(|e| {
+            format!("whitelist.json: {e}; fix it or move it away, then run init again")
+        })?;
         for name in players {
             white.add(WhiteEntry {
                 user: crate::lists::account(name, online)?,
@@ -256,7 +259,8 @@ fn add_players(
     }
     if let Some(name) = op {
         let mut ops = OpList::new(dir.join("ops.json"));
-        let _ = ops.load();
+        ops.load()
+            .map_err(|e| format!("ops.json: {e}; fix it or move it away, then run init again"))?;
         ops.add(OpEntry {
             user: crate::lists::account(name, online)?,
             level: 4,
@@ -270,6 +274,22 @@ fn add_players(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_whitelist_init_cannot_read_is_left_alone() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-server-init-list-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let theirs = "[{\"uuid\": \"x\", \"name\": \"Kim\",}]";
+        std::fs::write(dir.join("whitelist.json"), theirs).unwrap();
+        assert!(add_players(&dir, &["Alex".into()], None, false).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("whitelist.json")).unwrap(),
+            theirs
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn unattended_init_writes_everything() {

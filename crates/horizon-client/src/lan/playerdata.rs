@@ -53,6 +53,27 @@ pub fn exists(world: &Path, uuid: u128) -> bool {
     path(world, uuid).is_file()
 }
 
+/// The key `ServerPlayer.addAdditionalSaveData` stores the `WardenSpawnTracker` under.
+pub const WARDEN_TRACKER_KEY: &str = "warden_spawn_tracker";
+
+/// Put a player's `warden_spawn_tracker` into the compound `store` writes from
+/// (`guest.saved`), so a save keeps it rather than the older one loaded with
+/// the file (the LAN owner's tracker lives in `Game`, `save_warden_tracker`).
+/// Other saved keys are left as they are; no tracker (not loaded yet) changes
+/// nothing.
+pub fn with_warden(guest: &mut Guest, tracker: Option<Tag>) -> &mut Guest {
+    let Some(tracker) = tracker else {
+        return guest;
+    };
+    let saved = guest
+        .saved
+        .get_or_insert_with(|| Tag::Compound(Default::default()));
+    if let Tag::Compound(map) = saved {
+        map.insert(WARDEN_TRACKER_KEY.into(), tracker);
+    }
+    guest
+}
+
 /// `PlayerDataStorage.load`: a guest's saved state, if they have been here
 /// before. The player's file, else its `.dat_old` (what a save cut off
 /// between its two renames leaves, `write_dat`).
@@ -263,7 +284,8 @@ pub fn apply(guest: &mut Guest, level: &Level) {
     // Entity.load: a component of Motion over 10 blocks a tick reads as 0.
     let motion = level.motion.map(|v| if v.abs() > 10.0 { 0.0 } else { v });
     guest.loaded_body = Some(SavedBody {
-        fire_ticks: short("Fire", -20),
+        // Entity.load: `getShortOr("Fire", 0)` narrows; Air and TicksFrozen are ints.
+        fire_ticks: i32::from(short("Fire", -20) as i16),
         air: short("Air", 300),
         fall_distance: level.fall_distance,
         velocity: motion,
@@ -649,6 +671,42 @@ mod tests {
             [0.0, 64.0, 0.0],
             8,
         )
+    }
+
+    /// #9965: the owner's warden warning level and cooldown reach the file on
+    /// a save, instead of the ones the file was loaded with.
+    #[test]
+    fn a_stored_warden_tracker_replaces_the_loaded_one() {
+        let mut g = guest();
+        g.saved = Some(Tag::compound(vec![
+            (
+                "warden_spawn_tracker",
+                Tag::compound(vec![
+                    ("warning_level", Tag::Int(2)),
+                    ("cooldown_ticks", Tag::Int(77)),
+                    ("ticks_since_last_warning", Tag::Int(5)),
+                ]),
+            ),
+            ("unrelated_key", Tag::Int(9)),
+        ]));
+        let tracker = crate::sculk::WardenSpawnTracker {
+            ticks_since_last_warning: 0,
+            warning_level: 3,
+            cooldown_ticks: 200,
+        };
+        with_warden(&mut g, Some(tracker.to_nbt()));
+        let (tag, _) = round_trip(&g);
+        let mut back = guest();
+        let mut level = Level::default();
+        level.read_player(&tag);
+        level.player_extra = Some(tag);
+        apply(&mut back, &level);
+        let saved = back.saved.as_ref().unwrap();
+        let read =
+            crate::sculk::WardenSpawnTracker::from_nbt(saved.get("warden_spawn_tracker").unwrap());
+        assert_eq!((read.warning_level, read.cooldown_ticks), (3, 200));
+        assert_eq!(read.ticks_since_last_warning, 0);
+        assert!(matches!(saved.get("unrelated_key"), Some(Tag::Int(9))));
     }
 
     #[test]
@@ -1151,6 +1209,21 @@ mod tests {
             back.loaded_body.expect("a body").velocity,
             [0.25, -0.0784, 0.0]
         );
+    }
+
+    /// `Entity.load` reads a player's `Fire` with `getShortOr` too: an int
+    /// 40000 in the player file is -25536, not half an hour of burning.
+    #[test]
+    fn a_players_saved_fire_is_narrowed_to_a_short() {
+        for (saved, expected) in [(Tag::Int(40000), -25536), (Tag::Short(60), 60)] {
+            let level = Level {
+                player_extra: Some(Tag::compound([("Fire", saved)])),
+                ..Level::default()
+            };
+            let mut g = guest();
+            apply(&mut g, &level);
+            assert_eq!(g.loaded_body.expect("a body").fire_ticks, expected);
+        }
     }
 
     #[test]
