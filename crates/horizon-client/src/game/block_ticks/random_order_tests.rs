@@ -2,8 +2,8 @@
 //! not follow the order they finished loading in, or the level random's draws
 //! land on other blocks from one run of a world to the next (#15164).
 
-use super::Game;
-use super::native_machines::tests::server_game;
+use super::super::Game;
+use super::super::native_machines::tests::server_game;
 use horizon_client::chunk::Chunk;
 use horizon_core::geometry::Vec3;
 use std::sync::Arc;
