@@ -21,7 +21,7 @@ Turtle.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_t
 Turtle.checkTurtleSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	S::Turtle arm: below sea+4, sand, bright
 Turtle.createAttributes	skip:data		attribute values come from data tables (attr lookups in mobs.rs)
 Turtle.getAmbientSound	port	crates/horizon-client/src/mobs/ai.rs::turtle_ambient_silent	silent in water, in the air and as a baby
-Turtle.playStepSound	port	crates/horizon-client/src/mobs/ai.rs::step_sound	shamble and shamble_baby at 0.15 volume
+Turtle.playStepSound	port	crates/horizon-client/src/mobs/ai/step.rs::step_sound	shamble and shamble_baby at 0.15 volume
 Turtle.travelInWater	port	crates/horizon-client/src/mobs/turtle.rs::travel	ticked in #3512; `Turtle.travelInWater` is cited at crates/horizon-client/src/mobs/turtle.rs:152
 Turtle.TurtleLayEggGoal.isValidTarget	port	crates/horizon-client/src/mobs/turtle.rs::LayEgg::valid	air above and sand below
 Wolf.registerGoals	port	crates/horizon-client/src/mobs/tame.rs::register	
@@ -140,3 +140,4 @@ HangingEntity.recalculateBoundingBox	skip:other		bounds are derived on demand fr
 HangingEntity.calculateSupportBox	inline	crates/horizon-client/src/game/paintings.rs::Game::painting_survives	support box moved half a block into the wall
 HangingEntity.canCoexist	port	crates/horizon-client/src/game/paintings.rs::Game::painting_survives	gap: minor: only other paintings are checked for overlap; item frames and the same-facing rule are not
 HangingEntity.hasLevelCollision	port	crates/horizon-client/src/game/paintings.rs::Game::painting_survives	block collision of the box
+WitherBoss.customServerAiStep	port	crates/horizon-client/src/mobs/wither.rs::custom_server_ai_step	side heads pick targets with line of sight

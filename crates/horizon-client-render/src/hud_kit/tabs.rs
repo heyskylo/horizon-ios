@@ -38,6 +38,12 @@
 //! ```
 use crate::hud::{HudAtlas, HudBatch};
 use crate::hud_kit::{colour, fit};
+use crate::menu_style::{self, OverlayColours};
+
+/// The overlays' colours (`menu_style`, given at startup).
+fn overlay() -> &'static OverlayColours {
+    &menu_style::get().overlay
+}
 
 /// A pip under the strip: its size and the step from one to the next, in GUI px.
 pub const PIP: [f32; 2] = [3.0, 2.0];
@@ -45,8 +51,12 @@ pub const PIP_STEP: f32 = 5.0;
 /// How far, in GUI px, the arrows sit from the name.
 pub const ARROW_GAP: f32 = 4.0;
 /// An arrow with a page that way, and one at an end, with none.
-pub const ARROW: u32 = colour(horizon_theme::BACKDROP_MUTED, 255);
-pub const ARROW_OFF: u32 = colour(horizon_theme::BACKDROP_MUTED, 77);
+pub fn arrow_colour() -> u32 {
+    colour(overlay().backdrop_muted, 255)
+}
+pub fn arrow_off_colour() -> u32 {
+    colour(overlay().backdrop_muted, 77)
+}
 /// The pips (the selected one is white).
 pub const PIP_OFF: u32 = colour(0xFFFFFF, 89);
 pub const PIP_ON: u32 = colour(0xFFFFFF, 255);
@@ -65,9 +75,15 @@ pub const EDGE_FADE: f32 = 12.0;
 pub const FADE: [f32; 5] = [1.0, 0.7, 0.35, 0.15, 0.1];
 /// The selected tab's fill and text, and the others'.
 pub const SELECTED_FILL: u32 = colour(0xFFFFFF, 242);
-pub const SELECTED_TEXT: u32 = colour(horizon_theme::DARK.page, 255);
-pub const TAB_FILL: u32 = colour(horizon_theme::DARK.page, 191);
-pub const TAB_TEXT: u32 = colour(horizon_theme::BACKDROP_MUTED, 255);
+pub fn selected_text() -> u32 {
+    colour(overlay().page, 255)
+}
+pub fn tab_fill() -> u32 {
+    colour(overlay().page, 191)
+}
+pub fn tab_text() -> u32 {
+    colour(overlay().backdrop_muted, 255)
+}
 /// The line of text's height in GUI px (vanilla's font, without its shadow).
 const LINE: f32 = 8.0;
 
@@ -144,7 +160,11 @@ pub fn draw(batch: &mut HudBatch, atlas: &HudAtlas, strip: &Strip) {
             arrow,
             ax,
             ay,
-            if on { ARROW } else { ARROW_OFF },
+            if on {
+                arrow_colour()
+            } else {
+                arrow_off_colour()
+            },
             true,
         );
     }
@@ -282,9 +302,9 @@ pub fn draw_tabs(batch: &mut HudBatch, atlas: &HudAtlas, strip: &TabStrip, alpha
     for tab in &row.tabs {
         let [tx, ty, tw, th] = tab.area;
         let (fill, text) = if tab.selected {
-            (SELECTED_FILL, SELECTED_TEXT)
+            (SELECTED_FILL, selected_text())
         } else {
-            (TAB_FILL, TAB_TEXT)
+            (tab_fill(), tab_text())
         };
         let tab_start = batch.vertices.len();
         // Cut where the edges' fades start, so each fade runs over its own piece.
@@ -380,15 +400,16 @@ mod tests {
             let [ax, _] = strip.arrows[i];
             (batch.vertices.iter())
                 .filter(|v| {
-                    (v.pos[0] - ax).abs() < 4.0 && v.color & 0x00FF_FFFF == ARROW & 0x00FF_FFFF
+                    (v.pos[0] - ax).abs() < 4.0
+                        && v.color & 0x00FF_FFFF == arrow_colour() & 0x00FF_FFFF
                 })
                 .map(|v| v.color >> 24)
                 .max()
                 .unwrap_or(0)
         };
         let first = collapsed(&atlas, &pages, 0, AREA);
-        assert_eq!(alpha(&first, 0), ARROW_OFF >> 24);
-        assert_eq!(alpha(&first, 1), ARROW >> 24);
+        assert_eq!(alpha(&first, 0), arrow_off_colour() >> 24);
+        assert_eq!(alpha(&first, 1), arrow_colour() >> 24);
     }
 
     #[test]

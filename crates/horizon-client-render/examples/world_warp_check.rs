@@ -167,6 +167,7 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
             path: path.clone(),
             size: None,
             scaled: false,
+            background: false,
         });
         // twice: the first frame of a new warp builds it
         renderer.render(&frame).unwrap();
@@ -336,6 +337,7 @@ fn bench(renderer: &mut Renderer, out: &Path) -> Result<(), Box<dyn std::error::
             path: out.join("bench.png"),
             size: None,
             scaled: false,
+            background: false,
         });
         renderer.render(&frame).unwrap();
         renderer.render(&frame).unwrap();

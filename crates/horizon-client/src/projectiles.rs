@@ -314,6 +314,12 @@ pub trait ProjectileWorld {
     /// `Entity.isInWater` as `updateFluidInteraction` sets it: some water
     /// block's surface reaches the bottom of the box (deflated by 0.001).
     fn in_water(&self, bounds: Aabb) -> bool;
+    /// `velocity` after the currents of the water and the lava the box
+    /// touches (`EntityFluidInteraction.applyCurrentTo`): a projectile is
+    /// pushed by fluids like any entity (`Entity.isPushedByFluid`).
+    fn pushed_by_currents(&self, _bounds: Aabb, velocity: Vec3) -> Vec3 {
+        velocity
+    }
     fn targets(&self) -> &[(Who, Aabb)];
     /// Server-only mod-block contacts along the completed movement.
     fn block_contacts(&self, _entity: i32, _kind: &str, _from: Vec3, _to: Vec3, _bounds: Aabb) {}
@@ -860,6 +866,22 @@ impl Projectile {
         // aimed along, not from where it was created.
         self.previous_yaw = self.yaw;
         self.previous_pitch = self.pitch;
+    }
+    /// The kinds whose tick turns them with `Projectile.updateRotation`: a
+    /// `ThrowableProjectile` (the thrown kinds and the experience bottle) and
+    /// llama spit.
+    fn turns_with_update_rotation(&self) -> bool {
+        self.is_thrown() || self.kind == ProjectileKind::ExperienceBottle
+    }
+    /// `Projectile.updateRotation`: a fifth of the way (`lerpRotation`) from
+    /// the rotation the tick started with toward the motion's direction.
+    fn turn_towards_movement(&mut self) {
+        use horizon_core::geometry::trig::atan2_degrees;
+        let v = self.velocity;
+        let x_rot = atan2_degrees(v.y, v.horizontal_distance());
+        let y_rot = atan2_degrees(v.x, v.z);
+        self.pitch = crate::arrows::lerp_rotation(self.previous_pitch, x_rot);
+        self.yaw = crate::arrows::lerp_rotation(self.previous_yaw, y_rot);
     }
     /// `Entity.setOldPosAndRot`: where the renderer interpolates from.
     pub fn set_old_pos_and_rot(&mut self) {
@@ -1426,6 +1448,11 @@ impl Projectile {
                 );
             }
         }
+        // ThrowableProjectile.tick and LlamaSpit.tick turn with this move's
+        // motion, hit or not (a spit's drag and gravity come after).
+        if self.turns_with_update_rotation() {
+            self.turn_towards_movement();
+        }
         let from = self.position;
         let to = Vec3::new(
             from.x + self.velocity.x,
@@ -1519,15 +1546,18 @@ impl Projectile {
                 self.velocity.y * drag - self.get_gravity(),
                 self.velocity.z * drag,
             );
-            self.update_rotation();
             return (self.position.y > -128.0 && self.age < 6000, spit_hit);
         }
         self.position = to;
-        if !self.is_fireball() {
+        // Wind charges still face their motion at once; vanilla turns every
+        // `AbstractHurtingProjectile` gradually (#14466).
+        if !self.is_fireball() && !self.turns_with_update_rotation() {
             self.update_rotation();
         }
-        // Entity.baseTick's updateFluidInteraction, after the move.
+        // Entity.baseTick's updateFluidInteraction, after the move: the fluids
+        // it touches now, and their currents push it.
         self.touching_water = w.in_water(self.bounds());
+        self.velocity = w.pushed_by_currents(self.bounds(), self.velocity);
         let alive =
             self.position.y > -128.0 && self.age < if self.is_fireball() { 1200 } else { 6000 };
         (alive, Hit::None)

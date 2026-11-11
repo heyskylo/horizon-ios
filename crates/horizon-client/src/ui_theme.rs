@@ -1,6 +1,6 @@
-//! The design system's widgets drawn in the game (`crates/horizon-theme`:
-//! palette, type scale, radii, control sizes, motion and the bundled fonts;
-//! `docs/design-system.md`). Every menu is vanilla's (`ui`); what is left
+//! The design system's widgets drawn in the game: palette, type scale, radii,
+//! control sizes and fonts from `menu_style`, given at startup (in the official
+//! game `crates/horizon-theme`, `docs/design-system.md`). Every menu is vanilla's (`ui`); what is left
 //! here draws Horizon's own overlays that vanilla has no screen for: the
 //! on-screen keyboard a controller types with (`osk`), plus the
 //! `horizon.txt` preferences.
@@ -39,44 +39,76 @@ pub(crate) fn set_preference(dir: &Path, key: &str, value: Option<&str>) {
     let _ = std::fs::write(dir.join("horizon.txt"), out);
 }
 
-/// The dark palette (`horizon_theme::DARK`) in the HUD's colour encoding, plus the
+/// The overlays' palette (`menu_style`) in the HUD's colour encoding, plus the
 /// translucent plates the overlays draw over the game.
 pub(crate) mod color {
-    use horizon_theme::DARK as P;
-    pub const fn hex(c: u32, a: u8) -> u32 {
-        (a as u32) << 24 | (c & 0xff) << 16 | (c >> 8 & 0xff) << 8 | (c >> 16 & 0xff)
+    use horizon_client_render::menu_style::{self, OverlayColours};
+    pub use menu_style::hud_colour as hex;
+    fn p() -> &'static OverlayColours {
+        &menu_style::get().overlay
     }
     /// The page, under every veil.
-    pub const BG: u32 = hex(P.page, 255);
+    pub fn bg() -> u32 {
+        hex(p().page, 255)
+    }
     /// Hover plates, secondary buttons, fields, the segmented track: the
     /// dark palette's soft plate, as ink over the veil so the plates read the
     /// same over any backdrop (over the page colour they are `plate_soft`).
-    pub const RAISED: u32 = hex(P.ink, 20);
+    pub fn raised() -> u32 {
+        hex(p().ink, 20)
+    }
     /// Pressed plates and a switch that is off (`plate`, the same way).
-    pub const HOVER: u32 = hex(P.ink, 36);
+    pub fn hover() -> u32 {
+        hex(p().ink, 36)
+    }
     /// One-pixel rules between rows, slider tracks.
-    pub const BORDER: u32 = hex(P.rule, 255);
+    pub fn border() -> u32 {
+        hex(p().rule, 255)
+    }
     /// Text and selection (`ink`).
-    pub const TEXT: u32 = hex(P.ink, 255);
+    pub fn text() -> u32 {
+        hex(p().ink, 255)
+    }
     /// Values and secondary text (`ink_soft`).
-    pub const MUTED: u32 = hex(P.ink_soft, 255);
-    pub const ACCENT: u32 = hex(P.accent, 255);
-    pub const ON_ACCENT: u32 = hex(P.on_accent, 255);
+    pub fn muted() -> u32 {
+        hex(p().ink_soft, 255)
+    }
+    pub fn accent() -> u32 {
+        hex(p().accent, 255)
+    }
+    pub fn on_accent() -> u32 {
+        hex(p().on_accent, 255)
+    }
     pub(crate) fn with_alpha(c: u32, a: f32) -> u32 {
         let base = (c >> 24) as f32;
         (c & 0x00ff_ffff) | ((base * a.clamp(0.0, 1.0)).round() as u32) << 24
     }
 }
 
-/// The launcher's type scale and shapes (`horizon_theme`), in dp.
-pub(crate) const SMALL: f32 = horizon_theme::CAPTION.px;
-pub(crate) const BODY: f32 = horizon_theme::LABEL.px;
-/// The boot screen's wordmark (`DISPLAY`) and console lines (`MICRO`).
-pub(crate) const DISPLAY: f32 = horizon_theme::DISPLAY.px;
-pub(crate) const MICRO: f32 = horizon_theme::MICRO.px;
-/// Fields; plates (hover rows, selection); pills (buttons, segments).
-pub(crate) const RADIUS: f32 = horizon_theme::RADIUS;
-pub(crate) const RADIUS_PLATE: f32 = horizon_theme::RADIUS_PLATE;
+/// The type scale and shapes (`menu_style`), in dp.
+pub(crate) fn sizes() -> &'static horizon_client_render::menu_style::Sizes {
+    &horizon_client_render::menu_style::get().sizes
+}
+pub(crate) fn small() -> f32 {
+    sizes().caption
+}
+pub(crate) fn body() -> f32 {
+    sizes().label
+}
+/// The boot screen's wordmark (`display`) and console lines (`micro`).
+fn display() -> f32 {
+    sizes().display
+}
+fn micro() -> f32 {
+    sizes().micro
+}
+/// Fields; plates (hover rows, selection).
+pub(crate) fn radius() -> f32 {
+    sizes().radius
+}
+pub(crate) fn radius_plate() -> f32 {
+    sizes().radius_plate
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Face {
@@ -87,20 +119,34 @@ pub(crate) enum Face {
     /// Counts, timestamps and the boot screen's console lines.
     Mono,
 }
+#[cfg(not(test))]
+const TEST_FONTS: Option<horizon_client_render::menu_style::Fonts> = None;
+#[cfg(test)]
+const TEST_FONTS: Option<horizon_client_render::menu_style::Fonts> =
+    Some(horizon_client_render::menu_style::Fonts {
+        regular: horizon_theme::fonts::GEIST_REGULAR,
+        medium: horizon_theme::fonts::GEIST_MEDIUM,
+        semibold: horizon_theme::fonts::GEIST_SEMIBOLD,
+        mono: horizon_theme::fonts::GEIST_MONO,
+    });
 struct Fonts {
     faces: [FontRef<'static>; 4],
 }
 impl Fonts {
-    fn load() -> Self {
-        let f = |b: &'static [u8]| FontRef::try_from_slice(b).expect("bundled font");
-        Self {
+    /// The faces given in `menu_style`; none given, none (unit tests take the design system's).
+    fn load() -> Option<Self> {
+        let given = horizon_client_render::menu_style::get()
+            .fonts
+            .or(TEST_FONTS)?;
+        let f = |b: &'static [u8]| FontRef::try_from_slice(b).expect("given font");
+        Some(Self {
             faces: [
-                f(horizon_theme::fonts::GEIST_REGULAR),
-                f(horizon_theme::fonts::GEIST_MEDIUM),
-                f(horizon_theme::fonts::GEIST_SEMIBOLD),
-                f(horizon_theme::fonts::GEIST_MONO),
+                f(given.regular),
+                f(given.medium),
+                f(given.semibold),
+                f(given.mono),
             ],
-        }
+        })
     }
     fn face(&self, f: Face) -> &FontRef<'static> {
         &self.faces[f as usize]
@@ -142,7 +188,8 @@ struct Cached {
 }
 /// Glyphs and corner masks rasterized into the atlas region `horizon/ui-text`.
 struct Cache {
-    fonts: Fonts,
+    /// None: no fonts were given, and text draws nothing.
+    fonts: Option<Fonts>,
     entries: HashMap<Key, Cached>,
     shelf: (u32, u32, u32),
     pending: Vec<crate::font::Patch>,
@@ -230,9 +277,16 @@ impl Cache {
         if let Some(c) = self.entries.get(&key) {
             return *c;
         }
-        let scale = self.fonts.scale(face, f32::from(size) / 4.0);
+        let Some(fonts) = &self.fonts else {
+            return Cached {
+                rect: None,
+                left: 0.0,
+                top: 0.0,
+            };
+        };
+        let scale = fonts.scale(face, f32::from(size) / 4.0);
         let glyph = id.with_scale_and_position(scale, ab_glyph::point(0.0, 0.0));
-        let made = match self.fonts.face(face).outline_glyph(glyph) {
+        let made = match fonts.face(face).outline_glyph(glyph) {
             Some(outline) => {
                 let b = outline.px_bounds();
                 let (w, h) = (b.width() as u32, b.height() as u32);
@@ -459,14 +513,17 @@ impl<'a> Ui<'a> {
         let atlas = self.atlas;
         let gui = self.scale;
         with_cache(atlas, |c| {
-            let scale = c.fonts.scale(face, px);
+            let Some(fonts) = &c.fonts else {
+                return (0.0, 0.0, 0.0, Vec::new());
+            };
+            let scale = fonts.scale(face, px);
             let (ascent, descent) = {
-                let f = c.fonts.face(face).as_scaled(scale);
+                let f = fonts.face(face).as_scaled(scale);
                 (f.ascent(), f.descent())
             };
             let chars: Vec<(char, Option<crate::font::Glyph>)> = unformatted(text)
                 .map(|ch| {
-                    let pack = (!ch.is_whitespace() && c.fonts.face(face).glyph_id(ch).0 == 0)
+                    let pack = (!ch.is_whitespace() && fonts.face(face).glyph_id(ch).0 == 0)
                         .then(|| atlas.font.glyph(ch))
                         // The pack lacks it too (its missing glyph): Geist's box, like vanilla's.
                         .filter(|g| g.rect.is_some() || g.right <= 0.0);
@@ -491,7 +548,10 @@ impl<'a> Ui<'a> {
                     continue;
                 }
                 let (id, advance, kern) = {
-                    let font = c.fonts.face(face);
+                    let Some(fonts) = &c.fonts else {
+                        break;
+                    };
+                    let font = fonts.face(face);
                     let id = font.glyph_id(ch);
                     let f = font.as_scaled(scale);
                     (id, f.h_advance(id), prev.map_or(0.0, |p| f.kern(p, id)))
@@ -606,8 +666,8 @@ pub fn draw_boot(atlas: &HudAtlas, batch: &mut HudBatch, logs: &[String]) {
 /// The wordmark with its tagline, centred.
 fn wordmark(atlas: &HudAtlas, batch: &mut HudBatch) {
     let mut ui = Ui::new(atlas, batch, (0.0, 0.0));
-    let size = (ui.w / 16.0).clamp(DISPLAY, 96.0);
-    let small = (size * 0.25).clamp(MICRO, 18.0);
+    let size = (ui.w / 16.0).clamp(display(), 96.0);
+    let small = (size * 0.25).clamp(micro(), 18.0);
     let block = size * 1.45 + small * 0.6 + small * 1.5;
     let top = (ui.h - block) / 2.0;
     ui.text_centered(Face::SemiBold, size, ui.w / 2.0, top, BOOT_TEXT, "Horizon");
@@ -629,7 +689,7 @@ pub fn draw_boot_log(atlas: &HudAtlas, batch: &mut HudBatch, logs: &[String]) {
         return;
     }
     let mut ui = Ui::new(atlas, batch, (0.0, 0.0));
-    let (size, line, pad) = (MICRO, MICRO * 1.5, 16.0);
+    let (size, line, pad) = (micro(), micro() * 1.5, 16.0);
     let max_w = ui.w / 2.0;
     let max_rows = (((ui.h - pad) / line) as usize).clamp(1, 24);
     let mut y = ui.h - pad - line;
@@ -696,7 +756,12 @@ mod tests {
         let atlas = HudAtlas::build(Path::new("/nonexistent/horizon-test-assets")).unwrap();
         reset_atlas();
         let draw = |cache: &mut Cache| {
-            let glyph = cache.fonts.face(Face::Regular).glyph_id('A');
+            let glyph = cache
+                .fonts
+                .as_ref()
+                .unwrap()
+                .face(Face::Regular)
+                .glyph_id('A');
             assert!(
                 cache
                     .glyph(&atlas, Face::Regular, glyph, 16.0)
@@ -782,7 +847,7 @@ mod tests {
         let lines = wrapping_lines(
             &ui,
             Face::Mono,
-            MICRO,
+            micro(),
             "the quick brown fox jumps over the lazy dog",
             90.0,
         );
@@ -790,7 +855,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .all(|l| ui.measure(Face::Mono, MICRO, l) <= 90.0),
+                .all(|l| ui.measure(Face::Mono, micro(), l) <= 90.0),
             "every wrapped line fits"
         );
         assert_eq!(
@@ -812,7 +877,7 @@ mod tests {
     fn drawn(atlas: &HudAtlas, text: &str) -> (f32, Vec<([f32; 2], [f32; 2])>) {
         let mut batch = HudBatch::new([1280, 720]);
         let mut ui = Ui::new(atlas, &mut batch, (0.0, 0.0));
-        let w = ui.text_line(Face::Medium, BODY, 20.0, 10.0, 10.0, color::TEXT, text);
+        let w = ui.text_line(Face::Medium, body(), 20.0, 10.0, 10.0, color::text(), text);
         let quads = batch
             .vertices
             .iter()
