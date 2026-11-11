@@ -93,7 +93,7 @@ impl Seat {
     /// trails and auras stay hidden with "Hide other players' trails and auras".
     pub(super) fn fx(&mut self, m: &PlayerModel, item: &Arc<Item>, draw: &mut dyn PlayerDraw) {
         let own = m.kind == Kind::Own;
-        if !own && item.slot.is_effect() && self.said.hide_fx {
+        if !own && item.slot.is_effect() && self.settings.hide_fx {
             return;
         }
         // Past `FAR` a companion, trail or aura is a few pixels across for the cost of a model:

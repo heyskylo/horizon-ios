@@ -22,6 +22,6 @@ struct Stars {
     if HDR_WRITE_LIGHT && stars.hdr_light.w != 0.0 {
         return vec4(hdr_written(stars.color.rgb * b, 0.175, stars.hdr_settings, stars.hdr_shares), b);
     }
-    if HDR_WRITE_LIGHT { return vec4(stars.color.rgb * b, b); }
+    if HDR_WRITE_LIGHT { return vec4(frame_stored(stars.color).rgb * b, b); }
     return vec4(stars.color.rgb * b, 0.175);
 }

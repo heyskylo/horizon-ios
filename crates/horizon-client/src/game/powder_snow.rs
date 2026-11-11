@@ -35,11 +35,11 @@ impl Game<'_> {
         self.extinguish_sound([at.x, at.y, at.z]);
     }
     /// `PowderSnowBlock.entityInside` (runBefore EXTINGUISH) for a burning
-    /// player: `Level.destroyBlock(pos, false)`. A client of a remote server
-    /// leaves it to the server.
+    /// player: `Level.destroyBlock(pos, false)`, which needs `mayInteract`.
+    /// A client of a remote server leaves it to the server.
     pub(super) fn powder_snow_melt(&mut self, pos: BlockPos) {
         let at = [pos.x, pos.y, pos.z];
-        if self.remote.is_some() || !self.is_powder_snow(at) {
+        if self.remote.is_some() || !self.is_powder_snow(at) || !self.may_interact_at(pos) {
             return;
         }
         self.with_level(|b, level, ticks| b.destroy_block(level, ticks, pos, false));

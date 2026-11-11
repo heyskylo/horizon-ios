@@ -74,3 +74,8 @@ mod tests {
         assert_eq!(station.rename.value, "Diamond Sword");
     }
 }
+
+// The previews in a server session read the server's enchantments (#8688).
+#[cfg(test)]
+#[path = "remote_anvil_tests.rs"]
+mod remote_anvil_tests;

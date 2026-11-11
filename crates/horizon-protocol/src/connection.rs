@@ -314,6 +314,19 @@ impl Connection {
     /// start, alongside those still trying, and the first to connect wins: a dead address
     /// in a round-robin set costs 250 ms instead of the whole timeout.
     fn connect_addresses(host: &str, addrs: Vec<SocketAddr>, timeout: Duration) -> Result<Self> {
+        Self::connect_addresses_with(host, addrs, timeout, |addr, timeout| {
+            TcpStream::connect_timeout(&addr, timeout)
+        })
+    }
+    fn connect_addresses_with<F>(
+        host: &str,
+        addrs: Vec<SocketAddr>,
+        timeout: Duration,
+        connect: F,
+    ) -> Result<Self>
+    where
+        F: Fn(SocketAddr, Duration) -> std::io::Result<TcpStream> + Clone + Send + 'static,
+    {
         let addrs = ipv4_first(addrs);
         let (send, recv) = std::sync::mpsc::channel();
         let mut errors: Vec<Option<std::io::Error>> = addrs.iter().map(|_| None).collect();
@@ -321,10 +334,11 @@ impl Connection {
         loop {
             if let Some(&addr) = addrs.get(started) {
                 let (send, index) = (send.clone(), started);
+                let connect = connect.clone();
                 let spawned = std::thread::Builder::new()
                     .name("horizon-connect".into())
                     .spawn(move || {
-                        let _ = send.send((index, TcpStream::connect_timeout(&addr, timeout)));
+                        let _ = send.send((index, connect(addr, timeout)));
                     });
                 match spawned {
                     Ok(_) => pending += 1,
@@ -524,24 +538,26 @@ impl ConnReader {
     /// (`WouldBlock` when nothing waits).
     pub fn read_from(&mut self, source: &mut impl Read) -> std::io::Result<usize> {
         let wanted = match self.next_header() {
-            Ok(Some(wanted)) => wanted,
+            Ok(Some((prefix, len))) => prefix + len,
             _ => 0,
         };
         self.fill_from(source, wanted)
     }
-    /// The bytes the next frame needs, once its length prefix is whole.
-    fn next_header(&self) -> Result<Option<usize>> {
-        Ok(frame::header(&self.buffer[self.start..self.end])?.map(|(prefix, len)| prefix + len))
+    /// The completed next frame header: (length-prefix bytes, payload bytes).
+    fn next_header(&self) -> Result<Option<(usize, usize)>> {
+        frame::header(&self.buffer[self.start..self.end])
     }
     /// Take the next frame off the buffer, if it is whole.
     fn next(&mut self) -> Result<Next> {
-        let Some(wanted) = self.next_header()? else {
+        // Read the VarInt21 length once; the same prefix is used to locate
+        // the payload and to determine whether the full frame is available.
+        let Some((prefix, len)) = self.next_header()? else {
             return Ok(Next::Partial(0));
         };
+        let wanted = prefix + len;
         if self.end - self.start < wanted {
             return Ok(Next::Partial(wanted));
         }
-        let (prefix, _) = frame::header(&self.buffer[self.start..self.end])?.expect("whole");
         let frame = self.start + prefix..self.start + wanted;
         self.start = frame.end;
         Ok(match self.packet(frame)? {
@@ -785,16 +801,36 @@ mod tests {
 
     #[test]
     fn a_dead_address_does_not_hold_up_the_next() {
-        // TEST-NET-1 never answers (or is unreachable at once).
-        let dead: SocketAddr = "192.0.2.1:25565".parse().unwrap();
+        // A controlled pending dial cannot be intercepted by a VPN or proxy.
+        let held_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let dead = held_listener.local_addr().unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let live = listener.local_addr().unwrap();
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let wait = Arc::new(Mutex::new(wait));
+        let pending = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let entered = pending.clone();
         let start = Instant::now();
-        let c = Connection::connect_addresses("test", vec![dead, live], Duration::from_secs(10))
-            .unwrap();
+        let c = Connection::connect_addresses_with(
+            "test",
+            vec![dead, live],
+            Duration::from_secs(10),
+            move |addr, timeout| {
+                if addr == dead {
+                    entered.store(true, Ordering::SeqCst);
+                    let _ = wait.lock().unwrap().recv_timeout(Duration::from_secs(5));
+                    Err(std::io::ErrorKind::TimedOut.into())
+                } else {
+                    TcpStream::connect_timeout(&addr, timeout)
+                }
+            },
+        )
+        .unwrap();
+        drop(release);
+        assert!(pending.load(Ordering::SeqCst));
         assert_eq!(peer(&c), live);
         assert!(
-            start.elapsed() < Duration::from_secs(5),
+            start.elapsed() >= ATTEMPT_DELAY && start.elapsed() < Duration::from_secs(5),
             "{:?}",
             start.elapsed()
         );
@@ -865,6 +901,119 @@ mod tests {
         let (id, payload) = c.recv().unwrap();
         assert_eq!((id, payload.as_slice()), (9, &b"reply"[..]));
         server.join().unwrap();
+    }
+
+    #[test]
+    fn fragmented_plain_frame_header_and_following_packet() {
+        let (pipe, _peer) = Pipe::pair();
+        let mut connection = Connection::local(pipe);
+        let payload: Vec<u8> = (0..300).map(|i| i as u8).collect();
+        let mut body = vec![0xac, 0x02]; // Packet id 300, two-byte VarInt.
+        body.extend_from_slice(&payload);
+        let mut framed = frame::encode(&body, None).unwrap();
+        framed.extend(frame::encode(&[7, 9, 8], None).unwrap());
+
+        for chunk in [&framed[..1], &framed[1..2]] {
+            let mut input = chunk;
+            assert_eq!(
+                connection.reader.read_from(&mut input).unwrap(),
+                chunk.len()
+            );
+            assert!(connection.reader.buffered().unwrap().is_none());
+        }
+        assert_eq!(
+            connection.reader.next_header().unwrap(),
+            Some((2, body.len()))
+        );
+        let mut remaining = &framed[2..];
+        assert_eq!(
+            connection.reader.read_from(&mut remaining).unwrap(),
+            framed.len() - 2
+        );
+        assert_eq!(connection.reader.buffered().unwrap(), Some((300, payload)));
+        assert_eq!(connection.reader.buffered().unwrap(), Some((7, vec![9, 8])));
+        assert!(connection.reader.buffered().unwrap().is_none());
+        assert_eq!(
+            connection.reader.counters.received.load(Ordering::Relaxed),
+            2
+        );
+    }
+
+    #[test]
+    fn malformed_frame_headers_preserve_read_and_error_behaviour() {
+        for (header, message) in [
+            (&[0_u8][..], "Frame length cannot be zero"),
+            (&[0x80_u8, 0x80, 0x80][..], "length wider than 21 bits"),
+        ] {
+            let (pipe, _peer) = Pipe::pair();
+            let mut connection = Connection::local(pipe);
+            let mut input = header;
+            assert_eq!(
+                connection.reader.read_from(&mut input).unwrap(),
+                header.len()
+            );
+            assert!(input.is_empty());
+            assert_eq!(
+                connection.reader.next_header().unwrap_err().to_string(),
+                message
+            );
+
+            // A malformed buffered header must not make read_from stop reading.
+            let mut more = &[1_u8][..];
+            assert_eq!(connection.reader.read_from(&mut more).unwrap(), 1);
+            assert!(more.is_empty());
+            assert_eq!(
+                connection.reader.buffered().unwrap_err().to_string(),
+                message
+            );
+        }
+    }
+
+    /// In-memory decoding only; not a network or whole-server benchmark.
+    /// Run with cargo test --release -p horizon-protocol --lib
+    /// packet_decoder_in_memory_microbenchmark -- --ignored --nocapture
+    #[test]
+    #[ignore = "manual release-mode microbenchmark"]
+    fn packet_decoder_in_memory_microbenchmark() {
+        use std::hint::black_box;
+        const RUNS: usize = 4;
+        const SAMPLES_PER_RUN: usize = 15;
+        const PACKETS_PER_SAMPLE: usize = 10_000;
+
+        for payload_len in [0, 48, 1024, 65_536] {
+            let mut body = vec![0_u8]; // Packet id 0.
+            body.extend(vec![0x2a; payload_len]);
+            let frame = frame::encode(&body, None).unwrap();
+            let mut run_medians = Vec::with_capacity(RUNS);
+
+            for _ in 0..RUNS {
+                let mut samples = Vec::with_capacity(SAMPLES_PER_RUN);
+                for _ in 0..SAMPLES_PER_RUN {
+                    let (pipe, _peer) = Pipe::pair();
+                    let mut connection = Connection::local(pipe);
+                    let started = Instant::now();
+
+                    for _ in 0..PACKETS_PER_SAMPLE {
+                        let mut input = frame.as_slice();
+                        while !input.is_empty() {
+                            assert!(connection.reader.read_from(&mut input).unwrap() > 0);
+                        }
+                        let (id, decoded) = connection.reader.buffered().unwrap().unwrap();
+                        assert_eq!(id, 0);
+                        assert_eq!(decoded.len(), payload_len);
+                        black_box(decoded);
+                    }
+                    samples.push(started.elapsed().as_secs_f64() * 1e9 / PACKETS_PER_SAMPLE as f64);
+                }
+                samples.sort_by(f64::total_cmp);
+                run_medians.push(samples[SAMPLES_PER_RUN / 2]);
+            }
+            run_medians.sort_by(f64::total_cmp);
+            let median = (run_medians[1] + run_medians[2]) / 2.0;
+            println!(
+                "payload={payload_len} bytes: {median:.2} ns/packet (4 runs, 15 samples/run, 10000 packets/sample)"
+            );
+        }
     }
 
     #[test]

@@ -868,6 +868,20 @@ impl Game<'_> {
             b.lectern_update_below(level, ticks, p, state);
         });
     }
+    /// `LecternBlock.resetBookState`: the property with the block change event.
+    fn set_lectern_has_book(&mut self, key: (i32, i32, i32), has_book: bool, who: Option<Who>) {
+        // `LecternBlock.resetBookState`: `setBlockAndUpdate` writes the state and
+        // the `block_change` post follows unconditionally, not only when the
+        // state differs.
+        self.set_lectern_property(key, "has_book", has_book);
+        let after = self.world.block(key.0, key.1, key.2);
+        self.post_block_game_event(
+            "minecraft:block_change",
+            [key.0, key.1, key.2],
+            who,
+            Some(after),
+        );
+    }
     fn set_lectern_property(&mut self, key: (i32, i32, i32), name: &str, value: bool) {
         let state = self.world.block(key.0, key.1, key.2);
         let registry = self.pack.assets.registry;
@@ -884,33 +898,6 @@ impl Game<'_> {
                 b.set_block(level, ticks, p, new, level_flags::UPDATE_ALL)
             });
         }
-    }
-    /// `LecternBlock.resetBookState`: `POWERED` off and `HAS_BOOK` in one
-    /// `setBlockAndUpdate`, the `block_change` game event, then `updateBelow`.
-    fn reset_lectern_book_state(&mut self, key: (i32, i32, i32), has_book: bool, who: Option<Who>) {
-        let state = self.world.block(key.0, key.1, key.2);
-        let registry = self.pack.assets.registry;
-        let Some(mut s) = registry.state(state).cloned() else {
-            return;
-        };
-        for (name, value) in [("powered", false), ("has_book", has_book)] {
-            if !s.properties.contains_key(name) {
-                return;
-            }
-            s.properties.insert(name.into(), value.to_string());
-        }
-        let Some(new) = registry.id(&s) else { return };
-        let p = BlockPos::new(key.0, key.1, key.2);
-        self.with_level(|b, level, ticks| {
-            b.set_block(level, ticks, p, new, level_flags::UPDATE_ALL)
-        });
-        self.post_block_game_event(
-            "minecraft:block_change",
-            [key.0, key.1, key.2],
-            who,
-            Some(new),
-        );
-        self.with_level(|b, level, ticks| b.lectern_update_below(level, ticks, p, new));
     }
     /// The 2-tick pulses of turned lecterns.
     pub(super) fn tick_lecterns(&mut self) {
@@ -972,9 +959,7 @@ impl Game<'_> {
                 page: 0,
             }),
         );
-        // `LecternBlock.placeBook`: `setBook` then `resetBookState` with the
-        // player as the source entity, then the put sound.
-        self.reset_lectern_book_state(key, true, Some(Who::Player));
+        self.set_lectern_has_book(key, true, self.remote.is_none().then_some(Who::Player));
         if !self.creative {
             self.consume_held();
         }
@@ -1207,9 +1192,8 @@ impl Game<'_> {
         l.book = menu.slot(0).cloned();
         l.page = menu.data[0];
         if had && l.book.is_none() {
-            // `LecternBlockEntity.onBookItemRemove`: `resetBookState` with no
-            // source entity.
-            self.reset_lectern_book_state(key, false, None);
+            self.set_lectern_powered(key, false);
+            self.set_lectern_has_book(key, false, None);
             self.container_changed(key);
         } else if menu.data[0] != before {
             self.set_lectern_powered(key, true);
@@ -2117,6 +2101,62 @@ mod sign_tests {
             BookScreen::Edit { title_edit, .. } => title_edit.value.clone(),
             BookScreen::View { .. } => String::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::native_machines::tests::server_game;
+
+    /// `LecternBlock.resetBookState`: the book coming off a lectern clears
+    /// `has_book` and posts `block_change` at it.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_lectern_book_removal_posts_block_change() {
+        let mut game = server_game();
+        let key = (2, 4, 3);
+        let state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:lectern")
+            .unwrap();
+        game.world.set(key.0, key.1, key.2, state).unwrap();
+        game.world.block_entities.put(
+            key,
+            BlockEntity::Lectern(Lectern {
+                book: Some(ItemStack::new("minecraft:written_book", 1)),
+                page: 0,
+            }),
+        );
+        game.set_lectern_property(key, "has_book", true);
+        super::super::sculk::TEST_POSTED_EVENTS.with(|e| *e.borrow_mut() = Some(Vec::new()));
+
+        game.set_lectern_has_book(key, false, None);
+
+        let has_book = game
+            .pack
+            .assets
+            .registry
+            .state(game.world.block(key.0, key.1, key.2))
+            .and_then(|s| s.properties.get("has_book").cloned());
+        assert_eq!(
+            has_book.as_deref(),
+            Some("false"),
+            "the lectern has no book"
+        );
+        super::super::sculk::TEST_POSTED_EVENTS.with(|e| {
+            assert!(
+                e.borrow().as_ref().unwrap().contains(&(
+                    "minecraft:block_change",
+                    [2.5, 4.5, 3.5],
+                    None
+                )),
+                "{:?}",
+                e.borrow()
+            );
+        });
     }
 }
 
