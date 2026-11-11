@@ -60,6 +60,8 @@ use std::{
 };
 use winit::{event::MouseButton, keyboard::KeyCode};
 
+#[path = "remote_abilities.rs"]
+mod abilities;
 #[path = "remote_poll.rs"]
 mod poll;
 
@@ -6729,20 +6731,6 @@ impl Game<'_> {
         Ok(())
     }
 
-    /// ClientPacketListener.handlePlayerAbilities: the player flies, may fly
-    /// and is invulnerable as the server says (bits 2, 4 and 1).
-    fn apply_remote_abilities(&mut self) {
-        let (Some(player), Some(a)) = (
-            self.player.as_mut(),
-            self.remote.as_ref().and_then(|r| r.abilities.as_ref()),
-        ) else {
-            return;
-        };
-        player.invulnerable = a.flags & 1 != 0;
-        player.flying = a.flags & 2 != 0;
-        player.may_fly = a.flags & 4 != 0;
-        player.flying_speed = a.flying_speed;
-    }
     /// The local player's share of every touching entity's
     /// `LivingEntity.pushEntities`, and of the boats' pushes: on a client
     /// `EntitySelector.pushableBy` lets entities push only the local player,
