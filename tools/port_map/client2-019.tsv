@@ -103,7 +103,7 @@ SelectWorldScreen.init	port	crates/horizon-client/src/title.rs::Title::buttons	P
 SelectWorldScreen.createFooterButtons	port	crates/horizon-client/src/title.rs::Title::buttons	footer buttons for the selected world: Play, Create, Edit, Delete, Re-Create, Back
 SelectWorldScreen.createDebugWorldRecreateButton	skip:debug		DEBUG recreate button, only with SharedConstants.DEBUG_WORLD_RECREATE
 SelectWorldScreen.repositionElements	skip:ui		layout only
-SelectWorldScreen.updateButtonStatus	port	crates/horizon-client/src/title.rs::Title::buttons	gap: minor: buttons enable from the selection only; canEdit, canRecreate, canDelete and the primary action are not modelled
+SelectWorldScreen.updateButtonStatus	port	crates/horizon-client/src/title.rs::Title::buttons	Play while can_play and its primaryActionMessage (Play, Attempt to Recover, Upgrade and Play); Edit and Re-Create while can_edit (vanilla canEdit = canRecreate); Delete on any selection (canDelete is always true)
 SwitchGrid.Builder.addSwitch	skip:java		builder for the switch rows
 SwitchGrid.Builder.build	skip:java		layout builder for the switch rows; Horizon draws them in create_world buttons
 SwitchGrid.LabeledSwitch.refreshState	port	crates/horizon-client/src/title/create_world.rs::buttons	switch value and enabled flag are read from WorldOptions every frame
