@@ -51,8 +51,8 @@ class ParityMainTests(unittest.TestCase):
             real_run = parity_main.subprocess.run
             comments, ran, reported = [], [], []
             # git runs for real in the scratch repo; a `gh pr comment` is only recorded, never sent.
-            fake_run = lambda command, **kwargs: (comments.append(command) if command[0] == "gh"
-                                                  else real_run(command, **kwargs))
+            fake_run = lambda command, **kwargs: (comments.append(command) or mock.Mock(returncode=0)
+                                                  if command[0] == "gh" else real_run(command, **kwargs))
             at = lambda: commits.index(git("rev-parse", "HEAD"))
             run = lambda names, timeout: ran.append(at()) or [
                 name for name in names if broken_from[name] is not None and at() >= broken_from[name]]

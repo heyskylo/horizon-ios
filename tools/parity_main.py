@@ -117,14 +117,14 @@ def bisect(since, timeout, comment, budget=90):
 
     state = earlier_search(since)
     results = state["results"]
-    deadline = time.monotonic() + budget * 60
+    deadline = None  # set once HEAD and the base ran: the budget is for the search between them
 
-    def fails(commit, names, limited=True):
+    def fails(commit, names):
         """Those of names that fail at commit: from an earlier run of them there, else by running them now."""
         known = results.setdefault(commit, {})
         missing = [name for name in names if name not in known]
         if missing:
-            if limited and time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 raise OutOfTime
             print(f"--- {commit[:9]} {git('log', '-1', '--format=%s', commit).stdout.strip()}", flush=True)
             git("checkout", "-q", "--detach", commit)
@@ -149,16 +149,16 @@ def bisect(since, timeout, comment, budget=90):
     blames = []
     remaining = []
     try:
-        # HEAD is run again whatever an earlier run saw there: it is the run's verdict. It and the base are outside the
-        # budget, which is for the search between them.
+        # HEAD is run again whatever an earlier run saw there: it is the run's verdict.
         results.pop(head, None)
-        at_head = fails(head, failed, limited=False)
+        at_head = fails(head, failed)
         flakes = [name for name in failed if name not in at_head]
         if flakes:
             report(f"parity-main: {', '.join(flakes)} pass when run again at {head[:9]}: a flake, counted as a pass.")
         if not at_head:
             return 0
-        at_base = fails(since, at_head, limited=False)
+        at_base = fails(since, at_head)
+        deadline = time.monotonic() + budget * 60
         if at_base:
             report(f"parity-main: {', '.join(at_base)} fail at the base {since[:9]} too: the runner or a flake: "
                    "no merge is named.")
@@ -205,9 +205,9 @@ def bisect(since, timeout, comment, budget=90):
             url = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{REPO}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
             body = (f"🤖 Agent: parity-main found that this merge breaks {', '.join(f'`{name}`' for name in hit)} on main "
                     f"(bisected over {len(commits)} merges: {url}). Releases wait until parity-main passes again.")
-            subprocess.run(["gh", "pr", "comment", number.group(1), "--repo", REPO, "--body", body])
-            state["named"].update({name: culprit for name in hit})
-            BISECT.write_text(json.dumps(state), encoding="utf-8")
+            if subprocess.run(["gh", "pr", "comment", number.group(1), "--repo", REPO, "--body", body]).returncode == 0:
+                state["named"].update({name: culprit for name in hit})
+                BISECT.write_text(json.dumps(state), encoding="utf-8")
     return 1
 
 
