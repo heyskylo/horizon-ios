@@ -434,6 +434,12 @@ fn split_url(url: &str) -> Option<(String, u16, String)> {
     ))
 }
 
+/// How long a router has for its whole HTTP answer.
+const HTTP_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Gateways tried from one discovery: anyone on the LAN can answer SSDP, each with its own.
+const MAX_GATEWAYS: usize = 8;
+
 /// A tiny HTTP/1.1 client (Connection: close; Content-Length, chunked or
 /// to the end).
 fn http(
@@ -441,6 +447,16 @@ fn http(
     url: &str,
     headers: &[(&str, &str)],
     body: &str,
+) -> io::Result<(u16, String)> {
+    http_within(method, url, headers, body, HTTP_DEADLINE)
+}
+
+fn http_within(
+    method: &str,
+    url: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+    within: Duration,
 ) -> io::Result<(u16, String)> {
     let (host, port, path) = split_url(url).ok_or_else(|| io::Error::other("bad URL"))?;
     let addr = (host.as_str(), port)
@@ -459,8 +475,39 @@ fn http(
     req.push_str("\r\n");
     req.push_str(body);
     s.write_all(req.as_bytes())?;
+    // One deadline for the whole answer: a per-read timeout alone let a device sending a byte every
+    // few seconds hold the request (and the lock or the stop waiting on it) for weeks.
+    let deadline = Instant::now() + within;
     let mut raw = Vec::new();
-    s.take(1 << 20).read_to_end(&mut raw)?;
+    let mut chunk = [0u8; 8192];
+    loop {
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|d| !d.is_zero())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "router too slow"))?;
+        s.set_read_timeout(Some(left.min(Duration::from_secs(5))))?;
+        // A read that times out at the deadline is the router being too slow, whatever kind the
+        // platform reports it as (Linux: WouldBlock).
+        let n = match s.read(&mut chunk) {
+            Ok(n) => n,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "router too slow"));
+            }
+            Err(e) => return Err(e),
+        };
+        if n == 0 {
+            break;
+        }
+        raw.extend_from_slice(&chunk[..n]);
+        if raw.len() > 1 << 20 {
+            return Err(io::Error::other("router answer too big"));
+        }
+    }
     let text = String::from_utf8_lossy(&raw).into_owned();
     let (head, rest) = text
         .split_once("\r\n\r\n")
@@ -487,11 +534,16 @@ fn dechunk(mut s: &str) -> String {
         let Ok(n) = usize::from_str_radix(size.split(';').next().unwrap_or("").trim(), 16) else {
             break;
         };
-        if n == 0 || rest.len() < n {
+        // `n` is the device's byte count: a chunk ending inside a character (the text went through
+        // `from_utf8_lossy`) or past the end stops here rather than panicking.
+        let (Some(chunk), Some(next)) = (rest.get(..n), rest.get(n..)) else {
+            break;
+        };
+        if n == 0 {
             break;
         }
-        out.push_str(&rest[..n]);
-        s = rest[n..].trim_start_matches("\r\n");
+        out.push_str(chunk);
+        s = next.trim_start_matches("\r\n");
     }
     out
 }
@@ -539,6 +591,7 @@ pub fn ssdp_discover(timeout: Duration) -> Vec<String> {
         if let Ok((n, _)) = s.recv_from(&mut buf)
             && let Some(l) = ssdp_location(&String::from_utf8_lossy(&buf[..n]))
             && !found.contains(&l)
+            && found.len() < MAX_GATEWAYS
         {
             found.push(l);
         }
@@ -750,6 +803,35 @@ pub fn windows_gateway(text: &str) -> Option<Ipv4Addr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chunk_ending_inside_a_character_stops_the_body() {
+        // "é" is two bytes: a one-byte chunk ends inside it.
+        assert_eq!(dechunk("2\r\nab\r\n1\r\né\r\n0\r\n\r\n"), "ab");
+        assert_eq!(dechunk("2\r\nab\r\n9\r\nshort"), "ab");
+        assert_eq!(dechunk("3\r\nabc\r\n2\r\né\r\n0\r\n\r\n"), "abcé");
+    }
+
+    #[test]
+    fn a_router_trickling_its_answer_runs_out_of_time() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/desc.xml", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let _ = s.read(&mut [0; 1024]);
+            // Each byte well within the per-read timeout.
+            for b in b"HTTP/1.1 200 OK\r\n\r\n".iter().cycle().take(200) {
+                if s.write_all(&[*b]).is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+        let started = Instant::now();
+        let err = http_within("GET", &url, &[], "", Duration::from_millis(300)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
     use std::{
         collections::HashMap,
         net::TcpListener,

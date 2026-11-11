@@ -30,8 +30,7 @@ use horizon_world::registry::BlockStateId;
 use std::{collections::HashMap, sync::Arc};
 mod index;
 mod nbt;
-pub(super) use index::CartIndex;
-use index::cart_at;
+pub(super) use index::{CartIndex, cart_at};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum CartKind {
@@ -1895,7 +1894,7 @@ impl Game<'_> {
             if !self.native_tick_pre_one(&mut round, id, kind) {
                 continue;
             }
-            let Some(i) = cart_at(&self.carts, id, i) else {
+            let Some(i) = self.cart_in_world(id, i, &round, kind) else {
                 continue;
             };
             // The ticked copy takes the loot roll instead of copying it: only
@@ -2913,7 +2912,7 @@ impl Game<'_> {
             emissive: &self.gui.atlas.emissive,
             translucent_sprites: &self.gui.atlas.translucent,
             atlas_revision: self.gui.atlas.revision,
-            nether: self.dim == super::Dim::Nether,
+            nether: self.nether_lighting(),
             lid: &lid,
             sign: &|_| None,
             banner: &|_| Vec::new(),

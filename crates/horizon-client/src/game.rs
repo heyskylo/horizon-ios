@@ -3889,6 +3889,7 @@ impl Game<'_> {
             golem_chests.extend(self.chest_other_half(key));
         }
         let native_authoritative = self.native_authoritative();
+        let environment_type = self.dimension_type();
         let mut level = GameLevel {
             gateway_servers: &mut self.be_anims.gateway_servers,
             border: self.border.geometry(),
@@ -3911,11 +3912,7 @@ impl Game<'_> {
             events: &mut self.level_events,
             dimension,
             darken,
-            environment: match dimension {
-                LevelDimension::Overworld => self.res.environment(),
-                LevelDimension::Nether => self.res.nether_environment(),
-                LevelDimension::End => self.res.end_environment(),
-            },
+            environment: self.res.environment_of(&environment_type.id),
             raining: rain > 0.2,
             thundering: thunder > 0.9,
             player_box,
@@ -6734,19 +6731,14 @@ impl Game<'_> {
         // Entity shadows (EntityRenderer.extractShadow); a native pack's sun shadows replace them.
         self.mark_translucent_entity(out.len(), "minecraft:entity_shadow");
         let pack_shadows = self.renderer.as_ref().is_some_and(|r| {
-            r.pack_entity_shadows() || (self.dim == Dim::Overworld && r.native_shadow())
+            r.pack_entity_shadows() || (self.overworld_skybox() && r.native_shadow())
         });
         let shadows = self.settings.entity_shadows && self.pack.polytone_colors.entity_shadows();
         let shadow_sprite = (shadows && !pack_shadows)
             .then(|| self.gui.atlas.sprites.get("misc/shadow").copied())
             .flatten();
         if let Some(sprite) = shadow_sprite {
-            // DimensionType.ambientLight: the_nether 0.1, the_end 0.25.
-            let ambient = match self.dim {
-                Dim::Nether => 0.1,
-                Dim::End => 0.25,
-                Dim::Overworld => 0.0,
-            };
+            let ambient = self.dimension_type().ambient_light;
             let darken = self.sky_darken();
             let a = alpha;
             let lerp = |p: Vec3, q: Vec3| {
@@ -6909,7 +6901,7 @@ impl Game<'_> {
                 emissive: &self.gui.atlas.emissive,
                 translucent_sprites: &self.gui.atlas.translucent,
                 atlas_revision: self.gui.atlas.revision,
-                nether: self.dim == Dim::Nether,
+                nether: self.nether_lighting(),
                 lid: &lid,
                 sign: &|p| match self.world.block_entities.get(&(p[0], p[1], p[2])) {
                     Some(BlockEntity::Sign(sign)) => Some(sign),
@@ -7627,8 +7619,10 @@ impl Game<'_> {
             r.clear_sections(self.world.layout());
         }
         self.apply_settings();
-        self.streaming.sky_light = dim != Dim::Nether;
-        self.streaming.nether_shading = dim == Dim::Nether;
+        let facts = self.dimension_type_of(dim);
+        self.streaming.sky_light = facts.height.has_skylight;
+        self.streaming.nether_shading =
+            facts.cardinal_light == horizon_world::dimension_type::CardinalLight::Nether;
         self.load_world_state();
         // The level the world opens in, before any of its chunks.
         self.native_level_opened(dim);
@@ -9317,10 +9311,10 @@ impl Game<'_> {
                 game_time: self.world.game_time,
                 day_time: self.view_day_time(),
                 render_distance: self.streaming.radius,
-                sky_type: match self.dim {
-                    Dim::Overworld => 1,
-                    Dim::End => 2,
-                    Dim::Nether => 0,
+                sky_type: match self.dimension_type().skybox {
+                    horizon_world::dimension_type::Skybox::Overworld => 1,
+                    horizon_world::dimension_type::Skybox::End => 2,
+                    horizon_world::dimension_type::Skybox::None => 0,
                 },
                 dimension: match self.dim {
                     Dim::Overworld => "minecraft:overworld",
@@ -9662,13 +9656,13 @@ impl Game<'_> {
         pr.lap("pr_dragon_bolts");
         let (celestial, stars) = if title {
             (Vec::new(), None)
-        } else if self.dim == Dim::Overworld
+        } else if self.overworld_skybox()
             && self.potions.effects.get("darkness").is_none()
             && self.potions.effects.get("blindness").is_none()
         {
             // Camera.doesMobEffectBlockSky: no sun, moon or stars.
             self.celestial_geometry(&sky, rain)
-        } else if self.dim == Dim::End && self.settings.horizon.sky {
+        } else if self.end_skybox() && self.settings.horizon.sky {
             (self.end_flash_geometry(), None)
         } else {
             (Vec::new(), None)
@@ -9742,7 +9736,7 @@ impl Game<'_> {
         let frame = Frame {
             weather: &weather,
             weather_time: horizon_client::weather::Time::new(self.world.game_time, alpha as f32),
-            nether_lighting: self.dim == Dim::Nether,
+            nether_lighting: self.nether_lighting(),
             camera,
             yaw,
             pitch,
@@ -9782,8 +9776,8 @@ impl Game<'_> {
                     || self.potions.effects.get("darkness").is_some(),
                 self.boss_overlay.should_create_world_fog(),
             ),
-            skybox: self.dim == Dim::Overworld && self.settings.horizon.sky,
-            end_sky: self.dim == Dim::End && self.settings.horizon.sky,
+            skybox: self.overworld_skybox() && self.settings.horizon.sky,
+            end_sky: self.end_skybox() && self.settings.horizon.sky,
             end_sky_sprite: self
                 .gui
                 .atlas
@@ -9807,7 +9801,7 @@ impl Game<'_> {
             glint_alpha: self.glint_frame.alpha,
             glint_ticks: self.glint_frame.scroll_ticks(),
             clouds: (!title
-                && self.dim == Dim::Overworld
+                && self.overworld_skybox()
                 && horizon_client::clouds::visible(&self.settings.clouds, sky.cloud_color[3]))
             .then(|| self.gui.atlas.sprites.get("horizon/white"))
             .flatten()
@@ -9855,12 +9849,10 @@ impl Game<'_> {
             border,
             game_time: self.world.game_time as f32,
             shader_game_time: ((self.world.game_time % 24000) as f32 + alpha as f32) / 24000.0,
-            crumbling_sprite: self
-                .gui
-                .atlas
-                .sprites
-                .get("block/destroy_stage_0")
-                .map_or([0.0; 4], |r| [r.u0, r.v0, r.u1 - r.u0, r.v1 - r.v0]),
+            crumbling_sprite: frame_geometry::crumbling_sprite(
+                &self.gui.atlas.sprites,
+                self.settings.improved_transparency,
+            ),
             end_portal_sprites: ["environment/end_sky", "entity/end_portal/end_portal"].map(|n| {
                 self.gui
                     .atlas
