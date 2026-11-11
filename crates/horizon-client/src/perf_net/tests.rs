@@ -426,6 +426,21 @@ fn a_chunk_beyond_the_announced_size_ends_the_transfer() {
 }
 
 #[test]
+fn a_file_announced_over_the_cap_is_refused_and_its_chunks_are_stray() {
+    let t0 = Instant::now();
+    let mut link = Link::default();
+    link.ask("horizon", t0).unwrap();
+    link.answer(started("p", None), t0);
+    let bytes = horizon_perf_format::MAX_PART_BYTES + 1;
+    assert_eq!(
+        link.answer(finished_with("p", bytes), t0),
+        Outcome::TooLarge { bytes }
+    );
+    assert!(link.is_idle());
+    assert_eq!(link.chunk(32_768, t0), Received::Stray);
+}
+
+#[test]
 fn a_server_that_fails_mid_file_frees_the_link() {
     let t0 = Instant::now();
     let mut link = Link::default();

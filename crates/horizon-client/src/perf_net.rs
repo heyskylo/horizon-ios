@@ -1,6 +1,7 @@
 //! `horizon:perf`: a client asks a Horizon server to capture its side (docs/perf-platform.md §4.2).
 use crate::client_perf::request::{HZ_RANGE, StartOptions, Threads};
 use crate::server_perf::MAX_WINDOW_S;
+use horizon_perf_format::MAX_PART_BYTES;
 use horizon_protocol::{
     Error, Result,
     buf::{Reader, Writer},
@@ -414,6 +415,10 @@ pub enum Outcome {
         bytes: u64,
     },
     Refused(Refusal),
+    /// The server announced a file over [`MAX_PART_BYTES`]; none of it is taken.
+    TooLarge {
+        bytes: u64,
+    },
     /// The reply fits no request of ours, for example a duplicate.
     Stray,
 }
@@ -493,6 +498,9 @@ impl Link {
                     bytes,
                 },
             ) => {
+                if bytes > MAX_PART_BYTES {
+                    return Outcome::TooLarge { bytes };
+                }
                 if bytes > 0 {
                     *self = Self::Receiving {
                         path: path.clone(),

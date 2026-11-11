@@ -231,6 +231,12 @@ impl Game<'_> {
                     self.begin_part(waiting);
                 }
             }
+            Outcome::TooLarge { bytes } => {
+                log::warn!("Horizon: the server announced a {bytes}-byte profile; it is not taken");
+                self.profile.server_joined = false;
+                self.profile.server_reply = waiting;
+                self.abandon_part();
+            }
             Outcome::Refused(why) => {
                 if joined {
                     if let Some(code) = warning_of(why) {

@@ -4,10 +4,11 @@ use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use horizon_perf_format::v1::{
-    Capture, HealthSample, Mark, Side, Start, Stop, StopReason, WarningCode,
+    Attachment, Capture, HealthSample, Mark, Side, Start, Stop, StopReason, WarningCode,
 };
 use horizon_perf_format::{
-    CaptureWriter, Field, MergeError, PartMerger, ProtoMessage, RawSend, WriterThread,
+    CaptureWriter, Field, MAX_PART_FIELD, MAX_PART_INFLATED, MergeError, PartMerger, ProtoMessage,
+    RawSend, WriterThread,
 };
 
 fn inflate(gz: &[u8]) -> Vec<u8> {
@@ -109,7 +110,7 @@ fn fields_this_build_does_not_know_pass_through_the_merge() {
     }
     .encode_to_vec();
     inflated.extend_from_slice(&known);
-    let unknown = [0xFA, 0x06, 0x03, b'a', b'b', b'c'];
+    let unknown = [0xFA, 0x06, 0x05, 0x08, 0x02, 0x12, 0x01, b'a'];
     inflated.extend_from_slice(&unknown);
     let mut gz = GzEncoder::new(Vec::new(), Compression::default());
     gz.write_all(&inflated).unwrap();
@@ -189,4 +190,91 @@ fn a_part_that_never_yielded_a_field_gets_only_the_warning() {
 
 fn server_fields_len() -> usize {
     written(server_fields()).len()
+}
+
+fn gzip(inflated: &[u8]) -> Vec<u8> {
+    let mut gz = GzEncoder::new(Vec::new(), Compression::fast());
+    gz.write_all(inflated).unwrap();
+    gz.finish().unwrap()
+}
+
+fn push_all(gz: &[u8]) -> Result<(), MergeError> {
+    let mut merger = PartMerger::new();
+    for slice in gz.chunks(32 * 1024) {
+        merger.push(slice)?;
+    }
+    merger.finish()
+}
+
+fn server_mark_of(padding: usize) -> Vec<u8> {
+    Capture {
+        marks: vec![Mark {
+            side: Side::Server as i32,
+            t: 1.0,
+            name: "x".repeat(padding),
+        }],
+        ..Capture::default()
+    }
+    .encode_to_vec()
+}
+
+#[test]
+fn a_part_that_inflates_past_the_cap_is_refused() {
+    let field = server_mark_of(1 << 20);
+    let mut inflated = vec![0x08, 0x01];
+    while (inflated.len() as u64) <= MAX_PART_INFLATED {
+        inflated.extend_from_slice(&field);
+    }
+    let gz = gzip(&inflated);
+    assert!(gz.len() < 4 << 20, "a small bomb: {} bytes", gz.len());
+    assert!(matches!(push_all(&gz), Err(MergeError::TooLarge)));
+}
+
+#[test]
+fn a_field_longer_than_the_cap_is_refused_before_it_arrives() {
+    let field = server_mark_of(MAX_PART_FIELD as usize);
+    let mut inflated = vec![0x08, 0x01];
+    inflated.extend_from_slice(&field[..64]);
+    let mut merger = PartMerger::new();
+    assert!(matches!(
+        merger.push(&gzip(&inflated)),
+        Err(MergeError::TooLarge)
+    ));
+}
+
+#[test]
+fn a_part_holding_another_sides_field_is_refused() {
+    let client_mark = Capture {
+        marks: vec![Mark {
+            side: Side::Client as i32,
+            t: 1.0,
+            name: "x".into(),
+        }],
+        ..Capture::default()
+    };
+    let unsided_mark = Capture {
+        marks: vec![Mark {
+            t: 1.0,
+            ..Mark::default()
+        }],
+        ..Capture::default()
+    };
+    let attachment = Capture {
+        attachments: vec![Attachment {
+            name: "notes".into(),
+            ..Attachment::default()
+        }],
+        ..Capture::default()
+    };
+    for (bad, number) in [(client_mark, 7), (unsided_mark, 7), (attachment, 22)] {
+        let mut inflated = vec![0x08, 0x01];
+        inflated.extend(server_mark_of(0));
+        inflated.extend(bad.encode_to_vec());
+        let err = push_all(&gzip(&inflated)).unwrap_err();
+        assert!(
+            matches!(err, MergeError::NotServerSide { field } if field == number),
+            "{err}"
+        );
+    }
+    assert!(push_all(&written(server_fields())).is_ok());
 }

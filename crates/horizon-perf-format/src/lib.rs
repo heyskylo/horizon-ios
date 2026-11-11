@@ -20,7 +20,7 @@ pub use counters::{
     global as counter_registry,
 };
 pub use health::{Gauges, HealthRecorder, TIERS, Tps};
-pub use merge::{MergeError, PartMerger};
+pub use merge::{MAX_PART_BYTES, MAX_PART_FIELD, MAX_PART_INFLATED, MergeError, PartMerger};
 pub use prost::Message as ProtoMessage;
 pub use slow::{SLOW_RING_CAPACITY, SLOW_TOP_SPANS, SlowRecord, SlowRing, SlowSpan};
 pub use strings::Interner;
