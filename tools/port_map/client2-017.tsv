@@ -7,7 +7,7 @@ ClientBundleTooltip.extractSlot	port	crates/horizon-client/src/game/stations.rs:
 ClientBundleTooltip.extractCount	port	crates/horizon-client/src/game/stations.rs::Game::draw_bundle_tooltip	the +N label in the overflow cell
 ClientBundleTooltip.extractSelectedItemTooltip	port	crates/horizon-client/src/game/stations.rs::Game::draw_bundle_selected_name	the selected item's name in its own box, centred over the grid and kept on screen
 ClientBundleTooltip.extractProgressbar	port	crates/horizon-client/src/game/stations.rs::Game::draw_bundle_tooltip	fill, border and label sprites at the layout's bar position
-ClientBundleTooltip.getEmptyBundleDescriptionTextHeight	inline	crates/horizon-items/src/bundle.rs::tooltip_layout	gap: minor: fixed at two lines (18 px) instead of measuring the wrapped text
+ClientBundleTooltip.getEmptyBundleDescriptionTextHeight	inline	crates/horizon-items/src/bundle.rs::tooltip_layout	font.split(description, 96).size() * 9, the line count the tooltip's probe and draw pass in
 ClientBundleTooltip.getProgressBarFillText	port	crates/horizon-items/src/bundle.rs::tooltip_layout	empty and full labels (the label field), drawn by draw_bundle_tooltip
 ClientTooltipComponent.create	inline	crates/horizon-client/src/game/stations.rs::Game::draw_stack_tooltip	gap: minor: bundles, text lines and native mod image components (native_tooltip_component); no ActivePlayersTooltip
 DefaultTooltipPositioner.positionTooltip	port	crates/horizon-client-render/src/ui.rs::tooltip	gap: minor: also clamps y to at least 4, which vanilla does not do; the text height is Horizon's own estimate
