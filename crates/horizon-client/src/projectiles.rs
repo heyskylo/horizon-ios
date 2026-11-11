@@ -281,7 +281,8 @@ pub struct Projectile {
 }
 /// The chicken variant a thrown egg stack carries: its explicit
 /// `minecraft:chicken/variant` component, else its item's default (egg
-/// temperate, blue egg cold, brown egg warm).
+/// temperate, blue egg cold, brown egg warm). An explicit removal
+/// (`!minecraft:chicken/variant`) leaves the hatchling its temperate default.
 pub fn egg_chicken_variant(stack: &crate::items::ItemStack) -> u8 {
     let named = stack
         .extra
@@ -291,10 +292,19 @@ pub fn egg_chicken_variant(stack: &crate::items::ItemStack) -> u8 {
             horizon_world::nbt::Tag::String(s) => s.to_string().ok(),
             _ => None,
         });
-    let name = named.as_deref().unwrap_or(match &*stack.item {
-        "minecraft:blue_egg" => "cold",
-        "minecraft:brown_egg" => "warm",
-        _ => "temperate",
+    // 🤖 Agent: a removed component resolves to absent, not to the item default.
+    let removed = stack
+        .extra
+        .as_ref()
+        .is_some_and(|d| d.other("!minecraft:chicken/variant").is_some());
+    let name = named.as_deref().unwrap_or(if removed {
+        "temperate"
+    } else {
+        match &*stack.item {
+            "minecraft:blue_egg" => "cold",
+            "minecraft:brown_egg" => "warm",
+            _ => "temperate",
+        }
     });
     crate::mobs::finalize::variant_index(crate::mobs::Species::Chicken, name)
 }
@@ -1663,6 +1673,26 @@ impl Projectile {
 mod tests {
     use super::*;
     use horizon_core::random::LegacyRandom;
+
+    #[test]
+    fn egg_variant_honors_explicit_removal() {
+        use crate::mobs::{Species, finalize::variant_index};
+        let mut blue = crate::items::ItemStack::new("minecraft:blue_egg", 1);
+        assert_eq!(
+            egg_chicken_variant(&blue),
+            variant_index(Species::Chicken, "cold")
+        );
+        let mut data = horizon_items::item_data::StackData::default();
+        data.set_other(
+            "!minecraft:chicken/variant",
+            Some(horizon_world::nbt::Tag::Compound(Default::default())),
+        );
+        blue.extra = Some(Box::new(data));
+        assert_eq!(
+            egg_chicken_variant(&blue),
+            variant_index(Species::Chicken, "temperate")
+        );
+    }
 
     struct Empty(Vec<(Who, Aabb)>);
     impl ProjectileWorld for Empty {
