@@ -48,7 +48,7 @@ fn with_game(test: impl FnOnce(&mut Game<'_>)) {
     game.player = Some(
         horizon_client::motion::PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap(),
     );
-    game.world.random = LegacyRandom::new(114);
+    game.world.random = horizon_core::random::LevelRandom::for_level(LegacyRandom::new(114));
     test(&mut game);
 }
 

@@ -1385,24 +1385,13 @@ impl Items {
             .map(|i| i.modifiers.clone())
             .unwrap_or_default()
     }
-    /// Mining wear on an already durable item prototype. Custom durability on
-    /// non-durable items needs item-aware DAMAGE-presence decoding first.
+    /// The stack's damage capacity (`crate::durability::stack_max_damage`).
+    pub fn stack_max_damage(&self, stack: &ItemStack) -> u32 {
+        crate::durability::stack_max_damage(self, stack)
+    }
+    /// The damage capacity mining wear uses (`stack_max_damage`).
     pub fn mining_damage_capacity(&self, stack: &ItemStack) -> u32 {
-        let prototype_max = self.get(&stack.item).map_or(0, |info| info.max_damage);
-        let component = |id| stack.data().and_then(|d| d.other(id));
-        if prototype_max == 0
-            || stack.count == 0
-            || &*stack.item == "minecraft:air"
-            || component("!minecraft:max_damage").is_some()
-            || component("!minecraft:damage").is_some()
-            || component("minecraft:unbreakable").is_some()
-        {
-            return 0;
-        }
-        match component("minecraft:max_damage") {
-            Some(value) => horizon_world::datafix::dynamic::as_int(Some(value), 0).max(0) as u32,
-            _ => prototype_max,
-        }
+        self.stack_max_damage(stack)
     }
     /// Whether a loot table (`minecraft:blocks/stone`, ...) exists.
     pub fn has_loot_table(&self, id: &str) -> bool {

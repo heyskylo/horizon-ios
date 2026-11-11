@@ -4,7 +4,7 @@ use horizon_client::{
     chunk::Chunk,
     mobs::{Mob, MobEvent, goals::Cx},
 };
-use horizon_core::{geometry::Vec3, position::ChunkPos, random::LegacyRandom};
+use horizon_core::{geometry::Vec3, position::ChunkPos, random::RandomSource};
 use std::sync::Arc;
 
 #[test]
@@ -67,7 +67,7 @@ fn leave_block_goal_uses_real_neighbor_shapes_and_keeps_air_placement() {
             .default_state(&format!("minecraft:{name}"))
             .unwrap();
         let mut mob = Mob::new(325, kind.clone(), Vec3::new(3.5, 4.0, 3.5), 0.0);
-        mob.random = LegacyRandom::new(325);
+        mob.random.set_seed(325);
         mob.extra.carried = Some(carried);
         game.mobs.push(mob);
         for _ in 0..48_000 {
@@ -133,7 +133,7 @@ fn leave_block_goal_uses_real_neighbor_shapes_and_keeps_air_placement() {
         .insert("waterlogged".into(), "true".into());
     let fence = registry.resolve(&descriptor).unwrap();
     let mut mob = Mob::new(326, kind, Vec3::new(3.5, 4.0, 3.5), 0.0);
-    mob.random = LegacyRandom::new(325);
+    mob.random.set_seed(325);
     mob.extra.carried = Some(fence);
     game.mobs.clear();
     game.mobs.push(mob);
