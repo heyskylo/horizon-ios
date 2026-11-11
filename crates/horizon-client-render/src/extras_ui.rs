@@ -206,14 +206,13 @@ impl Screen for ExtrasScreen {
     fn note_lines(&self) -> usize {
         NOTE_LINES
     }
-    /// The rows read the extras, the mods, whether cosmetics are offered and the sections' rows.
+    /// The rows read the extras, the mods and the sections' rows.
     fn stamp(&self, s: &Settings) -> u64 {
         let mut added = Vec::new();
         for (_, section) in sections() {
             section.rows(&mut added);
         }
-        let cosmetics = horizon_cosmetics::enabled();
-        shell::stamp_of(&(&s.extras, &s.mods, cosmetics, added))
+        shell::stamp_of(&(&s.extras, &s.mods, added))
     }
     fn sheets(&self, s: &Settings) -> Vec<Sheet<(), ExtraRow>> {
         let mut groups = vec![Group {
@@ -319,22 +318,6 @@ mod tests {
                 .is_empty()
         );
         assert_ne!(s.extras.mouse_tweaks_wheel, before);
-    }
-
-    #[test]
-    fn the_three_way_cosmetics_row_turns_both_ways() {
-        use horizon_cosmetics::prefs::Others;
-        let mut s = Settings::default();
-        let mut screen = ExtrasScreen;
-        let row = ExtraRow::Item(Item::CosmeticsOthers);
-        // Not chosen, nothing owned: it shows Hidden, and forward wraps to Shown.
-        assert_eq!(s.extras.effective_others(), Others::Hidden);
-        screen.press(&mut s, row, false);
-        assert_eq!(s.extras.cosmetics_others, Some(Others::Shown));
-        screen.press(&mut s, row, true);
-        assert_eq!(s.extras.cosmetics_others, Some(Others::Hidden));
-        screen.press(&mut s, row, true);
-        assert_eq!(s.extras.cosmetics_others, Some(Others::NameTags));
     }
 
     /// The sort key binds instead of cycling; the wheel leaves it be.
