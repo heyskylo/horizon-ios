@@ -622,7 +622,11 @@ impl Game<'_> {
                 Dim::Nether => "level_the_nether",
                 Dim::End => "level_the_end",
             });
-            if let Err(e) = self.enter_level(None, dim) {
+            // The level's own share of the pass, outside its world tick: a slow tick's line names
+            // each of them, and `level_tick` holds the world tick itself (#15349).
+            if let Err(e) =
+                horizon_client::spans::time("enter_level", || self.enter_level(None, dim))
+            {
                 result = Err(e);
                 break;
             }
@@ -633,10 +637,14 @@ impl Game<'_> {
                 packets_drained: false,
             };
             if observe_level {
+                let _span = horizon_client::spans::guard("mods_level_tick_pre");
                 self.native_level_tick_pre(dim.id());
             }
-            self.update_dedicated_streaming();
-            self.update_world();
+            horizon_client::spans::time("dedicated_streaming", || {
+                self.update_dedicated_streaming();
+            });
+            horizon_client::spans::time("update_world", || self.update_world());
+            let tick_span = horizon_client::spans::guard("level_tick");
             result = horizon_client::block_contact::in_level(
                 (self.serving.is_some() || self.options.dedicated.is_some()).then_some(dim.id()),
                 || {
@@ -653,16 +661,19 @@ impl Game<'_> {
                     }
                 },
             );
+            drop(tick_span);
             if result.is_err() {
                 break;
             }
             if observe_level {
+                let _span = horizon_client::spans::guard("mods_level_tick_post");
                 self.native_level_tick_post(dim.id());
             }
-            self.publish_server_debug(dim);
+            horizon_client::spans::time("server_debug", || self.publish_server_debug(dim));
             // An entity that crossed into a level that already ticked this
             // server tick is in it when the tick ends (`addDuringTeleport`).
             if running == Some(true) {
+                let _span = horizon_client::spans::guard("late_portal_arrivals");
                 let mut moved = false;
                 for &earlier in &order[..k] {
                     if !self.arrival_chunks(earlier).is_empty()
@@ -680,6 +691,7 @@ impl Game<'_> {
         if let Some(&first) = order.first()
             && self.dim != first
         {
+            let _span = horizon_client::spans::guard("enter_level");
             let _ = self.enter_level(None, first);
         }
         self.level_pass = Pass::default();
