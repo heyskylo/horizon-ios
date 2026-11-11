@@ -369,8 +369,6 @@ pub fn run(dir: &Path) -> Result<(), String> {
     }
 }
 
-/// With the game stopped: backs the world up, points `current` at the release `to` and checks that its game
-/// loads on this system. What to watch while it starts; `None` when it stayed on the release it was on.
 /// The restore and the release switch asked for since the last start, done now: the world is
 /// replaced and `current` moved before the next game starts. The switch's [`Watch`], if any.
 fn apply_queued(shared: &Shared, dir: &Path, config: &Config) -> Option<Watch> {
@@ -401,6 +399,8 @@ fn apply_queued(shared: &Shared, dir: &Path, config: &Config) -> Option<Watch> {
     pending.and_then(|(to, timeout)| switch(shared, dir, config, &to, timeout))
 }
 
+/// With the game stopped: backs the world up, points `current` at the release `to` and checks that its game
+/// loads on this system. What to watch while it starts; `None` when it stayed on the release it was on.
 fn switch(
     shared: &Shared,
     dir: &Path,
