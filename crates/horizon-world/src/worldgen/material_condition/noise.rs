@@ -58,6 +58,14 @@ impl<P: PositionalRandom, S: MaterialSurfaceQueries> MaterialSurfaceQueries
     ) -> Result<usize, DecodeError> {
         self.surface.bind_density(sampler, eager)
     }
+    fn bind_density_rows(
+        &mut self,
+        sampler: Arc<dyn horizon_core::density::DensitySampler>,
+        eager: bool,
+        rows: [i32; 2],
+    ) -> Result<usize, DecodeError> {
+        self.surface.bind_density_rows(sampler, eager, rows)
+    }
     fn density(&mut self, index: usize, position: BlockPos) -> Result<f32, MaterialRuleError> {
         self.surface.density(index, position)
     }

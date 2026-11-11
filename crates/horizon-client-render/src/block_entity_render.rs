@@ -15,7 +15,7 @@ use crate::{
     font::{Font, Glyph},
     gfx::mark_oit,
     hud::Rect,
-    mesher::{CULL_BACK, Vertex},
+    mesher::{CULL_BACK, Vertex, cull_back},
     models::load_visibility,
     signs::{self, SignData, SignText},
     text::{Style, Text},
@@ -3093,9 +3093,9 @@ impl BlockEntityRenderer {
                     }
                 }
                 // `DecoratedPotRenderer` submits every part with `entitySolid`, which culls
-                // back faces: the flat `top` and `bottom` planes show one side each.
+                // back faces: the flat `top` and `bottom` planes show one side each (#15322).
                 for vertex in &mut out[first..] {
-                    vertex.normal = CULL_BACK;
+                    vertex.normal = cull_back(vertex.normal);
                 }
             }
             Kind::EndPortal => {
@@ -4760,9 +4760,12 @@ mod tests {
             28,
             "the pot submits all of vanilla's quads"
         );
+        // A part the shader shades keeps its normal (#15322): `w` alone says cull.
         assert!(
-            verts.iter().all(|v| v.normal == CULL_BACK),
-            "entitySolid culls the pot's back faces"
+            verts
+                .iter()
+                .all(|v| v.normal[3] == crate::mesher::SHADED_CULL_W && v.normal[..3] != [0; 3]),
+            "entitySolid culls the pot's back faces and shades it by its normals"
         );
     }
 

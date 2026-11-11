@@ -24,7 +24,7 @@ struct Out {
     return out;
 }
 @fragment fn fs_border(in: Out) -> @location(0) vec4<f32> {
-    return border_color(in);
+    return frame_stored(border_color(in));
 }
 fn border_color(in: Out) -> vec4<f32> {
     let color = textureSample(forcefield, forcefield_sampler, in.uv);

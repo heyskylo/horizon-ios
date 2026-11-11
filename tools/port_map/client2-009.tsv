@@ -16,7 +16,7 @@ Font.prepare8xTextOutline	skip:other		no vanilla 26.3 caller passes a non-zero o
 Font.prepareBackground	port	crates/horizon-client-render/src/hud_overlays.rs::text_with_backdrop	background box behind text; callers pass their own bounds
 Font.getGlyph	port	crates/horizon-client-render/src/font.rs::Font::glyph_styled	obfuscated glyph is picked in HudBatch::text_styled via random_glyph
 Font.PreparedTextBuilder.markSize	skip:other		bounds bookkeeping of prepared text; Horizon has no prepared-text object and hit-tests by advance
-Font.PreparedTextBuilder.markBackground	inline	crates/horizon-client-render/src/hud_overlays.rs::text_with_backdrop	gap: minor: the background box is 2 px around the text; vanilla grows it by 1 px around each glyph
+Font.PreparedTextBuilder.markBackground	inline	crates/horizon-client-render/src/hud_overlays.rs::text_with_backdrop	one pixel above and left of the glyphs, the advance right and nine down
 Font.PreparedTextBuilder.addGlyph	inline	crates/horizon-client-render/src/hud.rs::HudBatch::text_styled	glyph quad pushed directly into the batch
 Font.PreparedTextBuilder.addEffect	inline	crates/horizon-client-render/src/hud.rs::HudBatch::text_styled	underline and strikethrough rectangles drawn inline
 Font.PreparedTextBuilder.addEmptyGlyph	skip:other		hit areas for glyphs with no image; Chat::style_at hit-tests by advance width instead
@@ -97,7 +97,7 @@ AbstractContainerWidget.setFocused	port	crates/horizon-client-render/src/pack_sc
 AbstractContainerWidget.mouseClicked	port	crates/horizon-client-render/src/ui.rs::Scroll::press	gap: minor: child click dispatch is per screen; only the scrollbar press is here
 AbstractScrollArea.isOverScrollbar	inline	crates/horizon-client-render/src/ui.rs::Scroll::press	scrollbar column test folded into the press
 AbstractScrollArea.scrollBarY	port	crates/horizon-client-render/src/ui.rs::scrollbar_thumb	thumb top
-AbstractScrollArea.extractScrollbar	port	crates/horizon-client-render/src/ui.rs::scrollbar	gap: minor: no disabled-scroller sprite and no cursor request
+AbstractScrollArea.extractScrollbar	port	crates/horizon-client-render/src/ui.rs::scrollbar	the pack screen's bars ask for the hand, and RESIZE_NS while held (PackScreen::draw); the disabled-scroller sprite is still unported
 AbstractScrollArea.defaultSettings	skip:java		settings record builder; the sizes are constants in ui.rs
 AbstractSelectionList.swap	port	crates/horizon-client/src/multiplayer.rs::Screen::click	gap: minor: mouse move up or down works; keyboard Shift+arrow reorder is not ported
 AbstractSelectionList.scrollBarX	port	crates/horizon-client/src/social_screen.rs::scrollbar_x	the rows' right edge + 6 + 2; the social list's draw passes it to ui::scrollbar
