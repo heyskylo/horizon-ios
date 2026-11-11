@@ -76,7 +76,15 @@
   "warden_owned_memories": "capture-preserving harness: writes .local/h029/capture and asserts it is new, so it fails at startup on any checkout that ran it before (the Mac mini runner)",
   "shulker_lock_drop": "capture-preserving harness: needs --work-dir (a fresh capture folder) and --reference-dir, which an automatic run doesn't pass, so it fails at startup whatever changed",
   "pot_hopper": "capture-preserving harness: needs --work-dir (a fresh capture folder) and --reference-dir, which an automatic run doesn't pass, so it fails at startup whatever changed",
-  "stand_lodestone": "capture-preserving harness: needs --work-dir (a new capture folder), --reference-dir and --binary, which an automatic run doesn't pass, so it fails at startup whatever changed"
+  "stand_lodestone": "capture-preserving harness: needs --work-dir (a new capture folder), --reference-dir and --binary, which an automatic run doesn't pass, so it fails at startup whatever changed",
+  "hoglin_repeat_attack": "has never passed on CI since #12823 added it, and fails whatever a pull request changes (#15158): the pig's HurtTime and health after repeated hits differ; take it off this list with the fix",
+  "allay_pickup_cooldown": "has never passed on CI since #12893 added it, and fails whatever a pull request changes (#15158): Horizon's allay keeps item_pickup_cooldown_ticks and never picks the diamond up; take it off this list with the fix",
+  "last_hurt_by_mob": "has never passed on CI since #12843 added it, and fails whatever a pull request changes (#15158): a pig summoned with last_hurt_by_mob loses it, and the saved key order differs; take it off this list with the fix",
+  "kill_die_vibration": "has never passed on CI since #12160 added it, and fails whatever a pull request changes (#15158): the sculk sensor's listener event source is missing and a pig's HurtTime is off by one; take it off this list with the fix",
+  "interaction_data": "has never passed on CI since #12160 added it, and fails whatever a pull request changes (#15158): an Interaction's saved body lacks width; take it off this list with the fix",
+  "mob_command_damage_vibration": "has never passed on CI since #11179 added it, and fails whatever a pull request changes (#15158): 25 of 184 records differ, mostly sensor messages; take it off this list with the fix",
+  "world_test_def_lifecycle": "has never passed on CI since #11992 added it, and fails whatever a pull request changes (#15158): /execute if loaded passes in Horizon where vanilla's chunk is already unloaded; take it off this list with the fix",
+  "inline_feature_parse": "has never passed on CI since #12177 added it, and fails whatever a pull request changes (#15158): the error names MapLike[{}] where vanilla names the whole map; take it off this list with the fix"
  },
  "known_flaky": {
   "world_reopen": "counted 4 minecarts instead of 3 once on a loaded Mac mini runner, then passed at the same head (10-26)",
