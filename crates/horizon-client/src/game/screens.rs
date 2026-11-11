@@ -280,9 +280,7 @@ impl Game<'_> {
     fn pause_screen_additions(&self) -> Option<(Text, Tag)> {
         let registries = &self.remote.as_ref()?.registries;
         let dialogs = registries.registries.get("minecraft:dialog")?;
-        let tag = registries
-            .dialog_tags
-            .get("minecraft:pause_screen_additions")?;
+        let tag = registries.tag("minecraft:dialog", "minecraft:pause_screen_additions")?;
         // addCustomDialogButtons' label: computeExternalTitle falls back to the title.
         let button = |dialog_tag: Tag| -> Option<(Text, Tag)> {
             let dialog = Dialog::parse(&dialog_tag)?;
