@@ -763,7 +763,7 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   Discord bridges and scripts written for it. The supervisor serves it (`rcon.rs`, std only like `http.rs`), so it
   answers while the game restarts (a command then says the game isn't running), and it reads its settings as
   `RconThread.create` does: no password or a port outside 1 to 65535 leaves it off with vanilla's warning. The
-  packets are `RconClient`'s: login (3), command (2), the output in packets of 4096 characters, `-1` for a refused
+  packets are `RconClient`'s: login (3), command (2), the output in packets of 4096 UTF-16 units, `-1` for a refused
   login, `Unknown request <hex>` for another type, `Error executing: <command> (<reason>)` for a command that failed.
   A command goes to the game as an `rcon <line>` request on the control endpoint (`horizon-server cmd` sends
   `console <line>`, the same console under the `Server` source), so the
