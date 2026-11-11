@@ -118,8 +118,15 @@ fn an_allay_keeps_its_item_pickup_cooldown_memory() {
 fn pickup_cooldown_saves_the_full_integer_value() {
     let mut game = game();
     let i = index(&mut game);
+    assert!(game.run_command(&format!(
+        "item replace entity {SUPPLIED} weapon.mainhand with minecraft:diamond 1"
+    )));
     for ticks in [i32::MIN, -1, 0, 1, i32::MAX] {
         allay::set_pickup_cooldown(&mut game.mobs[i], Some(ticks));
+        assert!(
+            !game.mobs[i].can_pick_up_loot(),
+            "memory present at {ticks}"
+        );
         assert_eq!(
             saved(&mut game, i),
             Some(Tag::compound([("value", Tag::Int(ticks))])),
@@ -139,6 +146,8 @@ fn pickup_cooldown_saves_the_full_integer_value() {
             "loaded {ticks}"
         );
     }
+    allay::set_pickup_cooldown(&mut game.mobs[i], None);
+    assert!(game.mobs[i].can_pick_up_loot(), "memory erased");
 }
 
 // Added controls (after the frozen baseline above).
