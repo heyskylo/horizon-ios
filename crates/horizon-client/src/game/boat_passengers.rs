@@ -7,16 +7,48 @@
 use super::{Game, boats::Boat, lan_mobs::guest_bounds};
 use horizon_client::{
     camera::wrap_degrees,
-    mobs::{BoxReach, Mob, Species, Who, drops::is_animal, equine, riders},
+    fast_hash::FxHashMap,
+    join_seq::ListStamp,
+    mobs::{BoxReach, Mob, Species, Who, drops::is_animal, equine, riders, seen_grid::SeenGrid},
     scoreboard::pushable_by,
 };
 use horizon_core::geometry::{Aabb, Vec3};
+use std::cell::{Cell, RefCell};
 
 /// `Entity.boardingCooldown` once a mob leaves its boat.
 pub(super) const BOARDING_COOLDOWN: i32 = 60;
 /// `Player.DEFAULT_VEHICLE_ATTACHMENT`: how far below the seat a player's
 /// feet are.
 const PLAYER_RIDING_OFFSET: f64 = 0.6;
+
+/// How many box queries the walk over every mob answers, once a write to the mob list has
+/// made the grid stale, before a new grid is built: about what building one costs (with
+/// 25,000 mobs, six to eight walks). It doubles with each grid of a stretch, so vehicles
+/// that each write a mob (a boat pushing the pig beside it) never pay more for grids than
+/// for their walks.
+const WALKS_BEFORE_GRID: u32 = 8;
+
+/// What a stretch of vehicle ticks knows about the mobs, so a boat or a minecart reads the
+/// mobs near it and not every mob of the level ([`Game::mobs_meeting`]).
+#[derive(Default)]
+pub(super) struct VehicleMobs {
+    /// The mobs' [`BoxReach`] with the mob count it was worked out for; None outside a stretch.
+    reach: Cell<Option<(usize, BoxReach)>>,
+    grid: RefCell<MobGrid>,
+    /// The last query's candidates, kept for their allocation.
+    near: Cell<Vec<u32>>,
+    /// Each ridden vehicle's mobs by slot, for the mob list as it stood ([`Game::vehicle_riders`]).
+    riders: RefCell<Option<(ListStamp, FxHashMap<u32, Vec<usize>>)>>,
+}
+#[derive(Default)]
+struct MobGrid {
+    /// The mobs' boxes by column and the list they were read from: they hold until that
+    /// list's next write ([`ListStamp`]), which every push, pick-up, death and join is.
+    built: Option<(ListStamp, SeenGrid)>,
+    /// The queries walked since the grid went stale, and how many are before the next grid.
+    walked: u32,
+    patience: u32,
+}
 
 /// `Entity.canRide` for a mob species: `Warden` and `WitherBoss` override it
 /// to return false, so no vehicle ever takes them aboard.
@@ -66,32 +98,165 @@ pub(super) fn boat_pushes(boat: Aabb, other: Aabb, other_is_boat: bool) -> bool 
 }
 
 impl Game<'_> {
-    /// The players in boat `id`: the window's player (or the server player
-    /// acting as it) and the server's other players.
     /// Starts or ends a stretch of vehicle ticks (`tick_boats`, `tick_carts`): while one runs,
-    /// a vehicle's box query tests the mobs' positions against their [`BoxReach`] first.
-    /// A mob joining or leaving works it out again, and so does [`Self::vehicle_picked_up`].
+    /// a vehicle's box query ([`Self::mobs_meeting`]) reads the mobs near it from a grid of
+    /// their boxes, or tests the mobs' positions against their [`BoxReach`] first. A mob
+    /// joining or leaving works the reach out again, and so does [`Self::vehicle_picked_up`].
+    /// The first query that needs one works it out (the reach's count is one no list has), so
+    /// a level without boats or carts never walks its mobs for them.
     pub(super) fn vehicles_ticking(&self, on: bool) {
-        self.vehicle_mob_reach
-            .set(on.then(|| (self.mobs.len(), BoxReach::of(&self.mobs))));
+        let reach = on.then(|| (usize::MAX, BoxReach::default()));
+        self.vehicle_mobs.reach.set(reach);
+        // The boats' grid serves the carts ticking right after them; an older one goes.
+        let mut grid = self.vehicle_mobs.grid.borrow_mut();
+        let stamp = self.mobs.stamp();
+        let built = grid.built.take().filter(|(s, _)| *s == stamp);
+        *grid = MobGrid {
+            built,
+            ..Default::default()
+        };
     }
     /// A vehicle picked a mob up: a shulker turns its lid up (`Shulker.startRiding`), which
     /// changes its box, so the next query works the [`BoxReach`] out again.
     pub(super) fn vehicle_picked_up(&self) {
-        if let Some((_, reach)) = self.vehicle_mob_reach.get() {
-            self.vehicle_mob_reach.set(Some((usize::MAX, reach)));
+        if let Some((_, reach)) = self.vehicle_mobs.reach.get() {
+            self.vehicle_mobs.reach.set(Some((usize::MAX, reach)));
         }
     }
     /// The mobs' [`BoxReach`] while vehicles tick, none otherwise.
     pub(super) fn vehicle_mob_reach(&self) -> Option<BoxReach> {
-        let (count, reach) = self.vehicle_mob_reach.get()?;
+        let (count, reach) = self.vehicle_mobs.reach.get()?;
         if count == self.mobs.len() {
             return Some(reach);
         }
         let reach = BoxReach::of(&self.mobs);
-        self.vehicle_mob_reach.set(Some((self.mobs.len(), reach)));
+        self.vehicle_mobs.reach.set(Some((self.mobs.len(), reach)));
         Some(reach)
     }
+    /// The slots, ascending, of the mobs whose vehicle is `id`, whatever their state. While
+    /// vehicles tick, one walk over the mobs answers for every vehicle until the mob list is
+    /// next written: each boat asks for its passengers and each cart on rails whether it is
+    /// ridden, and each one walked every mob of the level.
+    fn vehicle_riders(&self, id: u32) -> Vec<usize> {
+        let rides = |v: u32| move |&j: &usize| self.mobs[j].extra.mount == Some(v);
+        if !self.vehicle_mobs_indexed() {
+            return (0..self.mobs.len()).filter(rides(id)).collect();
+        }
+        let stamp = self.mobs.stamp();
+        let mut riders = self.vehicle_mobs.riders.borrow_mut();
+        if riders.as_ref().is_none_or(|(s, _)| *s != stamp) {
+            let mut by_vehicle = FxHashMap::<u32, Vec<usize>>::default();
+            for (j, m) in self.mobs.iter().enumerate() {
+                if let Some(v) = m.extra.mount {
+                    by_vehicle.entry(v).or_default().push(j);
+                }
+            }
+            *riders = Some((stamp, by_vehicle));
+        }
+        let of = riders
+            .as_ref()
+            .and_then(|(_, by_vehicle)| by_vehicle.get(&id));
+        of.cloned().unwrap_or_default()
+    }
+    /// Whether a mob (one not removed) rides vehicle `id`: `Entity.isVehicle` for a cart.
+    pub(super) fn mob_rides(&self, id: u32) -> bool {
+        let riders = self.vehicle_riders(id);
+        riders.iter().any(|&j| !self.mobs[j].removed)
+    }
+    /// Whether what a stretch of vehicle ticks reads from the mob list may stand in for a walk
+    /// over it: a stretch runs, and no native mod is loaded (a hook can move a mob unseen, as
+    /// for the carts' `CartIndex`).
+    fn vehicle_mobs_indexed(&self) -> bool {
+        self.vehicle_mobs.reach.get().is_some() && horizon_client::mod_api::mods().is_empty()
+    }
+    /// The slots, ascending, of the mobs whose box may meet `area` into `out` (a superset: the
+    /// caller still tests each box), from a grid of the mobs' boxes that the first query of a
+    /// stretch of vehicle ticks builds. False: walk them all. That is outside a stretch or with
+    /// native mods loaded ([`Self::vehicle_mobs_indexed`]), when the grid cannot say, and for
+    /// a while after a write to the mob list ([`MobGrid`]).
+    fn vehicle_mobs_near(&self, area: Aabb, out: &mut Vec<u32>) -> bool {
+        if !self.vehicle_mobs_indexed() {
+            return false;
+        }
+        let stamp = self.mobs.stamp();
+        let mut grid = self.vehicle_mobs.grid.borrow_mut();
+        if grid.built.as_ref().is_none_or(|(s, _)| *s != stamp) {
+            if grid.walked < grid.patience {
+                grid.walked += 1;
+                return false;
+            }
+            grid.built = Some((stamp, SeenGrid::new(self.mobs.iter().map(Mob::bounds))));
+            grid.walked = 0;
+            grid.patience = (grid.patience * 2).max(WALKS_BEFORE_GRID);
+        }
+        let built = grid.built.as_ref();
+        built.is_some_and(|(_, cells)| cells.candidates(area, out))
+    }
+    /// A vehicle's box query: `each` gets every mob whose box meets `area`, in slot order,
+    /// with its slot and its box. While vehicles tick it reads the mobs near the area
+    /// ([`Self::vehicle_mobs_near`]) or, walking them all, tests each position against the
+    /// [`BoxReach`] before working the box out. The mobs and their order are those of a walk
+    /// that tests every box.
+    pub(super) fn mobs_meeting(&self, area: Aabb, mut each: impl FnMut(usize, &Mob, Aabb)) {
+        let mut near = self.vehicle_mobs.near.take();
+        if self.vehicle_mobs_near(area, &mut near) {
+            for &j in &near {
+                let m = &self.mobs[j as usize];
+                let b = m.bounds();
+                if b.intersects(area) {
+                    each(j as usize, m, b);
+                }
+            }
+        } else {
+            let reach = self.vehicle_mob_reach();
+            for (j, m) in self.mobs.iter().enumerate() {
+                if reach.is_some_and(|r| !r.may_meet(m, area)) {
+                    continue;
+                }
+                let b = m.bounds();
+                if b.intersects(area) {
+                    each(j, m, b);
+                }
+            }
+        }
+        self.vehicle_mobs.near.set(near);
+    }
+    /// The slots, ascending, of the mobs whose box may meet a cart, read from the mobs' grid
+    /// once per cart. None when the mobs are the fewer (asking the carts' grid once per mob
+    /// is then the shorter way) or the grid does not answer.
+    pub(super) fn mobs_near_carts(&self) -> Option<Vec<u32>> {
+        if self.mobs.len() <= self.carts.len() {
+            return None;
+        }
+        let (mut slots, mut near) = (Vec::new(), Vec::new());
+        for c in self.carts.iter() {
+            if !self.vehicle_mobs_near(c.bounds(), &mut near) {
+                return None;
+            }
+            slots.extend_from_slice(&near);
+        }
+        slots.sort_unstable();
+        slots.dedup();
+        Some(slots)
+    }
+    /// Whether mob `m`, whose box `reach` bounds, may touch a cart: the carts' grid (`cells`)
+    /// names the carts near it, or every cart when the grid cannot (a superset either way).
+    pub(super) fn mob_may_meet_cart(
+        &self,
+        reach: BoxReach,
+        m: &Mob,
+        cells: &SeenGrid,
+        near: &mut Vec<u32>,
+    ) -> bool {
+        if !cells.candidates(reach.around(m.position), near) {
+            near.clear();
+            near.extend(0..self.carts.len() as u32);
+        }
+        near.iter()
+            .any(|&k| reach.may_meet(m, self.carts[k as usize].bounds()))
+    }
+    /// The players in boat `id`: the window's player (or the server player
+    /// acting as it) and the server's other players.
     pub(super) fn boat_players(&self, id: u32) -> usize {
         let guests = self.lan.as_ref().map_or(0, |h| {
             h.hub
@@ -105,12 +270,9 @@ impl Game<'_> {
     /// The mobs in boat `id`, in their seat order after the players
     /// (`Entity.addPassenger` puts a player first).
     pub(super) fn boat_mobs(&self, id: u32) -> Vec<usize> {
-        (0..self.mobs.len())
-            .filter(|&j| {
-                let m = &self.mobs[j];
-                m.extra.mount == Some(id) && !m.removed && m.alive()
-            })
-            .collect()
+        let mut riders = self.vehicle_riders(id);
+        riders.retain(|&j| !self.mobs[j].removed && self.mobs[j].alive());
+        riders
     }
     /// `getPassengers().size()` of boat `id`.
     pub(super) fn boat_passengers(&self, id: u32) -> usize {
@@ -174,18 +336,12 @@ impl Game<'_> {
     /// `AbstractBoat.canVehicleCollide`: the other boats, minecarts,
     /// shulkers and pushable mobs and players, but not its own passengers.
     pub(super) fn boat_obstacles(&self, id: u32, area: Aabb) -> Vec<Aabb> {
-        let reach = self.vehicle_mob_reach();
-        let mut out: Vec<Aabb> = (0..self.mobs.len())
-            .filter(|&j| {
-                let m = &self.mobs[j];
-                // The box first: it turns away nearly every mob of the level.
-                reach.is_none_or(|r| r.may_meet(m, area))
-                    && m.bounds().intersects(area)
-                    && pushable(m)
-                    && (m.extra.mount.is_none() || self.mob_root_vehicle(j) != Some(id))
-            })
-            .map(|j| self.mobs[j].bounds())
-            .collect();
+        let mut out = Vec::new();
+        self.mobs_meeting(area, |j, m, b| {
+            if pushable(m) && (m.extra.mount.is_none() || self.mob_root_vehicle(j) != Some(id)) {
+                out.push(b);
+            }
+        });
         out.extend(
             self.boats
                 .iter()
@@ -230,19 +386,14 @@ impl Game<'_> {
         let pick_up = self.boat_players(id) == 0;
         // canAddPassenger, which startRiding asks after the checks below.
         let room = !self.boats[i].under_water();
-        // The box first: it turns away nearly every mob of the level, and the
-        // teams are only worked out when something touches the boat.
-        let reach = self.vehicle_mob_reach();
-        let sweep = area.union_bounds(bb);
-        let near: Vec<usize> = (0..self.mobs.len())
-            .filter(|&j| {
-                if reach.is_some_and(|r| !r.may_meet(&self.mobs[j], sweep)) {
-                    return false;
-                }
-                let mb = self.mobs[j].bounds();
-                mb.intersects(area) || mb.intersects(bb)
-            })
-            .collect();
+        // The mobs near the two boxes: the teams are only worked out when something
+        // touches the boat.
+        let mut near = Vec::new();
+        self.mobs_meeting(area.union_bounds(bb), |j, _, mb| {
+            if mb.intersects(area) || mb.intersects(bb) {
+                near.push(j);
+            }
+        });
         let outside = self.players_outside(id);
         let touching = !near.is_empty()
             || outside
@@ -535,5 +686,125 @@ mod tests {
         assert!(!boat_pushes(boat, at(64.1), false));
         assert!(boat_pushes(boat, at(64.5), true));
         assert!(!boat_pushes(boat, at(64.5625), true));
+    }
+
+    /// A mob pushes the cart its box touches while a mob far from every cart pushes none and
+    /// is not pushed, whichever grid finds them: the carts' (four carts in four of its columns,
+    /// asked once per mob while the mobs are the fewer) or, in a crowd, the mobs' (asked once
+    /// per cart).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn only_the_mob_touching_a_cart_pushes_it() {
+        use super::super::minecarts::{CartKind, Minecart};
+        let pushed = [0, 12].map(|crowd: u32| {
+            let mut game = super::super::native_machines::tests::server_game();
+            let pig = game.res.mob_types().get("minecraft:pig").unwrap().clone();
+            for (i, (x, z)) in [(0.5, 0.5), (20.5, 0.5), (0.5, 20.5), (20.5, 20.5)]
+                .into_iter()
+                .enumerate()
+            {
+                let at = Vec3::new(x, 64.0, z);
+                game.carts
+                    .push(Minecart::new(100 + i as u32, CartKind::Chest, at));
+            }
+            // 0.5 west of the second cart (boxes 0.9 and 0.98 wide), in the middle of them
+            // all, and the crowd well away.
+            let spots = [(20.0, 0.5), (10.5, 10.5)].into_iter();
+            let crowd = (0..crowd).map(|i| (40.5 + 3.0 * f64::from(i), 40.5));
+            for (i, (x, z)) in spots.chain(crowd).enumerate() {
+                let at = Vec3::new(x, 64.0, z);
+                game.mobs.push(Mob::new(1 + i as u32, pig.clone(), at, 0.0));
+            }
+            game.tick_carts();
+            let velocity = |id| game.mobs.iter().find(|m| m.id == id).unwrap().velocity;
+            assert!(velocity(1).x < 0.0, "pushed back west: {:?}", velocity(1));
+            let idle = game.mobs.iter().filter(|m| m.velocity == Vec3::ZERO);
+            assert_eq!(idle.count(), game.mobs.len() - 1);
+            velocity(1)
+        });
+        assert_eq!(pushed[0], pushed[1]);
+    }
+
+    /// A vehicle's box query during a stretch of vehicle ticks names the mobs a walk over
+    /// every box names, in the same order, also right after a mob moved into the box (a
+    /// push or a pick-up writes the mob list in the middle of a stretch).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_vehicles_box_query_matches_a_walk_over_every_mob() {
+        let mut game = super::super::native_machines::tests::server_game();
+        let pig = game.res.mob_types().get("minecraft:pig").unwrap().clone();
+        // A small LCG keeps the scene the same on every run.
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = |range: f64| {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (seed >> 11) as f64 / (1u64 << 53) as f64 * range
+        };
+        for id in 1..=400 {
+            let at = Vec3::new(next(48.0), 64.0 + next(3.0), next(48.0));
+            game.mobs.push(Mob::new(id, pig.clone(), at, 0.0));
+        }
+        let mut met = 0;
+        for round in 0..300 {
+            // Three stretches, each with two writes to the mob list.
+            if round % 100 == 0 {
+                game.vehicles_ticking(true);
+            }
+            let corner = Vec3::new(next(46.0), 63.0 + next(3.0), next(46.0));
+            let size = Vec3::new(0.5 + next(2.5), 0.5 + next(1.5), 0.5 + next(2.5));
+            let area = Aabb::new(corner, corner.add_vector(size));
+            if round % 40 == 20 {
+                let j = round % game.mobs.len();
+                game.mobs[j].position = area.center();
+            }
+            let walked: Vec<Aabb> = game
+                .mobs
+                .iter()
+                .map(Mob::bounds)
+                .filter(|b| b.intersects(area))
+                .collect();
+            met += walked.len();
+            assert_eq!(game.boat_obstacles(u32::MAX, area), walked, "round {round}");
+            if round % 100 == 99 {
+                // The last comparisons ran against the grid: it stands, for the list as it is.
+                let fresh = |(stamp, _): &(ListStamp, SeenGrid)| *stamp == game.mobs.stamp();
+                assert!(
+                    game.vehicle_mobs
+                        .grid
+                        .borrow()
+                        .built
+                        .as_ref()
+                        .is_some_and(fresh)
+                );
+                game.vehicles_ticking(false);
+            }
+        }
+        assert!(met > 100, "the boxes met {met} mobs");
+    }
+
+    /// Who rides a vehicle follows the mob list through a stretch of vehicle ticks: a mob that
+    /// boards counts from then on, one removed no longer does, and a dead one still makes
+    /// its cart a vehicle but is no passenger of a boat.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_vehicle_knows_its_mob_riders_as_soon_as_they_board() {
+        let mut game = super::super::native_machines::tests::server_game();
+        let pig = game.res.mob_types().get("minecraft:pig").unwrap().clone();
+        for id in 1..=4 {
+            game.mobs.push(Mob::new(id, pig.clone(), Vec3::ZERO, 0.0));
+        }
+        let riders =
+            |game: &Game| [100, 101, 102].map(|id| (game.mob_rides(id), game.boat_mobs(id)));
+        game.mobs[0].extra.mount = Some(100);
+        game.vehicles_ticking(true);
+        let none = (false, vec![]);
+        assert_eq!(riders(&game), [(true, vec![0]), none.clone(), none.clone()]);
+        game.mobs[0].removed = true;
+        game.mobs[1].extra.mount = Some(101);
+        game.mobs[3].extra.mount = Some(102);
+        game.mobs[3].health = 0.0;
+        let after = [none, (true, vec![1]), (true, vec![])];
+        assert_eq!(riders(&game), after);
+        game.vehicles_ticking(false);
+        assert_eq!(riders(&game), after);
     }
 }

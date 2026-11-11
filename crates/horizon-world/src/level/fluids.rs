@@ -297,6 +297,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     pitch: 1.0,
                 });
             }
+            // `CampfireBlock.douse` and `AbstractCandleBlock.extinguish` both
+            // end with `level.gameEvent(null, GameEvent.BLOCK_CHANGE, pos)`,
+            // before `placeLiquid` sets the waterlogged block.
+            self.game_event(pos, "minecraft:block_change");
         }
         self.set_block_and_update(pos, next);
         let delay = self.fluid_tick_delay(fluid.kind());
