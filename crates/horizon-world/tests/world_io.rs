@@ -199,11 +199,34 @@ fn corrupt_allocations_are_dropped_and_bad_payloads_fail() {
     assert_eq!(RegionFile::open(dir.region()).unwrap().chunks().count(), 0);
     fs::write(dir.region(), [0, 0, 2, 1]).unwrap();
     assert_eq!(RegionFile::open(dir.region()).unwrap().chunks().count(), 0);
-    for (len, codec) in [(0, 3), (4093, 3), (u32::MAX, 3), (1, 127)] {
+    // `getChunkDataInputStream` answers `null` for a chunk the file cannot
+    // deliver, so the reader skips it instead of giving up on the region.
+    for (len, codec) in [(0, 3), (4093, 3), (u32::MAX, 3)] {
         malformed_region(&dir.region(), 513, 0, len, codec);
         let mut reader = RegionFile::open(dir.region()).unwrap();
-        assert!(reader.read(ChunkPos::new(-32, 0)).is_err());
+        assert!(reader.read(ChunkPos::new(-32, 0)).unwrap().is_none());
     }
+    // A custom compression id has no codec of its own, still fails.
+    malformed_region(&dir.region(), 513, 0, 1, 127);
+    let mut reader = RegionFile::open(dir.region()).unwrap();
+    assert!(reader.read(ChunkPos::new(-32, 0)).is_err());
+}
+
+/// `getChunkDataInputStream`: a file that ends inside the chunk's header or
+/// payload reads as a chunk that is not there ("Chunk header is truncated"),
+/// not as an error, so a reader skips it.
+#[test]
+fn a_chunk_cut_off_by_the_end_of_the_file_is_absent() {
+    let dir = Directory::new();
+    // Slot 0 points at sector 2, but the file ends two bytes into it.
+    malformed_region(&dir.region(), 513, 0, 4093, 3);
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .open(dir.region())
+        .unwrap();
+    file.set_len(8192 + 2).unwrap();
+    let mut reader = RegionFile::open(dir.region()).unwrap();
+    assert!(reader.read(ChunkPos::new(-32, 0)).unwrap().is_none());
 }
 
 /// `SerializableChunkData.parse` reads the position with `getIntOr("xPos", 0)`
