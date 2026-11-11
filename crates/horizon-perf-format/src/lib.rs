@@ -6,6 +6,7 @@ pub mod v1 {
     include!(concat!(env!("OUT_DIR"), "/horizon.perf.v1.rs"));
 }
 
+mod brief;
 mod counters;
 pub mod files;
 mod health;
@@ -15,6 +16,7 @@ mod strings;
 mod timing;
 mod writer;
 
+pub use brief::server_brief;
 pub use counters::{
     Counter, CounterReport, CounterReporter, Gauge, Registry, counter, gauge,
     global as counter_registry,

@@ -283,7 +283,7 @@ pub fn moderate(dir: &Path, command: &str, words: &[String]) -> Result<(), Strin
     Ok(())
 }
 
-/// `report [SECONDS] [--no-samples]`: records a capture into `reports/profile-<time>Z.hzperf` and prints where it went.
+/// `report [SECONDS] [--no-samples]`: records a capture into `reports/profile-<time>Z.hzperf`, prints a few lines on it and where it went.
 pub fn report(dir: &Path, words: &[String]) -> Result<(), String> {
     let (seconds, line) = report_line(words)?;
     let client = running(dir)?;
@@ -308,6 +308,10 @@ pub fn report(dir: &Path, words: &[String]) -> Result<(), String> {
             .find(|p| !before.contains(p))
             && horizon_platform::perf_format::files::is_complete(&path).unwrap_or(false)
         {
+            match horizon_platform::perf_format::server_brief(&path) {
+                Ok(lines) => lines.iter().for_each(|line| println!("{line}")),
+                Err(e) => println!("(no summary: {e})"),
+            }
             println!(
                 "{}",
                 horizon_platform::perf_format::files::saved_line(&path)

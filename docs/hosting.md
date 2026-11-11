@@ -359,7 +359,7 @@ Tiles are sampled again for each player who asks (there is no cache yet). Vanill
 
 `horizon-server report` records the running server for 60 seconds (`report 300` for five minutes, up to 600) into
 `reports/profile-<time>Z.hzperf`, a capture the performance tools read ([perf-platform.md](perf-platform.md)), and
-prints where it went. On the console it is `horizon-report [SECONDS]`; `horizon-report stop` ends it now and
+prints a short summary (TPS, MSPT, CPU, memory, players and the heaviest tick phases) and where it went. On the console it is `horizon-report [SECONDS]`; `horizon-report stop` ends it now and
 `horizon-report status` says how far it is. Nothing restarts: the report runs beside the game.
 
 The capture holds the settings, the machine, the Horizon switches and the few game rules that change what a tick
