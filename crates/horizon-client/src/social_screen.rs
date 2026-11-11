@@ -156,6 +156,27 @@ fn visible(view: &SocialView, h: f32) -> impl Iterator<Item = (usize, f32)> + '_
 pub fn search_box(w: f32) -> [f32; 4] {
     [margin_x(w) + 28.0, 74.0, 200.0, 15.0]
 }
+/// `ContainerEventHandler.mouseClicked`: the screen's children in order, which
+/// the social screen inherits without an override of its own. A click inside
+/// the search box is that `EditBox`'s own `onClick` (the caret goes under the
+/// pointer); the tabs, the rows' buttons and Done come after it.
+pub fn search_click_at(size: (f32, f32), cursor: (f32, f32)) -> bool {
+    let [x, y, w, h] = search_box(size.0);
+    ui::hovered(cursor, x, y, w, h)
+}
+/// What the click at `cursor` belongs to: the search box first (the screen's
+/// child order), then the list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Click {
+    Search,
+    Action(Action),
+}
+pub fn click_kind(size: (f32, f32), cursor: (f32, f32), view: &SocialView) -> Option<Click> {
+    if search_click_at(size, cursor) {
+        return Some(Click::Search);
+    }
+    click(size, cursor, view).map(Click::Action)
+}
 /// Done's rectangle (`HeaderAndFooterLayout`'s footer).
 fn done(w: f32, h: f32) -> [f32; 4] {
     [(w / 2.0).floor() - 100.0, h - 27.0, 200.0, 20.0]
@@ -626,5 +647,32 @@ mod tests {
         assert_eq!(scrollbar_x(854.0), 545.0);
         assert!(max_scroll(240.0, 10) > 0.0);
         assert_eq!(max_scroll(1000.0, 2), 0.0);
+    }
+
+    /// `SocialInteractionsScreen.mouseClicked` gives the widgets the click
+    /// before the list: a click inside the search box is the box's own.
+    #[test]
+    fn a_click_in_the_search_box_is_the_boxes_own() {
+        let size = (427.0, 240.0);
+        let view = SocialView::default();
+        let [x, y, w, h] = search_box(size.0);
+        // Inside the box the click is the box's, at both corners.
+        assert_eq!(
+            click_kind(size, (x + 1.0, y + 1.0), &view),
+            Some(Click::Search)
+        );
+        assert_eq!(
+            click_kind(size, (x + w - 0.5, y + h - 0.5), &view),
+            Some(Click::Search)
+        );
+        // Left of it and just below it the box has no claim.
+        assert_eq!(click_kind(size, (x - 1.0, y + 1.0), &view), None);
+        assert_eq!(click_kind(size, (x + 1.0, y + h), &view), None);
+        // And the list keeps its own buttons: Done is not the box's click.
+        let [dx, dy, dw, dh] = done(size.0, size.1);
+        assert_eq!(
+            click_kind(size, (dx + dw / 2.0, dy + dh / 2.0), &view),
+            Some(Click::Action(Action::Done))
+        );
     }
 }
