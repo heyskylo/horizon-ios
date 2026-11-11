@@ -84,7 +84,7 @@ impl Game<'_> {
         }
         let camera = self.eye_position().unwrap_or(at);
         self.particles
-            .fireworks(at, velocity, explosions.to_vec(), camera);
+            .fireworks(at, velocity, explosions.to_vec(), camera, true);
         true
     }
 }

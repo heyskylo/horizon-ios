@@ -45,8 +45,9 @@ The design: [hdr-linear-light.md](../design/hdr-linear-light.md).
 
 ## Colour
 
-Every colour a 0.2 stage reads or returns is **linear light**: BT.709 (sRGB) primaries, scene-referred, 1.0 is
-vanilla's white at paper white, more is brighter. Horizon decodes vanilla's values with a 2.2 power (vanilla's, not
+Every colour a 0.2 stage reads or returns is **linear light**: BT.709 (sRGB) primaries by default, scene-referred,
+1.0 is vanilla's white at paper white, more is brighter. A pack may ask for BT.2020 primaries, which hold colours
+outside sRGB, with `[frame] primaries` (below). Horizon decodes vanilla's values with a 2.2 power (vanilla's, not
 the piecewise sRGB curve), replacing negatives and NaN with 0 first, and encodes a stage's result the same way where
 the frame stores gamma (`[frame] blend`, below).
 
@@ -68,6 +69,12 @@ the frame stores gamma (`[frame] blend`, below).
 pass them along, but don't construct them: `horizon-shader check` refuses `PostInput(...)` and the like. `Surface` is
 yours to construct and keeps its one field; later material outputs come as helpers.
 
+**New names reach a stage only if the pack asked for them.** A later release puts a new name before your files (a
+helper, a struct, a resource, a constant) only under a manifest key the pack sets, or in a stage added later, whose
+prelude is its own. A stage a pack has today keeps the names it has today, so a name of your own that is free now
+stays yours: an addition doesn't break a pack that didn't ask for it. Names starting with `horizon_` are Horizon's
+already, and new fields can't collide, since you don't construct those structs.
+
 ## The display
 
 `frame.hdr`, `headroom`, `paper_white`, `peak` and `black_level` describe the display, read again every frame. With HDR
@@ -87,6 +94,14 @@ out), so a solid surface looks as under `\"gamma\"`. A stage sees the same value
 draw a float frame the pack draws on an 8-bit one, in gamma. Under `\"linear\"` resource packs' `core/sky`,
 `core/stars` and `core/rendertype_lines` shaders, which write gamma, give way to Horizon's own sky, stars and block
 outline.
+
+## `[frame] primaries`
+
+`primaries = \"bt709\"` (the default) is the rule above. With `primaries = \"bt2020\"` every colour a stage reads or
+returns is in BT.2020 primaries instead (D65 white, 1.0 still vanilla's white at paper white, values never negative).
+It needs `blend = \"linear\"`, since a change of primaries is only right in linear light. `frame.primaries` says which
+space the pack's colours are in, and `frame.luminance` holds that space's luminance weights: compute luminance as
+`dot(color, frame.luminance)` and it is right in either. `\"bt2020\"` passes the check; the game doesn't serve it yet.
 
 ";
 

@@ -426,6 +426,7 @@ impl Game<'_> {
     /// flicker whenever the game is not paused, frozen or not, while `TextureManager.tick`
     /// needs the level running normally. `HORIZON_STILL` keeps both with the world.
     pub(super) fn tick_frame_visuals(&mut self, running: bool) {
+        self.hold_fullbright();
         if running || !self.clock.still() {
             self.fog.tick_flicker();
         }

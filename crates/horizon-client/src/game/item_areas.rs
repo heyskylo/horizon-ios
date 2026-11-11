@@ -21,6 +21,27 @@ pub(super) struct ItemAreas {
 }
 
 impl ItemAreas {
+    /// Build the grid for villager item sensors only when many due sensors
+    /// would otherwise repeatedly scan a large, spatially spread item list.
+    /// Sampling a few 32-block columns avoids overhead for crowded piles.
+    pub(super) fn worthwhile(items: &[ItemEntity], queries: usize) -> bool {
+        if items.len() < 2048 || queries < 32 {
+            return false;
+        }
+        let stride = (items.len() / 32).max(1);
+        let mut columns = std::collections::HashSet::new();
+        for item in items.iter().step_by(stride) {
+            let p = item.position;
+            if p.is_finite() {
+                columns.insert((cell(p.x) >> 2, cell(p.z) >> 2));
+                if columns.len() >= 9 {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Whether an item of `items` may meet `area`: false only when none can.
     pub(super) fn may_meet(&mut self, items: &[ItemEntity], next_entity: u32, area: Aabb) -> bool {
         self.build(items, next_entity);
@@ -306,6 +327,57 @@ mod tests {
         items.push(item_at(2.0, 64.0, 1.0));
         assert_eq!(scan.next_from(1, items.len()), 1);
         assert_eq!(scan.next_from(2, items.len()), 2);
+    }
+
+    #[test]
+    fn villager_sensing_candidates_match_full_scan_order() {
+        let items: Vec<_> = (0..2600)
+            .map(|i| {
+                let x = f64::from(i % 52) * 31.0 - 800.0;
+                let z = f64::from(i / 52) * 31.0 - 750.0;
+                item_at(x, 64.0 + f64::from(i % 3) * 0.25, z)
+            })
+            .collect();
+        assert!(ItemAreas::worthwhile(&items, 32));
+        assert!(!ItemAreas::worthwhile(&items, 31));
+
+        let clustered: Vec<_> = (0..2048).map(|_| item_at(1.0, 64.0, 1.0)).collect();
+        assert!(!ItemAreas::worthwhile(&clustered, 32));
+
+        let mut cells = ItemAreas::default();
+        for (x, z) in [
+            (-800.0, -750.0),
+            (-80.0, 40.0),
+            (0.0, 0.0),
+            (220.0, -130.0),
+            (790.0, 770.0),
+        ] {
+            // A villager's inflated item sensor box, with a conservative
+            // fraction for the item bounding box at cell boundaries.
+            let area = Aabb::new(
+                Vec3::new(x - 32.4, 48.0, z - 32.4),
+                Vec3::new(x + 32.4, 80.0, z + 32.4),
+            );
+            let expected: Vec<usize> = items
+                .iter()
+                .enumerate()
+                .filter_map(|(i, e)| area.intersects(e.bounds()).then_some(i))
+                .collect();
+            let mut scan = cells.scan(&items, 1, area);
+            let mut actual = Vec::new();
+            let mut j = 0;
+            loop {
+                j = scan.next_from(j, items.len());
+                let Some(e) = items.get(j) else {
+                    break;
+                };
+                if area.intersects(e.bounds()) {
+                    actual.push(j);
+                }
+                j += 1;
+            }
+            assert_eq!(actual, expected, "sensor at {x}, {z}");
+        }
     }
 
     #[test]

@@ -444,7 +444,13 @@ impl Animation {
     }
 
     /// `run` for the entity `id` in the frame `counter`, whose parameters `fill` writes.
-    fn run_with(&self, id: u32, counter: u32, fill: impl FnOnce(&mut [f32]), poses: &mut Poses) {
+    pub(super) fn run_with(
+        &self,
+        id: u32,
+        counter: u32,
+        fill: impl FnOnce(&mut [f32]),
+        poses: &mut Poses,
+    ) {
         let preview = IN_GUI.get();
         SLOTS.with_borrow_mut(|slots| {
             slots.clear();

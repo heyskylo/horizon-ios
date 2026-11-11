@@ -178,7 +178,7 @@ impl TopBarUi {
                 );
             }
             let color = if open {
-                style::ACCENT
+                style::accent()
             } else if hovered {
                 style::WHITE
             } else {
@@ -220,7 +220,7 @@ impl TopBarUi {
             if pause_hovered {
                 style::WHITE
             } else {
-                style::MUTED
+                style::muted()
             },
             true,
         );
@@ -339,7 +339,11 @@ impl TopBarUi {
                 &Text::translate(key, &[]),
                 x + 8.0,
                 y + 6.0,
-                if hovered { style::WHITE } else { style::MUTED },
+                if hovered {
+                    style::WHITE
+                } else {
+                    style::muted()
+                },
                 true,
             );
             if !shortcut.is_empty() {
@@ -350,7 +354,7 @@ impl TopBarUi {
                     &shortcut,
                     x + menu_width - shortcut_width - 8.0,
                     y + 6.0,
-                    style::SOFT,
+                    style::soft(),
                     true,
                 );
             }

@@ -187,6 +187,10 @@ uses the no-pack frame. What it changes from 0.1:
   sees the same values either way. Where the device can't draw a float frame the pack draws on an 8-bit one, in
   gamma. Resource packs' `core/sky`, `core/stars` and `core/rendertype_lines` shaders write gamma, so under
   `"linear"` Horizon's own sky, stars and block outline draw in their place.
+- **`[frame] primaries`**: `"bt709"` (the default) or `"bt2020"`, the primaries of every colour a stage reads or
+  returns. BT.2020 holds colours outside sRGB, which HDR displays show. It needs `blend = "linear"`. `Frame` says
+  which in `primaries`, with that space's luminance weights in `luminance`, after `black_level`. `"bt2020"` passes
+  the check, but the game doesn't serve it yet.
 
 ```toml
 api = "0.2"
@@ -196,6 +200,7 @@ file = "tonemap.wgsl"
 
 [frame]
 blend = "gamma"            # optional: gamma (default) or linear
+primaries = "bt709"        # optional: bt709 (default) or bt2020, which needs blend = "linear"
 ```
 
 0.1 is unchanged: the same prelude, entries and reference, and a 0.1 pack that names `[tonemap]` or `[frame]` is
@@ -232,6 +237,12 @@ and particles (the material stage covers terrain only).
 
 ## Changelog
 
+- 2026-11-10: API 0.2 (additions, experimental): `[frame] primaries`, `"bt709"` (the default) or `"bt2020"`, and
+  `Frame.primaries` and `luminance` after `black_level`. `horizon-shader check` takes `"bt2020"` with
+  `blend = "linear"` only, and the game refuses it for now. The reference's "Room to grow" gains the rule for new
+  names: a later release adds a name to a stage's prelude only under a manifest key the pack sets or in a new stage,
+  and a test holds each prelude to its list of names. API 0.1 is unchanged: the uploaded `Frame` buffer grows by 16
+  bytes after the fields 0.1 declares.
 - 2026-11-09: API 0.2 (change, experimental): the game draws `[frame] blend = "linear"` packs instead of refusing
   them: the frame holds linear light, so see-through draws blend as light does, and a stage sees the same values
   as under `"gamma"`. API 0.1 is unchanged.

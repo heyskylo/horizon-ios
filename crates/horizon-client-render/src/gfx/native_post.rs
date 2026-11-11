@@ -8,7 +8,7 @@
 
 use glam::{Mat4, Vec3};
 use horizon_shader_api::{
-    Api, Frame as FrameInputs, StageKind, check::CheckedStage, stages::GROUP,
+    Api, Frame as FrameInputs, Primaries, StageKind, check::CheckedStage, stages::GROUP,
 };
 
 use super::Frame;
@@ -1614,7 +1614,11 @@ pub fn frame_inputs(
         paper_white: 80.0,
         peak: 80.0,
         black_level: 0.0,
-        padding: [0; 3],
+        // No pack is served another space yet (`[frame] primaries`).
+        primaries: Primaries::Bt709 as u32,
+        luminance_gap: [0; 2],
+        luminance: Primaries::Bt709.luminance(),
+        padding: 0,
     }
 }
 
