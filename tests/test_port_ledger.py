@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
-from tests.test_class_index import Pool
+from test_class_index import Pool
 from tools import port_ledger
 
 SCRIPT = Path(port_ledger.__file__).resolve()
