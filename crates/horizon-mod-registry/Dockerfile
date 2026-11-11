@@ -3,8 +3,10 @@ FROM rust:1-slim AS build
 WORKDIR /src
 # The root manifest only for the shared crate's workspace settings (edition, lints).
 COPY Cargo.toml Cargo.toml
+# Every crate the registry's Cargo.lock builds from a path (tests/test_service_images.py checks the list); cargo needs
+# an optional dependency's manifest even with its feature off (horizon-shader-api).
 COPY crates/horizon-mods crates/horizon-mods
-# horizon-mods' optional dependency: cargo needs its manifest even with the feature off.
+COPY crates/horizon-release-sign crates/horizon-release-sign
 COPY crates/horizon-shader-api crates/horizon-shader-api
 COPY crates/horizon-mod-registry crates/horizon-mod-registry
 RUN cargo build --release --locked --manifest-path crates/horizon-mod-registry/Cargo.toml

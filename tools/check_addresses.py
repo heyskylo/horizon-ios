@@ -254,13 +254,18 @@ def check(config, found, base=None):
 
 
 def base_config(base):
-    shown = subprocess.run(["git", "show", f"{base}:{CONFIG_PATH}"], capture_output=True, text=True, cwd=ROOT)
+    """tools/addresses.json where the branch left `base` (their merge base), as check_layers.base_config."""
+    merge_base = subprocess.run(["git", "merge-base", base, "HEAD"], capture_output=True, text=True, cwd=ROOT)
+    if merge_base.returncode != 0:
+        return None
+    shown = subprocess.run(["git", "show", f"{merge_base.stdout.strip()}:{CONFIG_PATH}"], capture_output=True,
+                           text=True, cwd=ROOT)
     return json.loads(shown.stdout) if shown.returncode == 0 else None
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--base", help="refuse addresses added to 'allowed' since this git ref")
+    parser.add_argument("--base", help="refuse addresses added to 'allowed' since the branch left this git ref")
     parser.add_argument("--list", action="store_true", help="print every host found and its files")
     args = parser.parse_args(argv)
     config = json.loads((ROOT / CONFIG_PATH).read_text())
