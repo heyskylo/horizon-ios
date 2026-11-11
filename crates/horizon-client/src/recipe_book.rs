@@ -635,7 +635,9 @@ impl Book {
             (ns.to_lowercase(), p.to_lowercase())
         };
         let Some((namespace, path)) = query.split_once(':') else {
-            return in_lines(&query) || results.iter().any(|r| id(r).1.contains(&query));
+            // `FullTextSearchTree.searchPlainText`: the plain-text tree only,
+            // not the ids (#15321).
+            return in_lines(&query);
         };
         let (namespace, path) = (namespace.trim(), path.trim());
         results.iter().any(|r| id(r).0.contains(namespace))
@@ -2307,10 +2309,12 @@ mod tests {
             &*book.entries[custom_index].result.item,
             "minecraft:blaze_rod"
         );
-        // Searching without namespace prefix matches the item path in Vanilla parity.
+        // `FullTextSearchTree`: plain text searches the tooltip lines only
+        // (#15321); `namespace:path` also searches the result's id.
         let lines = |_: &ItemStack| vec!["Custom Recipe".to_owned()];
-        assert!(book.collection_matches(&[custom_index], "blaze", &lines));
-        assert!(book.collection_matches(&[custom_index], "rod", &lines));
+        assert!(book.collection_matches(&[custom_index], "custom", &lines));
+        assert!(!book.collection_matches(&[custom_index], "blaze", &lines));
+        assert!(!book.collection_matches(&[custom_index], "rod", &lines));
         assert!(book.collection_matches(&[custom_index], "minecraft:blaze", &lines));
         assert!(!book.collection_matches(&[custom_index], "iron", &lines));
     }

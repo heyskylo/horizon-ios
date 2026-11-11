@@ -2414,7 +2414,7 @@ impl Game<'_> {
             .as_ref()
             .is_none_or(|r| r.dimension.has_skylight);
         self.streaming.sky_light = has_sky;
-        self.streaming.nether_shading = self.dim == Dim::Nether;
+        self.streaming.nether_shading = self.nether_lighting();
         // The seed in SpawnInfo is already the hashed one the client's BiomeManager holds.
         self.streaming.biome_zoom = horizon_core::biome::BiomeZoom::new(spawn.seed);
         let player = self.player.as_ref();
@@ -6960,7 +6960,7 @@ impl Game<'_> {
         }
         let game_time = self.world.game_time;
         // `AbstractPiglin.isConverting`: the dimension is not piglin safe.
-        let nether = self.dim == super::Dim::Nether;
+        let nether = !self.dimension_type().piglins_zombify;
         // What a wither's side heads can look at, by network entity id: the
         // mobs and the player (position and eye height).
         let wither_targets: Vec<(i32, [f64; 3], f64)> = if self

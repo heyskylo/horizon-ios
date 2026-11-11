@@ -1193,13 +1193,12 @@ impl Game<'_> {
             return;
         }
         // Projectile.shoot spreads the shot with the projectile's own random.
-        let mut own = random_source::entity();
         match item.as_str() {
             "minecraft:experience_bottle"
             | "minecraft:splash_potion"
             | "minecraft:lingering_potion" => {
                 let mut shot = Projectile::new(ProjectileKind::Snowball, at, None);
-                shot.shoot(&mut own, dir, power, uncertainty);
+                shot.shoot(&mut random_source::entity(), dir, power, uncertainty);
                 self.launch_thrown(one, at, shot.velocity, None);
             }
             _ => {
@@ -1246,7 +1245,7 @@ impl Game<'_> {
                     a.set_item(&one);
                     a.pickup = horizon_client::arrows::Pickup::Allowed;
                 }
-                shot.shoot(&mut own, dir, power, uncertainty);
+                shot.shoot_own(dir, power, uncertainty);
                 self.add_projectile(shot);
             }
         }
