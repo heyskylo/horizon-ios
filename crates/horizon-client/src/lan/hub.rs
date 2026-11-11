@@ -2928,14 +2928,11 @@ impl Hub {
             .iter()
             .filter_map(|key| Some((*key, self.encoder.biome_data(world.chunks.get(key)?))))
             .collect();
-        for g in self.guests.iter().filter(|g| self.watches(g)) {
-            let chunks: Vec<_> = data
-                .iter()
-                .filter(|(key, _)| g.sent_chunks.contains(key))
-                .map(|(_, d)| d.clone())
-                .collect();
-            if !chunks.is_empty() {
-                g.send(&C::ChunksBiomes(play::ChunksBiomes { chunks }));
+        let watching: Vec<_> = self.guests.iter().filter(|g| self.watches(g)).collect();
+        let bodies = super::biome_resend::bodies(watching.iter().map(|g| &g.sent_chunks), &data);
+        for (g, body) in watching.into_iter().zip(bodies) {
+            if let Some(body) = body {
+                g.send_chunks_biomes_body(body);
             }
         }
     }
