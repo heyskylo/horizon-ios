@@ -966,6 +966,39 @@ pub fn enchantment_lines(
     lines
 }
 
+/// `ItemAttributeModifiers` from the stack's component, else the item's.
+fn stack_modifiers(
+    stack: &ItemStack,
+    info: Option<&ItemInfo>,
+) -> Vec<(String, String, f64, String, String)> {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:attribute_modifiers").is_some()) {
+        return Vec::new();
+    }
+    if let Some(horizon_world::nbt::Tag::List(entries)) =
+        data.and_then(|d| d.other("minecraft:attribute_modifiers"))
+    {
+        return entries
+            .iter()
+            .filter_map(|entry| {
+                let string = |key: &str| match entry.get(key) {
+                    Some(horizon_world::nbt::Tag::String(s)) => Some(s.to_string_lossy()),
+                    _ => None,
+                };
+                Some((
+                    string("type")?,
+                    string("id")?,
+                    horizon_world::datafix::dynamic::as_number(entry.get("amount")?)?.float_value()
+                        as f64,
+                    string("operation").unwrap_or_else(|| "add_value".into()),
+                    string("slot").unwrap_or_else(|| "any".into()),
+                ))
+            })
+            .collect();
+    }
+    info.map(|info| info.modifiers.clone()).unwrap_or_default()
+}
+
 /// The lines of `stack` below its name that its components give, in
 /// `ItemStack.addDetailsToTooltip` order.
 pub fn detail_lines(
@@ -1042,7 +1075,7 @@ pub fn detail_lines(
     lines.extend(dyed_line(stack, &display, false, translate).map(|l| l.0));
     if let Some(info) = info {
         lines.extend(
-            attribute_lines(&info.modifiers, None, translate)
+            attribute_lines(&stack_modifiers(stack, Some(info)), None, translate)
                 .into_iter()
                 .map(|(line, _)| line),
         );
