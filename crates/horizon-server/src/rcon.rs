@@ -7,8 +7,7 @@
 //! Where it differs from vanilla, on purpose: a packet is read from the stream (vanilla takes one `read` for
 //! one packet, so a command that TCP splits closes the connection), the password is compared in constant time,
 //! and a connection that hasn't logged in within [`LOGIN_WITHIN`] is closed, with at most [`MAX_CLIENTS`] open
-//! at once (vanilla has neither limit). A reply is cut in packets of 4096 characters, where vanilla cuts at
-//! 4096 UTF-16 units.
+//! at once (vanilla has neither limit).
 
 use crate::{
     api::{Phase, Shared, same_token},
@@ -41,7 +40,7 @@ const RESPONSE: i32 = 0;
 const AUTH_FAILURE: i32 = -1;
 /// `RconClient.buf`: the most a request takes, the length included.
 const MAX_REQUEST: usize = 1460;
-/// The characters of a reply in one packet (`sendCmdResponse`).
+/// The UTF-16 units of a reply in one packet (`sendCmdResponse`).
 const CHUNK: usize = 4096;
 /// How long a connection may take to log in.
 const LOGIN_WITHIN: Duration = Duration::from_secs(30);
@@ -348,15 +347,19 @@ fn send(stream: &mut TcpStream, id: i32, kind: i32, text: &str) -> io::Result<()
     stream.write_all(&encode(id, kind, text))
 }
 
-/// A command's output in packets of [`CHUNK`] characters: `sendCmdResponse` sends one, even when it is empty.
+/// A command's output in packets of [`CHUNK`] UTF-16 units: `sendCmdResponse` cuts the Java string
+/// with `substring`, so a character outside the BMP (two units) can straddle a cut, and
+/// `String.getBytes(UTF_8)` then writes each lone half as `?`. It sends one packet, even when the
+/// output is empty.
 fn send_output(stream: &mut TcpStream, id: i32, output: &str) -> io::Result<()> {
-    let mut rest = output;
+    let units: Vec<u16> = output.encode_utf16().collect();
+    let mut rest = units.as_slice();
     loop {
-        let end = rest
-            .char_indices()
-            .nth(CHUNK)
-            .map_or(rest.len(), |(i, _)| i);
-        send(stream, id, RESPONSE, &rest[..end])?;
+        let end = rest.len().min(CHUNK);
+        let text: String = char::decode_utf16(rest[..end].iter().copied())
+            .map(|unit| unit.unwrap_or('?'))
+            .collect();
+        send(stream, id, RESPONSE, &text)?;
         rest = &rest[end..];
         if rest.is_empty() {
             return Ok(());
@@ -399,6 +402,8 @@ mod tests {
             |line| match line {
                 "boom" => Err("it blew up".into()),
                 "long" => Ok("é".repeat(CHUNK + 5)),
+                // 4095 units, then a pair (a non-BMP character is two UTF-16 units), then one more.
+                "emoji" => Ok(format!("{}😀b", "a".repeat(CHUNK - 1))),
                 "silent" => Ok(String::new()),
                 line => Ok(format!("echo:{line}")),
             },
@@ -516,6 +521,21 @@ mod tests {
             (2, RESPONSE, CHUNK)
         );
         assert_eq!((second.0, second.2.chars().count()), (2, 5));
+    }
+
+    /// `sendCmdResponse` cuts the output with `String.substring` at 4096 UTF-16 units, so a pair that
+    /// straddles the cut is split, and `String.getBytes(UTF_8)` writes each lone half as `?`.
+    #[test]
+    fn an_output_is_cut_at_4096_utf16_units_and_a_split_pair_becomes_question_marks() {
+        let (address, _) = server(limits());
+        let mut rcon = connect(address);
+        rcon.write_all(&encode(1, AUTH, "hunter2")).unwrap();
+        reply(&mut rcon);
+        rcon.write_all(&encode(2, EXEC, "emoji")).unwrap();
+        let first = reply(&mut rcon);
+        let second = reply(&mut rcon);
+        assert_eq!(first, (2, RESPONSE, format!("{}?", "a".repeat(4095))));
+        assert_eq!(second, (2, RESPONSE, "?b".to_owned()));
     }
 
     #[test]
