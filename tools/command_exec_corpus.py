@@ -5245,7 +5245,8 @@ def sulfur_cube_size_ticks():
                 cmd(f'/data get entity {uuid} Size', expect_result=size),
                 cmd(f'/data get entity {uuid} Health 100', expect_result=health),
             ])
-    lines.extend(setup('/kill @e[type=sulfur_cube]', '/forceload remove 0 0 31 31'))
+    lines.extend(setup(SHRINK_SULFUR_CUBES.format('@e[type=sulfur_cube]'), '/kill @e[type=sulfur_cube]',
+                       '/forceload remove 0 0 31 31'))
     return lines
 
 
