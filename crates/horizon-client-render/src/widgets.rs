@@ -429,6 +429,16 @@ mod cursor_tests {
     use super::*;
 
     #[test]
+    fn a_hovered_text_field_asks_for_the_i_beam() {
+        let _ = take_cursor();
+        text_cursor(false, true);
+        assert_eq!(take_cursor(), Cursor::Arrow);
+        text_cursor(true, true);
+        assert_eq!(take_cursor(), Cursor::Ibeam);
+        text_cursor(true, false);
+        assert_eq!(take_cursor(), Cursor::NotAllowed);
+    }
+    #[test]
     fn hovered_widgets_ask_for_the_hand_or_not_allowed() {
         let _ = take_cursor();
         widget_cursor(false, true);
