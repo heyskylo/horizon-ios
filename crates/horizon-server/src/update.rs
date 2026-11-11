@@ -770,9 +770,14 @@ pub fn rollback(dir: &Path, args: &[String]) -> Result<(), String> {
 fn seconds(text: &str) -> Result<Duration, String> {
     text.parse()
         .ok()
-        .filter(|&s| s > 0)
+        .filter(|&s| s > 0 && s <= crate::api::MAX_UPDATE_TIMEOUT.as_secs())
         .map(Duration::from_secs)
-        .ok_or_else(|| format!("--timeout needs a number of seconds (got {text:?})"))
+        .ok_or_else(|| {
+            format!(
+                "--timeout needs a number of seconds up to {} (got {text:?})",
+                crate::api::MAX_UPDATE_TIMEOUT.as_secs()
+            )
+        })
 }
 
 /// Switches the install to the release `tag`. A running server restarts on it through its supervisor, which
@@ -892,6 +897,15 @@ fn switch_stopped(dir: &Path, install: &Install, tag: &str) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_update_timeout_past_a_day_is_refused() {
+        assert_eq!(seconds("90").unwrap(), Duration::from_secs(90));
+        assert!(seconds("86400").is_ok());
+        assert!(seconds("86401").is_err());
+        assert!(seconds("18446744073709551615").is_err());
+        assert!(seconds("0").is_err());
+    }
     use serde_json::json;
 
     #[test]
