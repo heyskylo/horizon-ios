@@ -32,7 +32,7 @@ ChestBlockEntity.recheckOpen	port	crates/horizon-world/src/level/tick.rs::Sim::t
 ChestLidController.tickLid	port	crates/horizon-client-render/src/block_entity_anim.rs::ChestLid::tick	lid openness step of 0.1 per tick
 ChiseledBookShelfBlockEntity.removeItem	port	crates/horizon-client/src/game/machines.rs::Game::take_one	removes one item from the slot
 ChiseledBookShelfBlockEntity.setItem	port	crates/horizon-client/src/game/chiseled_bookshelf.rs::Game::use_chiseled_bookshelf	player insert path; slot update via chiseled_bookshelf_update_state
-ChiseledBookShelfBlockEntity.canTakeItem	port	crates/horizon-client/src/game/machines.rs::Containers::can_take	gap: minor: the target-has-room check is left to take_one and put_back
+ChiseledBookShelfBlockEntity.canTakeItem	port	crates/horizon-client/src/game/machines.rs::Containers::can_take	the target's room: a free slot or a matching stack with room (`hasAnyMatching`); the hopper asks `can_take_into`, which applies it before `can_take`
 ChiseledBookShelfBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::place	Items as container component
 ChiseledBookShelfBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::collect	Items as container component
 CommandBlockEntity.onModeSwitch	port	crates/horizon-client/src/game/command_blocks.rs::Game::apply_command_block	mode switch; the AUTO schedule follows the setAutomatic step
