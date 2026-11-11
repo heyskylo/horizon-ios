@@ -63,7 +63,8 @@ pub fn single(from: &Mob, to: &mut Mob, params: Params) {
     to.extra.leash = from.extra.leash;
     to.extra.leash_pending = from.extra.leash_pending;
     to.extra.leash_player = from.extra.leash_player;
-    // convertCommon.
+    // convertCommon, in its order: the absorption first, then the effects.
+    to.absorption = from.absorption;
     to.extra.effects = from.extra.effects.clone();
     to.extra.effect_fallbacks = from.extra.effect_fallbacks.clone();
     to.extra.hidden_effects = from.extra.hidden_effects.clone();
