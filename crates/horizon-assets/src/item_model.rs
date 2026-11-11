@@ -1771,12 +1771,7 @@ fn last_index_less_or_equal(entries: &[(f32, ItemModelNode)], needle: f32) -> Op
             .map_or(entries.len() as i64 - 1, |i| i as i64 - 1)
     } else {
         match binary_search(entries, needle) {
-            Ok(mut index) => {
-                while index + 1 < entries.len() && entries[index + 1].0 <= needle {
-                    index += 1;
-                }
-                index as i64
-            }
+            Ok(index) => index as i64,
             Err(insertion) => insertion as i64 - 1,
         }
     };

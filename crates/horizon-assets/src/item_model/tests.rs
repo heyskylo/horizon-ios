@@ -195,11 +195,24 @@ fn last_index_less_or_equal_linear_and_binary() {
     assert_eq!(last_index_less_or_equal(&long, 310.0), Some(31));
     assert_eq!(last_index_less_or_equal(&long, 1000.0), Some(31));
 
-    // Upper-bound tie behavior for duplicate and signed-zero thresholds
+    // Short lists use upper-bound tie behavior, including signed zero.
     let duplicates = make(&[1.0, 1.0, 2.0]);
     assert_eq!(last_index_less_or_equal(&duplicates, 1.0), Some(1));
 
     let zeroes = make(&[-0.0, 0.0]);
     assert_eq!(last_index_less_or_equal(&zeroes, -0.0), Some(1));
     assert_eq!(last_index_less_or_equal(&zeroes, 0.0), Some(1));
+
+    // At 16 entries, vanilla returns Arrays.binarySearch's hit, not the last tie.
+    // Expected indices were checked on the JVM.
+    let duplicates = make(&[
+        0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 7.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0,
+    ]);
+    assert_eq!(last_index_less_or_equal(&duplicates, 7.0), Some(7));
+
+    let zeroes = make(&[
+        -8.0, -7.0, -6.0, -5.0, -4.0, -3.0, -2.0, -0.0, -0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0,
+    ]);
+    assert_eq!(last_index_less_or_equal(&zeroes, -0.0), Some(7));
+    assert_eq!(last_index_less_or_equal(&zeroes, 0.0), Some(9));
 }
