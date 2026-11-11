@@ -113,6 +113,7 @@ impl Game<'_> {
                 f64::from(pos[2] + 1),
             ),
         );
+        let entity_in_cube = self.non_mob_entity_meets(area);
         let placed = self.with_level(|b, level, ticks| {
             let target = level.block_state(at);
             let below = level.block_state(at.offset(0, -1, 0));
@@ -126,6 +127,7 @@ impl Game<'_> {
                 || !support.full_collision
                 || !b.can_survive(level, ticks, at, state)
                 || occupants.iter().any(|bounds| bounds.intersects(area))
+                || entity_in_cube
             {
                 return None;
             }
@@ -150,4 +152,47 @@ impl Game<'_> {
         }
         self.process_level_events()
     }
+    /// The rest of `Level.getEntities(enderman, box)` past the mobs the goal
+    /// saw: whether a player who is not a spectator (`NO_SPECTATORS`) or any
+    /// other entity has a box meeting `area`.
+    fn non_mob_entity_meets(&self, area: Aabb) -> bool {
+        use super::entity::{Entity as _, EntityLists, entity_lists_of, for_each_entity};
+        let boxed = |(lo, hi): ([f64; 3], [f64; 3])| {
+            Aabb::new(
+                Vec3::new(lo[0], lo[1], lo[2]),
+                Vec3::new(hi[0], hi[1], hi[2]),
+            )
+        };
+        let spectator = self.spectator();
+        let player = self.player.as_ref().filter(|_| !spectator).map(|p| {
+            super::point_box(
+                [p.position.x, p.position.y, p.position.z],
+                f64::from(p.dimensions.width),
+                f64::from(p.dimensions.height),
+            )
+        });
+        let lists = EntityLists {
+            mobs: &[],
+            ..entity_lists_of!(self)
+        };
+        let mut met = false;
+        for_each_entity!(lists, e => {
+            met |= !e.is_removed() && e.bounds().intersects(area);
+        });
+        met || player
+            .into_iter()
+            .chain(
+                self.lan_block_trigger_boxes()
+                    .into_iter()
+                    .map(|(_, b)| boxed(b)),
+            )
+            .chain(self.item_frames.iter().map(|f| boxed(f.bounds())))
+            .chain(self.paintings.iter().map(|p| boxed(p.bounds())))
+            .chain(self.crystals.iter().map(super::dragon::Crystal::bounds))
+            .chain(self.hook.iter().map(super::fishing::Hook::bounds))
+            .any(|b| b.intersects(area))
+    }
 }
+#[cfg(test)]
+#[path = "enderman_occupancy_tests.rs"]
+mod occupancy_tests;
