@@ -486,7 +486,20 @@ fn http_within(
             .filter(|d| !d.is_zero())
             .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "router too slow"))?;
         s.set_read_timeout(Some(left.min(Duration::from_secs(5))))?;
-        let n = s.read(&mut chunk)?;
+        // A read that times out at the deadline is the router being too slow, whatever kind the
+        // platform reports it as (Linux: WouldBlock).
+        let n = match s.read(&mut chunk) {
+            Ok(n) => n,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "router too slow"));
+            }
+            Err(e) => return Err(e),
+        };
         if n == 0 {
             break;
         }
