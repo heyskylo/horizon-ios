@@ -399,7 +399,7 @@ impl Game<'_> {
                         let (mut meta, mut defaults) = (Vec::new(), Vec::new());
                         super::lan::mob_meta(
                             m,
-                            hub,
+                            hub.sync_data(),
                             None,
                             g.world.game_time,
                             &mut meta,
@@ -1232,7 +1232,10 @@ impl Game<'_> {
                     horizon_client::random_source::set_thread_uniquifier(uniquifier)?;
                     self.harness_owner(|g| {
                         g.next_entity = u32::try_from(entity_id)?;
-                        g.world.random = horizon_core::random::LegacyRandom::new(level_seed);
+                        horizon_core::random::RandomSource::set_seed(
+                            &mut g.world.random,
+                            level_seed,
+                        );
                         Ok(())
                     })?;
                 }

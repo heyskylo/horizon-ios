@@ -4,6 +4,7 @@
 //! costs one `Option` check per tick.
 mod event_timings;
 mod level_event_targets;
+mod mob_states;
 
 use super::{Game, shield::OFFHAND_SLOT};
 use event_timings::EventTimings;
@@ -363,12 +364,12 @@ pub(super) fn baby_index(species: Species) -> Option<u8> {
 /// own: `mob_meta`'s arms hold these mobs' other entries.
 fn mob_variant_meta(
     m: &Mob,
-    hub: &Hub,
+    sync: &SyncData,
     meta: &mut Vec<(u8, i32, Value)>,
     defaults: &mut Vec<(u8, i32, Value)>,
 ) {
     let (kind, e) = (m.kind.id.as_str(), &m.extra);
-    let id = |registry: &str, name: &str| hub.registry_id(registry, &format!("minecraft:{name}"));
+    let id = |registry: &str, name: &str| sync.id(registry, &format!("minecraft:{name}"));
     match kind {
         // Axolotl.DATA_VARIANT (after AgeableMob's two).
         "minecraft:axolotl" => {
@@ -501,7 +502,7 @@ fn mob_variant_meta(
 /// `defaults` gets the defaults of the entries that can go back to theirs.
 pub(super) fn mob_meta(
     m: &Mob,
-    hub: &Hub,
+    sync: &SyncData,
     player_entity: Option<i32>,
     game_time: i64,
     meta: &mut Vec<(u8, i32, Value)>,
@@ -558,7 +559,7 @@ pub(super) fn mob_meta(
     // LivingEntity.DATA_EFFECT_PARTICLES and DATA_EFFECT_AMBIENCE_ID: the
     // swirls of its effects (the ones a mob has are visible, not ambient).
     meta.extend(
-        hub.effect_meta(
+        sync.effect_meta(
             (m.extra.effects.iter())
                 .filter(|e| !m.extra.hidden_effects.contains(&e.0))
                 .map(|e| (e.0, m.extra.ambient_effects.contains(&e.0))),
@@ -590,7 +591,7 @@ pub(super) fn mob_meta(
         }
     }
     let e = &m.extra;
-    let id = |registry: &str, name: &str| hub.registry_id(registry, &format!("minecraft:{name}"));
+    let id = |registry: &str, name: &str| sync.id(registry, &format!("minecraft:{name}"));
     // Pig.DATA_BOOST_TIME and Strider.DATA_BOOST_TIME (18, the first entry
     // after AgeableMob's two). The total `boost()` stored in `counter2`.
     // The default 0 is not registered: vanilla never writes it back, and the
@@ -598,7 +599,7 @@ pub(super) fn mob_meta(
     if matches!(kind, "minecraft:pig" | "minecraft:strider") && e.counter2 > 0 {
         meta.push((18, serializer::INT, Value::Int(e.counter2)));
     }
-    mob_variant_meta(m, hub, meta, defaults);
+    mob_variant_meta(m, sync, meta, defaults);
     mob_raider_meta(m, meta, defaults);
     match kind {
         "minecraft:guardian" | "minecraft:elder_guardian" => {
@@ -675,15 +676,15 @@ pub(super) fn mob_meta(
             defaults.push((19, serializer::BYTE, Value::Byte(0)));
         }
         "minecraft:parrot" => {
-            // TamableAnimal.DATA_FLAGS_ID: sitting 1, tame 4.
-            let flags = i8::from(e.sitting) | if e.tame { 4 } else { 0 };
+            // TamableAnimal.DATA_FLAGS_ID: in the sitting pose 1, tame 4.
+            let flags = i8::from(e.sitting_pose) | if e.tame { 4 } else { 0 };
             if flags != 0 {
                 meta.push((18, serializer::BYTE, Value::Byte(flags)));
             }
         }
         "minecraft:cat" | "minecraft:wolf" => {
-            // TamableAnimal.DATA_FLAGS_ID: sitting 1, tame 4.
-            let flags = i8::from(e.sitting) | if e.tame { 4 } else { 0 };
+            // TamableAnimal.DATA_FLAGS_ID: in the sitting pose 1, tame 4.
+            let flags = i8::from(e.sitting_pose) | if e.tame { 4 } else { 0 };
             if flags != 0 {
                 meta.push((18, serializer::BYTE, Value::Byte(flags)));
             }
@@ -1948,14 +1949,15 @@ impl Game<'_> {
         mut kept: Option<&mut super::lan_idle::IdlePass<'_>>,
     ) {
         out.clear();
-        let mut speeds = super::lan_attributes::SpeedByType::default();
+        let mut states = mob_states::Later::new(self.world.game_time);
         // ChunkMap.tick sends the changes of an entity outside the
         // entity-ticking range only when it changed section or needs sync.
         let levels = self.tickets.levels();
         let idle_at = |p: horizon_core::geometry::Vec3| {
             !levels.in_entity_ticking_range((p.x.floor() as i32) >> 4, (p.z.floor() as i32) >> 4)
         };
-        for m in self.mobs.iter().filter(|m| !m.removed && m.id > after) {
+        for (index, m) in (self.mobs.iter().enumerate()).filter(|(_, m)| !m.removed && m.id > after)
+        {
             // The lead's holder: the player the mob sees, another mob or a
             // fence knot (game/lan_entities.rs).
             let player_entity = || {
@@ -1986,6 +1988,7 @@ impl Game<'_> {
             let bare = idle
                 && (kept.as_deref_mut()).is_some_and(|k| k.bare(hub, m.id as i32, kind, &place))
                 && !m.needs_sync;
+            let slot = out.as_slice().len();
             let e = out.add(m.id as i32, entity_uuid(m.id), kind);
             e.position = place.position;
             (e.yaw, e.pitch, e.head_yaw) = place.rotation;
@@ -1999,21 +2002,11 @@ impl Game<'_> {
             if bare {
                 continue;
             }
-            mob_meta(
-                m,
-                hub,
-                player_entity(),
-                self.world.game_time,
-                &mut e.meta,
-                &mut e.defaults,
-            );
-            // HappyGhast.aiStep: requiresPrecisePosition while on a still timeout.
-            e.precise = m.species() == horizon_client::mobs::Species::HappyGhast
-                && horizon_client::mobs::happy_ghast::on_still_timeout(m);
-            mob_freeze_meta(m, &mut e.meta, &mut e.defaults);
+            let (sync, sources) = (hub.sync_data(), self.attr_sources());
+            states.state((slot, index), m, player_entity(), sync, sources, e);
             mob_equipment(m, hub, &mut e.equipment);
-            self.mob_attributes(m, &mut speeds, &mut e.attributes);
         }
+        states.fill(&self.mobs, hub.sync_data(), self.attr_sources(), out);
         for d in self.dropped.iter().filter(|d| d.id > after) {
             let idle = idle_at(d.position);
             let place = super::lan_idle::Place {
@@ -4116,7 +4109,7 @@ mod tests {
         let hub = meta_hub("RaiderMetaTest");
         let meta_of = |m: &Mob| {
             let (mut meta, mut defaults) = (Vec::new(), Vec::new());
-            super::mob_meta(m, &hub, None, 0, &mut meta, &mut defaults);
+            super::mob_meta(m, hub.sync_data(), None, 0, &mut meta, &mut defaults);
             (meta, defaults)
         };
 
@@ -4145,7 +4138,7 @@ mod tests {
             // The same health: the ghoul's own maximum is 40, the zombie's 20.
             m.health = 10.0;
             let (mut meta, mut defaults) = (Vec::new(), Vec::new());
-            super::mob_meta(&m, &hub, None, 0, &mut meta, &mut defaults);
+            super::mob_meta(&m, hub.sync_data(), None, 0, &mut meta, &mut defaults);
             (meta, defaults)
         };
         for (template, id) in [
