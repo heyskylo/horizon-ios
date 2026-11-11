@@ -576,13 +576,19 @@ public final class VanillaCommandExecOracle {
                     }
                 }) : new EmbeddedChannel(connection);
             JsonObject login = new JsonObject();
-            if (Boolean.getBoolean("horizon.loadedFixture")) {
+            java.util.Map<Integer, JsonArray> sentMerchantOffers = new java.util.HashMap<>();
+            if (Boolean.getBoolean("horizon.loadedFixture") || Boolean.getBoolean("horizon.merchantCraftedFixture")) {
                 channel.pipeline().addLast(new io.netty.channel.ChannelOutboundHandlerAdapter() {
                     @Override public void write(io.netty.channel.ChannelHandlerContext context, Object message,
                             io.netty.channel.ChannelPromise promise) throws Exception {
                         if (message instanceof net.minecraft.network.protocol.game.ClientboundLoginPacket packet) {
                             login.addProperty("view_distance", packet.chunkRadius());
                             login.addProperty("simulation_distance", packet.simulationDistance());
+                        }
+                        if (message instanceof net.minecraft.network.protocol.game.ClientboundMerchantOffersPacket packet) {
+                            JsonArray offers = new JsonArray();
+                            for (var offer : packet.getOffers()) offers.add(merchantOffer(offer));
+                            sentMerchantOffers.put(packet.getContainerId(), offers);
                         }
                         super.write(context, message, promise);
                     }
@@ -1133,8 +1139,11 @@ public final class VanillaCommandExecOracle {
                         uuid=new JsonArray();for(int n:net.minecraft.core.UUIDUtil.uuidToIntArray(player.getUUID()))uuid.add(n);state.add("player",uuid);
                         JsonArray slots=new JsonArray();for(int n=0;n<3;n++)slots.add(merchantStack(menu.getSlot(n).getItem()));state.add("slots",slots);
                         state.add("carried",merchantStack(menu.getCarried()));state.addProperty("xp",menu.getTraderXp());
+                        boolean offerPackets = op.has("offer_packets") && op.get("offer_packets").getAsBoolean();
+                        if (offerPackets) state.add("sent_offers",sentMerchantOffers.get(menu.containerId));
                         JsonArray offers=new JsonArray();for(var offer:menu.getOffers()) {
                             JsonObject o=new JsonObject();o.addProperty("uses",offer.getUses());o.addProperty("special",offer.getSpecialPriceDiff());
+                            if (offerPackets) o.addProperty("demand",offer.getDemand());
                             o.addProperty("cost",offer.getCostA().getCount());offers.add(o);
                         }state.add("offers",offers);
                         JsonObject record=new JsonObject();record.addProperty("cmd","#merchant_state "+op.get("label").getAsString());
@@ -1241,6 +1250,15 @@ public final class VanillaCommandExecOracle {
                 }
             }
             Files.writeString(output, out.toString(), StandardCharsets.UTF_8);
+        }
+
+        static JsonObject merchantOffer(net.minecraft.world.item.trading.MerchantOffer offer) {
+            JsonObject value = new JsonObject();
+            value.addProperty("uses", offer.getUses());
+            value.addProperty("special", offer.getSpecialPriceDiff());
+            value.addProperty("demand", offer.getDemand());
+            value.addProperty("cost", offer.getCostA().getCount());
+            return value;
         }
 
         static net.minecraft.world.entity.npc.villager.Villager merchantOwner(net.minecraft.world.inventory.MerchantMenu menu) {

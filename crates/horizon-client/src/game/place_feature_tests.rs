@@ -160,7 +160,7 @@ fn inline_and_named_features_fail_and_succeed_alike() {
 #[test]
 #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
 fn an_inline_feature_draws_the_level_random_as_its_named_twin() {
-    use horizon_core::random::{LegacyRandom, RandomSource};
+    use horizon_core::random::RandomSource;
     let mut game = game();
     let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
     let json =
@@ -178,7 +178,7 @@ fn an_inline_feature_draws_the_level_random_as_its_named_twin() {
         for z in [10, 12] {
             assert!(game.run_command(&format!("setblock {x} 99 {z} grass_block")));
         }
-        game.world.random = LegacyRandom::new(seed);
+        game.world.random.set_seed(seed);
         let named_at = format!("{x} 100 10");
         assert!(
             run(
@@ -189,7 +189,7 @@ fn an_inline_feature_draws_the_level_random_as_its_named_twin() {
         );
         let named = flower(&mut game, &named_at);
         let named_next = game.world.random.clone().next_long();
-        game.world.random = LegacyRandom::new(seed);
+        game.world.random.set_seed(seed);
         let inline_at = format!("{x} 100 12");
         assert!(run(&mut game, &format!("place feature {inline} {inline_at}")).0);
         assert_eq!(flower(&mut game, &inline_at), named, "seed {seed}");

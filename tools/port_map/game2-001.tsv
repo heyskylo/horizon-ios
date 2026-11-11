@@ -1,3 +1,4 @@
+HappyGhast.canBreatheUnderwater	port	crates/horizon-client/src/mobs/ai/air.rs::can_breathe_under_water	a baby answers true, an adult takes the tag
 WorldGenRegion.getChunk	port	crates/horizon-world/src/worldgen/feature_region.rs::TerrainRegion::chunk	gap: minor: returns the resident chunk without the generating-step status check
 GossipContainer.getReputation	port	crates/horizon-client/src/gossip.rs::Gossips::reputation	Villager calls it with all types only; the type predicate is fixed to all
 Frog.travelInWater	missing		minor: frog water travel (getSpeed() move, 0.9 drag on all axes) absent; generic fluid travel used instead
@@ -38,7 +39,7 @@ Wolf.applyTamingSideEffects	port	crates/horizon-client/src/mobs/tame.rs::set_tam
 Wolf.hurtArmor	port	crates/horizon-client/src/mobs.rs::Mob::hurt_wolf_armor	
 Wolf.tryToTame	port	crates/horizon-client/src/game/creatures.rs::Game::interact_mob	one in three tames; particles 7 or 6, sit, stop nav, clear target
 Wolf.handleEntityEvent	inline	crates/horizon-client/src/mobs/tame.rs::ai_step	entity events 8 and 56 folded into the shake state in ai_step
-Wolf.getLeashOffset	port	crates/horizon-client/src/mobs/leash.rs::leash_offset	gap: player: wolf rope point uses full eye height, not 0.6 times it
+Wolf.getLeashOffset	port	crates/horizon-client/src/mobs/leash.rs::leash_offset	(0, 0.6 times the eye height as a float product, 0.4 times the width)
 Wolf.checkWolfSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	S::Wolf arm: wolves_spawnable_on and bright
 Wolf.WolfAvoidEntityGoal.avoidLlama	port	crates/horizon-client/src/mobs/tame.rs::AvoidLlamas::can_use	strength check inside can_use
 WolfVariants.bootstrap	skip:data		registry bootstrap; variants are the WOLF_VARIANTS table in tame.rs
@@ -61,7 +62,7 @@ EnderDragon.findClosestNode	port	crates/horizon-client/src/game/dragon.rs::Game:
 EnderDragon.findPath	port	crates/horizon-client/src/game/dragon.rs::Game::dragon_path	
 EnderDragon.reconstructPath	inline	crates/horizon-client/src/game/dragon.rs::Game::dragon_path	path list built inside the A* search
 EnderDragon.addAdditionalSaveData	port	crates/horizon-client/src/game/dragon.rs::Dragon::to_nbt	
-EnderDragon.readAdditionalSaveData	port	crates/horizon-client/src/game/dragon.rs::Dragon::from_nbt	gap: minor: sitting_damage_received is not read back
+EnderDragon.readAdditionalSaveData	port	crates/horizon-client/src/game/dragon.rs::Dragon::from_nbt	health, phase, death time, NoAI and sitting_damage_received (getFloatOr, 0 when absent)
 EnderDragon.getHeadLookVector	port	crates/horizon-client/src/game/dragon.rs::Game::dragon_look	
 EnderDragon.onSyncedDataUpdated	port	crates/horizon-client/src/game/dragon.rs::Game::remote_dragon_data	phase set on guests from synced data
 EnderDragon.recreateFromPacket	port	crates/horizon-client/src/game/dragon.rs::Game::spawn_remote_dragon	gap: minor: part entity ids are not assigned; parts are indexes
@@ -96,7 +97,7 @@ ArmorStand.handleEntityEvent	inline	crates/horizon-client/src/game/armor_stands.
 ArmorStand.showBreakingParticles	port	crates/horizon-client/src/game/armor_stands.rs::Game::show_breaking_particles	ticked in #3514; `ArmorStand.showBreakingParticles` is cited at crates/horizon-client/src/game/armor_stands.rs:616
 ArmorStand.causeDamage	port	crates/horizon-client/src/entities.rs::ArmorStand::environment_tick	gap: minor: fire damage only (4 per second burning, 0.15 per contact); hit and explosion paths are elsewhere
 ArmorStand.brokenByPlayer	inline	crates/horizon-client/src/game/armor_stands.rs::Game::attack_armor_stand	stand item dropped, then the equipment
-ArmorStand.brokenByAnything	inline	crates/horizon-client/src/game/armor_stands.rs::Game::attack_armor_stand	gap: minor: vanishing-curse items are not filtered on the hand-break path, only on the burn path
+ArmorStand.brokenByAnything	inline	crates/horizon-client/src/game/armor_stands.rs::Game::attack_armor_stand	the hand-break path ends in break_armor_stand_with_source, whose broken_armor_stand_equipment leaves out vanishing-curse items as the burn path does
 ArmorStand.playBrokenSound	inline	crates/horizon-client/src/game/armor_stands.rs::Game::attack_armor_stand	break sound on both break paths
 ArmorStand.setYBodyRot	skip:other		client rotation setter from packets; a stand turns only with its yaw field
 ArmorStand.setYHeadRot	skip:other		client rotation setter from packets; a stand turns only with its yaw field
@@ -138,6 +139,6 @@ HangingEntity.onSyncedDataUpdated	skip:other		client resync of the facing; Horiz
 HangingEntity.setDirection	skip:other		facing field write; bounds are derived on demand from the facing
 HangingEntity.recalculateBoundingBox	skip:other		bounds are derived on demand from the facing
 HangingEntity.calculateSupportBox	inline	crates/horizon-client/src/game/paintings.rs::Game::painting_survives	support box moved half a block into the wall
-HangingEntity.canCoexist	port	crates/horizon-client/src/game/paintings.rs::Game::painting_survives	gap: minor: only other paintings are checked for overlap; item frames and the same-facing rule are not
+HangingEntity.canCoexist	port	crates/horizon-client/src/game/paintings.rs::Game::painting_survives	painting_coexists: an overlapping other painting of any facing, or an item frame of the same facing, conflicts
 HangingEntity.hasLevelCollision	port	crates/horizon-client/src/game/paintings.rs::Game::painting_survives	block collision of the box
 WitherBoss.customServerAiStep	port	crates/horizon-client/src/mobs/wither.rs::custom_server_ai_step	side heads pick targets with line of sight
