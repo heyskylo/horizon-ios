@@ -1523,7 +1523,6 @@ fn the_prediction_records_each_client_tick_and_the_server_ticks_it_had_seen() {
     inbox.push_back((S::ClientTickEnd(Empty), 0));
     s.tick(&[]);
     let record = s.hub.guests[0]
-        .anticheat
         .record
         .as_deref()
         .expect("the prediction records");
@@ -1547,7 +1546,7 @@ fn the_prediction_records_each_client_tick_and_the_server_ticks_it_had_seen() {
         0,
     ));
     s.tick(&[]);
-    let record = s.hub.guests[0].anticheat.record.as_deref().unwrap();
+    let record = s.hub.guests[0].record.as_deref().unwrap();
     assert_eq!(record.seen(), Some(pinged));
 }
 
