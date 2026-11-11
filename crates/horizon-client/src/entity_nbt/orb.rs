@@ -17,6 +17,7 @@ pub fn orb_to_nbt(o: &ExperienceOrb, uuid: [i32; 4]) -> Tag {
     let mut tag = base.tag(None);
     for (key, value) in [
         ("Health", Tag::Short(o.health as i16)),
+        ("Air", Tag::Short(o.air as i16)),
         ("Age", Tag::Short(o.age.min(i16::MAX as u32) as i16)),
         ("Value", Tag::Short(o.value as i16)),
         ("Count", Tag::Int(o.count.min(i32::MAX as u32) as i32)),
@@ -51,6 +52,7 @@ pub fn orbs_from_nbt(tag: &Tag) -> Vec<ExperienceOrb> {
         count,
         ticks: 0,
         health: number(tag.get("Health")).unwrap_or(5) as i32,
+        air: number(tag.get("Air")).map_or(300, |air| air as i32), // getIntOr("Air", max)
         // ExperienceOrb's followingPlayer is transient: never saved, so a
         // loaded orb starts without one.
         following: None,

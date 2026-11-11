@@ -4,6 +4,7 @@
 //! (`data/minecraft/...`) and the registries report.
 use crate::chunk::LevelShapes;
 use horizon_protocol::{
+    entity_data,
     packets::configuration::{RegistryData, RegistryEntry, RegistryTags, TagEntry, UpdateTags},
     registry::{Builtin, Dynamic},
 };
@@ -504,6 +505,58 @@ impl SyncData {
         self.registries
             .iter()
             .any(|(_, e)| e.from_pack.contains(&true))
+    }
+
+    /// `LivingEntity.updateSynchronizedMobEffectParticles`: DATA_EFFECT_PARTICLES
+    /// (10) and DATA_EFFECT_AMBIENCE_ID (11) for the visible `effects`, as
+    /// (effect, ambient). The entries are left out when there is nothing to
+    /// show, which is their default.
+    pub fn effect_meta<'a>(
+        &self,
+        effects: impl IntoIterator<Item = (&'a str, bool)>,
+    ) -> Vec<(u8, i32, entity_data::Value)> {
+        let mut particles = Vec::new();
+        let mut all_ambient = true;
+        for (effect, ambient) in effects {
+            let effect = effect.trim_start_matches("minecraft:");
+            // MobEffect.particleFactory: the omens have their own particles,
+            // the others an entity effect in their colour (faint if ambient).
+            let (name, data) = match effect {
+                "trial_omen" | "raid_omen" => (effect, None),
+                _ => {
+                    let Some(def) = crate::brewing::effect(effect) else {
+                        continue;
+                    };
+                    let alpha = if ambient { 38 } else { 255 };
+                    let argb = (alpha << 24) | def.shown_color() as i32;
+                    (
+                        "entity_effect",
+                        Some(entity_data::ParticleData::Color(argb)),
+                    )
+                }
+            };
+            let Some(id) = self.id("minecraft:particle_type", &format!("minecraft:{name}")) else {
+                continue;
+            };
+            particles.push(entity_data::Particle { id, data });
+            all_ambient &= ambient;
+        }
+        if particles.is_empty() {
+            return Vec::new();
+        }
+        let mut meta = vec![(
+            10,
+            entity_data::serializer::PARTICLES,
+            entity_data::Value::Particles(particles),
+        )];
+        if all_ambient {
+            meta.push((
+                11,
+                entity_data::serializer::BOOLEAN,
+                entity_data::Value::Bool(true),
+            ));
+        }
+        meta
     }
 
     /// The id of a name in a built-in or synchronized registry.

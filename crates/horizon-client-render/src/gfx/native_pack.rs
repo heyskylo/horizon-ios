@@ -129,7 +129,7 @@ impl NativePack {
             textures,
             lights,
             terrain.pbr,
-            api,
+            (api, terrain.linear && api == horizon_shader_api::Api::V0_2),
         );
         // `[displacement]`, unless its option is off; nothing to displace without heights.
         let displacement = report
@@ -361,6 +361,7 @@ mod tests {
             flat: None,
             sprites: [1.0, 2048.0],
             format: wgpu::TextureFormat::Rgba8Unorm,
+            linear: false,
             sprite_tags: &[],
             sprite_materials: &[],
             entities: &empty,

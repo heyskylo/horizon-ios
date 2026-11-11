@@ -165,7 +165,7 @@ impl OptionsUi {
                 added::Row::Text { text, .. } => {
                     out.extend(wrap(&text, 64).into_iter().map(Row::Note))
                 }
-                added::Row::Space(_) => continue,
+                added::Row::Space(_) | added::Row::Field { .. } => continue,
                 added::Row::Button {
                     label,
                     active,
