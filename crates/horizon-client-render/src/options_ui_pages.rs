@@ -124,21 +124,15 @@ impl OptionsUi {
                 Some(open("horizon.pages.open.studio", Page::Studio)),
             ),
             // No AI hides the AI Agent page and everything AI.
-            Row::Buttons(
-                self.extra_button(s, crate::extras::Item::DiscordPresence),
-                Some(if s.extras.no_ai {
-                    self.extra_button(s, crate::extras::Item::NoAi)
-                } else {
-                    open("horizon.pages.open.agent", Page::Agent)
-                }),
-            ),
-        ]
-        .into_iter()
-        .chain(
-            (!s.extras.no_ai)
-                .then(|| Row::Buttons(self.extra_button(s, crate::extras::Item::NoAi), None)),
-        )
-        .collect();
+            if s.extras.no_ai {
+                Row::Buttons(self.extra_button(s, crate::extras::Item::NoAi), None)
+            } else {
+                Row::Buttons(
+                    open("horizon.pages.open.agent", Page::Agent),
+                    Some(self.extra_button(s, crate::extras::Item::NoAi)),
+                )
+            },
+        ];
         self.added_entries(&mut rows);
         rows
     }

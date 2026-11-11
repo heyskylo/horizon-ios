@@ -1,0 +1,12 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "find_entity_by_uuid", "target": "horizon_client::game::native_npcs::Game<'_>::native_find_entity_by_uuid"},
+    {"name": "entity_nbt_in", "target": "horizon_client::game::native_npcs::Game<'_>::native_entity_nbt_in"}
+  ],
+  "rust_summary": "`native_find_entity_by_uuid(uuid)`, `native_entity_by_uuid` from `&self` for the server's players and the level in place, and `native_entity_nbt_in(dimension, id)`, an entity's data in any loaded level.",
+  "doc_summary": "`native_find_entity_by_uuid(uuid)`, `native_entity_by_uuid` from a `&self` context (the server's players and the level in place; a level not in place needs `native_entity_by_uuid`), and `native_entity_nbt_in(dimension, id)`, the data of an entity in any loaded level (`execute in <dimension> run data get entity`, without `id`). Bundles need \"hooks\": @API:npc_entity_lookup@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_npcs.rs"
+  ]
+}

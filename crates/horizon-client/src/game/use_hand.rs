@@ -102,28 +102,12 @@ impl Game<'_> {
                 respawn_anchor::AnchorUse::Pass => anchor_passed = true,
                 respawn_anchor::AnchorUse::Other => {}
             }
-            // CeilingHangingSignBlock.useItemOn: a hanging sign aimed at the
-            // underside passes, so the next sign chains below instead of
-            // opening the editor, unless the side has click commands to run
+            // HangingSignBlock.useItemOn, on a ceiling sign's underside or a
+            // wall sign's edge: the hanging sign in hand chains a new sign
+            // there, so the block's own use is skipped, unless the side the
+            // player faces has click commands to run
             // (`shouldTryToChainAnotherHangingSign`).
-            let chains_sign = hit.face == [0, -1, 0]
-                // `instanceof HangingSignItem`, independent of the item's name.
-                && held.as_ref().is_some_and(|s| {
-                    self.res.behaviours().item_binding(&s.item)
-                        .is_some_and(|i| i.kind == horizon_world::level::ItemKind::HangingSign)
-                })
-                && self
-                    .res
-                    .facts()
-                    .get(self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]))
-                    .has_class("CeilingHangingSignBlock")
-                && matches!(
-                    self.world
-                        .block_entities
-                        .get(&(hit.pos[0], hit.pos[1], hit.pos[2])),
-                    Some(BlockEntity::Sign(_))
-                )
-                && !self.sign_can_execute_click_commands((hit.pos[0], hit.pos[1], hit.pos[2]));
+            let chains_sign = self.chains_hanging_sign(hit.pos, hit.face, held.as_ref());
             // TRY_WITH_EMPTY_HAND: only the main hand's turn uses the block
             // itself (useWithoutItem).
             if !anchor_passed && !chains_sign && self.hand == Hand::Main {
@@ -652,7 +636,6 @@ impl Game<'_> {
             (self.known_player_movement(), pl.ground.on_ground)
         });
         arrow.shoot_from_rotation(
-            &mut self.world.random,
             self.pitch,
             self.yaw,
             0.0,
@@ -698,3 +681,7 @@ impl Game<'_> {
 #[cfg(test)]
 #[path = "sign_use_tests.rs"]
 mod sign_use_tests;
+
+#[cfg(test)]
+#[path = "sign_chain_tests.rs"]
+mod sign_chain_tests;

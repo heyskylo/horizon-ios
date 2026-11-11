@@ -71,11 +71,6 @@ pub(in crate::game) fn pose_playing(pose: Option<&Arc<dyn BodyPose>>) -> Option<
     any.downcast_ref::<EmotePose>().map(|e| &e.0)
 }
 
-/// The emote `m` plays, if any.
-pub(in crate::game) fn playing(m: &Mob) -> Option<&Playing> {
-    pose_playing(m.emote.as_ref())
-}
-
 /// The pose that plays `next` where `now` is laid, unless it plays that already (None: keep
 /// it; a new one allocates).
 fn replaced(

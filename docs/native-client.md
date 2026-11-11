@@ -61,7 +61,7 @@ glibc. An absent musl archive is not a reason to install the glibc archive on a 
 
 ## Run from a checkout
 
-Use current stable Rust (1.90+) and JDK 25 (Python 3.10+ only for the development
+Use current stable Rust (1.90+) and JDK 25 (Python 3.11+ only for the development
 harnesses). A checkout never
 downloads the game: resource preparation imports **your own copy** (the 26.3
 client from your official launcher install, and the 26.3 server jar you
@@ -423,16 +423,18 @@ While Discord runs on the same computer, the player's Discord profile shows
 "Playing Horizon" and what they are doing: "In the menus", "Singleplayer",
 "Multiplayer" or "Hosting a world" (with the party size, of 8), the dimension
 ("In the Nether") and the time since they entered the world. It never shows a
-world's name or a server's address. Horizon Settings has the switch
-(**Discord Rich Presence**, on by default; `discordPresence` in
-`horizon-extras.txt`), and `HORIZON_NO_DISCORD=1` turns it off for one run.
+world's name or a server's address. The switch is on the Extras page, in its
+Multiplayer group (**Discord Rich Presence**, on by default; `discordPresence`
+in `horizon-extras.txt`; in splitscreen only the first player has it), and
+`HORIZON_NO_DISCORD=1` turns it off for one run.
 
 The crate `horizon-discord` (Horizon layer) speaks Discord's local IPC itself
 (the `discord-ipc-N` socket or named pipe, no SDK) from a thread of its own.
 The game hands it a status only when it changes, through the platform's
-`activity` hook (`game/activity.rs` says what the player does). Only the
-official executable (`horizon-official`) registers it: horizon-client's own
-executable shows no presence. It retries every 15 s
+`activity` hook (`game/activity.rs` says what the player does), and keeps the
+switch itself: its settings store and its Extras row (the platform's settings
+and pages registries). Only the official executable (`horizon-official`)
+registers it: horizon-client's own executable shows no presence and no switch. It retries every 15 s
 while Discord isn't running and stays within Discord's 5 updates per 20 s.
 Dedicated servers never start it, and automated runs (offscreen, benchmarks)
 only talk to a fake Discord: `lab.game_env` sets `HORIZON_NO_DISCORD=1`, and
