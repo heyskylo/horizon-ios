@@ -6,10 +6,6 @@ use std::time::Instant;
 
 pub use crate::settings::Opt;
 
-#[path = "options_ui_wheel.rs"]
-mod wheel;
-pub(crate) use wheel::slider_unsnapped;
-
 use crate::{
     gamepad::{self, GlyphStyle},
     hdr_calibration::Picture,
@@ -23,6 +19,10 @@ use crate::{
 };
 
 mod shell_pages;
+
+#[path = "options_ui_wheel.rs"]
+mod wheel;
+pub(crate) use wheel::slider_unsnapped;
 
 fn tr(key: &str) -> Text {
     Text::translate(key, &[])
