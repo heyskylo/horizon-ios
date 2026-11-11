@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "online_mode", "target": "horizon_client::game::native_server::Game<'_>::native_online_mode"},
+    {"name": "server_port", "target": "horizon_client::game::native_server::Game<'_>::native_server_port"},
+    {"name": "proxy_forwarding", "target": "horizon_client::game::native_server::Game<'_>::native_proxy_forwarding"}
+  ],
+  "rust_summary": "a dedicated server's online mode, listening port and proxy forwarding (`native_online_mode`, `native_server_port`, `native_proxy_forwarding`).",
+  "doc_summary": "`native_online_mode()` is the dedicated server's `online-mode`; `native_server_port()` the port it listens on (`server-port`, or the `--port` it started with); `native_proxy_forwarding()` is `\"velocity\"` when it takes its players from a Velocity proxy with `forwarding.secret` (offline mode only) and `\"none\"` otherwise. The secret is never returned. All three are None off a dedicated server and before it listens. Bundles need \"hooks\": @API:server_settings@.",
+  "comments": ["crates/horizon-client/src/game/native_server.rs"]
+}

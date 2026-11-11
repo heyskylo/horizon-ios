@@ -17,10 +17,12 @@ class ParityIssuesTests(unittest.TestCase):
     def test_plan_opens_comments_and_closes(self):
         now = {"a": "fail", "b": "fail", "c": "pass", "d": "fail", "e": "pass"}
         previous = {"a": "pass", "b": "fail", "c": "fail", "e": "pass"}
+        # A harness no audit ran before (d) gets an issue as one that passed does (a): #15158's nine merged failing
+        # and no audit reported them. One that keeps passing (e) gets nothing.
         self.assertEqual(issues.plan(now, previous, {"b": 7, "c": 8}),
-                         [("open", "a"), ("comment", "b"), ("close", "c")])
-        # A harness that never passed in an audit (d) gets no issue; one that keeps passing (e) nothing.
-        self.assertEqual(issues.plan(now, {}, {}), [])
+                         [("open", "a"), ("comment", "b"), ("close", "c"), ("open", "d")])
+        # The first audit only records: it compares the results with themselves.
+        self.assertEqual(issues.plan(now, now, {}), [])
 
     def test_many_new_failures_at_once_are_one_report(self):
         many = [("open", f"h{i}") for i in range(issues.MASS_FAILURE + 1)]

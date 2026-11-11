@@ -5,6 +5,8 @@
     "dockerfilePath": "crates/horizon-mod-registry/Dockerfile",
     "watchPatterns": [
       "/crates/horizon-mods/**",
+      "/crates/horizon-release-sign/**",
+      "/crates/horizon-shader-api/**",
       "/crates/horizon-mod-registry/**",
       "/Cargo.toml"
     ]

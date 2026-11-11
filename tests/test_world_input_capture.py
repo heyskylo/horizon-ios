@@ -119,6 +119,12 @@ struct Remote;
 #[derive(Default)]
 struct StudioFreecam { active: bool }
 #[derive(Default)]
+struct Studio { freecam: StudioFreecam, rmb_down: bool }
+impl Studio { fn flying(&self) -> bool { self.freecam.active } }
+#[derive(Default)]
+struct Replay { driver: Option<()> }
+impl Replay { fn playing(&self) -> bool { self.driver.is_some() } }
+#[derive(Default)]
 struct Options { offscreen: bool }
 #[derive(Default)]
 struct ServerPacks { prompt: Option<()> }
@@ -127,7 +133,7 @@ struct Game {
     keyboard_mouse: bool, split_window: bool, view_at: [u32; 2],
     captured: bool, capture_mode: Option<CursorGrabMode>, regrab_on_refocus: bool, title: Option<()>, screen: Screen,
     remote: Option<Remote>,
-    studio_replay: Option<()>, studio_freecam: StudioFreecam, studio_rmb_down: bool,
+    studio: Studio, replay: Replay,
     mining: bool, lan_acting: Option<u32>, renderer: Option<Renderer>, cursor: (f32, f32),
     server_packs: ServerPacks, command_prompt: Option<()>, options: Options,
     unclaimed_window: bool, scripted: bool, focus_after_run: Option<bool>, applied_focus: Vec<bool>,
@@ -137,8 +143,7 @@ impl Default for Game {
         Self { focused: true, agent_pointer: false, window: Some(Window::default()),
             keyboard_mouse: true, split_window: false, view_at: [0, 0],
             mouse: Mouse::default(), captured: false, capture_mode: None, regrab_on_refocus: false, title: None,
-            screen: Screen::Playing, remote: None, studio_replay: None,
-            studio_freecam: StudioFreecam::default(), studio_rmb_down: false,
+            screen: Screen::Playing, remote: None, studio: Studio::default(), replay: Replay::default(),
             mining: false, lan_acting: None,
             renderer: None, cursor: (0.0, 0.0), server_packs: ServerPacks::default(),
             command_prompt: None, options: Options::default(),
@@ -148,6 +153,7 @@ impl Default for Game {
 HELPER
 impl Game {
     fn stop_mining(&mut self) { self.mining = false; }
+    fn studio_up(&self) -> bool { self.replay.playing() || self.studio.flying() }
     fn reset_inventory_clicks(&mut self) {}
     fn restore_held_keys(&mut self) {}
     fn dialog_open(&self) -> bool { false }
@@ -273,8 +279,8 @@ fn main() {
     // only captures it while the right mouse button is held.
     {
         let mut game = Game::default();
-        game.studio_replay = Some(());
-        game.studio_rmb_down = true;
+        game.replay.driver = Some(());
+        game.studio.rmb_down = true;
         game.capture(true);
         assert!(game.captured);
         game.regrab_on_refocus = true;
@@ -283,7 +289,7 @@ fn main() {
         game.focused = true;
         game.regrab_on_refocus();
         assert!(!game.captured);
-        assert!(!game.studio_rmb_down);
+        assert!(!game.studio.rmb_down);
     }
     // A controller-only player's screens leave the shared native pointer alone.
     {
@@ -487,9 +493,12 @@ mod input_trace {
     pub enum InputOrigin { User }
     pub enum TraceKind { Motion { x: f64, y: f64 } }
 }
+struct Radial(bool);
+impl Radial { fn is_open(&self) -> bool { self.0 } }
+struct Pad { radial: Radial }
 struct Game {
     pending_save: Option<()>, captured: bool, focused: bool, keyboard_mouse: bool, split_window: bool,
-    options: Options, screen: Screen, mouse: MouseLook, last_input: Instant, scripted: bool,
+    options: Options, screen: Screen, mouse: MouseLook, last_input: Instant, pad: Pad, scripted: bool,
 }
 impl Game {
     fn scripted_run(&self) -> bool { self.scripted }
@@ -497,26 +506,30 @@ impl Game {
     fn note_input(&mut self, _: input_trace::InputOrigin, _: input_trace::TraceKind) {}
     // Handing input back from the controller does not change the turn either.
     fn pad_yield_input(&mut self, _: &ActiveEventLoop) {}
+    // `game/pad/capture.rs`: the radial menu owns the pad while it is open.
+    fn pad_radial_captures(&self) -> bool { self.pad.radial.is_open() }
 METHOD
 }
 fn main() {
-    // (offscreen renderer, compositor, keyboard/mouse owner, active, gameplay, saving,
-    // a scripted run).
-    for (offscreen, split, owner, active, playing, saving, scripted, turns) in [
-        (false, false, true, true, true, false, false, true),
-        (true, true, true, true, true, false, false, true),
-        (true, true, false, true, true, false, false, false),
-        (true, false, true, true, true, false, false, false),
-        (true, true, true, false, true, false, false, false),
-        (true, true, true, true, false, false, false, false),
-        (true, true, true, true, true, true, false, false),
-        (false, false, true, true, true, false, true, false),
+    // (offscreen renderer, compositor, keyboard/mouse owner, active, gameplay, saving, the pad's
+    // radial menu open, a scripted run).
+    for (offscreen, split, owner, active, playing, saving, radial, scripted, turns) in [
+        (false, false, true, true, true, false, false, false, true),
+        (true, true, true, true, true, false, false, false, true),
+        (true, true, false, true, true, false, false, false, false),
+        (true, false, true, true, true, false, false, false, false),
+        (true, true, true, false, true, false, false, false, false),
+        (true, true, true, true, false, false, false, false, false),
+        (true, true, true, true, true, true, false, false, false),
+        (false, false, true, true, true, false, true, false, false),
+        (false, false, true, true, true, false, false, true, false),
     ] {
         let mut game = Game {
             pending_save: saving.then_some(()), captured: true, focused: active,
             keyboard_mouse: owner, split_window: split, options: Options { offscreen },
             screen: if playing { Screen::Playing } else { Screen::Paused },
-            mouse: MouseLook::default(), last_input: Instant::now(), scripted,
+            mouse: MouseLook::default(), last_input: Instant::now(), pad: Pad { radial: Radial(radial) },
+            scripted,
         };
         game.device_event(&ActiveEventLoop, DeviceId, DeviceEvent::MouseMotion { delta: (0.0, 0.0) });
         game.device_event(&ActiveEventLoop, DeviceId, DeviceEvent::MouseMotion { delta: (20.0, -10.0) });
@@ -526,7 +539,7 @@ fn main() {
         rotation.turn(x, y);
         let want = if turns { (3.0, -1.5) } else { (0.0, 0.0) };
         assert!((rotation.y_rot - want.0).abs() < 0.00001 && (rotation.x_rot - want.1).abs() < 0.00001,
-            "rotation=({}, {}), offscreen={offscreen}, split={split}, owner={owner}, active={active}, playing={playing}, saving={saving}, scripted={scripted}", rotation.y_rot, rotation.x_rot);
+            "rotation=({}, {}), offscreen={offscreen}, split={split}, owner={owner}, active={active}, playing={playing}, saving={saving}, radial={radial}, scripted={scripted}", rotation.y_rot, rotation.x_rot);
     }
 }
 '''
