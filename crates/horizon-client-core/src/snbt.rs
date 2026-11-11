@@ -337,6 +337,12 @@ pub fn java_hash_order(
         "immovable",
         "description",
         "hide_description",
+        // Interaction.addAdditionalSaveData.
+        "width",
+        "height",
+        "attack",
+        "interaction",
+        "response",
     ];
     // BlockEntity.saveMetadata writes the position after the entity's data.
     const AFTER: &[&str] = &["x", "y", "z"];
@@ -433,6 +439,20 @@ mod tests {
         assert!(
             pose_idx < immovable_idx,
             "expected `pose` before `immovable` in bucket 5, got: {rendered}"
+        );
+    }
+    #[test]
+    fn interaction_compound_orders_width_before_interaction_in_shared_bucket() {
+        // `width` and `interaction` share a bucket at every table size;
+        // `Interaction.addAdditionalSaveData` writes `width` first.
+        let tag = parse_snbt(
+            r#"{Air:300s,Fire:0s,Invulnerable:0b,Motion:[0.0d,0.0d,0.0d],OnGround:0b,PortalCooldown:0,Pos:[4.5d,100.0d,4.5d],Rotation:[0.0f,0.0f],UUID:[I;66,0,0,1],fall_distance:0.0d,height:1.25f,interaction:{player:[I;1,2,3,4],timestamp:9L},response:0b,width:1.0f}"#,
+        )
+        .unwrap()
+        .0;
+        assert_eq!(
+            pretty(&tag).plain(),
+            "{Motion: [0.0d, 0.0d, 0.0d], Invulnerable: 0b, fall_distance: 0.0d, Air: 300s, OnGround: 0b, PortalCooldown: 0, Rotation: [0.0f, 0.0f], Pos: [4.5d, 100.0d, 4.5d], response: 0b, Fire: 0s, width: 1.0f, interaction: {player: [I; 1, 2, 3, 4], timestamp: 9L}, UUID: [I; 66, 0, 0, 1], height: 1.25f}",
         );
     }
     #[test]
