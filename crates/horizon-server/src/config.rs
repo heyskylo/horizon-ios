@@ -524,7 +524,14 @@ impl Config {
                 DIFFICULTIES.join(", ")
             ));
         }
-        if w.name.is_empty() || w.name.contains(['/', '\\']) || w.name == ".." {
+        // Not the server folder itself, nor one of the supervisor's own folders in it.
+        if w.name.is_empty()
+            || w.name.contains(['/', '\\'])
+            || matches!(
+                w.name.as_str(),
+                "." | ".." | "backups" | "logs" | ".horizon"
+            )
+        {
             return Err(format!(
                 "world.name \"{}\" must be a folder name, without slashes",
                 w.name
@@ -582,7 +589,7 @@ impl Config {
             &date_string(now_millis()),
             false,
         );
-        std::fs::write(path, text)?;
+        replace(&path, &text)?;
         Ok(written)
     }
 
@@ -686,6 +693,7 @@ pub fn sync_back(dir: &Path, written: &[(String, String)]) -> Result<Vec<String>
     if changed.is_empty() {
         return Ok(Vec::new());
     }
+    let _one = WRITING.lock().unwrap_or_else(|e| e.into_inner());
     let path = dir.join(FILE);
     let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| format!("{e}"))?;
@@ -702,8 +710,42 @@ pub fn sync_back(dir: &Path, written: &[(String, String)]) -> Result<Vec<String>
     }
     let updated = doc.to_string();
     Config::parse(&updated)?;
-    std::fs::write(&path, updated).map_err(|e| e.to_string())?;
+    replace(&path, &updated).map_err(|e| e.to_string())?;
     Ok(changed.iter().map(|(k, _)| (*k).to_owned()).collect())
+}
+
+/// Held while `server.toml` is read, changed and written back, so two of this process's writers
+/// (management clients, the API, the supervisor's [`sync_back`]) don't drop each other's change.
+static WRITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Writes `text` to `path` through a new file renamed over it: a reader (or a crash) sees the old
+/// file or the new one, never an empty or half-written one. An empty `server.toml` reads as every
+/// default, and the next start would write those into `server.properties`. Another process (the
+/// CLI's `config set`) has its own temporary file.
+pub(crate) fn replace(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let name = path
+        .file_name()
+        .map_or_else(Default::default, |n| n.to_string_lossy());
+    let tmp = path.with_file_name(format!(
+        ".{name}.{}.{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let written = (|| {
+        let mut file = std::fs::File::create(&tmp)?;
+        std::io::Write::write_all(&mut file, text.as_bytes())?;
+        file.sync_all()?;
+        if let Ok(meta) = std::fs::metadata(path) {
+            std::fs::set_permissions(&tmp, meta.permissions())?;
+        }
+        std::fs::rename(&tmp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
 /// Sets one typed setting in `server.toml` (`whitelist on`), keeping the owner's comments.
@@ -714,6 +756,7 @@ pub fn update(dir: &Path, section: &str, field: &str, value: toml::Value) -> Res
 /// Sets settings in `server.toml`, keeping the owner's comments; nothing is written unless the result is
 /// a valid configuration.
 pub fn update_all(dir: &Path, changes: &[(String, String, toml::Value)]) -> Result<(), String> {
+    let _one = WRITING.lock().unwrap_or_else(|e| e.into_inner());
     let path = dir.join(FILE);
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| format!("{e}"))?;
@@ -722,7 +765,7 @@ pub fn update_all(dir: &Path, changes: &[(String, String, toml::Value)]) -> Resu
     }
     let updated = doc.to_string();
     Config::parse(&updated)?;
-    std::fs::write(&path, updated).map_err(|e| e.to_string())
+    replace(&path, &updated).map_err(|e| e.to_string())
 }
 
 pub fn read_properties(path: &Path) -> Result<Properties, String> {
@@ -980,6 +1023,49 @@ mod tests {
         assert!(Config::parse("[server]\nprot = 1\n").is_err());
         assert!(Config::parse("[properties]\nmotd = \"x\"\n").is_err());
         assert!(Config::parse("[world]\nname = \"../x\"\n").is_err());
+        for folder in [".", "..", "backups", "logs", ".horizon"] {
+            let text = format!("[world]\nname = \"{folder}\"\n");
+            assert!(Config::parse(&text).is_err(), "{folder}");
+        }
+    }
+
+    #[test]
+    fn settings_changed_at_once_are_all_kept() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-server-at-once-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(FILE), TEMPLATE).unwrap();
+        // Eight writers at once, as eight management clients each setting another key.
+        std::thread::scope(|scope| {
+            for n in 0..8i64 {
+                let dir = &dir;
+                scope.spawn(move || {
+                    update(
+                        dir,
+                        "properties",
+                        &format!("horizon-test-{n}"),
+                        toml::Value::Integer(n),
+                    )
+                    .unwrap()
+                });
+            }
+        });
+        let c = Config::load(&dir).unwrap();
+        for n in 0..8i64 {
+            assert_eq!(
+                c.properties.get(&format!("horizon-test-{n}")),
+                Some(&toml::Value::Integer(n)),
+                "horizon-test-{n} kept"
+            );
+        }
+        // No temporary file is left beside it.
+        let names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, [std::ffi::OsString::from(FILE)]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

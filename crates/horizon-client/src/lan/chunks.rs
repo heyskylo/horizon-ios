@@ -824,6 +824,12 @@ impl ChunkEncoder {
         )
     }
 
+    /// A lit resident far column, with its live block entities and every light layer:
+    /// neighbours outside the loading buffer need not be loaded just to send it.
+    pub(super) fn body_far(&self, chunk: &Chunk, world: &crate::world::World) -> Vec<u8> {
+        self.body(chunk, &world.block_entities, SectionMask::ALL)
+    }
+
     /// An encoder of the same level with caches of its own, for threads that encode saved chunks no
     /// level holds (`lan::far`).
     pub fn detached(&self) -> Self {

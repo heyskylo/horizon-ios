@@ -13,7 +13,10 @@ use horizon_client::{
     },
     random_sequences::RandomSequences,
 };
-use horizon_core::{geometry::Vec3, random::LegacyRandom};
+use horizon_core::{
+    geometry::Vec3,
+    random::{LegacyRandom, RandomSource},
+};
 use horizon_world::loot::{LootDamage, LootData, LootEntity, LootStack, PackOverlay};
 use std::{collections::BTreeMap, fmt::Write as _, fs, path::Path, sync::Arc};
 
@@ -203,7 +206,7 @@ pub fn main() -> horizon_client::Result<()> {
                 }
             }
             m.extra.drop_chances = Some(Box::new(chances));
-            m.random = LegacyRandom::new(rand + k);
+            m.random.set_seed(rand + k);
             // The killer, the last player to hurt the victim and the damage source.
             let killer_id = get("killer", "none");
             let weapon = c.get("weapon").map(|w| stack(w));
