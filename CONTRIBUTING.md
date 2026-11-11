@@ -1,7 +1,8 @@
 # Contributing to Horizon
 
 Thanks for helping. Horizon is Minecraft: Java Edition 26.3 rewritten in Rust, and the one rule that shapes
-everything is that **it plays exactly like vanilla**. This page is the short version of how we work; questions are
+everything is that **it plays like vanilla**: first exactly like it, then better where players gain from it
+([vanilla first, then better](#vanilla-first-then-better)). This page is the short version of how we work; questions are
 welcome on [Discord](https://discord.gg/playhorizon).
 
 This repository holds the game and the launcher, plus the tools, tests and docs that build, check and release them.
@@ -23,7 +24,7 @@ here.
 
 ## Build it
 
-- **Prerequisites:** Rust (stable), Python 3.10+, JDK 25, and on Linux the ALSA and udev headers
+- **Prerequisites:** Rust (stable), Python 3.11+, JDK 25, git 2.38 or newer, and on Linux the ALSA and udev headers
   (`libasound2-dev libudev-dev`).
 - **Resources:** Horizon never downloads the game; it prepares its resources from your own copy of Minecraft 26.3, as
   described in [Build from source](README.md#build-from-source).
@@ -36,7 +37,10 @@ here.
 
 - **Launcher:** its own Cargo workspace in `launcher/` (`cd launcher && cargo run`; on NixOS, `nix-shell` first).
 
-## Vanilla first
+## Vanilla first, then better
+
+Horizon gets there in two stages. First it plays exactly like vanilla; that is what parity work is for. Then it
+improves on vanilla where players gain from it, mostly speed: FPS, TPS, loading, memory.
 
 Wherever vanilla has a feature, vanilla is the specification, down to the order of random calls. "Parity" here means
 Horizon gives the same results as the pinned 26.3 client and server for the same inputs, checked by a **harness**: a
@@ -49,8 +53,10 @@ and compares their outputs.
 - **One version: 26.3.** Parity work targets 26.3 until its parity is good, redstone first. Don't open pull requests
   that move Horizon to a newer Minecraft version for now; to join servers on a newer version, put a Via proxy
   (ViaVersion, ViaProxy) in front of them.
-- **Gameplay changes come with a harness**, new or extended, so the next change can't silently break them.
-  [The parity workflow](docs/parity-workflow.md) shows how harnesses run; copy a nearby one.
+- **Ports of vanilla behaviour come with a harness**, new or extended, so the next change can't silently break
+  them. [The parity workflow](docs/parity-workflow.md) shows how harnesses run; copy a nearby one. Where vanilla
+  has nothing to compare (Horizon's own features, performance work, refactors), no harness is needed: one Rust
+  test of the changed behaviour, or the numbers before and after.
 - **Horizon's own features** (the launcher, the new menus) follow [the design system](docs/design-system.md) and are
   off by default wherever they would change the vanilla look.
 - **Three layers: engine, platform, Horizon.**
@@ -67,40 +73,26 @@ and compares their outputs.
   The pre-push hook checks the full history reachable from the branches and tags being pushed. Run
   `python3 tools/check_public_tree.py --history` to audit the history of all local refs.
 
-## Only original code, or code whose license allows it
+### When it doesn't have to be 1:1
 
-Horizon is MIT. Its code is written from Minecraft 26.3 itself and from public documentation. Since 30 October 2026
-another project's source may also be read and used, **only when that project's license allows it**:
+Parity is about what players and the vanilla game see, not about copying vanilla's internals. Performance work (a
+multithreaded server tick, rendering, chunk loading, memory) doesn't have to keep vanilla's internal order or its
+exact random calls. It has to work together with normal Minecraft:
 
-- **Allowed:** MIT, MIT-0, BSD-2-Clause, BSD-3-Clause, 0BSD, ISC, zlib, Apache-2.0, Unlicense, and the CC0-1.0
-  public-domain dedication. That code may be read, copied or adapted.
-- **Off limits, even to read:** GPL, LGPL (Iris), AGPL, MPL, EPL, Polyform (Sodium), the Creative Commons licenses
-  (CC BY, CC BY-SA, CC BY-NC and the others; CC0 is a public-domain dedication, not one of them), custom or
-  "source available" licenses, all rights reserved (OptiFine), and any project with no license or an unclear one.
-  Don't read, copy, translate or paraphrase their source, and don't send code an AI tool wrote from it. Being able
-  to download a mod or a pack does not give you the right to read its files.
-- **Java's own library is GPL too.** OpenJDK's source (`java.lang.Math`, `StrictMath`, `FdLibm`, `HashMap`, the
-  sorts, `Double.toString`, HotSpot's intrinsics...) is GPL-2.0, so it is off limits like the rest. Reproduce Java's
-  behaviour from its API documentation (the Javadoc) and from what a JVM returns, or from a permissive original such
-  as Sun's fdlibm C sources (see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)); see #6741.
-- **Check the license yourself.** Read the LICENSE file at the commit you use and the header of each file you take:
-  some repositories mix licenses, and a file under another license is off limits. A license that changed: the one at
-  your commit counts. In doubt, don't: ask in #contributors first.
-- **Say it in the pull request:** the project, a link to the commit, its license, and what you read or copied. A
-  pull request that used another project's source without saying so is closed.
-- **Copied or adapted code** keeps its copyright line and license notice at the top of the file, and gets an entry
-  in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Apache-2.0 code also keeps its NOTICE text and says what
-  was changed.
-
-User documentation and file formats are fine to read, and packs and mods are fine to run and observe, whatever their
-license. Shader packs are a clean-room rewrite of the pack format, produced from a written description of it (see
-#1561): the [specification and its provenance log](docs/cleanroom/README.md) are public. They carry no foreign
-source, and the rules above still apply to anything you read while working on them. A shader-pack pull request
-names its sources: the sections of that specification, the documentation pages and the packs it ran.
+- **Vanilla clients and servers still work with it.** A vanilla 26.3 client plays on a Horizon server, Horizon joins
+  vanilla servers, and saves and worlds open in both, as before.
+- **The game still plays the same.** Farms, redstone, mobs and drops work the way players know from vanilla. A
+  difference may only show where no player can rely on it, such as which of two mobs ticks first or exactly which
+  random number a mob gets.
+- **Vanilla's slow paths aren't copied.** When vanilla spends a lot of FPS or TPS on something that can reach the
+  same result faster, Horizon does it faster. Copying a performance problem isn't parity.
+- **Say what changes.** The pull request names the vanilla behaviour it no longer reproduces exactly, why players
+  won't notice it or why it's worth it, and how it was checked: numbers before and after, and the harnesses that
+  still pass. A change players could notice, such as a different tick order on a busy server, goes behind a setting.
 
 ## Vendor libraries and Java mods
 
-- **Upscalers and latency tools.** AMD FSR (MIT) may go in the repository, like any code under an allowed license.
+- **Upscalers and latency tools.** AMD FSR (MIT) may go in the repository.
   NVIDIA's DLSS, Reflex and any other library under an NVIDIA license may not: they ship only as an optional native mod
   that downloads NVIDIA's files itself, on the player's machine. No NVIDIA binaries, headers or SDK files in the
   repository.
@@ -198,3 +190,5 @@ new pushes, we add it again.
 
 [Discord](https://discord.gg/playhorizon) for questions and ideas, [issues](https://github.com/horizon-rust/horizon/issues)
 for bugs. To take something on, `/claim` its issue ([above](#claim-before-you-start)).
+
+How Horizon is run, and how people join the Team or lead a group: [GOVERNANCE.md](GOVERNANCE.md).

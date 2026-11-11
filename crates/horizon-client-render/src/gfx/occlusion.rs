@@ -42,6 +42,8 @@ const DISTANT_SQR: f64 = 3600.0;
 const SECTION_DIAGONAL: f64 = 28.0;
 /// In `Graph::rays`: the line from this corner stays in reached sections.
 const SEES: u8 = u8::MAX;
+/// Edits kept before a full resend.
+const EDIT_CAP: usize = 1 << 16;
 
 /// VisGraph connectivity per column, one entry per section (bottom first).
 /// A missing column or section connects every face.
@@ -611,6 +613,8 @@ pub struct Occlusion {
     queue: VecDeque<u32>,
     /// Changes whenever `contains` may answer differently (`generation`).
     generation: u64,
+    /// Set when edits were dropped; the next search resends every column.
+    resync: bool,
 }
 
 impl Occlusion {
@@ -631,6 +635,7 @@ impl Occlusion {
             vis: Vec::new(),
             queue: VecDeque::new(),
             generation: next_generation(),
+            resync: false,
         }
     }
     pub fn set(&mut self, key: SectionKey, vis: u64) {
@@ -639,11 +644,33 @@ impl Occlusion {
         }
     }
     fn changed(&mut self, key: SectionKey, vis: u64) {
-        self.edits.push(Edit::Set(key, vis));
         self.dirty = true;
+        if self.edits.len() >= EDIT_CAP || self.changed.len() >= EDIT_CAP {
+            // nobody drains these with cave culling off
+            self.resync = true;
+            self.edits.clear();
+            self.changed.clear();
+            self.changed_late.clear();
+        }
+        if self.resync {
+            return;
+        }
+        self.edits.push(Edit::Set(key, vis));
         self.changed.push(key);
         if self.running.is_some() {
             self.changed_late.push(key);
+        }
+    }
+    fn resync_edits(&mut self) {
+        self.resync = false;
+        self.edits.clear();
+        self.edits.push(Edit::Clear);
+        for (&(x, z), column) in &self.columns.map {
+            for (y, &vis) in column.iter().enumerate() {
+                if vis != ALL_VISIBLE {
+                    self.edits.push(Edit::Set((x, y as i32, z), vis));
+                }
+            }
         }
     }
     /// Every section of the column `x`, `z` goes (sees through every face).
@@ -674,6 +701,7 @@ impl Occlusion {
         self.columns.map.clear();
         self.edits.clear();
         self.edits.push(Edit::Clear);
+        self.resync = false;
         self.dirty = true;
         // Another world: the old graph says nothing about it. Without one, every
         // section was visible already, and stays so.
@@ -769,6 +797,9 @@ impl Occlusion {
         let from = self.columns.section_of(camera);
         self.dirty = false;
         self.searched = Some((from, radius));
+        if self.resync {
+            self.resync_edits();
+        }
         let graph = std::mem::take(&mut self.spare);
         if let Some(worker) = &self.worker {
             let job = Job {
@@ -1792,5 +1823,37 @@ mod tests {
         o.update(at((3, 1, 0)), radius);
         assert_ne!(answers(&o, around, spread + radius), walled.1);
         assert_ne!(o.generation(), walled.0, "the graph went");
+    }
+
+    #[test]
+    fn edit_queue_stays_bounded_without_searches() {
+        let mut o = Occlusion::new(0, 4);
+        let total = (1usize << 16) + 5000;
+        for i in 0..total {
+            o.set(((i % 700) as i32, 1, (i / 700) as i32), 1 + (i as u64 % 5));
+        }
+        assert!(o.edits.len() <= 1 << 16, "{} edits queued", o.edits.len());
+        assert!(
+            o.changed.len() <= 1 << 16,
+            "{} changed queued",
+            o.changed.len()
+        );
+
+        let mut fresh = Occlusion::new(0, 4);
+        for (&(x, z), column) in &o.columns.map {
+            for (y, &vis) in column.iter().enumerate() {
+                fresh.set((x, y as i32, z), vis);
+            }
+        }
+        let camera = at((0, 1, 0));
+        for _ in 0..2 {
+            o.settle(camera, 6);
+            fresh.settle(camera, 6);
+        }
+        assert_eq!(
+            reached(&o),
+            reached(&fresh),
+            "the worker saw the same world"
+        );
     }
 }

@@ -1,9 +1,9 @@
 //! A game started without its prepared files (the game build run by hand, not
-//! through the launcher): a window that says where to get the launcher
+//! through a launcher): a window that says where to get them
 //! (`horizon_client::no_resources`) and quits when it is closed. No loader, no
 //! crash report: nothing went wrong in the game.
 use super::*;
-use horizon_client::no_resources::{Action, DOWNLOAD_URL, NoResources};
+use horizon_client::no_resources::{Action, NoResources};
 use winit::event::MouseButton;
 
 struct Missing {
@@ -19,6 +19,11 @@ struct Missing {
 
 /// Shows the screen until the player closes it.
 pub(super) fn show(looked_in: &std::path::Path, settings: &Settings) -> Result<()> {
+    // The player's language, from the strings compiled in: there are no prepared ones.
+    horizon_client::lang::set(horizon_client::lang::Language::load(
+        &[],
+        &settings.language,
+    ));
     let mut app = Missing {
         window: None,
         renderer: None,
@@ -26,7 +31,7 @@ pub(super) fn show(looked_in: &std::path::Path, settings: &Settings) -> Result<(
             atlas: HudAtlas::build(looked_in)?,
             panorama: Arc::new(horizon_client::gfx::panorama::Faces::colour([0; 4])),
         },
-        screen: NoResources::new(looked_in),
+        screen: NoResources::new(looked_in, horizon_hooks::engine::get_the_game()),
         pointer: (0.0, 0.0),
         api: settings.horizon.api,
         error: None,
@@ -81,7 +86,7 @@ impl Missing {
     fn click(&mut self, event_loop: &ActiveEventLoop) {
         let mut batch = HudBatch::new(self.size());
         match self.with_ui(&mut batch, |ui| self.screen.click(ui)) {
-            Some(Action::Download) => packs::open_uri(DOWNLOAD_URL),
+            Some(Action::Open(address)) => packs::open_uri(address),
             Some(Action::Quit) => event_loop.exit(),
             None => {}
         }
@@ -93,10 +98,9 @@ impl ApplicationHandler for Missing {
         if self.window.is_some() {
             return;
         }
-        let attributes = horizon_client::window::with_horizon_icon(
-            Window::default_attributes().with_title("Horizon"),
-        )
-        .with_inner_size(winit::dpi::LogicalSize::new(1040.0, 700.0));
+        let attributes =
+            horizon_client::window::with_icon(Window::default_attributes().with_title("Horizon"))
+                .with_inner_size(winit::dpi::LogicalSize::new(1040.0, 700.0));
         let made = event_loop
             .create_window(attributes)
             .map_err(Into::into)

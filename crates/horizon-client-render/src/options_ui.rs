@@ -18,6 +18,12 @@ use crate::{
     ui,
 };
 
+mod shell_pages;
+
+#[path = "options_ui_wheel.rs"]
+mod wheel;
+pub(crate) use wheel::slider_unsnapped;
+
 fn tr(key: &str) -> Text {
     Text::translate(key, &[])
 }
@@ -322,6 +328,8 @@ impl Opt {
             Opt::PadNintendoButtons => "horizon.options.nintendo_buttons",
             Opt::PadKeyboard => "horizon.options.on_screen_keyboard",
             Opt::PadGameplayGuide => "horizon.options.gameplay_guide",
+            Opt::PadRadialMode => "horizon.options.radial_mode",
+            Opt::PadRadialStick => "horizon.options.radial_stick",
             Opt::ModelPart(i) => [
                 "options.modelPart.cape",
                 "options.modelPart.jacket",
@@ -361,7 +369,7 @@ impl Opt {
             ),
             Opt::SimulationDistance => unit(s.simulation_distance as f32, 5.0, 32.0),
             Opt::Sensitivity => Kind::Slider(s.sensitivity),
-            Opt::WheelSensitivity => unit(s.mouse_wheel_sensitivity, 0.01, 10.0),
+            Opt::WheelSensitivity => wheel::kind(s.mouse_wheel_sensitivity),
             Opt::Volume(i) => Kind::Slider(if i == 0 {
                 s.master_volume
             } else {
@@ -880,6 +888,7 @@ impl Opt {
                 gamepad::TextKeyboard::Horizon => "horizon.options.keyboard.horizon",
                 gamepad::TextKeyboard::Steam => "horizon.options.keyboard.steam",
             }),
+            Opt::PadRadialMode | Opt::PadRadialStick => self.radial_text(s),
             Opt::Page(page, row) => pages::slider_text(page, row),
             _ => Text::empty(),
         }
@@ -911,7 +920,7 @@ impl Opt {
             }
             Opt::SimulationDistance => s.simulation_distance = step(5.0, 32.0) as i32,
             Opt::Sensitivity => s.sensitivity = v,
-            Opt::WheelSensitivity => s.mouse_wheel_sensitivity = 0.01 + v * 9.99,
+            Opt::WheelSensitivity => s.mouse_wheel_sensitivity = wheel::from_slider(v),
             Opt::Volume(0) => s.master_volume = v,
             Opt::Volume(i) => s.volumes[i] = v,
             Opt::Gamma => s.gamma = v,
@@ -919,7 +928,7 @@ impl Opt {
             Opt::CloudRange => s.cloud_range = step(2.0, 128.0) as i32,
             Opt::EntityDistance => s.entity_distance = step(2.0, 20.0) / 4.0,
             Opt::BiomeBlend => s.biome_blend = step(0.0, 7.0) as i32,
-            Opt::Preset => s.graphics_preset = PRESETS[step(0.0, 3.0) as usize].into(),
+            Opt::Preset => s.graphics_preset = PRESETS[preset_from_slider(v)].into(),
             Opt::Mipmaps => s.mipmap_levels = step(0.0, 4.0) as i32,
             Opt::MaxAnisotropy => s.file.set(
                 "maxAnisotropyBit",
@@ -1201,98 +1210,13 @@ impl Opt {
                     .unwrap_or(0) as u8;
                 s.controller.keyboard = all[usize::from(next(i, 3))];
             }
+            Opt::PadRadialMode | Opt::PadRadialStick => self.radial_step(s, back),
             _ => {}
         }
         if self.affects_preset() {
             s.graphics_preset = "custom".into();
         }
     }
-}
-const PRESETS: [&str; 4] = ["fast", "fancy", "fabulous", "custom"];
-fn preset_index(p: &str) -> usize {
-    PRESETS.iter().position(|x| *x == p).unwrap_or(1)
-}
-/// A slider moved to `v` (OptionInstance.set): the graphics preset applies
-/// its options when its value changes (`Options.applyGraphicsPreset`).
-pub fn set_slider(opt: Opt, s: &mut Settings, v: f32) {
-    let preset = preset_index(&s.graphics_preset);
-    opt.set_slider(s, v);
-    if opt == Opt::Preset && preset_index(&s.graphics_preset) != preset {
-        apply_preset(s);
-    }
-}
-/// A slider pressed or dragged to `v`: apply it live, and tell the game when
-/// a category volume changed (`Options.createSoundSliderOptionInstance`'s
-/// callback, which `OptionInstance.set` runs only for a new value).
-fn drag_slider(opt: Opt, s: &mut Settings, v: f32, events: &mut Vec<Event>) {
-    let volume = |s: &Settings| match opt {
-        Opt::Volume(0) => Some(s.master_volume),
-        Opt::Volume(i) => Some(s.volumes[i]),
-        _ => None,
-    };
-    let before = volume(s);
-    set_slider(opt, s, v);
-    events.push(Event::SliderDrag);
-    if let (Opt::Volume(source), Some(after)) = (opt, volume(s))
-        && before != Some(after)
-    {
-        events.push(Event::Volume(source, after));
-    }
-}
-/// GraphicsPreset.apply: the options Fast, Fancy and Fabulous set.
-pub fn apply_preset(s: &mut Settings) {
-    let fabulous = s.graphics_preset == "fabulous";
-    match s.graphics_preset.as_str() {
-        "fast" => {
-            s.biome_blend = 1;
-            s.render_distance = 8;
-            s.prioritize_chunk_updates = 0;
-            s.simulation_distance = 6;
-            s.smooth_lighting = false;
-            s.clouds = "fast".into();
-            s.particles = 1;
-            s.mipmap_levels = 2;
-            s.entity_shadows = false;
-            s.entity_distance = 0.75;
-            s.menu_blur = 2;
-            s.cloud_range = 32;
-            s.cutout_leaves = false;
-            s.improved_transparency = false;
-            s.weather_radius = 5;
-            set_filtering(s, 1, 0);
-        }
-        "fancy" | "fabulous" => {
-            s.biome_blend = 2;
-            s.render_distance = if fabulous { 32 } else { 16 };
-            s.prioritize_chunk_updates = 1;
-            s.simulation_distance = 12;
-            s.smooth_lighting = true;
-            s.clouds = "true".into();
-            s.particles = 0;
-            s.mipmap_levels = 4;
-            s.entity_shadows = true;
-            s.entity_distance = if fabulous { 1.25 } else { 1.0 };
-            s.menu_blur = 5;
-            s.cloud_range = if fabulous { 128 } else { 64 };
-            s.cutout_leaves = true;
-            s.improved_transparency = fabulous;
-            s.weather_radius = 10;
-            // Fabulous takes anisotropic filtering (RGSS on a device with known issues, which
-            // wgpu does not report).
-            set_filtering(
-                s,
-                if fabulous { 2 } else { 1 },
-                if fabulous { 2 } else { 1 },
-            );
-        }
-        _ => {}
-    }
-}
-/// The preset's `maxAnisotropyBit` and `textureFiltering` (0 none, 1 RGSS, 2 anisotropic).
-fn set_filtering(s: &mut Settings, anisotropy_bit: i32, filtering: i32) {
-    use crate::options_file::V;
-    s.file.set("maxAnisotropyBit", V::Int(anisotropy_bit));
-    s.file.set("textureFiltering", V::Int(filtering));
 }
 
 /// `Options.preferredGraphicsBackend`'s tooltip: the restart note once the choice differs from
@@ -1352,6 +1276,11 @@ pub enum Page {
     /// Horizon's controller settings and button binds.
     Controller,
     PadBinds,
+    /// The radial menu's pages (`radial_editor`), on the settings shell, and a page's name.
+    ControllerRadial,
+    ControllerRadialName,
+    /// The list of every action for one of its slots.
+    ControllerRadialPick,
     Extras,
     /// PvP & HUD (`pvp`): the extras a PvP player sets, on their own page.
     Pvp,
@@ -1593,23 +1522,6 @@ pub struct MusicGroup {
     /// The rows, in `sounds.json` order.
     pub tracks: Vec<MusicTrack>,
 }
-/// `SliderableValueSet.applyValueImmediately`: these apply 600 ms after
-/// the last change (`OptionInstanceSliderButton.delayedApplyAt`).
-fn delays_apply(opt: Opt) -> bool {
-    matches!(
-        opt,
-        Opt::RenderDistance | Opt::SimulationDistance | Opt::BiomeBlend | Opt::WheelSensitivity
-    )
-}
-/// Whether a slider still shows its own position: while held, or for a
-/// delayed one until its value applies (both then `resetValue`).
-fn slider_unsnapped(opt: Opt, held: bool, moved: Instant) -> bool {
-    if delays_apply(opt) {
-        moved.elapsed().as_millis() < 600
-    } else {
-        held
-    }
-}
 pub struct OptionsUi {
     pub stack: Vec<Page>,
     scroll: f32,
@@ -1683,6 +1595,10 @@ pub struct OptionsUi {
     controller: shell::Shell<crate::controller_ui::ControllerScreen>,
     /// Horizon Extras, on the settings shell.
     extras: shell::Shell<crate::extras_ui::ExtrasScreen>,
+    /// The radial menu's pages, on the settings shell.
+    radial: shell::Shell<crate::radial_editor::RadialScreen>,
+    /// The list of actions for one of the radial menu's slots.
+    radial_pick: shell::Shell<crate::radial_editor::PickScreen>,
     /// Shaders: the shader packs and the picked one's options, on the settings shell.
     shader: shell::Shell<crate::shader_ui::ShaderScreen>,
     /// The Pack Options page, and the packs' Polytone config entries by pack id (the game
@@ -1767,6 +1683,8 @@ impl Default for OptionsUi {
             graphics: Default::default(),
             controller: Default::default(),
             extras: Default::default(),
+            radial: Default::default(),
+            radial_pick: Default::default(),
             shader: Default::default(),
             pack_options: Default::default(),
             pack_configs: Default::default(),
@@ -2112,6 +2030,7 @@ impl OptionsUi {
                     .pack_screen
                     .as_ref()
                     .is_some_and(|p| p.search_focused()),
+                Page::ControllerRadialName => self.radial_name_typing(),
                 _ => match self.shell() {
                     Some(shell) => shell.typing(),
                     None => self.settings_search_active(),
@@ -2244,94 +2163,15 @@ impl OptionsUi {
             self.studio.refresh();
         }
     }
-    /// The open page's screen on the settings shell. This, with `shell_mut`, is all a screen
-    /// needs here: drawing, clicks, the wheel, a stick's scrolling, keys and typing all go
-    /// through them, so no input path can miss one.
-    fn shell(&self) -> Option<&dyn shell::Hosted> {
-        match self.page() {
-            Page::Extras => Some(&self.extras),
-            page if Self::graphics_page(page).is_some() => Some(&self.graphics),
-            page if Self::controller_page(page).is_some() => Some(&self.controller),
-            page if Self::shader_page(page).is_some() => Some(&self.shader),
-            _ => None,
-        }
-    }
-    fn shell_mut(&mut self) -> Option<&mut dyn shell::Hosted> {
-        self.graphics.screen.output = self.output;
-        match self.page() {
-            Page::Extras => Some(&mut self.extras),
-            page if Self::graphics_page(page).is_some() => Some(&mut self.graphics),
-            page if Self::controller_page(page).is_some() => Some(&mut self.controller),
-            page if Self::shader_page(page).is_some() => Some(&mut self.shader),
-            _ => None,
-        }
-    }
     /// A controller's or the keyboard's focus landed on `rect`: a row of a shell screen's list
     /// that is partly hidden scrolls all into view. How far it moved down, when it moved.
     pub fn reveal(&mut self, s: &Settings, size: (f32, f32), rect: [f32; 4]) -> Option<f32> {
         self.shell_mut()?.reveal(s, size, rect)
     }
-    /// The window's size, for the graphics and controller screens' rows that step an option
-    /// (`Opt::cycle`, which a fullscreen resolution needs): before each input that can press one.
-    fn shell_framebuffers(&mut self) {
-        self.graphics.screen.framebuffer = self.framebuffer;
-        self.controller.screen.framebuffer = self.framebuffer;
-    }
-    /// Who and what Controller Settings is about: the game sets it before each draw.
-    pub fn set_controller_context(&mut self, context: crate::controller_ui::Context) {
-        self.controller.screen.context = context;
-    }
-    /// The binding the screen waits on: a controller button's, else a key's.
-    fn waiting(&self) -> Option<shell::Capture> {
-        let pad = self.selected_pad_action.map(shell::Capture::Pad);
-        pad.or(self.selected_key.map(shell::Capture::Key))
-    }
-    /// What a shell screen's outputs do to these options.
-    fn shell_events(&mut self, s: &mut Settings, outputs: Vec<shell::Output>) -> Vec<Event> {
-        let mut events = Vec::new();
-        for output in outputs {
-            match output {
-                shell::Output::Event(event) => events.push(event),
-                shell::Output::Bind(shell::Capture::Key(name)) => self.selected_key = Some(name),
-                shell::Output::Bind(shell::Capture::Pad(action)) => {
-                    self.selected_pad_action = Some(action)
-                }
-                shell::Output::Push(page) => {
-                    if page == Page::HdrCalibration {
-                        self.calibration =
-                            Some(crate::hdr_calibration::Calibration::new(s, &self.output));
-                    }
-                    self.push(page);
-                }
-                shell::Output::Done => events.extend(self.back(s)),
-            }
-        }
-        events
-    }
-    /// Where the shader screen opens for `page`, if it is one of its pages.
-    fn shader_page(page: Page) -> Option<crate::shader_ui::Tab> {
-        match page {
-            Page::ShaderPacks => Some(crate::shader_ui::Tab::Packs),
-            Page::ShaderOptions => Some(crate::shader_ui::Tab::Screen(0)),
-            _ => None,
-        }
-    }
-    /// Where the controller screen opens for `page`, if it is one of its pages.
-    fn controller_page(page: Page) -> Option<crate::controller_ui::Page> {
-        match page {
-            Page::Controller => Some(crate::controller_ui::Page::General),
-            Page::PadBinds => Some(crate::controller_ui::Page::Bindings),
-            _ => None,
-        }
-    }
     /// Whether a video settings screen is open, Horizon's or vanilla's: the fullscreen mode
     /// waits for it to close, and Ctrl with the wheel steps the GUI scale.
     pub fn video_open(&self) -> bool {
         self.page() == Page::Video || Self::graphics_page(self.page()).is_some()
-    }
-    /// Whether the controller screen is open: a controller button pressed now may bind.
-    pub fn controller_open(&self) -> bool {
-        Self::controller_page(self.page()).is_some()
     }
     /// Where the graphics screen opens for `page`, if it is one of its pages.
     fn graphics_page(page: Page) -> Option<crate::graphics_ui::Page> {
@@ -2369,6 +2209,9 @@ impl OptionsUi {
                 "options.videoTitle"
             }
             Page::Controller | Page::PadBinds => "horizon.pages.controller",
+            Page::ControllerRadial => "horizon.pages.controller_radial",
+            Page::ControllerRadialName => "horizon.radial.name_title",
+            Page::ControllerRadialPick => "horizon.radial.pick_title",
             Page::Extras => "horizon.pages.extras",
             Page::Pvp => "horizon.pages.pvp",
             Page::Credits => "credits_and_attribution.screen.title",
@@ -3602,6 +3445,9 @@ impl OptionsUi {
         }
         let waiting = self.waiting();
         let in_world = self.in_world;
+        if self.draw_radial_name(batch, atlas, cursor, in_world) {
+            return;
+        }
         if let Some(shell) = self.shell_mut() {
             shell.draw(s, batch, atlas, cursor, in_world, waiting);
             // The keys lay the screen out at the size it was drawn at.
@@ -3952,6 +3798,9 @@ impl OptionsUi {
             }
             let outcome = c.click(&atlas.font, (x, y), size, drag);
             return self.calibration_outcome(s, outcome);
+        }
+        if self.page() == Page::ControllerRadialName {
+            return self.click_radial_name(s, atlas, (x, y), size, drag || right);
         }
         if self.shell().is_some() {
             // Waiting on a controller button: a click cancels the wait.
@@ -4648,6 +4497,8 @@ impl OptionsUi {
             self.scroll = 0.0;
         } else if self.page() == Page::SplitProfiles {
             self.split_profiles.type_text(text);
+        } else if self.page() == Page::ControllerRadialName {
+            self.type_radial_name(text);
         } else if let Some(shell) = self.shell_mut() {
             if shell.typing() {
                 shell.type_text(text);
@@ -4682,6 +4533,9 @@ impl OptionsUi {
         }
         if self.page() == Page::SplitProfiles {
             return self.split_profiles.shortcut(shortcut, clipboard);
+        }
+        if self.page() == Page::ControllerRadialName {
+            return self.radial_name_shortcut(shortcut, clipboard);
         }
         if let Some(shell) = self.shell_mut() {
             return shell.shortcut(shortcut, clipboard);
@@ -4785,6 +4639,9 @@ impl OptionsUi {
         }
         if self.page() == Page::SplitProfiles && self.split_profiles.key(key, text) {
             return Vec::new();
+        }
+        if self.page() == Page::ControllerRadialName {
+            return self.radial_name_key(s, key, text);
         }
 
         // The size it was drawn at; before the first draw, one its keys can lay out at.
@@ -8341,6 +8198,11 @@ mod tests {
     }
 }
 
+#[path = "options_ui_preset.rs"]
+mod preset;
+pub(crate) use preset::{
+    PRESETS, apply_preset, drag_slider, preset_from_slider, preset_index, set_slider,
+};
 #[cfg(test)]
 #[path = "options_ui_graphics_tests.rs"]
 mod graphics_tests;

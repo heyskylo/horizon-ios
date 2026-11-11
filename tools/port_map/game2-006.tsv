@@ -78,7 +78,7 @@ ThrownTrident.isAcceptibleReturnOwner	port	crates/horizon-client/src/game/triden
 ThrownTrident.findHitEntities	port	crates/horizon-client/src/arrows.rs::Ticker::step_move_and_hit	one entity hit per trident, none once it has dealt damage
 ThrownTrident.hitBlockEnchantmentEffects	port	crates/horizon-client/src/game/trident.rs::Game::channel_rod_hit	gap: minor: only Channeling's hit_block effect (lightning on a rod in a storm) is modelled
 ThrownTrident.tryPickup	port	crates/horizon-client/src/game/trident.rs::Game::trident_taken	all three pickup modes and the no-physics owner's return; gap: inventory overflow drops instead of refusing pickup
-ThrownTrident.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::trident_from_nbt	pickup, Owner, LeftOwner, HasBeenShot and DealtDamage survive load; ThrownTrident::from_nbt reads loyalty from the saved stack
+ThrownTrident.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt/trident.rs::trident_from_nbt	pickup, Owner, LeftOwner, HasBeenShot and DealtDamage survive load; ThrownTrident::from_nbt reads loyalty from the saved stack
 ThrownTrident.getLoyaltyFromItem	port	crates/horizon-client/src/game/trident.rs::Game::release_trident	loyalty level read from the thrown stack when the trident is released
 ThrownTrident.tickDespawn	inline	crates/horizon-client/src/arrows.rs::Ticker::tick	gap: minor: the 1200-tick life limit applies to every trident; the loyalty exemption is not checked
 AbstractHurtingProjectile.shouldRenderAtSqrDistance	skip:ui		distance culling for the fireball model; Horizon culls with its own range check
@@ -125,8 +125,8 @@ PriorityProvider.Selector.codec	skip:java		record codec for a variant selector's
 VariantUtils.getDefaultOrAny	port	crates/horizon-client/src/mobs/finalize.rs::variant_index	gap: minor: name to index with unknown names falling back to index 0; no registry holder lookup
 VariantUtils.writeVariant	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	the variant key is written with the rest of the mob's save data
 VariantUtils.readVariant	port	crates/horizon-client/src/entity_nbt.rs::read_variant	reads the variant key from the save
-ContainerEntity.addChestVehicleSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::to_nbt	writes the cart's items and any loot table
-ContainerEntity.readChestVehicleSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::from_nbt	reads the cart's items from the save
+ContainerEntity.addChestVehicleSaveData	port	crates/horizon-client/src/game/minecarts/nbt.rs::Minecart::to_nbt	writes the cart's items and any loot table
+ContainerEntity.readChestVehicleSaveData	port	crates/horizon-client/src/game/minecarts/nbt.rs::Minecart::from_nbt	reads the cart's items from the save
 ContainerEntity.chestVehicleDestroyed	port	crates/horizon-client/src/game/minecarts.rs::Game::hurt_cart	with entity_drops on, the second Containers.dropContents of the container remove() already emptied, which only draws each slot's spot; gap: a player's hit on a container minecart angers no piglins (the chest boat does it in strike_boat)
 ContainerEntity.unpackChestVehicleLootTable	port	crates/horizon-client/src/game/minecarts.rs::Game::unpack_cart_loot	opening a chest minecart rolls the loot table it still holds, firing `player_generates_container_loot`, and the cart keeps its items from then on
 ContainerEntity.isChestVehicleEmpty	inline	crates/horizon-client/src/game/minecarts.rs::Minecart::container_signal	the comparator signal reads the slots' emptiness; gap: minor: no separate empty test
