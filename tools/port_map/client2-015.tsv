@@ -2,7 +2,7 @@ WinScreen.wrapCreditsIO	port	crates/horizon-client/src/win_screen.rs::WinScreen:
 WinScreen.extractRenderState	port	crates/horizon-client/src/win_screen.rs::WinScreen::draw	logo, lines scrolled up, last line stops mid-screen; background and vignette are drawn here too
 WinScreen.extractVignette	inline	crates/horizon-client/src/win_screen.rs::WinScreen::draw	credits_vignette sprite stretched over the screen
 WinScreen.extractMenuBackground	port	crates/horizon-client/src/win_screen.rs::WinScreen::menu_background	menu background tiled and scrolled at half the text speed
-WorldOptionsScreen.init	port	crates/horizon-client/src/game/lan_screen.rs::Game::open_world_options	reads difficulty, lock, LAN port and command/force settings when opened; layout is WorldOptions::buttons
+WorldOptionsScreen.init	port	crates/horizon-client/src/game/lan_screen.rs::Game::open_world_options	reads difficulty, lock, LAN port and command/force settings when opened; layout is WorldOptions::buttons; the port box's PORT_INFO_TEXT tooltip is WorldOptions::port_tooltip
 WorldOptionsScreen.createGameRulesButton	inline	crates/horizon-client/src/game/lan_screen.rs::Game::world_options_click	GameRules arm opens the rules view; enabled state is in WorldOptions::active
 WorldOptionsScreen.createGameModeButton	inline	crates/horizon-client/src/game/lan_screen.rs::Game::world_options_click	Default and Personal mode arms cycle the mode; enabled state is in WorldOptions::active
 WorldOptionsScreen.createAllowCommandsButton	inline	crates/horizon-client/src/game/lan_screen.rs::Game::world_options_click	Cheats arm toggles commands; the hardcore lock is in WorldOptions::active
@@ -23,7 +23,7 @@ WorldOptionsScreen.hasSettingsChanges	inline	crates/horizon-client/src/game/lan_
 WorldOptionsScreen.lanPortChanged	inline	crates/horizon-client/src/game/lan_screen.rs::WorldOptions::snapshot	the port is part of the snapshot only while LAN is on
 WorldOptionsScreen.changeMultiplayerScope	inline	crates/horizon-client/src/game/lan_screen.rs::Game::apply_world_options	closes LAN and reopens it on the new port when the scope or port changed
 WorldOptionsScreen.sendPublishMessage	inline	crates/horizon-client/src/game/lan_screen.rs::Game::apply_world_options	publish started, failed or stopped line in chat via system_message
-WorldOptionsScreen.updatePortControlsState	inline	crates/horizon-client/src/game/lan_screen.rs::Game::world_options_click	Lan arm drops port focus; gap: minor: vanilla clears the port text when LAN is switched off and refills it from the saved port when on, Horizon keeps the typed text
+WorldOptionsScreen.updatePortControlsState	port	crates/horizon-client/src/game/lan_screen.rs::WorldOptions::update_port_controls	the box is editable with LAN only but stays focusable, so its value can be selected and copied; gap: minor: vanilla clears the port text when LAN is switched off and refills it from the saved port when on, Horizon keeps the typed text
 WorldOptionsScreen.tryParsePort	port	crates/horizon-client/src/game/lan_screen.rs::WorldOptions::parsed_port	blank uses the suggested port; 1024 to 65535 accepted; gap: minor: no port-in-use check and no error message, only the red colour from draw_options_view
 WorldOptionsScreen.setPortError	inline	crates/horizon-client/src/game/lan_screen.rs::Game::draw_options_view	port text turns red when invalid; gap: minor: no error tooltip
 WorldOptionsScreen.DifficultyButtons.create	inline	crates/horizon-client/src/game/lan_screen.rs::Game::open_world_options	difficulty read at open; the cycle and lock arms are in world_options_click
@@ -82,7 +82,7 @@ AdvancementWidget.isMouseOver	port	crates/horizon-client/src/game/advancements_s
 AdvancementWidget.attachToParent	inline	crates/horizon-client/src/game/advancements_screen.rs::Game::adv_view	parent link set when the view is built
 AdvancementsScreen.init	port	crates/horizon-client/src/game/advancements_screen.rs::Game::open_advancements	opens on the kept tab; gap: minor: no tab pages with < and > buttons, the view shows at most 26 tabs
 AdvancementsScreen.repositionElements	skip:ui		layout only: window position
-AdvancementsScreen.removed	missing		minor: the server is not sent the closed-screen packet when the advancements screen closes
+AdvancementsScreen.removed	port	crates/horizon-client/src/game/advancements_screen.rs::Game::close_advancements	the closed-screen packet (action 1, no identifier) goes out with the screen
 AdvancementsScreen.tick	port	crates/horizon-client/src/game/advancements_screen.rs::Game::adv_tick_hover	hover tracking and card fade; gap: minor: runs from the frame, not the 20 Hz tick
 AdvancementsScreen.mouseClicked	port	crates/horizon-client/src/game/advancements_screen.rs::Game::advancements_mouse	left click selects a tab, Done closes; gap: minor: tab pages are not filtered
 AdvancementsScreen.keyPressed	port	crates/horizon-client/src/game/play_keys.rs::Game::key_pressed	the advancements key (L) closes the screen

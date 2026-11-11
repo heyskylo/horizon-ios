@@ -55,7 +55,7 @@ fn pair(g: &mut Game<'_>, slot: usize) -> Damage {
         m.health = 100.0;
         g.mobs.push(m);
     }
-    g.mobs[0].random = LegacyRandom::new(1);
+    g.mobs[0].random.set_seed(1);
     f::set_item_stack(&mut g.mobs[0], f::MAINHAND, thorny()); // Retaliation must not recurse.
     f::set_item_stack(&mut g.mobs[1], slot, thorny());
     Damage::mob(41, [10.5, 64.0, 0.5])
@@ -213,7 +213,11 @@ fn dragon_takes_player_thorns_through_its_body() {
                 Some(("minecraft:thorns", Some(77), Some(77)))
             );
             assert_eq!(d.hurt_by_player, Some((FightWho::Host, 0)));
-            assert_eq!(g.armor[1].as_ref().unwrap().damage, 2);
+            // Thorns' own 2 plus the hit's `max(1, damage / 4)`: 2 for the head's 10, 1 for the wing's 5.
+            assert_eq!(
+                g.armor[1].as_ref().unwrap().damage,
+                if wing { 3 } else { 4 }
+            );
             assert_eq!(
                 g.audio
                     .capture
@@ -231,10 +235,10 @@ fn dragon_takes_player_thorns_through_its_body() {
         let health = g.player.as_ref().unwrap().health.health();
         g.dragon_hurts_player("minecraft:mob_attack", 1.0);
         assert_eq!(g.player.as_ref().unwrap().health.health(), health);
-        assert_eq!(g.armor[1].as_ref().unwrap().damage, 4);
+        assert_eq!(g.armor[1].as_ref().unwrap().damage, 5);
         let before = g.dragon.as_ref().unwrap().health;
         g.dragon_hurts_player("minecraft:indirect_magic", 1.0);
         assert_eq!(g.dragon.as_ref().unwrap().health, before);
-        assert_eq!(g.armor[1].as_ref().unwrap().damage, 4);
+        assert_eq!(g.armor[1].as_ref().unwrap().damage, 5);
     });
 }

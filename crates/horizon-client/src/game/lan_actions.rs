@@ -38,14 +38,16 @@ use horizon_protocol::{
 use horizon_world::entity_move::EntityMoveWorld;
 use winit::keyboard::KeyCode;
 
+mod guest_body;
+mod horizon_channels;
+use horizon_channels::horizon_channel;
+
 #[cfg(test)]
 mod crack_feedback_tests;
 
 /// Per-guest state of the gameplay code that lives outside `Guest`.
 #[derive(Default)]
 pub(super) struct GuestPlay {
-    /// The sign this guest may write on (`SignBlockEntity.playerWhoMayEdit`).
-    pub(super) sign_editing: Option<[i32; 3]>,
     mining: Option<Mining>,
     destroy_delay: u32,
     using: Option<(usize, u32)>,
@@ -503,42 +505,7 @@ impl Game<'_> {
         );
         let fresh = host.hub.guests[i].motion.is_none();
         if fresh {
-            let p = Vec3::new(
-                host.hub.guests[i].position[0],
-                host.hub.guests[i].position[1],
-                host.hub.guests[i].position[2],
-            );
-            host.hub.guests[i].motion = PlayerMotion::new(self.motion, p).ok().map(Box::new);
-            // The first body after joining burns, breathes and falls on as saved.
-            let g = &mut host.hub.guests[i];
-            if let Some(saved) = g.loaded_body.take()
-                && let Some(m) = g.motion.as_mut()
-            {
-                saved.apply(m);
-                // LivingEntity.readAdditionalSaveData: the saved attributes.
-                let _ =
-                    m.apply_saved_attributes(g.saved.as_ref().and_then(|t| t.get("attributes")));
-            }
-            // ServerPlayer.restoreFrom: a body that follows another takes its
-            // attributes (a scale of 0.1 stays 0.1 after a respawn or a trip
-            // to another level).
-            let g = &mut host.hub.guests[i];
-            if let Some(carried) = g.carried_attributes.take()
-                && let Some(m) = g.motion.as_mut()
-            {
-                let _ = m.apply_saved_attributes(Some(&carried));
-            }
-            // The saved golden hearts go on the first body of a player who
-            // has been here before.
-            let saved = host.hub.guests[i].saved_absorption.take();
-            if let (Some(m), Some(amount)) = (host.hub.guests[i].motion.as_mut(), saved) {
-                let _ = m.internal_set_absorption(amount);
-            }
-            let kept = host.hub.guests[i].logs_kept.take();
-            if let (Some(m), Some((hurts, attacks))) = (host.hub.guests[i].motion.as_mut(), kept) {
-                m.hurt_log = hurts;
-                m.attack_log = attacks;
-            }
+            guest_body::initialize(self.motion, &mut host.hub.guests[i]);
         }
         let mut play = host.play.remove(&conn).unwrap_or_default();
         if fresh {
@@ -3553,13 +3520,9 @@ impl Game<'_> {
                 && self.pvp_land(host, victim, &strike)
             {
                 let on_ground = Self::pvp_victim_on_ground(host, victim);
-                self.as_guest(host, conn, |g| {
-                    g.weapon_hit_player(on_ground);
-                    g.pvp_exhaustion();
-                    if strike.stops_sprint() {
-                        g.stop_sprint_after_extra_knockback();
-                    }
-                });
+                let stops_sprint = strike.stops_sprint();
+                let sent = self.as_guest(host, conn, |g| g.pvp_hit_after(on_ground, stops_sprint));
+                self.send_guest_motion(host, conn, sent.flatten());
             }
             return;
         }
@@ -4132,6 +4095,7 @@ impl Game<'_> {
         self.native_player_clone(cloned, &name, true);
         let clock_rate = self.network_clock_rate();
         let ctx = TickCtx {
+            sea_level: self.end.locator().map_or(63, |terrain| terrain.sea_level()),
             world: &mut self.world,
             entities: &[],
             next_entity: &mut self.next_entity,
@@ -4186,8 +4150,8 @@ impl Game<'_> {
                 .map_or([0.5, 80.0, 0.5], |[x, y, z]| {
                     [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5]
                 });
-            let at = found.map_or(world, |(at, yaw)| {
-                host.hub.guests[i].yaw = yaw;
+            let at = found.map_or(world, |(at, yaw, pitch)| {
+                (host.hub.guests[i].yaw, host.hub.guests[i].pitch) = (yaw, pitch);
                 [at.x, at.y, at.z]
             });
             if found.is_none() {
@@ -4373,16 +4337,11 @@ impl Game<'_> {
             // Player.tick: a different main-hand item resets the attack
             // strength, and detectEquipmentUpdates gives the guest its modifiers.
             let g = &host.hub.guests[gi];
-            let held = g
-                .inventory
-                .get(g.selected)
-                .cloned()
-                .flatten()
-                .map(|s| s.item);
+            let held = super::held_items::held_attack_item(&g.inventory, g.selected);
             let play = host.play.entry(conn).or_default();
-            if play.attack_item != held {
+            if play.attack_item.as_ref() != held {
                 play.attack_ticks = 0;
-                play.attack_item = held;
+                play.attack_item = held.cloned();
             }
             self.guest_delayed_destroy(host, conn);
             self.guest_server_tick(host, conn);
@@ -5254,14 +5213,8 @@ impl Game<'_> {
                 w.server_player_pose_tick()
             };
             let mut events = std::mem::take(&mut w.player.events);
-            // LayeredCauldronBlock.handleEntityOnFireInside along those moves.
-            for event in &events {
-                match event {
-                    MotionEvent::CauldronExtinguish { pos } => game.cauldron_extinguish(*pos),
-                    MotionEvent::PowderSnowMelt { pos } => game.powder_snow_melt(*pos),
-                    _ => {}
-                }
-            }
+            // Powder snow and cauldrons put the fire out along those moves.
+            game.block_extinguish_player(&events);
             // Entity.baseTick: rain puts out a burning player.
             game.rain_extinguish_player();
             // WitherRoseBlock.entityInside along those moves.
@@ -5474,35 +5427,6 @@ impl Game<'_> {
                 velocity: [v.x, v.y, v.z],
             }));
         }
-    }
-
-    /// ServerGamePacketListenerImpl.handlePlayerCommand START_RIDING_JUMP: the
-    /// vehicle the guest rides takes its own `handleStartJump` — a horse rears
-    /// and slides on the rider's keys, a camel dashes — and the sound vanilla's
-    /// server plays is broadcast to the players near the mount, the rider
-    /// included (their own client plays none).
-    fn lan_start_riding_jump(&mut self, host: &mut LanHost, conn: u32, data: i32) {
-        let Some(Some(index)) = self.as_guest(host, conn, |g| g.mount_index()) else {
-            return;
-        };
-        let m = &mut self.mobs[index];
-        let Some((sound, volume)) = crate::game::mounts::start_riding_jump(m, data) else {
-            return;
-        };
-        let at = m.center();
-        // LivingEntity.getSoundSource: a mob's sounds are in the neutral source.
-        let neutral = horizon_client::settings::SOUND_SOURCES
-            .iter()
-            .position(|s| *s == "neutral")
-            .unwrap_or(0) as i32;
-        host.hub.sound(
-            &format!("minecraft:{sound}"),
-            at,
-            volume,
-            1.0,
-            neutral,
-            None,
-        );
     }
 
     /// ServerGamePacketListenerImpl.handlePlayerCommand START_FALL_FLYING:
@@ -6296,31 +6220,8 @@ fn eye_columns(at: [f64; 3], body: Dimensions) -> [std::ops::RangeInclusive<i32>
     [range(at[0]), range(at[2])]
 }
 
-/// What `ServerPlayerGameMode.handleBlockBreakAction`'s STOP_DESTROY_BLOCK branch does with a
-/// guest's STOP.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum StopDig {
-    /// A block the last START did not name: the STOP is not this dig's.
-    Other,
-    /// Already broken, by the guest's own tick: only the crack goes.
-    Gone,
-    /// The dig the START counts is at least 70 % done: the block breaks outright.
-    Break,
-    /// Less than that: the server finishes it alone from that same START.
-    Delay(u64),
-}
-
-/// The STOP branch's decision: a STOP is measured from the START that named its block
-/// (`destroyPos`, which an abort or a STOP from out of reach leaves alone), whose ticks times
-/// `getDestroyProgress` decide between the break and the delayed dig (#4124).
-fn stop_dig(play: &GuestPlay, pos: [i32; 3], air: bool, ticks: u64, per_tick: f32) -> StopDig {
-    match play.dig_start_for(pos) {
-        None => StopDig::Other,
-        Some(_) if air => StopDig::Gone,
-        Some(start) if per_tick * (ticks - start + 1) as f32 >= 0.7 => StopDig::Break,
-        Some(start) => StopDig::Delay(start),
-    }
-}
+mod dig_stop;
+use dig_stop::{StopDig, stop_dig};
 
 /// ServerPlayer.swingAndResetAttackStrength resets only when a use starts a swing.
 fn reset_use_attack_strength(ticker: &mut u32, before: u32, after: u32) {
@@ -6955,18 +6856,6 @@ mod guest_close_listener_tests {
     }
 }
 
-/// Whether a guest's plugin channel message is for one of Horizon's own handlers in
-/// `lan_guest_packet` (its `CustomPayload` arms), not for the mods.
-fn horizon_channel(channel: &str) -> bool {
-    [
-        horizon_protocol::quiet::CHANNEL,
-        horizon_protocol::mod_net::CHANNEL,
-        horizon_client::lod_net::CHANNEL,
-        horizon_client::lan::recipes::TRANSFER_CHANNEL,
-    ]
-    .contains(&channel)
-}
-
 #[cfg(test)]
 mod horizon_channel_tests {
     use super::horizon_channel;
@@ -7016,6 +6905,7 @@ mod connected_self_pose_tests {
 
     fn hub_pass(game: &mut Game<'_>, hub: &mut Hub, drain: bool) {
         let mut ctx = TickCtx {
+            sea_level: game.end.locator().map_or(63, |terrain| terrain.sea_level()),
             world: &mut game.world,
             entities: &[],
             next_entity: &mut game.next_entity,

@@ -134,7 +134,8 @@ impl Goal for LandOnOwnersShoulder {
             && m.age > 100
     }
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
-        if !m.extra.sitting
+        // `!isInSittingPose()`: an ordered parrot still in the water may land.
+        if !m.extra.sitting_pose
             && m.extra.leash.is_none()
             && is_owner(m, cx.w)
             && cx
@@ -226,6 +227,21 @@ pub fn set_tame(m: &mut Mob, tame: bool) {
     } else {
         m.attrs.max_health = 8.0;
     }
+    // `setBaseValue`: a base kept from the load or `/attribute` is replaced too.
+    let base = wolf_health_base(tame);
+    if m.species() == Species::Wolf
+        && let Some(b) = m.extra.attributes.as_mut().and_then(|s| {
+            s.bases
+                .iter_mut()
+                .find(|(a, _)| *a == super::finalize::Attr::MaxHealth)
+        })
+    {
+        b.1 = base;
+    }
+}
+/// The max_health base `Wolf.applyTamingSideEffects` sets.
+pub fn wolf_health_base(tame: bool) -> f64 {
+    if tame { 40.0 } else { 8.0 }
 }
 /// `TamableAnimal.getOwner`: the player the saved owner UUID names, when it
 /// is the one this mob sees; anyone else nearby is not its owner.
@@ -383,6 +399,11 @@ impl Goal for SitWhenOrdered {
     /// stops.
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         m.nav_stop();
+        m.extra.sitting_pose = true;
+    }
+    /// `SitWhenOrderedToGoal.stop`.
+    fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
+        m.extra.sitting_pose = false;
     }
 }
 /// `Wolf.WolfAvoidEntityGoal`: untamed wolves flee llamas.
@@ -586,6 +607,10 @@ fn wants_to_attack(m: &Mob, w: &MobWorld, who: Who) -> bool {
     let Some(s) = w.seen(id) else {
         return false;
     };
+    // `TargetingConditions.test` starts with `canBeSeenByAnyone`.
+    if !s.alive {
+        return false;
+    }
     match s.species {
         Species::Creeper | Species::Ghast => false,
         Species::Wolf => !s.tame || s.owner != m.extra.owner,
@@ -610,7 +635,7 @@ impl Beg {
             i.as_deref()
                 .is_some_and(|i| i == "minecraft:bone" || self.food.iter().any(|f| f == i))
         };
-        p.alive && !p.spectator && (held(&p.main_hand) || held(&p.off_hand))
+        p.alive && (held(&p.main_hand) || held(&p.off_hand))
     }
 }
 impl Goal for Beg {
@@ -621,7 +646,7 @@ impl Goal for Beg {
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         cx.w.player
             .as_ref()
-            .is_some_and(|p| m.distance_sqr(p.position) <= 64.0)
+            .is_some_and(|p| p.alive && !p.spectator && m.distance_sqr(p.position) <= 64.0)
             && self.interesting(cx.w)
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
@@ -658,10 +683,11 @@ fn valid_player_target(w: &MobWorld) -> bool {
 fn stop_being_angry(m: &mut Mob) {
     // setLastHurtByMob(null) also stamps the time.
     m.ai.last_hurt_by = None;
+    m.ai.last_hurt_by_ref = None;
     m.ai.last_hurt_by_time = m.age as i32;
     m.ai.target = None;
     m.extra.angry_at = None;
-    m.extra.anger = 0;
+    super::neutral_anger::stop(m);
 }
 /// `NeutralMob.playerDied`: the anger at the player who died ends.
 pub fn forgive_dead_player(m: &mut Mob) {
@@ -880,7 +906,7 @@ pub fn anim(m: &Mob, s: &State, p: &mut Poses) {
     } else {
         p.yrot("tail", (pos * 0.6662).mcos() * 1.4 * speed);
     }
-    if m.extra.sitting {
+    if m.extra.sitting_pose {
         let age = if baby { 0.5 } else { 1.0 };
         let add = |p: &mut Poses, part: &str, x: f32, y: f32, z: f32| {
             let v = p.get(part);
@@ -980,6 +1006,8 @@ const RELAX: usize = 2;
 /// `Cat.registerGoals` (with `reassessTameGoals`' player avoidance).
 pub fn register_cat(m: &mut Mob) {
     m.extra.color = RED;
+    // Cat.defineSynchedData: DATA_VARIANT_ID starts at DEFAULT_VARIANT (CatVariants.BLACK, id 1).
+    m.extra.variant = 1;
     let food = m.kind.food.clone();
     let g = &mut m.ai.goals;
     g.add(1, Float);
@@ -999,7 +1027,7 @@ pub fn register_cat(m: &mut Mob) {
     g.add(8, LeapAtTarget::new(0.3));
     g.add(9, OcelotAttack { attack_time: 0 });
     g.add(10, Breed::new(0.8));
-    g.add(11, Stroll::avoiding_water(0.8));
+    g.add(11, cat_stroll());
     g.add(12, LookAtPlayer::new(10.0));
     // `reassessTameGoals` adds the avoidance after `registerGoals`: goals run
     // in insertion order, so it comes last.
@@ -1016,6 +1044,13 @@ pub fn register_cat(m: &mut Mob) {
         1,
         NonTameTarget::new(NearestTarget::new(Prey::Filter(baby_turtle_on_land), false)),
     );
+}
+/// `Cat.registerGoals`: `WaterAvoidingRandomStrollGoal(this, 0.8, 1.0000001E-5F)`,
+/// the ocelot's probability (a cat strolls out of water one tick in 100000).
+pub fn cat_stroll() -> Stroll {
+    let mut stroll = Stroll::avoiding_water(0.8);
+    stroll.water_avoiding = Some(1.000_000_1e-5);
+    stroll
 }
 /// `Ocelot.registerGoals`, then `reassessTrustingGoals` adds the player
 /// avoidance last. A trusting ocelot (`Ocelot.mobInteract`, the `Trusting`
@@ -1123,9 +1158,14 @@ impl Goal for OcelotAvoid {
         self.0.tick(m, cx)
     }
 }
-/// `Cat.isInSittingPose`: ordered to sit or sitting on a block.
+/// `TamableAnimal.readAdditionalSaveData`: the saved order sets the pose too.
+pub fn restore_sitting(m: &mut Mob, ordered: bool) {
+    m.extra.sitting = ordered;
+    m.extra.sitting_pose = ordered;
+}
+/// `Cat.isInSittingPose`: `SitWhenOrderedToGoal` or a chest/bed goal.
 pub fn cat_sitting(m: &Mob) -> bool {
-    m.extra.sitting || m.extra.flag2
+    m.extra.sitting_pose
 }
 /// `Cat.CatTemptGoal`: only wild cats come for fish. The second field is
 /// `selectedPlayer`, the player the cat has picked to approach unscared.
@@ -1222,7 +1262,7 @@ impl CatRelaxOnOwner {
                 f64::from(g[2]) + 3.0,
             ),
         );
-        w.others.iter().any(|o| {
+        w.others_near(area).any(|o| {
             o.species == Species::Cat && o.id != m.id && o.lying && o.bounds.intersects(area)
         })
     }
@@ -1273,7 +1313,7 @@ impl Goal for CatRelaxOnOwner {
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(g) = self.goal {
-            m.extra.flag2 = false;
+            m.extra.sitting_pose = false;
             m.nav_move_to(
                 cx.w,
                 [f64::from(g[0]), f64::from(g[1]), f64::from(g[2])],
@@ -1309,7 +1349,7 @@ impl Goal for CatRelaxOnOwner {
         let (Some(p), Some(g)) = (cx.w.player.as_ref(), self.goal) else {
             return;
         };
-        m.extra.flag2 = false;
+        m.extra.sitting_pose = false;
         m.nav_move_to(
             cx.w,
             [f64::from(g[0]), f64::from(g[1]), f64::from(g[2])],
@@ -1413,7 +1453,7 @@ impl Goal for CatLieOnBlock {
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx.w);
-        m.extra.flag2 = false;
+        m.extra.sitting_pose = false;
     }
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         m.extra.flag = false;
@@ -1423,7 +1463,7 @@ impl Goal for CatLieOnBlock {
     }
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.tick(m, cx.w);
-        m.extra.flag2 = false;
+        m.extra.sitting_pose = false;
         m.extra.flag = self.0.reached;
     }
 }
@@ -1472,17 +1512,17 @@ impl Goal for CatSitOnBlock {
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx.w);
-        m.extra.flag2 = false;
+        m.extra.sitting_pose = false;
     }
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
-        m.extra.flag2 = false;
+        m.extra.sitting_pose = false;
     }
     fn every_tick(&self) -> bool {
         true
     }
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.tick(m, cx.w);
-        m.extra.flag2 = self.0.reached;
+        m.extra.sitting_pose = self.0.reached;
     }
 }
 /// `OcelotAttackGoal`: stalk slowly, dash in, swipe every second.
@@ -1772,6 +1812,49 @@ mod tests {
     use horizon_core::geometry::Vec3;
     use std::sync::Arc;
 
+    /// The cat bed check answers the same through the grid as by a full scan.
+    #[test]
+    fn cat_bed_check_matches_the_full_scan() {
+        use crate::mobs::{Seen, seen_grid::SeenGrid, world::with_test_world};
+        let mut cat = kind();
+        let k = Arc::make_mut(&mut cat);
+        k.id = "minecraft:cat".into();
+        k.species = Species::Cat;
+        // Cats on a 1.5-block lattice; every fourth one lies down.
+        let mobs: Vec<Mob> = (0..200u32)
+            .map(|i| {
+                let at = Vec3::new(f64::from(i % 20) * 1.5, 64.0, f64::from(i / 20) * 1.5);
+                let mut m = Mob::new(i + 1, cat.clone(), at, 0.0);
+                m.extra.flag = i % 4 == 0;
+                m
+            })
+            .collect();
+        let seen: Vec<Seen> = mobs.iter().map(|m| m.seen(None)).collect();
+        let grid = SeenGrid::new(seen.iter().map(|s| s.bounds));
+        with_test_world(&seen, |w, _| {
+            let indexed = MobWorld {
+                others_grid: Some(&grid),
+                ..w.clone()
+            };
+            let (mut hits, mut misses) = (0, 0);
+            for bed in [[0, 64, 0], [5, 64, 5], [12, 64, 9], [28, 64, 20]] {
+                let relax = CatRelaxOnOwner {
+                    goal: Some(bed),
+                    on_bed_ticks: 0,
+                };
+                for me in &mobs {
+                    let scan = relax.occupied(me, w);
+                    assert_eq!(relax.occupied(me, &indexed), scan);
+                    if scan {
+                        hits += 1;
+                    } else {
+                        misses += 1;
+                    }
+                }
+            }
+            assert!(hits > 0 && misses > 0);
+        });
+    }
     /// Wolf.tick: a shake starting posts ENTITY_ACTION with its sound, on the server only.
     #[test]
     fn a_shake_posts_entity_action_on_the_server() {
@@ -1796,6 +1879,21 @@ mod tests {
         let mut events = Vec::new();
         shake_tick(&mut shaking_wolf(), false, false, &mut events);
         assert!(!action(&events), "a client's copy posts nothing");
+    }
+
+    /// Cat.defineSynchedData: DATA_VARIANT_ID defaults to CatVariants.BLACK.
+    #[test]
+    fn a_newly_registered_cat_defaults_to_black_variant() {
+        let mut kind = kind();
+        let k = Arc::make_mut(&mut kind);
+        k.id = "minecraft:cat".into();
+        k.species = Species::Cat;
+        let m = Mob::new(1, kind, Vec3::ZERO, 0.0);
+        assert_eq!(m.extra.variant, 1);
+        assert_eq!(
+            super::super::finalize::variant_name(Species::Cat, m.extra.variant),
+            "black"
+        );
     }
 
     /// `TamableAnimal.unableToMoveToOwner` (#12939): a pet on a lead, with lead
@@ -2062,7 +2160,10 @@ mod tests {
             let mut m = sitting(species, name);
             m.id = id;
             m.extra.in_love = 600;
+            // Ordered to sit on the ground, so also in the pose the partner
+            // check reads.
             m.extra.sitting = sat;
+            m.extra.sitting_pose = sat;
             m
         };
         for (species, name, seeker_sat, partner_sat, breeds) in [
@@ -2093,6 +2194,112 @@ mod tests {
                 );
             });
         }
+    }
+
+    /// `BegGoal` finds its player with `TargetingConditions.forNonCombat()`,
+    /// which never picks a spectator or a dead player.
+    #[test]
+    fn a_spectator_holding_a_bone_does_not_make_a_wolf_beg() {
+        use crate::mobs::goals::Cx;
+        use crate::mobs::world::{test_player, with_test_world};
+        use horizon_core::random::LegacyRandom;
+        let mut outcomes = Vec::new();
+        if !with_test_world(&[], |w, _| {
+            for spectator in [false, true] {
+                let mut world = w.clone();
+                let mut p = test_player(Vec3::new(2.5, 64.0, 0.5));
+                p.main_hand = Some("minecraft:bone".into());
+                p.spectator = spectator;
+                world.player = Some(p);
+                let mut kind = (*kind()).clone();
+                kind.species = Species::Wolf;
+                let mut m = Mob::new(1, Arc::new(kind), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                m.ai.goals.add(
+                    1,
+                    super::Beg {
+                        food: Arc::from(vec!["minecraft:bone".to_string()]),
+                        ticks: 0,
+                    },
+                );
+                let mut lr = LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &world,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut m.ai.goals);
+                goals.tick(&mut m, &mut cx);
+                outcomes.push(goals.is_running("Beg"));
+                m.ai.goals = goals;
+            }
+        }) {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            vec![true, false],
+            "a survival player's bone makes it beg; a spectator's does not"
+        );
+    }
+    /// `OwnerHurtByTargetGoal.canUse` runs the owner's attacker through
+    /// `TargetingConditions.forCombat()`, whose `test` starts with
+    /// `canBeSeenByAnyone`: a dead attacker is not avenged.
+    #[test]
+    fn a_pet_does_not_avenge_its_owner_on_a_dead_attacker() {
+        use crate::mobs::goals::Cx;
+        use crate::mobs::world::{test_player, with_test_world};
+        use horizon_core::random::LegacyRandom;
+        let mut outcomes = Vec::new();
+        if !with_test_world(&[], |w, _| {
+            for alive in [true, false] {
+                let mut world = w.clone();
+                let p = test_player(Vec3::new(1.5, 64.0, 0.5));
+                world.player = Some(p.clone());
+                let mut wolf_kind = (*kind()).clone();
+                wolf_kind.species = Species::Wolf;
+                let mut wolf = Mob::new(1, Arc::new(wolf_kind), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                wolf.extra.tame = true;
+                wolf.extra.owner = Some(p.uuid);
+                let mut attacker_kind = (*kind()).clone();
+                attacker_kind.species = Species::Zombie;
+                let mut attacker =
+                    Mob::new(2, Arc::new(attacker_kind), Vec3::new(2.5, 64.0, 0.5), 0.0);
+                if !alive {
+                    attacker.health = 0.0;
+                }
+                let seen = [attacker.seen(None)];
+                let world = crate::mobs::MobWorld {
+                    others: &seen,
+                    ..world
+                };
+                let mut p = p;
+                p.hurt_by = Some((Who::Mob(2), 5));
+                let world = crate::mobs::MobWorld {
+                    player: Some(p),
+                    ..world
+                };
+                wolf.ai.targets.add(1, OwnerHurtBy { timestamp: 0 });
+                let mut lr = LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &world,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut wolf.ai.targets);
+                goals.tick(&mut wolf, &mut cx);
+                outcomes.push(goals.is_running("OwnerHurtBy"));
+                wolf.ai.targets = goals;
+            }
+        }) {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            vec![true, false],
+            "an alive attacker is avenged; a dead one is not"
+        );
     }
 }
 
@@ -2337,3 +2544,7 @@ mod non_tame_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "pet_pose_tests.rs"]
+mod pet_pose_tests;
