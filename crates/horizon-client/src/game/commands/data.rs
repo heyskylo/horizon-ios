@@ -118,12 +118,14 @@ impl Game<'_> {
             Target::Item(id) => {
                 let uuid = self.uuid_for(id);
                 let e = self.dropped.iter().find(|e| e.id == id)?;
-                entity_nbt::item_entity_to_nbt_with_items(
+                let mut tag = entity_nbt::item_entity_to_nbt_with_items(
                     e,
                     uuid,
                     self.persist.raw.get(&id),
                     self.items(),
-                )
+                );
+                self.save_portal_cooldown(id, &mut tag);
+                tag
             }
             Target::Stand(id) => {
                 let uuid = self.uuid_for(id);
@@ -149,6 +151,7 @@ impl Game<'_> {
                 self.put_mob_passengers(&mut tag, id);
                 // AbstractBoat.addAdditionalSaveData: the live or pending leash.
                 self.write_boat_leash(&mut tag, i);
+                self.save_portal_cooldown(id, &mut tag);
                 tag
             }
             Target::Cart(id) => {
@@ -156,6 +159,7 @@ impl Game<'_> {
                 let c = self.carts.iter().find(|c| c.id == id)?;
                 let mut tag = c.to_nbt(uuid, self.persist.raw.get(&id));
                 self.put_mob_passengers(&mut tag, id);
+                self.save_portal_cooldown(id, &mut tag);
                 tag
             }
             Target::Fangs(id) => {
@@ -549,6 +553,7 @@ impl Game<'_> {
                 b.no_gravity = entity_nbt::flag(&tag, "NoGravity");
                 b.on_ground = entity_nbt::flag(&tag, "OnGround");
                 b.fire_ticks = crate::game::boats::saved_fire(&tag);
+                b.ticks_frozen = crate::game::boats::saved_ticks_frozen(&tag);
                 if b.chest {
                     b.items = save::decode_items(tag.get("Items"), crate::game::boats::CHEST_SLOTS);
                 }
