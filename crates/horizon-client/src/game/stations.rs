@@ -5,6 +5,9 @@
 //! `BrewingStandScreen`); item rules live in `horizon_client::stations`.
 
 mod anvil;
+#[path = "smithing_icons.rs"]
+mod smithing_icons;
+use smithing_icons::smithing_slot_icons;
 /// Invalid measurements must not reach tooltip positioning or reserve empty space.
 fn tooltip_component_size(size: Option<[f32; 2]>) -> Option<[f32; 2]> {
     size.filter(|size| size.iter().all(|v| v.is_finite() && *v > 0.0))
@@ -272,64 +275,6 @@ const EMPTY_TEMPLATE_ICONS: [&str; 2] = [
     "smithing_template_armor_trim",
     "smithing_template_netherite_upgrade",
 ];
-/// The base and additions slot icons of the template in the smithing table:
-/// `SmithingTemplateItem.createNetheriteUpgradeTemplate` (the 11 tools and
-/// armour of `SmithingTemplateItem.createNetheriteUpgradeIconList`, then the
-/// ingot) and `SmithingTemplateItem.createArmorTrimTemplate` (the four armour
-/// pieces, then the seven trim materials), as `getBaseSlotEmptyIcons` and
-/// `getAdditionalSlotEmptyIcons` give them.
-fn smithing_slot_icons(
-    template: Option<&str>,
-) -> ([&'static str; 11], usize, [&'static str; 7], usize) {
-    let none = ([""; 11], 0, [""; 7], 0);
-    match template.map(|t| t.trim_start_matches("minecraft:")) {
-        Some("netherite_upgrade_smithing_template") => (
-            [
-                "helmet",
-                "sword",
-                "chestplate",
-                "pickaxe",
-                "leggings",
-                "axe",
-                "boots",
-                "hoe",
-                "shovel",
-                "nautilus_armor",
-                "spear",
-            ],
-            11,
-            ["ingot", "", "", "", "", "", ""],
-            1,
-        ),
-        Some(t) if t.ends_with("_armor_trim_smithing_template") => (
-            [
-                "helmet",
-                "chestplate",
-                "leggings",
-                "boots",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-            ],
-            4,
-            [
-                "ingot",
-                "redstone_dust",
-                "lapis_lazuli",
-                "quartz",
-                "diamond",
-                "emerald",
-                "amethyst_shard",
-            ],
-            7,
-        ),
-        _ => none,
-    }
-}
 
 pub(super) struct Station {
     pub(super) kind: Kind,
@@ -2773,10 +2718,31 @@ impl Game<'_> {
         }
         lines.splice(1..1, after_name);
         let lines = Self::resolved(&lines);
+        // `getEmptyBundleDescriptionTextHeight`: the empty bundle's description
+        // wrapped at the component's 96 pixel width, 9 pixels a line.
+        let description_lines = self
+            .gui
+            .atlas
+            .font
+            .split_lines(
+                &horizon_client::text::Text::translate(
+                    "item.minecraft.bundle.empty.description",
+                    &[],
+                ),
+                96.0,
+            )
+            .len()
+            .max(1);
         // The component's height does not depend on where it is drawn, so a
         // probe at the origin gives the box its extra height.
-        let probe =
-            horizon_client::item_tooltip::bundle_tooltip(self.items(), stack, 0.0, 0.0, 96.0);
+        let probe = horizon_client::item_tooltip::bundle_tooltip(
+            self.items(),
+            stack,
+            0.0,
+            0.0,
+            96.0,
+            description_lines,
+        );
         let bundle_extra = probe.as_ref().map_or(0.0, |l| l.height + 2.0);
         let mut component = None;
         self.native_tooltip_component(stack, &mut component);
@@ -2801,6 +2767,7 @@ impl Game<'_> {
             x,
             y + text_h + 2.0,
             w,
+            description_lines,
         ) {
             self.draw_bundle_tooltip(batch, &layout);
             self.draw_bundle_selected_name(batch, &layout, x, y + text_h + 2.0, w);

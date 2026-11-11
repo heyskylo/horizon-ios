@@ -704,8 +704,7 @@ impl Game<'_> {
         }
         // `extractRenderState`: FIXED, seeded by the frame entity.
         let skinning = self.skinning();
-        let lights =
-            horizon_client::block_entity_render::diffuse_lights(self.dim == super::Dim::Nether);
+        let lights = horizon_client::block_entity_render::diffuse_lights(self.nether_lighting());
         for (stack, id, m, light, cull, kind) in items {
             let entity_start = out.len();
             self.mark_entity(entity_start, kind);

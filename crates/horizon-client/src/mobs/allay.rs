@@ -22,9 +22,25 @@ pub mod interaction;
 // Allay state: `main_hand` the held filter; `State::inventory` the fetched stack,
 // `tame` a liked player, `point` the wanted item (set by the game),
 // `State::noteblock` the liked note block with `ints[2]` its cooldown,
-// `ints[3]` the pickup cooldown, `flag` dancing with `ints[4]` the dance clock,
+// `pickup_cooldown` the pickup cooldown, `flag` dancing with `ints[4]` the dance clock,
 // `egg_time` the duplication cooldown. AnimState slots: holding (0),
 // spinning (1).
+/// `ITEM_PICKUP_COOLDOWN_TICKS`. `CountDownCooldownTicks` counts it down while it is above 0 and
+/// erases it the tick after it reached 0 (`stop`), so a memory at 0 is still
+/// there for a tick, and `Allay.isOnPickupCooldown` is the memory's presence.
+pub fn pickup_cooldown(m: &Mob) -> Option<i32> {
+    m.extra.allay.as_ref()?.pickup_cooldown
+}
+/// `Allay.canPickUpLoot`: a held item and no pickup-cooldown memory.
+pub fn can_pick_up_loot(m: &Mob) -> bool {
+    m.extra.main_hand.is_some() && pickup_cooldown(m).is_none()
+}
+/// Set or erase `ITEM_PICKUP_COOLDOWN_TICKS` (see [`pickup_cooldown`]).
+pub fn set_pickup_cooldown(m: &mut Mob, ticks: Option<i32>) {
+    if let Some(state) = m.extra.allay.as_mut() {
+        state.pickup_cooldown = ticks;
+    }
+}
 pub const HOLD: usize = 0;
 pub const SPIN: usize = 1;
 /// `Allay.isLikedPlayer`: compare the supplied verified player UUID with
@@ -157,6 +173,8 @@ pub fn pickup_reach(bounds: Aabb) -> Aabb {
 pub struct State {
     /// Allay's separate one-slot SimpleContainer.
     pub inventory: Option<ItemStack>,
+    /// The full Codec.INT value, including zero while the memory is present.
+    pub pickup_cooldown: Option<i32>,
     pub vibration: sculk::Data,
     pub noteblock: Option<GlobalPos>,
     /// The `LIKED_PLAYER` memory's time to live (`MemorySlot.timeToLive`);
@@ -326,7 +344,7 @@ impl Goal for Fetch {
         MOVE
     }
     fn can_use(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
-        m.extra.point.is_some() && m.extra.ints[3] <= 0
+        m.extra.point.is_some() && pickup_cooldown(m).is_none()
     }
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(p) = m.extra.point
@@ -491,11 +509,12 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld) {
     tick_liked_player(m);
     passive_heal(m);
     stop_dancing_away(m, w);
-    for i in [2, 3] {
-        if m.extra.ints[i] > 0 {
-            m.extra.ints[i] -= 1;
-        }
+    if m.extra.ints[2] > 0 {
+        m.extra.ints[2] -= 1;
     }
+    // CountDownCooldownTicks stops and erases a nonpositive memory; a positive
+    // value reaches zero for one tick before that stop.
+    set_pickup_cooldown(m, pickup_cooldown(m).filter(|t| *t > 0).map(|t| t - 1));
     update_duplication_cooldown(m);
     animate(m);
 }
