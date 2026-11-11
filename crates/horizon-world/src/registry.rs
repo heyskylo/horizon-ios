@@ -74,6 +74,15 @@ fn cacheable_saved_state(tag: &Tag) -> bool {
         _ => false,
     }
 }
+/// Equal when they hold the same states in the same order and the same block
+/// defaults. The indexes are built from the states, and the saved-entry cache
+/// only ever resolves to the same ids, so neither counts.
+impl PartialEq for BlockRegistry {
+    fn eq(&self, other: &Self) -> bool {
+        self.states == other.states && self.defaults == other.defaults
+    }
+}
+impl Eq for BlockRegistry {}
 /// The hash [`BlockRegistry`] indexes states by (fixed keys: the same in
 /// every process).
 fn state_key(state: &BlockState) -> u64 {

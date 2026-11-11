@@ -7,10 +7,11 @@ use super::{
     ocean_ruin,
     processor::ProcessorList,
     ruined_portal::{self, PortalProps, Vertical},
+    saved_legacy::{flag, int},
     simple::igloo_pivot,
 };
 use crate::{
-    datafix::dynamic::{Number, as_bool_opt, as_float, as_number},
+    datafix::dynamic::{as_bool_opt, as_float, as_number},
     nbt::Tag,
     worldgen::block_feature::FeatureBlockBindings,
 };
@@ -22,29 +23,6 @@ fn text(tag: &Tag, key: &str) -> Option<String> {
         _ => None,
     }
 }
-fn int(tag: &Tag, key: &str) -> i32 {
-    // `CompoundTag.getIntOr`: `Mth.floor` of a float or double tag, the low 32 bits of the others.
-    match tag.get(key).and_then(as_number) {
-        Some(Number::Float(v)) => {
-            let i = v as i32;
-            if v < i as f32 { i.wrapping_sub(1) } else { i }
-        }
-        Some(Number::Double(v)) => {
-            let i = v as i32;
-            if v < f64::from(i) {
-                i.wrapping_sub(1)
-            } else {
-                i
-            }
-        }
-        Some(n) => n.int_value(),
-        None => 0,
-    }
-}
-fn flag(tag: &Tag, key: &str) -> bool {
-    int(tag, key) as i8 != 0
-}
-
 fn mirror(tag: &Tag, key: &str) -> Option<Mirror> {
     [Mirror::None, Mirror::LeftRight, Mirror::FrontBack]
         .into_iter()
@@ -386,7 +364,8 @@ mod tests {
             original.save(),
             "rebuild box and NORTH orientation"
         );
-        for (key, value) in [("id", "minecraft:msroom"), ("Rot", "broken")] {
+        // `tejp` is a piece type Horizon cannot read yet.
+        for (key, value) in [("id", "minecraft:tejp"), ("Rot", "broken")] {
             let mut broken = tag.clone();
             let Some(Tag::List(children)) = broken.get_mut("Children") else {
                 unreachable!()

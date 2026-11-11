@@ -9,6 +9,7 @@ pub mod blocks;
 pub mod bundle;
 pub mod content_namespaces;
 pub mod cooldowns;
+pub mod durability;
 pub mod enchant;
 pub mod firework;
 pub mod flowers;

@@ -11,6 +11,8 @@
 pub mod code;
 pub mod crypto;
 pub mod direct;
+#[cfg(feature = "game")]
+pub mod game;
 pub mod guest;
 pub mod host;
 pub mod invite;

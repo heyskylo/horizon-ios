@@ -21,7 +21,11 @@ use horizon_client::{
     screen_effects::{ScreenInputs, ScreenQuad, lightmap_brightness, nausea_has_effect},
 };
 use horizon_core::random::{LegacyRandom, RandomSource};
-use horizon_world::{heightmap::HeightmapType, worldgen::terrain::TerrainBlockStates};
+use horizon_world::{
+    dimension_type::{CardinalLight, Skybox},
+    heightmap::HeightmapType,
+    worldgen::terrain::TerrainBlockStates,
+};
 
 pub(super) fn player_tracking_body(player: &PlayerMotion) -> TrackingBody {
     TrackingBody {
@@ -96,6 +100,18 @@ fn rains_at(world: &World, biomes: &Biomes, x: i32, y: i32, z: i32) -> bool {
 }
 
 impl Game<'_> {
+    /// `GameRenderer`'s cardinal light: the level's type uses the Nether's diffuse lights.
+    pub(super) fn nether_lighting(&self) -> bool {
+        self.dimension_type().cardinal_light == CardinalLight::Nether
+    }
+    /// `SkyRenderer`'s overworld skybox: sun, moon, stars and clouds.
+    pub(super) fn overworld_skybox(&self) -> bool {
+        self.dimension_type().skybox == Skybox::Overworld
+    }
+    /// `SkyRenderer`'s End skybox and its flashes.
+    pub(super) fn end_skybox(&self) -> bool {
+        self.dimension_type().skybox == Skybox::End
+    }
     pub(super) fn forward(&self) -> [f64; 3] {
         let (yaw, pitch) = (
             f64::from(self.yaw).to_radians(),
@@ -151,7 +167,7 @@ impl Game<'_> {
             forward: forward.map(|c| c as f32),
             rain,
             thunder,
-            skybox: self.dim == Dim::Overworld,
+            skybox: self.overworld_skybox(),
             blindness: self
                 .potions
                 .effects
@@ -164,10 +180,11 @@ impl Game<'_> {
             boss_world_fog: self.boss_overlay.should_create_world_fog(),
             spectator: self.spectator(),
             fire_resistance: self.potions.effects.get("fire_resistance").is_some()
-                || self.settings.extras.pvp.tweaks.clear_lava,
-            full_water_vision: self.settings.extras.pvp.tweaks.clear_water,
+                || self.pvp_clear_fluids().0,
+            full_water_vision: self.pvp_clear_fluids().1,
             night_vision: self.fog_night_vision(),
             environment: self.pack.polytone_colors.env,
+            fluid_fog: self.pack.polytone_colors.fluid_fog,
         };
         let mut fog = horizon_client::fog::setup_fog(tables, &self.fog, &input);
         if !self.settings.horizon.fog {
@@ -264,9 +281,9 @@ impl Game<'_> {
         let horizon = if self.level_flat() {
             f64::from(self.level_min_y())
         } else {
-            63.0
+            f64::from(self.pack.polytone_colors.env.horizon_height)
         };
-        self.dim == Dim::Overworld
+        self.overworld_skybox()
             && camera.y < horizon
             && fog_type(
                 &self.world,
@@ -405,7 +422,7 @@ impl Game<'_> {
             on_fire: self.camera_type.first_person()
                 && !self.spectator()
                 && self.player.as_ref().is_some_and(|p| p.fire_ticks > 0),
-            fire_lower: f32::from(self.settings.extras.pvp.tweaks.fire_lower) / 100.0,
+            fire_lower: self.pvp_fire_lower(),
             gui_overlays: &gui_overlays,
         })
     }
@@ -425,6 +442,7 @@ impl Game<'_> {
     /// flicker whenever the game is not paused, frozen or not, while `TextureManager.tick`
     /// needs the level running normally. `HORIZON_STILL` keeps both with the world.
     pub(super) fn tick_frame_visuals(&mut self, running: bool) {
+        self.hold_fullbright();
         if running || !self.clock.still() {
             self.fog.tick_flicker();
         }
@@ -520,10 +538,10 @@ impl Game<'_> {
         let height_no_leaves =
             |p: [i32; 3]| motion_blocking_leaves(world, facts, p[0], p[2], i32::MAX, false);
         // The day timeline: firefly bush sounds from 12600 to 23400.
-        let firefly_bush_sounds = self.dim == Dim::Overworld
+        let firefly_bush_sounds = self.dimension_type().has_timeline("minecraft:day")
             && (12600..23401).contains(&self.world.day_time.rem_euclid(24000));
         // EnvironmentAttributes.CREAKING_ACTIVE: the same overworld night.
-        let creaking_active = self.dim == Dim::Overworld
+        let creaking_active = self.dimension_type().has_timeline("minecraft:day")
             && (12600..23401).contains(&self.world.day_time.rem_euclid(24000));
         let tables = &self.pack.context.tables;
         let model_offset = |state, x, z| tables.offset(state, x, z);
@@ -550,7 +568,7 @@ impl Game<'_> {
             model_offset: &model_offset,
             gateway_particles: &gateway_particles,
             thundering,
-            ultrawarm: self.dim == Dim::Nether,
+            ultrawarm: self.dimension_type().water_evaporates,
         };
         if let Some(e) = eye {
             let block = [
@@ -679,6 +697,7 @@ impl Game<'_> {
                 .player
                 .as_ref()
                 .map(|p| ([p.position.x, p.position.y, p.position.z], p.velocity.y)),
+            cached_chunk: std::cell::Cell::new(None),
         };
         laps.lap("tp_level");
         // Resource packs' Polytone entity emitters on the player (#11486): fog, dust and
@@ -725,6 +744,37 @@ impl Game<'_> {
             }
         }
     }
+
+    /// The ticks the frame shows (animated textures, the HUD, a shader pack's clock): the
+    /// client's, or under `HORIZON_STILL` (`FixedStep::still`) the world's game time, which
+    /// moves only while the world runs.
+    pub(super) fn visual_ticks(&self) -> u64 {
+        if self.clock.still() {
+            self.world.game_time.max(0) as u64
+        } else {
+            self.ticks
+        }
+    }
+
+    /// The clock of the animated textures: `Minecraft.runTick` ticks the `TextureManager`
+    /// only while the level runs normally. Under `HORIZON_STILL` it is the world's ticks.
+    pub(super) fn texture_clock(&self) -> u64 {
+        if self.clock.still() {
+            self.visual_ticks()
+        } else {
+            self.texture_ticks
+        }
+    }
+
+    /// `Util.getMillis` for what the frame shows (the world border's scroll, the hearts' blink,
+    /// the glint's under the switch): under `HORIZON_STILL`, the world's ticks in milliseconds.
+    pub(super) fn visual_millis(&self) -> i64 {
+        if self.clock.still() {
+            self.visual_ticks() as i64 * 50
+        } else {
+            self.started.elapsed().as_millis() as i64
+        }
+    }
 }
 impl Game<'_> {
     /// What the packs' Polytone animation modes read this tick (wiki "Variant Textures"): the
@@ -745,8 +795,15 @@ impl Game<'_> {
                 day_time,
                 ..Default::default()
             });
+        // `screen_time` counts while the same screen stays open.
+        let screen = (self.screen != super::Screen::Playing).then(|| {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::mem::discriminant(&self.screen).hash(&mut hasher);
+            hasher.finish()
+        });
         if let Some(renderer) = &mut self.renderer {
-            renderer.set_animation_inputs(day_time, [rain, thunder], Some(&frame));
+            renderer.set_animation_inputs(day_time, [rain, thunder], Some(&frame), screen);
         }
     }
 }

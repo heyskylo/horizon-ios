@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 mod face_buttons;
 mod hid_layout;
 mod sdl_row;
+mod trigger_effects;
 mod triggers;
 
 /// The controllers gilrs sees and the DualSense's output.
@@ -222,8 +223,14 @@ impl Pads {
             return PadState::default();
         };
         let active = self.devices.active;
+        self.peaks = [[0.0; 2]; 2];
         while let Some(gilrs::Event { id, event, .. }) = gilrs.next_event() {
             use gilrs::EventType as E;
+            // The furthest each stick of the active pad leant between the events, which a read
+            // after them all misses (`Pads::peaks`).
+            if matches!(event, E::AxisChanged(..)) && self.devices.active == Some(id) {
+                keep_peaks(&mut self.peaks, sticks_of(&gilrs.gamepad(id)));
+            }
             match event {
                 E::Connected => {
                     log::info!("Controller connected: {}", gilrs.gamepad(id).name());
@@ -264,6 +271,7 @@ impl Pads {
         // Another pad, or none: its A going away isn't a release.
         if self.devices.active != active {
             self.menu.armed = None;
+            self.radial.cancel();
             self.menu.stop_craft();
         }
         let Some(pad) = self
@@ -280,6 +288,16 @@ impl Pads {
         self.style = GlyphStyle::of_device(pad.vendor_id(), pad.product_id());
         self.devices.dualsense = is_dualsense(&pad);
         state_of(&pad)
+    }
+}
+
+/// The furthest each stick leant: `sticks` (left, right) where they lean further than `peaks`.
+fn keep_peaks(peaks: &mut [[f32; 2]; 2], sticks: [[f32; 2]; 2]) {
+    use horizon_client_input::radial::stick_length;
+    for (peak, stick) in peaks.iter_mut().zip(sticks) {
+        if stick_length(stick) > stick_length(*peak) {
+            *peak = stick;
+        }
     }
 }
 
@@ -328,6 +346,13 @@ fn state_of(pad: &gilrs::Gamepad) -> PadState {
             state.set(button, pad.is_pressed(named));
         }
     }
+    [state.left, state.right] = sticks_of(pad);
+    state.triggers = triggers::triggers(pad);
+    state
+}
+
+/// A pad's sticks now (left, right).
+fn sticks_of(pad: &gilrs::Gamepad) -> [[f32; 2]; 2] {
     let axis = |a| pad.value(a);
     use gilrs::Axis as A;
     let sdl_mapped = pad.mapping_source() == gilrs::MappingSource::SdlMappings;
@@ -340,14 +365,12 @@ fn state_of(pad: &gilrs::Gamepad) -> PadState {
         sdl_mapped,
     );
     let (left, right) = sdl_row::sticks(pad, left, right);
-    state.left = left;
-    state.right = if hid_layout::right_stick_on_z(pad) {
+    let right = if hid_layout::right_stick_on_z(pad) {
         hid_layout::right_stick([axis(A::LeftZ), axis(A::RightZ)])
     } else {
         right
     };
-    state.triggers = triggers::triggers(pad);
-    state
+    [left, right]
 }
 
 /// A controller, as splitscreen tells them apart.
@@ -361,6 +384,8 @@ pub(in crate::game) struct PadRouter {
     started: bool,
     /// Vibrations playing while several play, each until its end.
     rumbles: Vec<(gilrs::ff::Effect, Instant)>,
+    /// The furthest each pad's sticks leant since the last `events` (`Pads::peaks`).
+    peaks: Vec<(PadId, [[f32; 2]; 2])>,
 }
 
 impl PadRouter {
@@ -444,7 +469,15 @@ impl PadRouter {
             return Vec::new();
         };
         let mut events = Vec::new();
+        self.peaks.clear();
         while let Some(gilrs::Event { id, event, .. }) = gilrs.next_event() {
+            if matches!(event, gilrs::EventType::AxisChanged(..)) {
+                let sticks = sticks_of(&gilrs.gamepad(id));
+                match self.peaks.iter_mut().find(|(pad, _)| *pad == id) {
+                    Some((_, peaks)) => keep_peaks(peaks, sticks),
+                    None => self.peaks.push((id, sticks)),
+                }
+            }
             match event {
                 gilrs::EventType::ButtonPressed(pressed, _) => {
                     let crossed = face_buttons::crossed(&gilrs.gamepad(id));
@@ -478,6 +511,14 @@ impl PadRouter {
         self.gilrs
             .as_ref()
             .map_or([0; 16], |g| g.gamepad(id).uuid())
+    }
+
+    /// The furthest the pad's sticks leant since the last `events`.
+    pub(in crate::game) fn peaks(&self, id: PadId) -> [[f32; 2]; 2] {
+        self.peaks
+            .iter()
+            .find(|(pad, _)| *pad == id)
+            .map_or([[0.0; 2]; 2], |(_, peaks)| *peaks)
     }
 
     /// The pad's state now (released when it is gone).
@@ -576,7 +617,7 @@ impl Game<'_> {
         };
         let lights = self.settings.controller.lightbar != gamepad::Lightbar::Off;
         let state = horizon_dualsense::device::State {
-            triggers: self.settings.controller.trigger_effects(using, attacking),
+            triggers: trigger_effects::effects(&self.settings.controller, using, attacking),
             lightbar: lightbar.filter(|_| lights),
             player_leds: lights.then_some(horizon_dualsense::PLAYER_1),
         };

@@ -126,15 +126,25 @@ fn sprite_name(resource: &str) -> String {
 }
 
 impl ConnectedTextures {
-    /// The rules under `root`, with their tiles inserted into `sprites` (before it finishes).
-    /// `face_layer` answers a block state's sprite on a side, for rules that connect by tile.
+    /// The sprites `rules` match by name (`matchTiles`, `connectTiles`), for
+    /// [`Sprites::keep_apart`]: before the models insert theirs.
+    pub fn matched_sprites(rules: &[Rule]) -> Vec<String> {
+        (rules.iter())
+            .flat_map(|r| r.match_tiles.iter().chain(&r.connect_tiles))
+            .map(|t| sprite_name(t))
+            .collect()
+    }
+
+    /// `rules` (`ctm::load` under `root`), with their tiles inserted into `sprites` (before it
+    /// finishes). `face_layer` answers a block state's sprite on a side, for rules that connect
+    /// by tile.
     pub fn load(
         root: &Path,
+        mut rules: Vec<Rule>,
         registry: &BlockRegistry,
         sprites: &mut Sprites,
         mut face_layer: impl FnMut(BlockStateId, Face) -> Option<u32>,
     ) -> Self {
-        let mut rules = ctm::load(root);
         // Rules with a custom name load no tiles: section meshes see no block entity.
         rules.retain(|r| r.name.is_none());
         // Rule indices are `u16`.
@@ -1339,6 +1349,41 @@ mod tests {
         // Another block, or a pane without rules, hides nothing.
         assert!(!ctm.stacked_pane_hides(1, 2, post));
         assert!(!ctm.stacked_pane_hides(3, 3, post));
+    }
+
+    #[test]
+    fn rules_name_the_sprites_they_match() {
+        // `matchTiles` among the textures and beside the file (a chain onto another rule's
+        // tile), and `connectTiles`: each as the sprite name the textures and tiles are inserted
+        // under.
+        let dir = "assets/minecraft/optifine/ctm/pack/crops";
+        let rule = |file: &str, text: &str| {
+            Rule::parse(
+                &format!("{dir}/{file}"),
+                &horizon_optifine::properties::Properties::parse(text),
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let rules = [
+            rule(
+                "1.properties",
+                "matchTiles=./19.png\nmethod=random\ntiles=5-6",
+            ),
+            rule(
+                "2.properties",
+                "matchTiles=textures/block/extra/placeholder.png\nmethod=overlay\n\
+                 connectTiles=textures/block/stone.png\ntiles=0-16",
+            ),
+        ];
+        assert_eq!(
+            ConnectedTextures::matched_sprites(&rules),
+            [
+                format!("{dir}/19.png"),
+                "minecraft:block/extra/placeholder".to_owned(),
+                "minecraft:block/stone".to_owned(),
+            ]
+        );
     }
 
     #[test]

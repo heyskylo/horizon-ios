@@ -8,8 +8,8 @@
 //!
 //! [`TouchControls`] turns fingers into the controller state the game already
 //! reads ([`PadState`]). Each finger gets a role when it lands (the joystick or
-//! D-pad, a button, or a camera drag) and keeps it until it lifts, so moving,
-//! looking and pressing never take each other's fingers.
+//! D-pad, a button, or a look gesture on the world) and keeps it until it
+//! lifts, so moving, looking and pressing never take each other's fingers.
 pub mod aim;
 pub mod layout;
 pub use aim::{
@@ -22,6 +22,10 @@ use crate::gamepad::{Button, PadState};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+/// A world touch held this long without dragging becomes a hold (mining, eating).
+const HOLD_DELAY: Duration = Duration::from_millis(350);
+/// How long the marker of a short world tap stays.
+const MARKER_TIME: Duration = Duration::from_millis(180);
 /// Two taps on the D-pad's sneak button closer than this toggle crouching.
 const DOUBLE_TAP: Duration = Duration::from_millis(300);
 /// A look finger that moves farther than this (a fraction of the surface
@@ -35,8 +39,19 @@ const SWAP_HANDS: &str = "action:key.swapOffhand";
 enum Role {
     /// Drives the joystick or D-pad, measured from this anchor.
     Move([f32; 2]),
-    /// Landed on the world: turns the camera once it moves past [`DRAG_SLOP`].
-    Look { start: [f32; 2], dragged: bool },
+    /// Turns the camera; without a drag, a short tap or a long hold acts on
+    /// the world where it landed.
+    Look {
+        start: [f32; 2],
+        since: Instant,
+        /// Moved past [`DRAG_SLOP`]: a camera turn, not a tap.
+        dragged: bool,
+        /// Whether a hold uses the item (eat, draw a bow) instead of mining,
+        /// as [`TouchControls::hold_uses_item`] said when the finger landed.
+        held_use: bool,
+        /// Became a hold before it dragged; it keeps acting while it turns.
+        committed: bool,
+    },
     /// Landed on a control that acted at once; nothing more until it lifts.
     Ignore,
     /// Holds the shield up.
@@ -52,6 +67,8 @@ pub struct TouchControls {
     pub settings: Settings,
     /// The game needs the crosshair whatever the scheme.
     pub force_crosshair: bool,
+    /// The held item is aimed along the crosshair ([`projectile_crosshair`]).
+    pub projectile_crosshair: bool,
     /// The player has a shield, so the shield button may show.
     pub shield_available: bool,
     /// Only the shortcut buttons (chat, pause, settings, F3, F5): a keyboard
@@ -64,6 +81,16 @@ pub struct TouchControls {
     pub vertical_movement: bool,
     pub swimming: bool,
     pub mounted: bool,
+    /// A long hold on the world uses the held item instead of mining. Read when
+    /// a finger lands, so a change mid-hold (the last apple eaten) can't turn
+    /// eating into mining.
+    pub hold_uses_item: bool,
+    /// Where this tick's world action aims (0..1 of the surface), set by
+    /// [`Self::poll_state`].
+    pub aim: Option<[f32; 2]>,
+    /// A world hold is active this tick, and whether it uses the item.
+    pub holding: bool,
+    pub holding_use: bool,
     /// A button was pressed; the game plays the click and clears it.
     pub clicked: bool,
     pub chat_requested: bool,
@@ -75,6 +102,10 @@ pub struct TouchControls {
     pending: PadState,
     /// Key or action presses for the game's key bindings: (token, down).
     key_events: Vec<(String, bool)>,
+    tap_aim: Option<[f32; 2]>,
+    /// A short world tap waiting for the game, with the finger's `held_use`.
+    pending_tap: Option<bool>,
+    last_marker: Option<([f32; 2], Instant)>,
     last_sneak_tap: Option<Instant>,
     sprint_latched: bool,
     aspect: f32,
@@ -97,6 +128,27 @@ impl TouchControls {
         } else {
             16.0 / 9.0
         }
+    }
+
+    /// Where a dynamic joystick may appear, as `[x, y, w, h]`: a strip
+    /// `dynamic_area_x` of the width wide on the joystick's side, and
+    /// `dynamic_area_y` of the height tall centred on it. Touches outside it
+    /// stay camera gestures.
+    pub fn dynamic_area(&self) -> [f32; 4] {
+        let home = self.placement(Control::Move);
+        let width = self.settings.dynamic_area_x.clamp(0.0, 1.0);
+        let height = self.settings.dynamic_area_y.clamp(0.0, 1.0);
+        let y = (home.center[1] - height / 2.0).clamp(0.0, 1.0 - height);
+        let x = if home.center[0] < 0.5 {
+            0.0
+        } else {
+            1.0 - width
+        };
+        [x, y, width, height]
+    }
+
+    fn dynamic_joystick(&self) -> bool {
+        self.settings.dynamic_joystick && self.settings.mode != Mode::Dpad
     }
 
     /// The shortcuts that stay with [`Self::auxiliary_only`].
@@ -123,7 +175,17 @@ impl TouchControls {
     /// The visible control under `point`, the last-drawn one first.
     pub fn control_at(&self, point: [f32; 2]) -> Option<Control> {
         Control::ALL.into_iter().rev().find(|&c| {
-            self.visible(c) && layout::contains(self.placement(c).rect(self.aspect()), point)
+            if !self.visible(c) {
+                return false;
+            }
+            if c == Control::Move && self.dynamic_joystick() {
+                let area = self.dynamic_area();
+                return area[2] > 0.0
+                    && area[3] > 0.0
+                    && !self.moving()
+                    && layout::contains(area, point);
+            }
+            layout::contains(self.placement(c).rect(self.aspect()), point)
         })
     }
 
@@ -262,12 +324,41 @@ impl TouchControls {
                 .any(|(r, _)| matches!(r, Role::Shield))
     }
 
+    /// Where the touch marker goes in the tap schemes: under a look finger, or
+    /// briefly where a short tap landed.
+    pub fn pointer(&self) -> Option<[f32; 2]> {
+        if self.crosshair() {
+            return None;
+        }
+        self.fingers
+            .values()
+            .find_map(|(r, point)| matches!(r, Role::Look { .. }).then_some(*point))
+            .or_else(|| {
+                self.last_marker
+                    .filter(|(_, t)| t.elapsed() < MARKER_TIME)
+                    .map(|(p, _)| p)
+            })
+    }
+
+    /// The aim point of a world action: the crosshair, or where the finger is.
+    fn aim_at(&self, point: [f32; 2]) -> [f32; 2] {
+        if self.settings.crosshair() || self.projectile_crosshair {
+            [0.5, 0.5]
+        } else {
+            point
+        }
+    }
+
+    fn world_gestures(&self) -> bool {
+        !self.crosshair() || self.settings.crosshair_gestures
+    }
+
     /// One touch event: finger `id` at `point` (0..1 of the surface), as it
     /// lands (`started`), moves, or lifts (`ended`). Returns how far the
     /// camera should turn, in surface fractions (see [`camera_delta`]).
     pub fn update(&mut self, id: u64, point: [f32; 2], started: bool, ended: bool) -> [f32; 2] {
         if ended {
-            self.fingers.remove(&id);
+            self.lift(id);
             return [0.0; 2];
         }
         if started {
@@ -275,14 +366,26 @@ impl TouchControls {
             return [0.0; 2];
         }
         let aspect = self.aspect();
+        let attack_look = self.settings.attack_button_look && self.crosshair();
         let Some((role, previous)) = self.fingers.get_mut(&id) else {
             return [0.0; 2];
         };
         let turns = match role {
-            Role::Look { start, dragged } => {
+            Role::Look {
+                start,
+                since,
+                dragged,
+                committed,
+                ..
+            } => {
+                if !*dragged && since.elapsed() >= HOLD_DELAY {
+                    *committed = true;
+                }
                 *dragged |= ((point[0] - start[0]) * aspect).hypot(point[1] - start[1]) > DRAG_SLOP;
                 *dragged
             }
+            // In the crosshair schemes the attack button can steer while it mines.
+            Role::Button(Button::RightTrigger) => attack_look,
             _ => false,
         };
         let delta = [point[0] - previous[0], point[1] - previous[1]];
@@ -290,11 +393,34 @@ impl TouchControls {
         if turns { delta } else { [0.0; 2] }
     }
 
+    fn lift(&mut self, id: u64) {
+        let Some((
+            Role::Look {
+                start,
+                since,
+                dragged,
+                held_use,
+                ..
+            },
+            _,
+        )) = self.fingers.remove(&id)
+        else {
+            return;
+        };
+        if self.world_gestures() && !dragged && since.elapsed() < HOLD_DELAY {
+            self.tap_aim = Some(self.aim_at(start));
+            self.last_marker = Some((start, Instant::now()));
+            self.pending_tap = Some(held_use);
+        }
+    }
+
     fn land(&mut self, id: u64, point: [f32; 2]) {
         let role = match self.control_at(point) {
-            Some(Control::Move) if !self.moving() => {
-                Role::Move(self.placement(Control::Move).center)
-            }
+            Some(Control::Move) if !self.moving() => Role::Move(if self.dynamic_joystick() {
+                point
+            } else {
+                self.placement(Control::Move).center
+            }),
             Some(Control::Shield) => {
                 self.clicked = true;
                 self.pending.triggers[0] = 1.0;
@@ -348,7 +474,10 @@ impl TouchControls {
             Some(c) => Self::button(c).map_or(Role::Ignore, Role::Button),
             None => Role::Look {
                 start: point,
+                since: Instant::now(),
                 dragged: false,
+                held_use: self.hold_uses_item,
+                committed: false,
             },
         };
         self.fingers.insert(id, (role, point));
@@ -367,10 +496,23 @@ impl TouchControls {
         self.last_sneak_tap = None;
         self.sprint_latched = false;
         self.pending = PadState::default();
+        self.aim = None;
+        self.tap_aim = None;
+        self.pending_tap = None;
+        self.last_marker = None;
+        self.holding_use = false;
+        self.holding = false;
         self.chat_requested = false;
         self.settings_requested = false;
         self.debug_requested = false;
         self.perspective_requested = false;
+    }
+
+    /// A short world tap since the last call, and whether it uses the item.
+    /// A tap never holds attack or use into the next tick: the game acts once
+    /// at [`Self::aim`].
+    pub fn take_tap(&mut self) -> Option<bool> {
+        self.pending_tap.take()
     }
 
     /// Key or action presses for the game's key bindings since the last call.
@@ -378,9 +520,63 @@ impl TouchControls {
         std::mem::take(&mut self.key_events)
     }
 
-    /// This tick's controller state, with presses that already lifted.
+    /// This tick's controller state, with presses that already lifted, and
+    /// sets [`Self::aim`], [`Self::holding`] and [`Self::holding_use`].
     pub fn poll_state(&mut self) -> PadState {
-        self.state().merge(&std::mem::take(&mut self.pending))
+        let mut state = self.state().merge(&std::mem::take(&mut self.pending));
+        self.aim = self.tap_aim.take();
+        self.holding_use = false;
+        self.holding = false;
+        if !self.world_gestures() {
+            return state;
+        }
+        let mut hold = None;
+        for (role, point) in self.fingers.values_mut() {
+            if let Role::Look {
+                since,
+                dragged,
+                held_use,
+                committed,
+                ..
+            } = role
+            {
+                if !*dragged && since.elapsed() >= HOLD_DELAY {
+                    *committed = true;
+                }
+                if !*dragged || *committed {
+                    hold = Some((*point, *committed, *held_use));
+                    if *committed {
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some((point, committed, held_use)) = hold {
+            self.aim = Some(self.aim_at(point));
+            if committed {
+                self.holding = true;
+                self.holding_use = held_use;
+                state.triggers[usize::from(!held_use)] = 1.0;
+            }
+        }
+        state
+    }
+
+    /// Keeps the current hold using the item, even after the last one was
+    /// eaten or the target changed.
+    pub fn latch_use(&mut self) {
+        if let Some((Role::Look { held_use, .. }, _)) = self.fingers.values_mut().find(|(r, _)| {
+            matches!(
+                r,
+                Role::Look {
+                    committed: true,
+                    ..
+                }
+            )
+        }) {
+            *held_use = true;
+        }
+        self.holding_use = true;
     }
 
     /// The controller state the fingers hold right now.
