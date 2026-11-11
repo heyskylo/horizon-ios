@@ -13,7 +13,7 @@ reopened; labels never start it):
 
 | Job | Runs on | What | Time |
 | --- | --- | --- | --- |
-| `verify` | Our checks runners (label `horizon-checks`, the desktop's) for the pull requests whose number ends in 0 or 1, forks included; GitHub `ubuntu-latest` for the others and main's pushes. `SELF_HOSTED_CI` moves them: `all` all to ours, `light` or `off` all to GitHub ([CI runners](ci-runners.md)) | Public-tree check, Python tests, rustfmt, clippy with warnings denied, Rust tests, one after another in one job. Dependencies and the workspace build come from a cache saved by main's runs (GitHub) or the runner's own build folder (ours) | ~8 min |
+| `verify` | Our checks runners (label `horizon-checks`, the desktop's) for this repository's own pull requests whose number ends in 0 or 1; GitHub `ubuntu-latest` for the others, forks' pull requests (they see no repository variable, so no switch could move them off a machine that is off) and main's pushes. `SELF_HOSTED_CI` moves them: `all` all to ours, `light` or `off` all to GitHub ([CI runners](ci-runners.md)) | Public-tree check, Python tests, rustfmt, clippy with warnings denied, Rust tests, one after another in one job. Dependencies and the workspace build come from a cache saved by main's runs (GitHub) or the runner's own build folder (ours) | ~8 min |
 | `parity / parity` | A runner with the label `horizon-game`: the Mac mini's and playhorizon's (below) | Only for a change to a harness, an oracle, a probe or the runner (or the `run-parity` label): the vanilla harnesses the change can affect (`tools/parity.py --changed <base>`). Other pull requests skip it: [parity-main](#parity-on-main) checks them on main | seconds when nothing is affected; minutes per affected harness |
 
 Pushes to main run `verify` only; the nightly audit covers main's harnesses.
@@ -125,7 +125,7 @@ requires `verify` for everyone, and Ludovic's review for the files `.github/CODE
 and ships releases). Branches don't have to be up to date with main: main's own `checks` run catches the rare
 semantic conflict.
 
-**Who merges.** The Horizon Team (GitHub team `horizon-team`: kacpherek, levzzz5154, rdbtCVS, Online5277, dezer-x, itarqos5) and
+**Who merges.** The Horizon Team (GitHub team `horizon-team`: kacpherek, levzzz5154, rdbtCVS, Online5277, dezer-x) and
 Ludovic. The orchestrator's agents prove only the risky pull requests (below), so a contributor's ordinary pull
 request doesn't wait for them.
 
@@ -170,15 +170,17 @@ which runs them on main a batch of merges at a time, on the Mac mini's runner:
 
 - It starts on every push to main, one run at a time (`concurrency: parity-main`). A run that started always
   finishes; merges that land while it goes on wait in one pending run: GitHub keeps only the newest and cancels the
-  others, so the next run takes them all. The many `cancelled` runs in the list are those pending ones, plus runs
-  whose bisect outgrew the job's 240 minutes.
+  others, so the next run takes them all. The many `cancelled` runs in the list are those pending ones.
 - `tools/parity_main.py base` gives the newest commit main contains whose parity-main passed (else the last
   merge's parent), and the run is `tools/parity.py --changed <that commit>`: the union of the harnesses every merge
   since then can affect, once, with every earlier pass reused.
 - On a failure, `tools/parity_main.py bisect` checks out the batch's first-parent merges by halves and runs only
   the failing harnesses, names the first merge they fail on in the run's summary and comments on its pull request
   (`🤖 Agent: parity-main found that this merge breaks ...`). Fix it with a pull request as usual; the next
-  run checks from the last green commit again.
+  run checks from the last green commit again. The search has 90 minutes (`--budget`): after that it says between
+  which merges each harness broke, and the next run goes on from there (`.local/parity-runner/bisect.json`, kept
+  while the base is the same), without commenting again on a merge it already named. Before 2026-11-11 a search
+  over many merges ran into the job's 240 minutes and said nothing.
 - Nightlies build only on a commit both `checks` and `parity-main` passed on (`tools/release_train.py`,
   `tools/ci/nightly.py`, see below), so a broken merge holds them instead of reaching players. They take the
   newest such commit even when a later batch failed: that failure is in merges the green commit doesn't contain, so
@@ -462,7 +464,7 @@ commit's source to build them ([native-mods.md](native-mods.md)).
 ### Trusted reviewers
 
 One list, `.github/trusted-reviewers.txt`, governs two things for the people on it (kacpherek, rdbtCVS and
-Online5277 since 2026-10-27, levzzz5154 since 2026-10-28, itarqos5 since 2026-11-08) and for Ludovic, with no repository role: `/nightly` (below) and triage by comment.
+Online5277 since 2026-10-27, levzzz5154 since 2026-10-28) and for Ludovic, with no repository role: `/nightly` (below) and triage by comment.
 
 ```text
 /close                    closes an issue as completed; a pull request is closed without merging
@@ -496,7 +498,7 @@ Online5277 since 2026-10-27, levzzz5154 since 2026-10-28, itarqos5 since 2026-11
 ### Trusted reviewers pick the Nightly's pull requests
 
 The Nightly is where contributors test pull requests before the gate. The trusted reviewers listed in
-`.github/trusted-reviewers.txt` (kacpherek, rdbtCVS and Online5277 since 2026-10-27, levzzz5154 since 2026-10-28, itarqos5 since 2026-11-08) and Ludovic pick them with a
+`.github/trusted-reviewers.txt` (kacpherek, rdbtCVS and Online5277 since 2026-10-27, levzzz5154 since 2026-10-28) and Ludovic pick them with a
 comment on any issue or pull request (`.github/workflows/nightly-command.yml`, `tools/ci/nightly_set.py`):
 
 ```text
@@ -575,9 +577,9 @@ time, on the Mac mini's runner, after preparing the resources again if the prepa
 `tools/ci/parity_issues.py` then compares the results with the previous audit
 (`.local/parity-runner/audit.json` in the runner's checkout):
 
-- a harness that passed last night and fails now gets an issue labelled `parity-regression`, titled
-  `Parity regression: <harness>`, with the commit, the run and the end of its log (one issue per harness: an open
-  one gets a comment instead);
+- a harness that fails now and passed last night, or is in its first audit, gets an issue labelled
+  `parity-regression`, titled `Parity regression: <harness>`, with the commit, the run and the end of its log (one
+  issue per harness: an open one gets a comment instead);
 - a harness with an open issue that passes again gets its issue closed.
 
 The bugs session picks the issues up. The audit's logs are the run's `nightly-parity-logs` artifact; harnesses

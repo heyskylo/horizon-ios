@@ -15,6 +15,8 @@ pub(super) fn rename_box() -> horizon_client::ui::EditBox {
     edit.text_color = u32::MAX;
     // AnvilScreen also sets `setTextColorUneditable(-1)`: white either way.
     edit.text_color_uneditable = u32::MAX;
+    // AnvilScreen sets `setInvertHighlightedTextColor(false)`.
+    edit.invert_highlighted_text_color = false;
     edit.focused = true;
     edit.editable = false;
     edit
@@ -40,6 +42,7 @@ mod tests {
         // AnvilScreen.init: no input yet, so the box is read-only but focused.
         let station_box = rename_box();
         assert!(station_box.focused && !station_box.editable);
+        assert!(!station_box.invert_highlighted_text_color);
 
         // slotChanged with an item: editable, and it shows the item's name.
         let mut station = Station::new_kind(Kind::Anvil, [0; 3]);
@@ -71,3 +74,8 @@ mod tests {
         assert_eq!(station.rename.value, "Diamond Sword");
     }
 }
+
+// The previews in a server session read the server's enchantments (#8688).
+#[cfg(test)]
+#[path = "remote_anvil_tests.rs"]
+mod remote_anvil_tests;

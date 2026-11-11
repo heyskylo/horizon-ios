@@ -252,6 +252,10 @@ impl VanillaTerrain {
         terrain.flat = true;
         Ok(terrain)
     }
+    /// `ChunkGenerator.getSeaLevel`: the active generator's loaded setting.
+    pub fn sea_level(&self) -> i32 {
+        self.generator.sea_level()
+    }
     /// Whether this is a superflat generator, whose `spawnOriginalMobs` places nothing.
     pub fn is_flat(&self) -> bool {
         self.flat
@@ -367,6 +371,11 @@ impl VanillaTerrain {
     /// mobs are finalized with.
     pub fn set_spawn_conditions(&self, difficulty: u8, day_time: i64) {
         self.structure_mobs.set_conditions(difficulty, day_time);
+    }
+    /// Reads what generated mobs are finalized with on a thread of its own
+    /// (`StructureMobFinalizer::load_behind`).
+    pub fn load_structure_mobs_behind(&self) {
+        self.structure_mobs.load_behind();
     }
     /// The random a chunk's generation steps draw from (`WorldGenRegion`).
     pub fn region_random(&self, cx: i32, cz: i32) -> Box<dyn PieceRandom> {

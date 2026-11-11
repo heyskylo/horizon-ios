@@ -460,6 +460,7 @@ mod tests {
 
     const NO_PACK: FrameRequest = FrameRequest {
         linear_pack: false,
+        linear_blend: false,
         hdr_float: true,
     };
     fn on() -> Graphics {
@@ -549,8 +550,10 @@ mod tests {
         reading.luminance = Some(Reported {
             paper_white: 250,
             peak: 600,
+            peak_guessed: false,
         });
-        settings.hdr_ui_brightness = 60;
+        // 150 nits under the reported paper white of 250: 0.6 of it.
+        settings.hdr_ui_nits = 150;
         let mut swapchain = Swapchain::default();
         let next = candidate(&settings, caps, reading, &applied);
         let published = commit(&mut swapchain, &applied, next, caps, &mut None);
@@ -583,6 +586,7 @@ mod tests {
             reading.luminance = Some(Reported {
                 paper_white,
                 peak: 1000,
+                peak_guessed: false,
             });
             let next = candidate(&settings, caps, reading, &published);
             let again = commit(&mut swapchain, &published, next, caps, &mut rejected);
@@ -728,6 +732,7 @@ mod tests {
                 luminance: (hdr == Some(true)).then_some(Reported {
                     paper_white: 300,
                     peak: 800,
+                    peak_guessed: false,
                 }),
                 hdr,
             };

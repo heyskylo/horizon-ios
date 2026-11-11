@@ -108,7 +108,7 @@ impl FinalizeLevel for Level<'_> {
         let index = self.created;
         self.created += 1;
         let mut m = Mob::new(index as u32 + 1, t, Vec3::ZERO, 0.0);
-        m.random = LegacyRandom::new(self.eseed.wrapping_add(index as i64));
+        m.random.set_seed(self.eseed.wrapping_add(index as i64));
         Some(m)
     }
 }
