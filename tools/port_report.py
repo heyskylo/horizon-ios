@@ -18,6 +18,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 try:
     from . import class_index, vanilla_map
@@ -52,7 +53,9 @@ def version_sites(facts, root=ROOT):
     """file:line of every place the code states these version facts (not tests)."""
     pattern = ["-e", str(facts["protocol_version"]), "-e", str(facts["world_version"])]
     found = []
-    for command in (["git", "grep", "-n", "-w"] + pattern, ["git", "grep", "-n", "-F", f'"{facts["id"]}"']):
+    for command in (["git", "grep", "-n", "-w"] + pattern,
+                    ["git", "grep", "-n", "-F", f'"{facts["id"]}"'],
+                    ["git", "grep", "-n", "-F", f"'{facts['id']}'"]):
         result = subprocess.run(command + ["--", "crates/*.rs", "launcher/*.rs", "tools/*.py"],
                                 cwd=root, capture_output=True, text=True)
         found += [line.split(":", 2)[0] + ":" + line.split(":", 2)[1] for line in result.stdout.splitlines()]
@@ -374,3 +377,9 @@ def markdown(report, limit=12):
                                               for p, n in list(entry["packages"].items())[:limit]))
             lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+if __name__ == "__main__":
+    # A module, not a command: say how it is used instead of doing nothing at all.
+    print(__doc__, file=sys.stderr)
+    raise SystemExit(2)

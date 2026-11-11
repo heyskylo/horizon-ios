@@ -46,7 +46,7 @@ The report is the [benchmark report format](benchmark-report.md): startup to the
 
 ## Reproduce it
 
-You need Horizon built (`cargo build --release -p horizon-client -p horizon-client-lib --bins`) and its resources prepared from your own copy of 26.3 (which also provides `.local/minecraft/26.3`, the vanilla client the driver starts), Java 25 with `javac`, and Python 3.10 or newer.
+You need Horizon built (`cargo build --release -p horizon-client -p horizon-client-lib --bins`) and its resources prepared from your own copy of 26.3 (which also provides `.local/minecraft/26.3`, the vanilla client the driver starts), Java 25 with `javac`, and Python 3.11 or newer.
 
 ```sh
 python3 tools/perf_bench.py --game horizon --label horizon-mine
