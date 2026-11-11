@@ -1435,31 +1435,6 @@ impl Extra {
     }
 }
 
-/// `DeathProtection.TOTEM_EFFECTS`: clear, then regeneration II, absorption II
-/// and fire resistance.
-fn totem_death_effects() -> Vec<crate::items::ConsumeEffect> {
-    use crate::items::{ConsumeEffect, ConsumeEffectSpec};
-    let spec = |id: &str, duration, amplifier| ConsumeEffectSpec {
-        id: id.to_owned(),
-        duration,
-        amplifier,
-        ambient: false,
-        show_particles: true,
-        show_icon: true,
-    };
-    vec![
-        ConsumeEffect::ClearAllEffects,
-        ConsumeEffect::ApplyEffects {
-            effects: vec![
-                spec("minecraft:regeneration", 900, 1),
-                spec("minecraft:absorption", 100, 1),
-                spec("minecraft:fire_resistance", 800, 0),
-            ],
-            probability: 1.0,
-        },
-    ]
-}
-
 /// How far the boxes of a set of mobs reach from their positions: the widest reach sideways, below
 /// and above among them, worked out from each mob's real box ([`Mob::bounds`]: a shulker's grows
 /// toward its open lid, sideways or below its position). A box query over many mobs (a vehicle's,
@@ -2599,6 +2574,9 @@ pub struct Seen {
     pub delay: i32,
     /// `getLastHurtByMob` and its timestamp.
     pub hurt_by: Option<(Who, i32)>,
+    /// `PathfinderMob.isPanicking`: a running panic goal or the brain's
+    /// `IS_PANICKING` memory.
+    pub panicking: bool,
     /// A raider in an active raid.
     pub active_raid: bool,
     /// A copper golem's `openedChestPos` (`ContainerUser.hasContainerOpen`).
@@ -2838,6 +2816,7 @@ impl Mob {
             section: (m.extra.section, m.extra.section_seq),
             delay: m.extra.ints[5],
             hurt_by: m.ai.last_hurt_by.map(|w| (w, m.ai.last_hurt_by_time)),
+            panicking: m.ai.panicking,
             active_raid: raider::has_active_raid(m),
             opened_chest: m.extra.opened_chest,
             passenger: m.extra.mount.is_some(),
@@ -4361,7 +4340,7 @@ impl Mob {
         let (main, off) = match self.extra.hand_protection.clone() {
             Some(h) => (h.main, h.off),
             None => {
-                let totem = || Some(totem_death_effects());
+                let totem = || Some(living::totem_death_effects());
                 (
                     (self.extra.main_hand.as_deref() == Some(TOTEM))
                         .then(totem)
