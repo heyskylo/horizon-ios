@@ -46,6 +46,8 @@ pub(super) struct SpawnScratch {
     /// dx/dz order, that no earlier player's square holds.
     segments: Vec<Vec<(i32, i32)>>,
     stale: Vec<bool>,
+    /// Reusable buffer for spawn players across ticks to avoid heap allocation.
+    pub(super) spawn_players: Vec<SpawnPlayer>,
 }
 impl SpawnScratch {
     fn chunk(p: &LevelPlayer) -> (i32, i32) {
@@ -128,6 +130,20 @@ impl SpawnScratch {
         self.prepare(players);
         self.candidates.clear();
         let mut count = 0;
+        if players.len() == 1 {
+            let p = &players[0];
+            count = self.segments.first().map_or(0, |s| s.len());
+            if !p.spectator
+                && let Some(segment) = self.segments.first()
+            {
+                for &c in segment {
+                    if close_enough_for_spawning(p, c) && keep(c) {
+                        self.candidates.push(c);
+                    }
+                }
+            }
+            return count as i32;
+        }
         for (i, segment) in self.segments.iter().enumerate() {
             count += segment.len();
             let near = &self.neighbours[i];
@@ -650,8 +666,10 @@ fn spawn_cost_types(biomes: &horizon_client::biome::Biomes) -> Vec<&str> {
     types
 }
 impl<'a> Game<'a> {
-    pub(super) fn natural_level(&self) -> GameLevel<'_, 'a> {
-        let players = self.level_players();
+    pub(super) fn natural_level_with_players(
+        &self,
+        players: Vec<LevelPlayer>,
+    ) -> GameLevel<'_, 'a> {
         let nearest = players
             .iter()
             .filter(|p| !p.spectator)
@@ -669,6 +687,9 @@ impl<'a> Game<'a> {
             box_queries: Default::default(),
             costed: spawn_cost_types(world_biomes!(self)),
         }
+    }
+    pub(super) fn natural_level(&self) -> GameLevel<'_, 'a> {
+        self.natural_level_with_players(self.level_players())
     }
     /// Creates a mob the spawner accepted, finalized the game's way; the
     /// caller adds it with [`Game::add_spawned`].
@@ -773,6 +794,8 @@ impl<'a> Game<'a> {
         scratch: &mut SpawnScratch,
     ) -> i32 {
         let levels = self.tickets.levels();
+        // Recomputed each pass: a chunk's ticket level and entity loading change without the
+        // players moving or the chunk count changing.
         scratch.collect(players, |(cx, cz)| {
             levels.loaded_ticking(cx, cz) && super::ticking_chunk(&self.world, cx, cz)
         })
@@ -819,31 +842,28 @@ impl<'a> Game<'a> {
         {
             let level = self.natural_level();
             laps.lap("sn_level");
-            let counted: Vec<Counted> = self
-                .mobs
-                .iter()
-                .map(|m| Counted {
-                    entity: &m.kind.id,
-                    category: Category::from_name(&m.kind.category),
-                    block: [
-                        m.position.x.floor() as i32,
-                        m.position.y.floor() as i32,
-                        m.position.z.floor() as i32,
-                    ],
-                    is_mob: true,
-                    persistent: m.persistent
-                        || horizon_client::mobs::ai::requires_custom_persistence(m),
-                })
-                .collect();
-            let players = players
-                .iter()
-                .map(|p| SpawnPlayer {
+            let counted = self.mobs.iter().map(|m| Counted {
+                entity: &m.kind.id,
+                category: Category::from_name(&m.kind.category),
+                block: [
+                    m.position.x.floor() as i32,
+                    m.position.y.floor() as i32,
+                    m.position.z.floor() as i32,
+                ],
+                is_mob: true,
+                persistent: m.persistent
+                    || horizon_client::mobs::ai::requires_custom_persistence(m),
+            });
+            scratch.spawn_players.clear();
+            scratch
+                .spawn_players
+                .extend(players.iter().map(|p| SpawnPlayer {
                     position: [p.position.x, p.position.y, p.position.z],
                     spectator: p.spectator,
-                })
-                .collect();
+                }));
+            let spawn_players = std::mem::take(&mut scratch.spawn_players);
             laps.lap("sn_materialize");
-            let mut state = SpawnState::new(&level, spawnable, players, &counted, |cx, cz| {
+            let mut state = SpawnState::new(&level, spawnable, spawn_players, counted, |cx, cz| {
                 self.world.chunks.contains_key(&(cx, cz))
             });
             laps.lap("sn_state");
@@ -854,7 +874,8 @@ impl<'a> Game<'a> {
                 Vec::new()
             };
             laps.lap("sn_categories");
-            // Util.shuffle.
+            // Util.shuffle, every pass: it draws from the level's random even when no
+            // category may spawn.
             for i in (1..scratch.candidates.len()).rev() {
                 let j = random.next_int_bound(i as i32 + 1).unwrap_or(0) as usize;
                 scratch.candidates.swap(i, j);
@@ -885,6 +906,7 @@ impl<'a> Game<'a> {
                     );
                 }
             }
+            scratch.spawn_players = state.into_players();
         }
         spawn_selection::attempt_counters(true);
         laps.lap("sn_attempts");

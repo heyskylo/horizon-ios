@@ -247,14 +247,14 @@ impl Launcher {
             PlayPress::Nothing => play = disabled(play),
             PlayPress::Play => {
                 play = play.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.picker_open = false;
+                    this.picker.open = false;
                     this.play();
                     cx.notify();
                 }))
             }
             PlayPress::PrepareThenPlay => {
                 play = play.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.picker_open = false;
+                    this.picker.open = false;
                     this.play_when_prepared = this.selected().cloned();
                     this.prepare(backend::MinecraftFrom::Install);
                     cx.notify();

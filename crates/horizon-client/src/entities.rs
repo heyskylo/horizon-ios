@@ -84,7 +84,7 @@ fn slime_at(world: &World, facts: &BlockFacts, position: BlockPos) -> bool {
 mod fluids;
 mod item_fall;
 mod item_no_physics;
-pub use fluids::{fluid_flow, update_entity_fluids, water_clip};
+pub use fluids::{fall_reset_hit, fluid_flow, update_entity_fluids, water_clip};
 
 #[cfg(test)]
 mod drop_motion_tests {
