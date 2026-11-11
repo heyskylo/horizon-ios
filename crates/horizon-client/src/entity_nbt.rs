@@ -3321,14 +3321,15 @@ pub fn throwable_to_nbt(
     if p.no_gravity {
         put(&mut tag, "NoGravity", Tag::Byte(1));
     }
-    // the loaded item stays (a blue egg's, a renamed one's, a potion's
-    // effects); when there is none, `getItem`'s default is written.
-    if tag.get("Item").is_none() {
-        let stack = match &p.kind {
-            ProjectileKind::Potion(stack, _) => (**stack).clone(),
+    // the loaded item stays (blue egg, potion effects) at `setItem`'s count 1.
+    if let Tag::Compound(m) = &mut tag {
+        let st = match &p.kind {
+            ProjectileKind::Potion(s, _) => (**s).clone(),
             _ => crate::items::ItemStack::new(item, 1),
         };
-        put(&mut tag, "Item", item_to_nbt(&stack));
+        if let Tag::Compound(i) = m.entry("Item".into()).or_insert_with(|| item_to_nbt(&st)) {
+            i.insert("count".into(), Tag::Int(1));
+        }
     }
     Some(tag)
 }
@@ -3337,12 +3338,11 @@ pub fn throwable_to_nbt(
 /// [`throwable_to_nbt`] writes; the owner is the player when it is theirs.
 pub fn throwable_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Projectile> {
     let mut kind = throwable_kind(&kind(tag)?)?;
-    // `readAdditionalSaveData` sets the `Item` it flies as, potion effects
-    // and all; a tag without one keeps `getItem`'s default.
     if let ProjectileKind::Potion(stack, _) = &mut kind
         && let Some(item) = tag.get("Item").and_then(item_from_nbt)
     {
         **stack = item;
+        stack.count = 1;
     }
     let owner = owner_uuid(tag);
     let from_player = player.is_some() && owner == player;
