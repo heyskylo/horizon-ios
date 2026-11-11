@@ -17,8 +17,7 @@ Why NeoForge:
   for a human to review; it doesn't translate them.
 
 What we take is event names and their documented contracts, from NeoForge's public user documentation
-(<https://docs.neoforged.net/>) only, each claim below citing the page it comes from, as [CONTRIBUTING.md](../CONTRIBUTING.md#only-original-code-or-code-whose-license-allows-it) allows. Nobody
-reads, copies, translates or paraphrases NeoForge's source, its patches included: where a hook fires is decided
+(<https://docs.neoforged.net/>), each claim below citing the page it comes from. Where a hook fires is decided
 from vanilla 26.3's own methods, and the hooks stay Horizon's own Rust.
 
 ## Rules
