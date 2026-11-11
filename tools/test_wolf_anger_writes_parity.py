@@ -17,10 +17,12 @@ def main():
     parser.add_argument('--clock-diagnostic', action='store_true')
     parser.add_argument('--allow-gaps', action='store_true')
     parser.add_argument('--reference-only', action='store_true')
+    parser.add_argument('--work-dir', type=Path)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     command = [sys.executable, str(root / 'tools/test_command_exec_parity.py'),
-               '--only', 'wolf anger']
+               '--only', 'wolf anger', '--work-dir',
+               str(args.work_dir.resolve() if args.work_dir else root / '.local/wolf-anger-writes-parity')]
     if args.binary:
         command += ['--binary', str(args.binary.resolve())]
     for enabled, flag in [(args.prepare, '--prepare'), (args.allow_gaps, '--allow-gaps'),
