@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -760,3 +761,68 @@ class WorkspaceManifestTests(unittest.TestCase):
 
     def test_without_a_base_everything_counts(self):
         self.assertEqual(parity.workspace_only_manifests({"Cargo.lock"}, None), set())
+
+
+# A harness that leaves a child behind: the child locks a file, says so, and sleeps; the harness then exits or hangs.
+# The lock frees once the child is dead, on every platform (flock, or msvcrt's byte lock).
+LEAVING_HARNESS = """
+import subprocess, sys, time
+from pathlib import Path
+held = Path(sys.argv[0]).with_name("held")
+child = subprocess.Popen([sys.executable, "-c", '''
+import sys, time
+sys.path.insert(0, sys.argv[1])
+from tools import file_lock
+handle = open(sys.argv[2], "w")
+file_lock.lock(handle)
+open(sys.argv[2] + ".ready", "w").close()
+time.sleep(120)
+''', str(Path({root!r})), str(held)], stdout=subprocess.DEVNULL)
+while not Path(str(held) + ".ready").exists():
+    time.sleep(0.05)
+if {hang!r}:
+    time.sleep(120)
+"""
+
+
+def child_released(held, seconds=30):
+    """Whether the left child's lock on held frees within seconds (it is dead)."""
+    from tools import file_lock
+    deadline = time.monotonic() + seconds
+    with open(held, "a") as handle:
+        while time.monotonic() < deadline:
+            if file_lock.lock(handle, wait=False):
+                return True
+            time.sleep(0.1)
+    return False
+
+
+class LeftProcessTests(unittest.TestCase):
+    """What a harness starts ends with it, whether it exits, crashes or times out (tools/process_tree.py)."""
+
+    def run_harness(self, hang, timeout):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            script = tmp / "test_leaving_parity.py"
+            script.write_text(LEAVING_HARNESS.format(root=str(parity.ROOT), hang=hang), encoding="utf-8")
+            with mock.patch.object(parity, "STATE_DIR", tmp / "state"), mock.patch.object(parity, "SHARED", tmp / "shared"):
+                local = parity.LocalExecutor(1, 1 << 40, timeout)
+                self.assertTrue(local.start("leaving", script, False, 0))
+                finished, deadline = [], time.monotonic() + 120
+                while not finished and time.monotonic() < deadline:
+                    finished = local.poll()
+                    time.sleep(0.1)
+                local.stop()
+            self.assertEqual([name for name, *_ in finished], ["leaving"])
+            self.assertTrue((tmp / "held.ready").exists())
+            self.assertTrue(child_released(tmp / "held"), "the harness's child outlived it")
+            return finished[0]
+
+    @unittest.skipUnless(os.name == "nt" or hasattr(os, "waitid"), "macOS before Python 3.13 has no os.waitid")
+    def test_a_finished_harness_takes_what_it_left_running(self):
+        _, _, passed, *_ = self.run_harness(hang=False, timeout=120)
+        self.assertTrue(passed)
+
+    def test_a_timed_out_harness_takes_what_it_started(self):
+        _, _, passed, *_ = self.run_harness(hang=True, timeout=5)
+        self.assertFalse(passed)

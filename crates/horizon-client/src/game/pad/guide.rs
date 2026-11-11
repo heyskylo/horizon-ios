@@ -26,6 +26,31 @@ pub(in crate::game) struct Shown {
 /// A drawn quad covering this much of the view is the screen's dimming, not something to avoid.
 const GUIDE_BACKDROP_SHARE: f32 = 0.9;
 
+/// `ItemStack.get(EQUIPPABLE)` for the guide: the stack's slot and
+/// `swappable`, else the item's own.
+fn guide_equippable(
+    stack: &ItemStack,
+    default_slot: Option<&str>,
+    default_swappable: bool,
+) -> Option<(String, bool)> {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:equippable").is_some()) {
+        return None;
+    }
+    if let Some(tag) = data.and_then(|d| d.other("minecraft:equippable")) {
+        let slot = match tag.get("slot") {
+            Some(horizon_world::nbt::Tag::String(slot)) => slot.to_string_lossy(),
+            _ => return None,
+        };
+        let swappable = tag
+            .get("swappable")
+            .and_then(horizon_client::item_data::component_bool)
+            .unwrap_or(true);
+        return Some((slot, swappable));
+    }
+    Some((default_slot?.to_owned(), default_swappable))
+}
+
 impl Game<'_> {
     /// The guide shows while the pad plays: not over a menu, a prompt, the debug screen or a sleeping
     /// or missing player, not once the mouse or keyboard took over, and not when the setting is off.
@@ -630,11 +655,10 @@ impl Game<'_> {
                 }
             }
             // Equippable.swapWithEquipmentSlot: only what can be swapped onto the armour slots.
-            _ if info.swappable
-                && matches!(
-                    info.equip_slot.as_deref(),
-                    Some("head" | "chest" | "legs" | "feet")
-                ) =>
+            _ if guide_equippable(&stack, info.equip_slot.as_deref(), info.swappable)
+                .is_some_and(|(slot, swappable)| {
+                    swappable && matches!(slot.as_str(), "head" | "chest" | "legs" | "feet")
+                }) =>
             {
                 Verb::Equip
             }
@@ -665,5 +689,40 @@ impl Game<'_> {
     fn pad_guide_has_ammo(&self, weapon: &str) -> Option<()> {
         let weapon = format!("minecraft:{weapon}");
         (self.creative || self.projectile_slot(&weapon).is_some()).then_some(())
+    }
+}
+
+#[cfg(test)]
+mod guide_equippable_tests {
+    use super::guide_equippable;
+    use horizon_client::items::ItemStack;
+
+    #[test]
+    fn a_stack_swappable_flag_comes_from_its_equippable() {
+        let mut helmet = ItemStack::new("minecraft:golden_helmet", 1);
+        let default = Some("head");
+        assert_eq!(
+            guide_equippable(&helmet, default, true),
+            Some(("head".into(), true))
+        );
+        helmet.data_mut().set_other(
+            "minecraft:equippable",
+            Some(horizon_world::nbt::Tag::compound([
+                ("slot", horizon_world::nbt::Tag::String("head".into())),
+                ("swappable", horizon_world::nbt::Tag::Byte(0)),
+            ])),
+        );
+        assert_eq!(
+            guide_equippable(&helmet, default, true),
+            Some(("head".into(), false))
+        );
+        helmet.data_mut().set_other(
+            "!minecraft:equippable",
+            Some(horizon_world::nbt::Tag::compound(Vec::<(
+                &str,
+                horizon_world::nbt::Tag,
+            )>::new())),
+        );
+        assert_eq!(guide_equippable(&helmet, default, true), None);
     }
 }
