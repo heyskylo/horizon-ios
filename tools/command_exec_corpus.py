@@ -7603,7 +7603,8 @@ def explosion_creaking_heart_experience():
                 cmd(f'/setblock {x0 + 8} {y0} {z0 + 8} creaking_heart[natural=true]', expect_result=1),
                 cmd(f'/summon tnt {x0 + 8}.5 {y0 + 1} {z0 + 8}.5 {{fuse:1,Tags:["heart_tnt"]}}', expect_result=1)]
         if owner == 'zombie':
-            ops.append(cmd(f'/summon zombie {x0 + 1}.5 {y0} {z0 + 1}.5 {{NoAI:1b,Silent:1b,PersistenceRequired:1b,Tags:["heart_owner"]}}',
+            ops.append(cmd(f'/summon zombie {x0 + 1}.5 {y0} {z0 + 1}.5 '
+                           f'{{NoAI:1b,Silent:1b,PersistenceRequired:1b,Tags:["heart_owner"]}}',
                            expect_result=1))
             owner = f'@e[type=zombie,tag=heart_owner,{near},limit=1]'
         if owner:
