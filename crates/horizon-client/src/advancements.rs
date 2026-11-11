@@ -1989,13 +1989,13 @@ mod tests {
     }
     /// The criteria an inventory change and a recipe unlock test, on vanilla's tree:
     /// `cargo test -p horizon-client --lib -- --ignored --nocapture index_on_vanilla_tree`
-    /// with HORIZON_RESOURCES set to the prepared resources.
+    /// with HORIZON_TEST_RESOURCES set to the prepared resources.
     #[test]
-    #[ignore = "needs the prepared resources"]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn index_on_vanilla_tree() {
-        let Some(root) = std::env::var_os("HORIZON_RESOURCES").map(std::path::PathBuf::from) else {
-            return;
-        };
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("HORIZON_TEST_RESOURCES"),
+        );
         let data = root.join("data");
         let t = std::time::Instant::now();
         let tree = Tree::load(&data);

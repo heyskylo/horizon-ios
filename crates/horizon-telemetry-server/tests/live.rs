@@ -336,6 +336,35 @@ async fn the_official_servers_count_is_pinged_and_served_apart() {
     );
 }
 
+#[tokio::test]
+async fn an_impossible_official_count_is_not_written() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut buf = [0; 256];
+        let _ = socket.read(&mut buf).unwrap();
+        let json = br#"{"players":{"online":18446744073709551615,"max":50}}"#;
+        let mut packet = vec![0x00, json.len() as u8];
+        packet.extend_from_slice(json);
+        let mut out = vec![packet.len() as u8];
+        out.extend(packet);
+        socket.write_all(&out).unwrap();
+    });
+    let app = app_with_official(&address);
+    let recorded = tokio::task::spawn_blocking({
+        let app = app.clone();
+        move || app.record_official()
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(!recorded);
+    let (code, _, body) = history(&app, "range=24h&series=official").await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+}
+
 fn app_with_official(address: &str) -> Arc<App> {
     app(Config {
         official_server: Some(address.into()),

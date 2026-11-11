@@ -136,6 +136,9 @@ public final class VanillaContainerScreenOracle {
                 put(screen, Screen.class, "children", new ArrayList<>());
                 put(screen, AbstractContainerScreen.class, "quickCraftSlots", new HashSet<Slot>());
                 put(screen, AbstractContainerScreen.class, "lastQuickMoved", ItemStack.EMPTY);
+                // alloc skips the constructor, which sets skipNextRelease = true:
+                // a fresh screen swallows a release with no press before it.
+                put(screen, AbstractContainerScreen.class, "skipNextRelease", true);
                 if (c.has("book")) {
                     var book = c.getAsJsonArray("book");
                     var component = alloc(CraftingRecipeBookComponent.class);

@@ -54,20 +54,21 @@ wgsl_types! {
     [[f32; 4]; 8] => "array<vec4<f32>, 8>",
 }
 
-/// A uniform struct: the Rust type the renderer uploads, and its WGSL. `pad` names a trailing
-/// field in Rust only, which fills the struct out to WGSL's size (a multiple of its 16-byte
-/// alignment), since `Pod` allows no implicit padding.
+/// A uniform struct: the Rust type the renderer uploads, and its WGSL. `@pad` after a field
+/// names a field in Rust only, which fills what WGSL's layout leaves empty there (before a
+/// `vec3`, aligned to 16 bytes, and up to the struct's size, a multiple of 16), since `Pod`
+/// allows no implicit padding.
 macro_rules! uniform {
     ($(#[doc = $doc:literal])* $name:ident {
-        $($(#[doc = $fdoc:literal])* $field:ident: $ty:ty,)*
-    } $(pad $pad:ident: $pad_ty:ty)?) => {
+        $($(#[doc = $fdoc:literal])* $field:ident: $ty:ty, $(@pad $pad:ident: $pad_ty:ty,)?)*
+    }) => {
         $(#[doc = $doc])*
         #[repr(C)]
         #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
         pub struct $name {
-            $($(#[doc = $fdoc])* pub $field: $ty,)*
-            $(/// Not in the WGSL: zeros up to its size.
-            pub $pad: $pad_ty,)?
+            $($(#[doc = $fdoc])* pub $field: $ty,
+            $(/// Not in the WGSL: zeros where its layout leaves a gap.
+            pub $pad: $pad_ty,)?)*
         }
 
         impl $name {
@@ -216,7 +217,14 @@ uniform! {
         peak: f32,
         /// The display's black in nits (HDR's Black Level); 0 in SDR.
         black_level: f32,
-    } pad padding: [u32; 3]
+        /// The primaries of this pack's colours (`[frame] primaries`): 0 BT.709, 1 BT.2020.
+        primaries: u32,
+        @pad luminance_gap: [u32; 2],
+        /// The weights that give a colour's luminance in those primaries, `dot(c, frame.luminance)`:
+        /// (0.2126, 0.7152, 0.0722) for BT.709, (0.2627, 0.6780, 0.0593) for BT.2020.
+        luminance: [f32; 3],
+        @pad padding: u32,
+    }
 }
 
 impl Frame {
@@ -360,13 +368,14 @@ mod tests {
     #[test]
     fn frame_fields_carry_their_docs() {
         let wgsl = Frame::WGSL;
-        assert_eq!(wgsl.fields.len(), 54);
+        assert_eq!(wgsl.fields.len(), 56);
         assert!(wgsl.fields.iter().all(|f| !f.doc.trim().is_empty()));
-        // 0.1's 49 fields, then 0.2's five and the padding to a multiple of 16.
+        // 0.1's 49 fields, then 0.2's seven: `luminance` is a `vec3`, on the next 16 bytes.
         assert_eq!(
             std::mem::size_of::<Frame>(),
-            6 * 64 + 15 * 16 + 8 * 16 + 2 * 16
+            6 * 64 + 15 * 16 + 8 * 16 + 3 * 16
         );
+        assert_eq!(Frame::OFFSETS[55], std::mem::size_of::<Frame>() - 16);
         assert_eq!(Frame::OFFSETS[Frame::FIELDS_0_1], 6 * 64 + 15 * 16 + 8 * 16);
         assert_eq!(
             Frame::line(crate::Api::V0_1).fields.len(),
