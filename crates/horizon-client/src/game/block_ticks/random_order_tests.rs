@@ -51,4 +51,7 @@ fn chunks_random_tick_in_the_same_order_however_they_loaded() {
         "a chunk past the simulation distance doesn't"
     );
     assert_eq!(a, b);
+    let mut sorted = a.clone();
+    sorted.sort_unstable();
+    assert_eq!(a, sorted, "chunk position order");
 }
