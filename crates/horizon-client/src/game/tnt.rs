@@ -1776,7 +1776,7 @@ mod tests {
             for seed in [0, 1, -1, 42, i64::MIN, i64::MAX] {
                 let mut audible = None;
                 for silent in [false, true] {
-                    game.world.random = horizon_core::random::LegacyRandom::new(seed);
+                    game.world.random.set_seed(seed);
                     game.orbs.clear();
                     let mut projectile = Projectile::new(
                         ProjectileKind::ExperienceBottle,
