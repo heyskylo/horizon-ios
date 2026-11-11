@@ -6729,7 +6729,7 @@ impl Game<'_> {
                 if item == "minecraft:armadillo_scute"
                     && m.extra.tame
                     && m.extra.owner == Some(acting)
-                    && m.extra.sitting
+                    && m.extra.sitting_pose
                     && m.extra.body.is_some()
                     && m.extra.body_damage > 0 =>
             {
