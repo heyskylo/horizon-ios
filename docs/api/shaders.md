@@ -183,6 +183,10 @@ uses the no-pack frame. What it changes from 0.1:
   one HDR uses without a pack; one or the other runs, never both.
 - **`[frame] blend`**: `"gamma"` (the default) or `"linear"`, what the frame stores and so how see-through draws
   blend. `"linear"` passes the check, but the game doesn't serve it yet.
+- **`[frame] primaries`**: `"bt709"` (the default) or `"bt2020"`, the primaries of every colour a stage reads or
+  returns. BT.2020 holds colours outside sRGB, which HDR displays show. It needs `blend = "linear"`. `Frame` says
+  which in `primaries`, with that space's luminance weights in `luminance`, after `black_level`. `"bt2020"` passes
+  the check, but the game doesn't serve it yet.
 
 ```toml
 api = "0.2"
@@ -192,6 +196,7 @@ file = "tonemap.wgsl"
 
 [frame]
 blend = "gamma"            # optional: gamma (default) or linear
+primaries = "bt709"        # optional: bt709 (default) or bt2020, which needs blend = "linear"
 ```
 
 0.1 is unchanged: the same prelude, entries and reference, and a 0.1 pack that names `[tonemap]` or `[frame]` is
@@ -228,6 +233,12 @@ and particles (the material stage covers terrain only).
 
 ## Changelog
 
+- 2026-11-10: API 0.2 (additions, experimental): `[frame] primaries`, `"bt709"` (the default) or `"bt2020"`, and
+  `Frame.primaries` and `luminance` after `black_level`. `horizon-shader check` takes `"bt2020"` with
+  `blend = "linear"` only, and the game refuses it for now. The reference's "Room to grow" gains the rule for new
+  names: a later release adds a name to a stage's prelude only under a manifest key the pack sets or in a new stage,
+  and a test holds each prelude to its list of names. API 0.1 is unchanged: the uploaded `Frame` buffer grows by 16
+  bytes after the fields 0.1 declares.
 - 2026-11-08: API 0.2 (change, experimental): with `HORIZON_HDR_FRAME=float` and HDR on, where the device keeps the
   HUD on a layer of its own, a 0.2 pack is shown in HDR: `Frame`'s display fields are the display's, its `[tonemap]`
   or else Horizon's no-pack curve maps the light once, the HUD is laid over it as without a pack, and F2 writes the

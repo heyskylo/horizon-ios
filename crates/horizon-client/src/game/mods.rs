@@ -1258,6 +1258,7 @@ mod tests {
             ingredient: |_, _, _| {},
             ingredient_test: |_, _, _, _| {},
             log_line: |_, _, _, _| {},
+            living_death_message: |_, _, _| {},
             handshake: |_, _, _, _, _| {},
         });
         assert!(installed.is_ok());

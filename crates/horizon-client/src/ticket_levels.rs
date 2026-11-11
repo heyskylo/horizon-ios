@@ -186,10 +186,6 @@ impl Levels {
     fn get(&self, x: i32, z: i32) -> Option<(u8, u8)> {
         Some(self.0.as_ref()?.get(x, z))
     }
-    /// Whether any ticket exists; with none, everything ticks.
-    pub fn has_tickets(&self) -> bool {
-        self.0.is_some()
-    }
     /// `DistanceManager.inEntityTickingRange`, in an entity-ticking chunk:
     /// where entities tick.
     pub fn entity_ticking(&self, x: i32, z: i32) -> bool {
@@ -256,41 +252,9 @@ pub struct ChunkTickets {
     sources: Option<Sources>,
     levels: Levels,
     portal: Vec<PortalTicket>,
-    /// The resident chunk keys at one membership revision.
-    resident: std::sync::Mutex<(u64, Arc<crate::fast_hash::FxHashSet<(i32, i32)>>)>,
 }
 
 impl ChunkTickets {
-    /// `Levels::entity_ticking_at`, held back as `ChunkMap.prepareEntityTickingChunk`
-    /// does: a chunk waits until every chunk within 2 columns is loaded. With no
-    /// tickets everything ticks.
-    pub fn entity_ticking_area(
-        &self,
-        chunks: &crate::chunk_map::ChunkMap,
-        gate: bool,
-    ) -> impl Fn(i32, i32) -> bool + use<> {
-        let levels = self.levels.clone();
-        let resident = (gate && levels.0.is_some()).then(|| {
-            let revision = chunks.membership_revision();
-            let mut cache = self.resident.lock().unwrap_or_else(|e| e.into_inner());
-            if cache.0 != revision {
-                *cache = (revision, Arc::new(chunks.keys().copied().collect()));
-            }
-            cache.1.clone()
-        });
-        // Callers ask once per entity: remember each chunk's answer, so an
-        // entity costs one lookup instead of the 25 of its neighbourhood.
-        let surrounded = std::cell::RefCell::new(crate::fast_hash::FxHashMap::default());
-        move |x, z| {
-            levels.entity_ticking_at(x, z)
-                && resident.as_ref().is_none_or(|keys| {
-                    let (cx, cz) = (x >> 4, z >> 4);
-                    *surrounded.borrow_mut().entry((cx, cz)).or_insert_with(|| {
-                        (cz - 2..=cz + 2).all(|z| (cx - 2..=cx + 2).all(|x| keys.contains(&(x, z))))
-                    })
-                })
-        }
-    }
     /// `None`: tick everywhere.
     pub fn update(&mut self, mut sources: Option<Sources>) {
         // The game submits a fresh `Sources` value every tick even when no
