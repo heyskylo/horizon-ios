@@ -1636,6 +1636,19 @@ impl Game<'_> {
             .get(&anon_key(kind, p))
             .map(|(_, raw)| raw)
     }
+    /// `Entity.applyEffectsFromBlocks` on a fire-immune entity that is not
+    /// burning (`EndCrystal.tick`): the loaded `Fire` is reset to
+    /// `-getFireImmuneTicks()`, which is 0.
+    pub(super) fn clear_crystal_fire(&mut self) {
+        for c in &self.crystals {
+            let key = anon_key("minecraft:end_crystal", c.position);
+            if let Some((_, Tag::Compound(raw))) = self.persist.anon.get_mut(&key)
+                && let Some(fire) = raw.get_mut(&"Fire".into())
+            {
+                *fire = Tag::Short(0);
+            }
+        }
+    }
     /// The compound an entity was loaded with (and commands have edited).
     pub(super) fn persist_raw(&self, id: u32) -> Option<&Tag> {
         self.persist.raw.get(&id)
