@@ -132,7 +132,7 @@ def main():
         if kind == "open":
             gh("issue", "create", "--label", LABEL, "--title", TITLE + harness, "--body",
                (f"`{harness}` passed in the previous nightly audit and fails now.\n\n" if harness in (previous or {})
-                else f"`{harness}` fails in its first nightly audit: it has not passed on main.\n\n") + details,
+                else f"`{harness}` fails, and no earlier nightly audit has a result for it.\n\n") + details,
                dry_run=args.dry_run)
         elif kind == "comment":
             gh("issue", "comment", str(open_issues[harness]), "--body", "Still failing.\n\n" + details, dry_run=args.dry_run)
