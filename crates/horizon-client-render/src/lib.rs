@@ -43,6 +43,7 @@ pub mod crash;
 pub mod custom_sky;
 pub mod datapack;
 pub mod dynamic_light;
+pub mod dynamic_resolution;
 pub mod effects;
 pub mod environment;
 pub mod extras;

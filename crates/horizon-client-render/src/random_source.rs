@@ -10,10 +10,8 @@ pub fn create() -> LegacyRandom {
     LegacyRandom::new(unique_seed())
 }
 
-/// An entity's own random (`Entity.random`). Vanilla's is
-/// `RandomSource.createThreadLocalInstance`, seeded from Java's
-/// `ThreadLocalRandom`; Horizon seeds it as `create` does. Draws from an
-/// entity's own random never touch the level's.
+/// An entity's own random (`Entity.random`), `RandomSource.create()` as
+/// vanilla's is. Draws from an entity's own random never touch the level's.
 pub fn entity() -> LegacyRandom {
     create()
 }
