@@ -169,4 +169,24 @@ mod tests {
             assert_eq!(bare.custom_name.as_deref(), Some("Frosty"));
         });
     }
+    /// `ConversionType.convertCommon` copies `getAbsorptionAmount`, so the
+    /// golden hearts an apple left on a zombie survive its turn into a drowned.
+    #[test]
+    fn a_converting_mob_keeps_its_absorption() {
+        with_test_world(&[], |_, types| {
+            let mob = |id, kind: &str| {
+                Mob::new(
+                    id,
+                    Arc::new(types.types[kind].clone()),
+                    Vec3::new(3.5, 70.0, -2.5),
+                    0.0,
+                )
+            };
+            let mut z = mob(1, "minecraft:zombie");
+            z.absorption = 3.0;
+            let mut d = mob(2, "minecraft:drowned");
+            single(&z, &mut d, Params::KEEP_ALL);
+            assert_eq!(d.absorption, 3.0, "the absorption crosses the conversion");
+        });
+    }
 }
