@@ -322,7 +322,9 @@ impl Game<'_> {
         );
         let state = self.world.block(origin.x, origin.y, origin.z);
         let mut used = Vec::new();
-        if let Some(op) = case.get("wind_burst") {
+        if let Some(op) = case.get("special_attack") {
+            used = self.fixture_special_attack(op)?;
+        } else if let Some(op) = case.get("wind_burst") {
             let center = [
                 op["center"][0].as_f64().ok_or("wind center x")?,
                 op["center"][1].as_f64().ok_or("wind center y")?,
@@ -353,7 +355,7 @@ impl Game<'_> {
             let found =
                 self.find_respawn_and_use(config, op["consume"].as_bool().unwrap_or(true))?;
             used.push(match found {
-                Some((p, yaw)) => format!(
+                Some((p, yaw, _pitch)) => format!(
                     "respawn {} {} {} {}",
                     num(p.x),
                     num(p.y),
@@ -579,6 +581,7 @@ impl Game<'_> {
                 dim: self.dim,
                 pos: [p(0), p(1), p(2)],
                 yaw: 0.0,
+                pitch: 0.0,
                 forced: false,
             });
         }
@@ -1122,6 +1125,8 @@ impl Game<'_> {
             let mut stand = horizon_client::entities::ArmorStand::new(id, at, yaw);
             stand.marker = e["marker"].as_bool().unwrap_or(false);
             stand.on_ground = e["ground"].as_bool().unwrap_or(false);
+            stand.show_arms = e["arms"].as_bool().unwrap_or(false);
+            stand.disabled_slots = e["disabled"].as_i64().unwrap_or(0) as i32;
             if let Some(last_hit) = e["last_hit"].as_i64() {
                 stand.last_hit = last_hit;
             }

@@ -144,6 +144,9 @@ pub struct EffectiveOutput {
     pub(crate) nits: [f32; 3],
     /// The HUD and menus' brightness, as a share of paper white: their nits over its.
     pub(crate) ui_brightness: f32,
+    /// The running shader pack lights the world itself: Horizon lifts none of it, so HDR
+    /// Lighting has nothing to switch (`with_pack`).
+    pub(crate) pack_lights: bool,
 }
 impl Default for EffectiveOutput {
     fn default() -> Self {
@@ -166,7 +169,22 @@ impl EffectiveOutput {
         },
         nits: [203.0, 1000.0, 0.0],
         ui_brightness: 1.0,
+        pack_lights: false,
     };
+    /// This output under the running shader pack: a `shaders/` one (`shaders`), or one of
+    /// Horizon's own of API `native`. Under a 0.1 pack on the 8- or 16-bit frame the last pass
+    /// still lifts the light sources and the sun its marks hold (`lifts_world` in
+    /// `Renderer::render`); under the rest Horizon lifts nothing.
+    pub(crate) fn with_pack(self, shaders: bool, native: Option<horizon_shader_api::Api>) -> Self {
+        let pack_lights = shaders
+            || native.is_some_and(|api| {
+                api != horizon_shader_api::Api::V0_1 || self.frame.format == super::LINEAR_FRAME
+            });
+        Self {
+            pack_lights,
+            ..self
+        }
+    }
     /// Whether the destination offers HDR output.
     pub fn hdr_offered(&self) -> bool {
         self.offered.is_some()
@@ -273,7 +291,24 @@ pub(crate) fn resolve_output(
         ],
         ui_brightness: settings.ui_nits(reading.luminance) as f32
             / settings.paper_white_nits(reading.luminance) as f32,
+        pack_lights: false,
     }
+}
+
+/// Whether HDR output lifts the world's light-source marks above paper white. Not on the title
+/// screen or the float frame, and not under a pack that lights its world itself: a 0.2 pack is
+/// shown at paper white, and a `shaders/` pack's `final` pass leaves its own alpha in the
+/// frame, which isn't marks (HDR lighting is off under it too).
+pub(crate) fn lifts_world(
+    title: bool,
+    float_frame: bool,
+    shaders_pack: bool,
+    native_api: Option<horizon_shader_api::Api>,
+) -> bool {
+    !title
+        && !float_frame
+        && !shaders_pack
+        && native_api.is_none_or(|api| api == horizon_shader_api::Api::V0_1)
 }
 
 #[cfg(test)]
@@ -316,6 +351,29 @@ pub(crate) mod tests {
     ) -> EffectiveOutput {
         let frame = resolve_frame(settings, request, caps, reading, Bgra8UnormSrgb);
         resolve_output(settings, caps, reading, frame, true)
+    }
+
+    /// HDR output lifts light-source marks only on the 8/16-bit frame's world with no pack or
+    /// a 0.1 pack: a `shaders/` pack's alpha isn't marks, and a 0.2 pack is shown at paper white.
+    #[test]
+    fn only_horizons_own_gamma_world_is_lifted() {
+        use horizon_shader_api::Api::{V0_1, V0_2};
+        // (title, float frame, `shaders/` pack, Horizon pack) -> lifts
+        let cases = [
+            ((false, false, false, None), true),
+            ((false, false, false, Some(V0_1)), true),
+            ((false, false, true, None), false),
+            ((false, false, false, Some(V0_2)), false),
+            ((false, true, false, None), false),
+            ((true, false, false, None), false),
+        ];
+        for ((title, float, shaders, api), lifts) in cases {
+            assert_eq!(
+                lifts_world(title, float, shaders, api),
+                lifts,
+                "title {title}, float {float}, shaders/ pack {shaders}, pack {api:?}"
+            );
+        }
     }
 
     /// Every mode against every offer, system report, pack and device: HDR output only where

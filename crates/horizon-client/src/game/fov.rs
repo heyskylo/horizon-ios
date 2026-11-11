@@ -22,9 +22,6 @@ use horizon_client::{
     hud_layout, hud_overlays,
 };
 
-/// `Abilities.walkingSpeed`.
-const WALKING_SPEED: f32 = 0.1;
-
 fn valid_fov_modifier(modifier: f32, fallback: f32) -> f32 {
     if modifier.is_finite() && (0.01..=10.0).contains(&modifier) {
         modifier
@@ -80,7 +77,7 @@ impl Game<'_> {
         });
         Some(FovPlayer {
             flying: p.flying,
-            walking_speed: WALKING_SPEED,
+            walking_speed: self.remote_walking_speed(),
             // Player.aiStep keeps `speed` as the float movement speed attribute.
             movement_speed: f64::from(p.speed),
             using,
@@ -135,7 +132,7 @@ impl Game<'_> {
     }
     /// `Camera.calculateFov` with `modifyFovBasedOnDeathOrFluid`.
     pub(super) fn fov_degrees(&self, partial: f32, camera: [f64; 3]) -> f32 {
-        if self.studio.freecam.active {
+        if self.studio.flying() {
             return self.studio.freecam.fov.clamp(1.0, 179.0);
         }
         let fov = self.view.calculate_fov(

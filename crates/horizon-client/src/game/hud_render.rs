@@ -7,8 +7,9 @@ pub(super) fn debug_crosshair_drawn(
     first_person: bool,
     hide_gui: bool,
     panorama: bool,
+    overlay_holds_view: bool,
 ) -> bool {
-    enabled && first_person && !hide_gui && !panorama
+    enabled && first_person && !hide_gui && !panorama && !overlay_holds_view
 }
 
 /// GameRenderer.shouldRenderBlockOutline, and only over a level. A panorama frame (the title
