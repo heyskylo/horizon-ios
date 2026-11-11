@@ -582,6 +582,12 @@ fn console_lines() -> mpsc::Receiver<String> {
 
 /// Copies the game's output to ours and to the API's log, line by line; the game's `Done` line means it
 /// is up.
+/// The message of a game's INFO log line (`[12:00:00] [Server thread/INFO]: Done (…`), from the
+/// first `/INFO]: ` on; "" for any other line.
+fn info_message(line: &str) -> &str {
+    line.split_once("/INFO]: ").map_or("", |(_, m)| m)
+}
+
 fn pump(shared: &Arc<Shared>, from: impl Read + Send + 'static, to_stderr: bool) {
     let shared = shared.clone();
     let _ = thread::Builder::new()
@@ -593,7 +599,10 @@ fn pump(shared: &Arc<Shared>, from: impl Read + Send + 'static, to_stderr: bool)
                     eprintln!("{line}");
                 } else {
                     println!("{line}");
-                    if line.contains("/INFO]: Done (") {
+                    // The game's own message, not text a player put in it: chat is logged after
+                    // `/INFO]: <name> `, so a player typing `/INFO]: Stopping server` matches nothing.
+                    let message = info_message(&line);
+                    if message.starts_with("Done (") {
                         let up = {
                             let mut state = shared.state.lock().unwrap();
                             let starting = state.phase == Phase::Starting;
@@ -606,8 +615,8 @@ fn pump(shared: &Arc<Shared>, from: impl Read + Send + 'static, to_stderr: bool)
                             shared.emit("phase", serde_json::json!({ "phase": "running" }));
                             crate::management::started(&shared);
                         }
-                    } else if line.contains("/INFO]: Stopping server")
-                        || line.contains("/INFO]: Stopping in ")
+                    } else if message.starts_with("Stopping server")
+                        || message.starts_with("Stopping in ")
                     {
                         // The game's own `stop` (a command in the game, not the supervisor's), or the
                         // start of the wait `[transfer]` makes before it, so a proxy hears of it then.
@@ -869,6 +878,27 @@ fn send_stop(stdin: &mut Option<std::process::ChildStdin>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_cannot_pass_for_the_games_own_stopping_line() {
+        let stopping = |line: &str| {
+            let m = info_message(line);
+            m.starts_with("Stopping server") || m.starts_with("Stopping in ")
+        };
+        assert!(stopping("[12:00:00] [Server thread/INFO]: Stopping server"));
+        assert!(stopping(
+            "[12:00:00] [Server thread/INFO]: Stopping in 10 seconds"
+        ));
+        assert!(!stopping(
+            "[12:00:00] [Server thread/INFO]: <Kim> /INFO]: Stopping server"
+        ));
+        assert!(!stopping(
+            "[12:00:00] [Server thread/INFO]: [Kim: Stopping server]"
+        ));
+        assert!(
+            info_message("[12:00:00] [Server thread/INFO]: Done (2.1s)!").starts_with("Done (")
+        );
+    }
 
     #[test]
     fn a_prune_that_rolled_back_still_lets_the_server_start() {
