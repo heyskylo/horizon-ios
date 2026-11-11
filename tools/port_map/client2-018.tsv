@@ -20,7 +20,7 @@ RecipeBookComponent.mouseDragged	port	crates/horizon-client/src/game/recipe_book
 RecipeBookComponent.onTabButtonPress	port	crates/horizon-client/src/game/recipe_book.rs::Game::recipe_book_click	a tab click selects the tab and resets the page to 0
 RecipeBookComponent.replaceSelected	inline	crates/horizon-client/src/game/recipe_book.rs::Game::recipe_book_click	sets recipe_ui.tab, so one tab is selected at a time
 RecipeBookComponent.toggleFiltering	port	crates/horizon-client/src/game/recipe_book.rs::Game::recipe_book_click	the craftable filter button flips the filter, sends the settings and resets the page
-RecipeBookComponent.keyPressed	port	crates/horizon-client/src/game/recipe_book.rs::Game::recipe_book_key	Enter, NumpadEnter or Space (repeats included; Shift places as many as fit) places the recipe clicked last while the search box is unfocused; search keys go through recipe_key; gap: player: Escape does not close only the book in the narrow layout
+RecipeBookComponent.keyPressed	port	crates/horizon-client/src/game/recipe_book.rs::Game::recipe_book_key	Enter, NumpadEnter or Space (repeats included; Shift places as many as fit) places the recipe clicked last while the search box is unfocused; search keys go through recipe_key; Escape closes a narrow window's open book only (recipe_book_escape)
 RecipeBookComponent.charTyped	port	crates/horizon-client/src/game/recipe_book.rs::Game::recipe_key	typed text enters the search box from the key event; gap: minor: no separate char event, so no IME text
 RecipeBookComponent.preeditUpdated	port	crates/horizon-client/src/game/ime.rs::Game::ime_preedit	the composition is drawn under the caret and committed into the focused box by Game::ime_commit; the recipe search is one of the fields Game::text_field_focused allows the input method for, though the composition sits in the overlay rather than in the box's own text
 RecipeBookComponent.capturesInput	port	crates/horizon-client/src/game/recipe_book.rs::Game::recipe_search_focused	true while the search box has focus
@@ -59,7 +59,7 @@ ReportReasonSelectionScreen	skip:service		abuse report reason screen; Horizon ha
 ReportReasonSelectionScreen.ReasonSelectionList	skip:service		reason list of the report screen; Horizon has no reporting
 ReportReasonSelectionScreen.ReasonSelectionList.Entry	skip:service		reason row of the report screen; Horizon has no reporting
 SkinReportScreen	skip:service		skin abuse report screen; Horizon has no reporting
-PlayerEntry	port	crates/horizon-client/src/social_screen.rs::Entry	the row and its report (disabled) and hide/show buttons; the list, pages and search are social_screen's SocialView/draw, the state is game/social.rs::Social; the buttons' 500 ms tooltip delay is social_screen::TooltipDelay
+PlayerEntry	home	crates/horizon-client/src/social_screen.rs	the row and its report (disabled) and hide/show buttons; the list, pages and search are social_screen's SocialView/draw, the state is game/social.rs::Social; the buttons' 500 ms tooltip delay is social_screen::TooltipDelay
 PlayerSocialManager	skip:service		Mojang social manager: block, friends and message hiding; Horizon has none of it
 PresenceHandler	skip:service		online presence sharing with the service; Horizon has none
 RemoteFriendListUpdateHandler	skip:service		friend list polling and toasts from the service; Horizon has no friend list (its relay is separate)

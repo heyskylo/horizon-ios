@@ -330,3 +330,74 @@ async fn the_website_may_post_from_the_browser() {
     assert_eq!(header("access-control-allow-methods"), "POST");
     assert_eq!(header("access-control-allow-headers"), "content-type");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_report_sent_twice_while_github_is_slow_opens_one_issue() {
+    use std::sync::mpsc;
+    // GitHub takes its time: the filer says it started, then waits to be let go.
+    let (started, has_started) = mpsc::channel::<()>();
+    let (let_go, wait) = mpsc::channel::<()>();
+    let (started, wait) = (Mutex::new(started), Mutex::new(wait));
+    let calls = Arc::new(AtomicU32::new(0));
+    let counted = calls.clone();
+    let filer: Arc<Filer> = Arc::new(move |_: &Issue| {
+        let n = counted.fetch_add(1, Ordering::SeqCst) + 1;
+        started.lock().unwrap().send(()).unwrap();
+        wait.lock().unwrap().recv().unwrap();
+        Ok(format!(
+            "https://github.com/horizon-rust/horizon/issues/{}",
+            1000 + n
+        ))
+    });
+    let app = App::with_filer(
+        Store::open(":memory:").unwrap(),
+        config(),
+        Box::new(|| DAY),
+        Some(filer),
+    );
+    let hub = Hub {
+        app: app.clone(),
+        github: Arc::default(),
+        day: Arc::new(AtomicU32::new(DAY)),
+    };
+    let body = report("Crash when opening a chest");
+    let first = {
+        let app = app.clone();
+        let body = body.clone();
+        tokio::spawn(async move {
+            Hub {
+                app,
+                github: Arc::default(),
+                day: Arc::new(AtomicU32::new(DAY)),
+            }
+            .post("/hub/report", body)
+            .await
+        })
+    };
+    tokio::task::spawn_blocking(move || has_started.recv().unwrap())
+        .await
+        .unwrap();
+    // The same form again while the first waits on GitHub, and the upkeep's round: neither files.
+    let (code, second) = hub.post("/hub/report", body).await;
+    assert_eq!(
+        (code, &second["issue"]),
+        (StatusCode::ACCEPTED, &Value::Null)
+    );
+    let upkeep = app.clone();
+    tokio::task::spawn_blocking(move || upkeep.file_pending())
+        .await
+        .unwrap();
+    let_go.send(()).unwrap();
+    let (code, first) = first.await.unwrap();
+    assert_eq!(code, StatusCode::CREATED);
+    assert_eq!(second["id"], first["id"]);
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "one issue for one report");
+    // Once opened, the form sent again answers with that issue.
+    let (code, again) = hub
+        .post("/hub/report", report("Crash when opening a chest"))
+        .await;
+    assert_eq!(
+        (code, &again["issue"]),
+        (StatusCode::CREATED, &first["issue"])
+    );
+}
