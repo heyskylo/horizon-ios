@@ -320,17 +320,13 @@ impl Game<'_> {
         self.spawn_destroyed_contents(destroyed);
     }
     /// `ItemUtils.onContainerDestroyed`: each stack a destroyed item held
-    /// becomes an item entity where that item lay (`new ItemEntity(level, x,
-    /// y, z, stack)`), nudged by 0.2 less 0.1 per axis and pickable at once.
+    /// becomes an item entity where that item lay, made by
+    /// `new ItemEntity(level, x, y, z, stack)`: its motion is that
+    /// constructor's own, 0.2 up and ±0.1 sideways from the item's random,
+    /// and it is pickable at once.
     pub(super) fn spawn_destroyed_contents(&mut self, destroyed: Vec<(ItemStack, Vec3)>) {
         for (stack, at) in destroyed {
-            let r = &mut self.world.random;
-            let motion = [
-                r.next_double() * 0.2 - 0.1,
-                r.next_double() * 0.2 - 0.1,
-                r.next_double() * 0.2 - 0.1,
-            ];
-            self.spawn_item(stack, [at.x, at.y, at.z], motion, 0);
+            self.spawn_item_own(stack, [at.x, at.y, at.z], 0);
         }
     }
     /// `ExperienceOrb.award`: orbs of the largest sizes; each draws the id
@@ -682,6 +678,18 @@ impl Game<'_> {
         self.add_item_entity(stack, position, None, pickup_delay)
     }
 
+    /// `DefaultDispenseItemBehavior.spawnItem`: `new ItemEntity(level, x, y, z,
+    /// stack)` draws its default motion from the item's own random, then
+    /// `setDeltaMovement` throws it with `velocity` before `addFreshEntity`.
+    pub(super) fn spawn_item_thrown(
+        &mut self,
+        stack: ItemStack,
+        position: [f64; 3],
+        velocity: [f64; 3],
+    ) {
+        self.add_item_entity_drawn(stack, position, Some(velocity), true, 0);
+    }
+
     pub(super) fn add_item_entity(
         &mut self,
         stack: ItemStack,
@@ -689,20 +697,36 @@ impl Game<'_> {
         velocity: Option<[f64; 3]>,
         pickup_delay: u32,
     ) -> [f64; 3] {
+        self.add_item_entity_drawn(stack, position, velocity, velocity.is_none(), pickup_delay)
+    }
+
+    /// `add_item_entity`; `constructor_motion` draws the five-argument
+    /// constructor's default motion, which a given `velocity` then replaces.
+    fn add_item_entity_drawn(
+        &mut self,
+        stack: ItemStack,
+        position: [f64; 3],
+        velocity: Option<[f64; 3]>,
+        constructor_motion: bool,
+        pickup_delay: u32,
+    ) -> [f64; 3] {
         let (item, count) = (stack.item.clone(), stack.count as i32);
         self.next_entity += 1;
         let p = Vec3::new(position[0], position[1], position[2]);
         // The item's own random, in vanilla's order: Entity's UUID, ItemEntity's
-        // bobOffs and yaw, then (without a given motion) the constructor's motion.
+        // bobOffs and yaw, then (the five-argument constructor) its default motion.
         let mut own = random_source::entity();
         let uuid = horizon_client::save::insecure_uuid(&mut own);
         self.persist.uuids.insert(self.next_entity, uuid);
         let bob = own.next_float() * std::f32::consts::PI * 2.0;
         let yaw = own.next_float() * 360.0;
-        let velocity = velocity.unwrap_or_else(|| {
+        let constructed = constructor_motion.then(|| {
             let x = own.next_double() * 0.2 - 0.1;
             [x, 0.2, own.next_double() * 0.2 - 0.1]
         });
+        let velocity = velocity
+            .or(constructed)
+            .expect("an item entity without a velocity takes the constructor's");
         self.dropped.push(ItemEntity {
             rotation: [yaw, 0.0],
             pickup_delay: i64::from(pickup_delay),
@@ -862,6 +886,100 @@ impl Game<'_> {
 }
 
 #[cfg(test)]
+mod destroyed_contents_tests {
+    use super::super::native_machines::tests::server_game;
+    use super::*;
+    use horizon_client::items::ItemStack;
+    use horizon_core::random::RandomSource;
+
+    /// The motion of each spilled stack, in the order the spill made them.
+    fn spilled_motions(game: &Game<'_>) -> Vec<[f64; 3]> {
+        game.dropped
+            .iter()
+            .map(|item| [item.velocity.x, item.velocity.y, item.velocity.z])
+            .collect()
+    }
+
+    /// `ItemUtils.onContainerDestroyed` makes each stack with
+    /// `new ItemEntity(level, x, y, z, stack)`, whose motion is 0.2 up and
+    /// ±0.1 sideways from the *item's* random (ItemEntity.java:61-66), and
+    /// draws nothing from the level's. Every destroyed container funnels here:
+    /// lava, fire and cactus in the item's environment tick, an explosion, and
+    /// the damage command.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn spilled_stacks_rise_from_their_own_randoms() {
+        let mut game = server_game();
+        let at = Vec3::new(8.5, 70.0, 8.5);
+        let stacks = ["minecraft:stone", "minecraft:dirt", "minecraft:glass"]
+            .into_iter()
+            .map(|id| (ItemStack::new(id, 1), at))
+            .collect();
+        let mut level = game.world.random.clone();
+        game.spawn_destroyed_contents(stacks);
+        let motions = spilled_motions(&game);
+        assert_eq!(motions.len(), 3);
+        for motion in &motions {
+            assert_eq!(motion[1], 0.2, "the four-argument constructor rises 0.2");
+            assert!((-0.1..0.1).contains(&motion[0]), "{motion:?}");
+            assert!((-0.1..0.1).contains(&motion[2]), "{motion:?}");
+        }
+        // Three stacks, three different sideways motions: each drew its own.
+        assert_ne!(motions[0], motions[1]);
+        assert_ne!(motions[1], motions[2]);
+        assert_ne!(motions[0], motions[2]);
+        // The spill leaves the level's random alone.
+        assert_eq!(game.world.random.next_double(), level.next_double());
+        assert_eq!(game.world.random.next_double(), level.next_double());
+    }
+
+    /// The damage command is one of those callers: killing a shulker box item
+    /// spills its contents with the same upward motion.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_damaged_shulker_box_spills_its_stacks_upward() {
+        let mut game = server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.world.chunks.insert(
+            (0, 0),
+            std::sync::Arc::new(horizon_client::chunk::Chunk::empty(0, 0)),
+        );
+        let feet = Vec3::new(8.5, 70.0, 8.5);
+        game.player = Some(horizon_client::motion::PlayerMotion::new(game.motion, feet).unwrap());
+        game.update_chunk_tickets();
+        let boxed = horizon_client::item_data::parse_stack(
+            r#"{id:"minecraft:shulker_box",count:1,components:{"minecraft:container":[
+                {slot:0,item:{id:"minecraft:stone",count:2}},
+                {slot:4,item:{id:"minecraft:dirt",count:1}},
+                {slot:8,item:{id:"minecraft:glass",count:3}}]}}"#,
+        )
+        .unwrap()
+        .unwrap();
+        game.spawn_item(boxed, [8.5, 70.0, 8.5], [0.0; 3], 0);
+        assert_eq!(game.dropped.len(), 1);
+        assert!(game.run_command("damage @e[type=minecraft:item,limit=1] 100 minecraft:generic"));
+        let mut spilled: Vec<_> = game
+            .dropped
+            .iter()
+            .map(|item| (item.stack.item.to_string(), item.stack.count))
+            .collect();
+        spilled.sort();
+        assert_eq!(
+            spilled,
+            [
+                ("minecraft:dirt".to_owned(), 1),
+                ("minecraft:glass".to_owned(), 3),
+                ("minecraft:stone".to_owned(), 2)
+            ]
+        );
+        for item in &game.dropped {
+            assert_eq!(item.velocity.y, 0.2, "{item:?}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod escape_tests {
     use super::super::native_machines::tests::server_game;
     use horizon_client::chunk::Chunk;
@@ -878,9 +996,14 @@ mod escape_tests {
         let mut game = server_game();
         let feet = horizon_core::geometry::Vec3::new(8.5, 70.0, 8.5);
         game.player = Some(horizon_client::motion::PlayerMotion::new(game.motion, feet).unwrap());
-        game.world
-            .chunks
-            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        // Entity-ticking chunks also need the surrounding loaded chunks.
+        for x in -2..=2 {
+            for z in -2..=2 {
+                game.world
+                    .chunks
+                    .insert((x, z), Arc::new(Chunk::empty(x, z)));
+            }
+        }
         game.update_chunk_tickets();
         assert!(game.entity_ticking_area()(8, 8));
         let stone = game
@@ -894,13 +1017,17 @@ mod escape_tests {
         game.spawn_item(stack, [8.5, 64.4, 8.5], [0.0, 0.0, 0.0], 10);
         let item = game.dropped.last().unwrap();
         let expected = f64::from(item.random.clone().next_float() * 0.2 + 0.1);
+        let mut own = item.random.clone();
+        own.next_float();
         let mut level = game.world.random.clone();
         game.ticked_entities_through = u32::MAX;
         game.tick_items();
         let item = game.dropped.last().unwrap();
         // Up is the nearest open side from the middle of the block.
         // The push replaces the fall's velocity; then the 0.98 drag.
-        assert_eq!(item.velocity.y, expected * 0.98);
+        // Entity.getAirDrag returns 0.98F, promoted to double for the drag.
+        assert_eq!(item.velocity.y, expected * f64::from(0.98_f32));
+        assert_eq!(item.random.clone().next_int(), own.next_int());
         assert_eq!(game.world.random.next_float(), level.next_float());
     }
 }

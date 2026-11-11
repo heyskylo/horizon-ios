@@ -25,7 +25,7 @@ sha2 = "0.10"
 base64 = "0.22"
 getrandom = "0.3"
 # Ratings: one SQLite file on a small volume, as the telemetry server keeps its data.
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled", "fallible_uint"] }
 # Draining a refused upload (already one of axum's).
 http-body-util = "0.1"
 # The upload's zip checked before any reader opens it (src/archive.rs): horizon-mods' own.

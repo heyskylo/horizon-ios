@@ -205,6 +205,19 @@ fn merge_slices(slices: &[&[u32]], out: &mut Vec<u32>) {
     }
 }
 
+impl super::BoxReach {
+    /// The box that holds the box of each mob this was worked out for, standing at `at`: an
+    /// area clear of it is one [`super::BoxReach::may_meet`] turns away.
+    pub fn around(self, at: horizon_core::geometry::Vec3) -> Aabb {
+        use horizon_core::geometry::Vec3;
+        let (w, b, h) = (self.half_width, self.below, self.height);
+        Aabb::new(
+            Vec3::new(at.x - w, at.y - b, at.z - w),
+            Vec3::new(at.x + w, at.y + h, at.z + w),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
