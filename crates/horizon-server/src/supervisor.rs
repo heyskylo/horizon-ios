@@ -235,6 +235,11 @@ pub fn run(dir: &Path) -> Result<(), String> {
         // Read again before every start: edits to server.toml apply on the next restart, and so does a
         // switch to another release.
         let config = Config::load(dir)?;
+        // Queued while the game ran, stopped or was already stopping: applied before this start,
+        // whatever ended the last game, not left for some later restart.
+        if let Some(w) = apply_queued(&shared, dir, &config) {
+            watch = Some(w);
+        }
         if let Ok(found) = engine::program_in(&config, dir, shared.install.as_ref())
             && let Ok(found_resources) = engine::resources(&config, dir, Some(&found))
         {
@@ -320,36 +325,8 @@ pub fn run(dir: &Path) -> Result<(), String> {
                 return Ok(());
             }
             Exit::NotUp => continue,
-            Exit::Restart => {
-                let restore = shared.restore.lock().unwrap().take();
-                if let Some((name, dimension)) = restore {
-                    let done = match &dimension {
-                        Some(d) => backup::restore_dimension(dir, &config, &name, d),
-                        None => backup::restore(dir, &config, &name),
-                    };
-                    let name = match &dimension {
-                        Some(d) => format!("{name} ({d})"),
-                        None => name,
-                    };
-                    match done {
-                        Ok(Some(old)) => note(
-                            &shared,
-                            "INFO",
-                            &format!(
-                                "Restored {name}; the world it replaced is in {}",
-                                old.display()
-                            ),
-                        ),
-                        Ok(None) => note(&shared, "INFO", &format!("Restored {name}")),
-                        Err(e) => note(&shared, "ERROR", &format!("Could not restore {name}: {e}")),
-                    }
-                }
-                let pending = shared.update.lock().unwrap().pending.take();
-                if let Some((to, timeout)) = pending {
-                    watch = switch(&shared, dir, &config, &to, timeout);
-                }
-                continue;
-            }
+            // A restore or update asked for is applied at the head of the loop, before every start.
+            Exit::Restart => continue,
             Exit::Crashed(status) => status,
         };
         {
@@ -394,6 +371,36 @@ pub fn run(dir: &Path) -> Result<(), String> {
 
 /// With the game stopped: backs the world up, points `current` at the release `to` and checks that its game
 /// loads on this system. What to watch while it starts; `None` when it stayed on the release it was on.
+/// The restore and the release switch asked for since the last start, done now: the world is
+/// replaced and `current` moved before the next game starts. The switch's [`Watch`], if any.
+fn apply_queued(shared: &Shared, dir: &Path, config: &Config) -> Option<Watch> {
+    let restore = shared.restore.lock().unwrap().take();
+    if let Some((name, dimension)) = restore {
+        let done = match &dimension {
+            Some(d) => backup::restore_dimension(dir, config, &name, d),
+            None => backup::restore(dir, config, &name),
+        };
+        let name = match &dimension {
+            Some(d) => format!("{name} ({d})"),
+            None => name,
+        };
+        match done {
+            Ok(Some(old)) => note(
+                shared,
+                "INFO",
+                &format!(
+                    "Restored {name}; the world it replaced is in {}",
+                    old.display()
+                ),
+            ),
+            Ok(None) => note(shared, "INFO", &format!("Restored {name}")),
+            Err(e) => note(shared, "ERROR", &format!("Could not restore {name}: {e}")),
+        }
+    }
+    let pending = shared.update.lock().unwrap().pending.take();
+    pending.and_then(|(to, timeout)| switch(shared, dir, config, &to, timeout))
+}
+
 fn switch(
     shared: &Shared,
     dir: &Path,
@@ -401,6 +408,8 @@ fn switch(
     to: &str,
     timeout: Duration,
 ) -> Option<Watch> {
+    // `Instant + Duration` panics past its range: this runs after nothing is switched yet.
+    let timeout = timeout.min(crate::api::MAX_UPDATE_TIMEOUT);
     let Some(install) = shared.install.as_ref() else {
         shared.finish_update(
             false,
@@ -800,7 +809,9 @@ fn supervise(
                 shared.set_phase(Phase::Stopping);
                 crate::management::stopping(shared);
                 send_stop(&mut stdin);
-            } else {
+            } else if signal {
+                // A second Ctrl-C (or signal) from a person: at once. A repeated API or management
+                // stop does nothing more, as vanilla's second halt does: the game is saving.
                 note(shared, "WARN", "Stopping the game at once, without saving");
                 let _ = child.kill();
             }
@@ -869,6 +880,33 @@ fn send_stop(stdin: &mut Option<std::process::ChildStdin>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A restore asked for while the game is stopped is done before the next start (the loop's
+    /// head runs `apply_queued`), not left queued for some later restart.
+    #[test]
+    fn a_queued_restore_is_done_before_the_next_start() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-server-queued-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config = Config::default();
+        let world = dir.join("world");
+        std::fs::create_dir_all(&world).unwrap();
+        std::fs::write(world.join("level.dat"), b"before").unwrap();
+        std::fs::write(dir.join("server.toml"), crate::config::TEMPLATE).unwrap();
+        let name = backup::file_name(std::time::SystemTime::now(), None).unwrap();
+        backup::create(&dir, &config, &name).unwrap();
+        std::fs::write(world.join("level.dat"), b"after").unwrap();
+        let shared = Shared::new(&dir);
+        *shared.restore.lock().unwrap() = Some((name, None));
+        assert!(apply_queued(&shared, &dir, &config).is_none());
+        assert_eq!(std::fs::read(world.join("level.dat")).unwrap(), b"before");
+        assert!(shared.restore.lock().unwrap().is_none(), "no longer queued");
+        // Nothing queued: nothing done.
+        std::fs::write(world.join("level.dat"), b"again").unwrap();
+        assert!(apply_queued(&shared, &dir, &config).is_none());
+        assert_eq!(std::fs::read(world.join("level.dat")).unwrap(), b"again");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_prune_that_rolled_back_still_lets_the_server_start() {
