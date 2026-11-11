@@ -97,10 +97,16 @@ impl Row {
 /// The licence family of an SPDX id or a `mods.toml` licence text.
 pub fn license_kind(license: &str) -> &'static str {
     let l = license.to_ascii_lowercase();
-    // Whole words of the text: "limited" holds "mit", "template" "mpl" and "Discord" "isc".
+    // Whole words of the text, or a family with its version run on ("GPLv3", "MPL2"): "limited"
+    // holds "mit", "template" "mpl" and "Discord" "isc", but none of those is a family's word.
     let has = |k: &str| {
-        l.split(|c: char| !c.is_ascii_alphanumeric())
-            .any(|t| t == k)
+        l.split(|c: char| !c.is_ascii_alphanumeric()).any(|t| {
+            t.strip_prefix(k).is_some_and(|rest| {
+                let digits = rest.strip_prefix('v').unwrap_or(rest);
+                rest.is_empty()
+                    || (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+            })
+        })
     };
     if l.is_empty() || l.starts_with("unknown") {
         "unknown"
@@ -801,6 +807,14 @@ mod tests {
         assert_eq!(license_kind("Custom, limited redistribution"), "custom");
         assert_eq!(license_kind("See the template"), "custom");
         assert_eq!(license_kind("Ask on Discord"), "custom");
+        // A version run on to the family's name.
+        for spelled in [
+            "GPLv3", "LGPLv3", "AGPLv3", "MPLv2", "GPL3", "LGPLv2.1", "gplv2+",
+        ] {
+            assert_eq!(license_kind(spelled), "copyleft", "{spelled}");
+        }
+        assert_eq!(license_kind("Apache2"), "permissive");
+        assert_eq!(license_kind("mplvx"), "custom");
         assert_eq!(license_kind("CC0-1.0"), "permissive");
         assert_eq!(license_kind("LGPL-3.0-only"), "copyleft");
         assert_eq!(
