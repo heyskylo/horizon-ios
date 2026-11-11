@@ -386,6 +386,7 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
                 path: path.clone(),
                 size: None,
                 scaled: false,
+                background: false,
             });
             for _ in 0..32 {
                 draw(&mut renderer)?;
