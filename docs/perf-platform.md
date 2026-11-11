@@ -979,7 +979,7 @@ Same conventions as the site's API: JSON replies, `cache-control: no-store` on e
   are only ever served with the capture content type).
 - **The CLI:** `horizon-perf share FILE` uploads and pins (posts to `PERF_UPLOAD_URL`, else `HORIZON_PERF_CAPTURES`, else the address list's) and
   prints the link and delete token; `horizon-perf upload FILE` makes a 1-hour temporary upload; `horizon-perf summary|query|diff` accept a share link wherever they accept a file.
-- **The game:** nothing uploads by itself. `[Share]` or `/profiler share [id]` uploads the capture in the background and prints a clickable `/perf/c/<id>` link in chat; a failure keeps the file and offers `/profiler share` to retry. An adjacent `.hzperf.share.json` receipt stores the endpoint and owner/delete token (mode 0600 on Unix), so a retry after a failed share pin reuses the upload. Control-socket, environment and dedicated report captures remain local unless explicitly shared through the CLI. Do not share the owner receipt.
+- **The game:** nothing uploads by itself. `[Share]` or `/profiler share [id]` uploads the capture in the background and prints a clickable `/perf/c/<id>` link in chat; a failure keeps the file and offers `/profiler share` to retry. An adjacent `.hzperf.share.json` receipt stores the endpoint and owner/delete token (mode 0600 on Unix), so a retry after a failed share pin reuses the upload; when the server no longer has that upload (404 or 410 on the pin) the capture is uploaded again and the receipt replaced. Control-socket, environment and dedicated report captures remain local unless explicitly shared through the CLI. Do not share the owner receipt.
 
 ## 8. `horizon-perf mcp`
 
