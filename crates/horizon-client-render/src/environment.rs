@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
+mod noise;
+
 pub struct Environment {
     system: System,
     /// What the packs' expressions read; the frame sets it before sampling.
@@ -559,13 +561,9 @@ impl<'a> BlockHost<'a> {
     }
 }
 
-/// The simplex noise `r.noise(x, y)` reads, the same for blocks and particles.
-pub(crate) fn polytone_noise() -> &'static horizon_core::noise::SimplexNoise {
-    static NOISE: std::sync::OnceLock<horizon_core::noise::SimplexNoise> =
-        std::sync::OnceLock::new();
-    NOISE.get_or_init(|| {
-        horizon_core::noise::SimplexNoise::new(&mut horizon_core::random::LegacyRandom::new(0))
-    })
+/// The noise `r.noise(x, y)` reads, the same for blocks and particles.
+pub(crate) fn polytone_noise() -> &'static noise::PerlinSimplex {
+    noise::builtin()
 }
 
 impl horizon_polytone::expr::Host for BlockHost<'_> {
@@ -615,7 +613,7 @@ impl horizon_polytone::expr::Host for BlockHost<'_> {
             (V::Object(2), "noise") => {
                 let mut coords = args.iter().filter(|v| !matches!(v, V::Str(_))).map(V::num);
                 let (x, y) = (coords.next().unwrap_or(0.0), coords.next().unwrap_or(0.0));
-                num(f64::from(polytone_noise().get2(x, y)))
+                num(polytone_noise().get(x, y))
             }
             _ => Err(format!("{name} is not available to block colormaps")),
         }
