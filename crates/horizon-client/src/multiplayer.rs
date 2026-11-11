@@ -1618,6 +1618,8 @@ impl Screen {
                 },
                 Some(50),
             ) => {
+                // Held through the save: a ping storing an icon meanwhile would undo the edit.
+                let guard = servers::lock();
                 let (mut list, mut hidden) = servers::load_all(&servers_file(saves));
                 let mut entry = ServerEntry::new(name.trim(), address.trim());
                 entry.accept_textures = *packs;
@@ -1641,6 +1643,8 @@ impl Screen {
                     },
                 }
                 let _ = servers::save_all(&servers_file(saves), &list, &hidden);
+                // Before the list is shown again: loading it may save, which takes the lock.
+                drop(guard);
                 *self = Self::list(saves);
             }
             (
