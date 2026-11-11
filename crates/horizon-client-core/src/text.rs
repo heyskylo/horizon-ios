@@ -61,6 +61,8 @@ pub enum ClickEvent {
     /// A local file to open with the system handler.
     /// Only allow this in locally constructed messages, never server/LAN text.
     OpenFile(String),
+    /// A `/profiler` line the client's own buttons run; never decoded from a server's text, so only they reach the local profiler.
+    Profiler(String),
 }
 
 /// A non-character `minecraft:object` embedded in a text component.
@@ -624,6 +626,9 @@ fn style_json(style: &Style) -> Vec<(String, Value)> {
                 event
             }
             ClickEvent::OpenFile(path) => json!({ "action": "open_file", "path": path }),
+            ClickEvent::Profiler(command) => {
+                json!({ "action": "run_command", "command": command })
+            }
         };
         out.push(("click_event".to_owned(), event));
     }

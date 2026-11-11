@@ -58,7 +58,7 @@ fn button(label: &str, hover: Text, click: ClickEvent) -> Text {
 }
 
 fn command(label: &str, hover: &str, command: String) -> Text {
-    button(label, tr(hover, &[]), ClickEvent::RunCommand(command))
+    button(label, tr(hover, &[]), ClickEvent::Profiler(command))
 }
 
 /// Buttons side by side, a single space between.
@@ -285,11 +285,27 @@ mod tests {
     }
 
     fn run(command: &str) -> ClickEvent {
-        ClickEvent::RunCommand(command.into())
+        ClickEvent::Profiler(command.into())
     }
 
     fn file() -> PathBuf {
         PathBuf::from("/home/p/reports/profile-20261110-233142Z.hzperf")
+    }
+
+    #[test]
+    fn a_share_button_sent_back_by_a_server_is_a_plain_command_not_the_local_profiler() {
+        let line = chat(english(|| saved(12.0, &file(), "reports/x.hzperf", true)));
+        assert_eq!(
+            click(&line, "[Share]"),
+            &run("/profiler share profile-20261110-233142Z")
+        );
+        let echoed = english(|| {
+            horizon_client::component::to_text(&line.component(), &mut |_| Text::empty())
+        });
+        assert_eq!(
+            click(&echoed, "[Share]"),
+            &ClickEvent::RunCommand("/profiler share profile-20261110-233142Z".into())
+        );
     }
 
     #[test]
