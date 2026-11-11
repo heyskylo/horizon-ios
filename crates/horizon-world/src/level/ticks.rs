@@ -39,7 +39,11 @@ pub struct Ticks {
     pub piston_pushes: Vec<(BlockPos, super::pistons::MovingPiston, f32)>,
     pub(crate) next_block_entity_id: u64,
     /// `ServerLevel.blockEvents`, run by `Behaviours::run_block_events`.
-    pub block_events: Vec<super::pistons::BlockEventData>,
+    /// Changed only through [`Ticks::queue_block_event`], [`Ticks::pop_block_event`]
+    /// and [`Ticks::retain_block_events`], which keep `block_event_keys` in step.
+    pub block_events: std::collections::VecDeque<super::pistons::BlockEventData>,
+    /// The events in `block_events`, for the O(1) dedupe in `queue_block_event`.
+    block_event_keys: horizon_core::fast_hash::FxHashSet<super::pistons::BlockEventData>,
     /// `ServerLevel.isHandlingTick` (true while scheduled ticks run).
     pub(crate) handling_tick: bool,
     /// Worldgen shape updates collect the ticks they schedule here, for the
@@ -76,7 +80,8 @@ impl Ticks {
             moving_piston_ids: FxHashMap::default(),
             piston_pushes: Vec::new(),
             next_block_entity_id: 0,
-            block_events: Vec::new(),
+            block_events: Default::default(),
+            block_event_keys: Default::default(),
             handling_tick: false,
             capture: None,
         }
@@ -134,6 +139,30 @@ impl Ticks {
     pub(crate) fn moving_piston_has(&self, pos: BlockPos, id: u64) -> bool {
         self.moving_piston_slot(pos)
             .is_some_and(|slot| self.moving_pistons[slot].1.id == id)
+    }
+    /// `ServerLevel.blockEvent`'s dedupe: queue `event` at the back unless the
+    /// same event is already queued. Returns whether it was queued.
+    pub fn queue_block_event(&mut self, event: super::pistons::BlockEventData) -> bool {
+        if self.block_event_keys.insert(event) {
+            self.block_events.push_back(event);
+            true
+        } else {
+            false
+        }
+    }
+    /// Take the front block event off the queue (`ServerLevel.runBlockEvents`).
+    pub fn pop_block_event(&mut self) -> Option<super::pistons::BlockEventData> {
+        let event = self.block_events.pop_front()?;
+        self.block_event_keys.remove(&event);
+        Some(event)
+    }
+    /// Keep only the queued block events `keep` accepts (a test area's clear).
+    pub fn retain_block_events(
+        &mut self,
+        keep: impl FnMut(&super::pistons::BlockEventData) -> bool,
+    ) {
+        self.block_events.retain(keep);
+        self.block_event_keys = self.block_events.iter().copied().collect();
     }
     /// Register a chunk without saved ticks.
     pub fn add_empty_chunk(&mut self, pos: ChunkPos) -> Result<(), TickError> {
@@ -219,6 +248,99 @@ impl Ticks {
             y + ((value >> 16) & y_mask),
             z + ((value >> 8) & 15),
         )
+    }
+}
+
+#[cfg(test)]
+mod block_event_queue_tests {
+    use super::Ticks;
+    use crate::level::{pistons::BlockEventData, states::BlockId};
+    use horizon_core::position::BlockPos;
+
+    fn event(i: i32) -> BlockEventData {
+        BlockEventData {
+            pos: BlockPos::new(i % 37, i % 11, i / 37),
+            block: BlockId((i % 5) as u16),
+            param_a: i % 3,
+            param_b: 0,
+        }
+    }
+
+    /// The queue must behave like the old `Vec` (`contains` + `push`,
+    /// `remove(0)`) under pushes, duplicates, pops with re-queues during a
+    /// run, deferred events put back after the run, and retains.
+    #[test]
+    fn queue_matches_the_vec_model() {
+        let mut ticks = Ticks::new(0);
+        let mut model: Vec<BlockEventData> = Vec::new();
+        let mut rng = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+        for round in 0..300 {
+            for _ in 0..next() % 40 {
+                let e = event((next() % 300) as i32);
+                let queued = !model.contains(&e);
+                if queued {
+                    model.push(e);
+                }
+                assert_eq!(ticks.queue_block_event(e), queued, "round {round}");
+            }
+            let mut deferred = Vec::new();
+            while !model.is_empty() {
+                let old = model.remove(0);
+                assert_eq!(ticks.pop_block_event(), Some(old), "round {round}");
+                match next() % 6 {
+                    0 => deferred.push(old),
+                    1 => {
+                        // Re-queued during its own run: goes to the back.
+                        let queued = !model.contains(&old);
+                        if queued {
+                            model.push(old);
+                        }
+                        assert_eq!(ticks.queue_block_event(old), queued);
+                    }
+                    _ => {}
+                }
+            }
+            for e in deferred {
+                let queued = !model.contains(&e);
+                if queued {
+                    model.push(e);
+                }
+                assert_eq!(ticks.queue_block_event(e), queued, "reschedule");
+            }
+            if round % 17 == 0 {
+                model.retain(|e| e.pos.x % 2 == 0);
+                ticks.retain_block_events(|e| e.pos.x % 2 == 0);
+            }
+            assert!(ticks.block_events.iter().eq(model.iter()), "round {round}");
+        }
+        while !model.is_empty() {
+            assert_eq!(ticks.pop_block_event(), Some(model.remove(0)));
+        }
+        assert_eq!(ticks.pop_block_event(), None);
+    }
+
+    #[test]
+    fn distinct_events_pop_in_queue_order() {
+        let mut ticks = Ticks::new(0);
+        for i in 0..5000 {
+            assert!(ticks.queue_block_event(event(i)));
+        }
+        assert!(!ticks.queue_block_event(event(4999)), "duplicate dropped");
+        assert_eq!(ticks.block_events.len(), 5000);
+        for i in 0..5000 {
+            assert_eq!(ticks.pop_block_event(), Some(event(i)));
+        }
+        assert_eq!(ticks.pop_block_event(), None);
+        assert!(
+            ticks.queue_block_event(event(0)),
+            "popped events queue again"
+        );
     }
 }
 
