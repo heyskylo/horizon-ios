@@ -206,6 +206,37 @@ fn corrupt_allocations_are_dropped_and_bad_payloads_fail() {
     }
 }
 
+/// `SerializableChunkData.parse` reads the position with `getIntOr("xPos", 0)`
+/// and `getIntOr("zPos", 0)`, so a chunk that does not carry them is the chunk
+/// at 0, 0, and `Tag.asInt` takes the narrower integer tags too.
+#[test]
+fn a_chunk_without_its_position_is_at_the_origin() {
+    let chunk = |extra: Vec<(&str, Tag)>| {
+        let mut entries = vec![
+            ("DataVersion", Tag::Int(DATA_VERSION)),
+            ("sections", Tag::List(Vec::new())),
+        ];
+        entries.extend(extra);
+        ChunkData::new(NamedTag {
+            name: JavaString::default(),
+            tag: Tag::compound(entries),
+        })
+    };
+    assert_eq!(chunk(Vec::new()).unwrap().position(), ChunkPos::new(0, 0));
+    assert_eq!(
+        chunk(vec![("xPos", Tag::Int(-3)), ("zPos", Tag::Int(7))])
+            .unwrap()
+            .position(),
+        ChunkPos::new(-3, 7)
+    );
+    assert_eq!(
+        chunk(vec![("xPos", Tag::Short(-3)), ("zPos", Tag::Byte(7))])
+            .unwrap()
+            .position(),
+        ChunkPos::new(-3, 7)
+    );
+}
+
 /// `getChunkDataInputStream`: the external branch never reads the stub's length
 /// — `streamLength != 0` only logs "Chunk has both internal and external
 /// streams" — and `createExternalChunkInputStream` answers `null` when the
