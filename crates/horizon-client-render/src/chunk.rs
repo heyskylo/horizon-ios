@@ -4,6 +4,7 @@
 use horizon_core::paletted::{PalettedContainer, Strategy};
 use horizon_world::nbt::{Compound, Tag};
 use horizon_world::registry::BlockStateId;
+use std::sync::atomic::{AtomicI16, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 pub mod block_entity;
@@ -457,6 +458,44 @@ impl Light {
         }
     }
 }
+/// One of a chunk's heightmaps (`Chunk::surface`): the heights, built whole on the first read,
+/// and the columns a write may have moved since, each found again on its next read. Reads share
+/// the chunk (helper threads read the world): a stale column is found the same by any of them.
+#[derive(Default)]
+struct Heights {
+    heights: OnceLock<Box<[AtomicI16; 256]>>,
+    stale: [AtomicU64; 4],
+}
+impl Heights {
+    /// `Heightmap.update`: a write two or more below column `i`'s height can't move it; any
+    /// other marks the column.
+    fn write(&mut self, i: usize, y: i32) {
+        let Some(heights) = self.heights.get_mut() else {
+            return;
+        };
+        let stale = self.stale[i >> 6].get_mut();
+        if *stale & 1 << (i & 63) == 0 && y >= i32::from(*heights[i].get_mut()) - 1 {
+            *stale |= 1 << (i & 63);
+        }
+    }
+}
+impl Clone for Heights {
+    fn clone(&self) -> Self {
+        let copy = Self::default();
+        // A reader can refresh a height and then clear its stale bit while we clone. Copy the
+        // bits first: a stale snapshot will rescan; a clean one acquires the refreshed height.
+        // Copying heights first could keep an old height with a newly cleared bit.
+        for (to, from) in copy.stale.iter().zip(&self.stale) {
+            to.store(from.load(Ordering::Acquire), Ordering::Relaxed);
+        }
+        if let Some(heights) = self.heights.get() {
+            let _ = copy.heights.set(Box::new(std::array::from_fn(|i| {
+                AtomicI16::new(heights[i].load(Ordering::Relaxed))
+            })));
+        }
+        copy
+    }
+}
 #[inline]
 fn column(x: i32, z: i32) -> usize {
     ((z & 15) << 4 | (x & 15)) as usize
@@ -574,10 +613,10 @@ pub struct Chunk {
     pub sections: Vec<Arc<Section>>,
     /// `Heightmap.Types.WORLD_SURFACE` per column (`z << 4 | x`): one above
     /// the highest non-air block, or the column's minimum Y. Built on the first read; a
-    /// `set` that can move a column's surface drops it.
-    surface: OnceLock<Box<[i16; 256]>>,
+    /// `set` that can move a column's surface marks that column, found again on its next read.
+    surface: Heights,
     /// `Heightmap.Types.MOTION_BLOCKING` per column, kept like `surface`.
-    motion_blocking: OnceLock<Box<[i16; 256]>>,
+    motion_blocking: Heights,
     pub lit: bool,
     /// Light read from a save with `isLightOn`: no light job is needed.
     pub light_loaded: bool,
@@ -618,8 +657,8 @@ impl Chunk {
             z,
             min_y: layout.min_y(),
             sections: (0..layout.sections()).map(|_| empty.clone()).collect(),
-            surface: OnceLock::new(),
-            motion_blocking: OnceLock::new(),
+            surface: Heights::default(),
+            motion_blocking: Heights::default(),
             lit: false,
             light_loaded: false,
             fresh: false,
@@ -698,12 +737,7 @@ impl Chunk {
         // move it. Any other change rebuilds that map on the next read.
         if previous != v {
             for map in [&mut self.surface, &mut self.motion_blocking] {
-                if map
-                    .get()
-                    .is_some_and(|heights| y >= i32::from(heights[column(x, z)]) - 1)
-                {
-                    *map = OnceLock::new();
-                }
+                map.write(column(x, z), y);
             }
         }
         previous
@@ -714,24 +748,55 @@ impl Chunk {
         let section = Arc::make_mut(&mut self.sections[s]);
         section.blocks = Section::from_blocks(values);
         section.compact();
-        self.surface = OnceLock::new();
-        self.motion_blocking = OnceLock::new();
+        self.surface = Heights::default();
+        self.motion_blocking = Heights::default();
     }
     /// `getHeight(Heightmap.Types.WORLD_SURFACE, x, z)` (`x`, `z` within the
     /// chunk): one above the highest block that isn't `air`, or the column's
     /// minimum Y.
     /// Sections must change only through `set` once this has been read.
     pub fn world_surface(&self, x: i32, z: i32, air: impl Fn(u32) -> bool) -> i32 {
-        let surface = self.surface.get_or_init(|| self.prime(|v| !air(v)));
-        i32::from(surface[column(x, z)])
+        self.height(&self.surface, x, z, |v| !air(v))
     }
     /// `getHeight(Heightmap.Types.MOTION_BLOCKING, x, z)` (`x`, `z` within
     /// the chunk): one above the highest state where `blocks` (a motion
     /// blocking block or a fluid), or the column's minimum Y. Kept as
     /// `world_surface` is.
     pub fn motion_blocking(&self, x: i32, z: i32, blocks: impl Fn(u32) -> bool) -> i32 {
-        let heights = self.motion_blocking.get_or_init(|| self.prime(blocks));
-        i32::from(heights[column(x, z)])
+        self.height(&self.motion_blocking, x, z, blocks)
+    }
+    /// One column's height in `map`: the whole map built on its first read, a column a write
+    /// marked found again down that column alone.
+    fn height(&self, map: &Heights, x: i32, z: i32, counts: impl Fn(u32) -> bool) -> i32 {
+        let heights = map.heights.get_or_init(|| {
+            let built = self.prime(&counts);
+            Box::new(std::array::from_fn(|i| AtomicI16::new(built[i])))
+        });
+        let i = column(x, z);
+        let (word, bit) = (i >> 6, 1u64 << (i & 63));
+        if map.stale[word].load(Ordering::Acquire) & bit != 0 {
+            let height = self.column_height(i, &counts);
+            heights[i].store(height, Ordering::Relaxed);
+            map.stale[word].fetch_and(!bit, Ordering::Release);
+            return i32::from(height);
+        }
+        i32::from(heights[i].load(Ordering::Relaxed))
+    }
+    /// [`Self::prime`] for column `i` alone.
+    fn column_height(&self, i: usize, counts: impl Fn(u32) -> bool) -> i16 {
+        for (s, section) in self.sections.iter().enumerate().rev() {
+            if section.blocks.uniform().is_some_and(|v| !counts(v)) {
+                continue;
+            }
+            let base = self.min_y + s as i32 * 16;
+            if let Some(dy) = (0..16)
+                .rev()
+                .find(|&dy| counts(section.blocks.get(dy << 8 | i)))
+            {
+                return (base + dy as i32 + 1) as i16;
+            }
+        }
+        self.min_y as i16
     }
     /// `Heightmap.primeHeightmaps`: each section from the top, skipping
     /// those of one state that doesn't count, until every column is found.
@@ -797,7 +862,7 @@ impl Chunk {
             + self.sections.capacity() * std::mem::size_of::<Arc<Section>>();
         census.heightmap_bytes += [&self.surface, &self.motion_blocking]
             .iter()
-            .filter(|map| map.get().is_some())
+            .filter(|map| map.heights.get().is_some())
             .count()
             * std::mem::size_of::<[i16; 256]>();
         for section in &self.sections {
@@ -1020,8 +1085,88 @@ mod tests {
         let before = chunk.world_surface(3, 3, is_air);
         chunk.set(3, MIN_Y + HEIGHT, 3, stone);
         chunk.set(3, before - 1, 3, chunk.get(3, before - 1, 3));
-        assert!(chunk.surface.get().is_some());
+        assert!(chunk.surface.heights.get().is_some());
         assert_eq!(chunk.world_surface(3, 3, |_| unreachable!()), before);
+    }
+    /// A write two below a column's height can't move it, so the next read asks about no block;
+    /// a write at or above it (placing on top, clearing the top block) is found again on the next
+    /// read by looking down that column alone, and the other columns keep their heights.
+    #[test]
+    fn a_write_finds_its_own_column_again() {
+        // Each column holds its own state (16 + i), so a read that looks at another column's
+        // blocks shows up as a state that isn't air or this column's.
+        let state = |i: usize| 16 + i as u32;
+        let mut chunk = Chunk::empty(0, 0);
+        for i in 0..256 {
+            for y in MIN_Y..MIN_Y + 20 + (i as i32 % 7) {
+                chunk.set(i as i32 & 15, y, i as i32 >> 4, state(i));
+            }
+        }
+        let seen = std::cell::RefCell::new(Vec::new());
+        let surface = |c: &Chunk, i: usize| {
+            c.world_surface(i as i32 & 15, i as i32 >> 4, |v| {
+                seen.borrow_mut().push(v);
+                v == 0
+            })
+        };
+        let heights: Vec<i32> = (0..256).map(|i| surface(&chunk, i)).collect();
+        assert_eq!(heights[0], MIN_Y + 20);
+        assert_eq!(heights[6], MIN_Y + 26);
+        seen.borrow_mut().clear();
+
+        let (column, x, z) = (0x35, 5, 3);
+        let top = heights[column];
+        // Two below the height: the column keeps its map entry.
+        chunk.set(x, top - 2, z, 0);
+        assert_eq!(surface(&chunk, column), top);
+        assert!(seen.borrow().is_empty());
+        chunk.set(x, top - 2, z, state(column));
+
+        // At the height: placed on top, found again down this column only.
+        chunk.set(x, top, z, state(column));
+        assert_eq!(surface(&chunk, column), top + 1);
+        assert!(!seen.borrow().is_empty());
+        assert!(seen.borrow().iter().all(|&v| v == 0 || v == state(column)));
+        seen.borrow_mut().clear();
+        assert_eq!(surface(&chunk, column), top + 1);
+        for i in (0..256).filter(|&i| i != column) {
+            assert_eq!(surface(&chunk, i), heights[i]);
+        }
+        assert!(
+            seen.borrow().is_empty(),
+            "a read found again an untouched column"
+        );
+
+        // One below the height: the top block cleared, the height drops by one.
+        chunk.set(x, top, z, 0);
+        assert_eq!(surface(&chunk, column), top);
+        assert!(seen.borrow().iter().all(|&v| v == 0 || v == state(column)));
+    }
+    /// Chunk snapshots can be cloned while helper threads refresh a stale height. No snapshot
+    /// may retain the old height with its stale bit cleared, for either map.
+    #[test]
+    fn cloning_during_a_height_refresh_keeps_the_new_height() {
+        for _ in 0..4096 {
+            let mut chunk = Chunk::empty(0, 0);
+            chunk.set(0, MIN_Y + 4, 0, 1);
+            assert_eq!(chunk.world_surface(0, 0, |v| v == 0), MIN_Y + 5);
+            assert_eq!(chunk.motion_blocking(0, 0, |v| v != 0), MIN_Y + 5);
+            chunk.set(0, MIN_Y + 5, 0, 1);
+            let ready = std::sync::Barrier::new(2);
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    ready.wait();
+                    assert_eq!(chunk.world_surface(0, 0, |v| v == 0), MIN_Y + 6);
+                    assert_eq!(chunk.motion_blocking(0, 0, |v| v != 0), MIN_Y + 6);
+                });
+                ready.wait();
+                for _ in 0..4 {
+                    let snapshot = chunk.clone();
+                    assert_eq!(snapshot.world_surface(0, 0, |v| v == 0), MIN_Y + 6);
+                    assert_eq!(snapshot.motion_blocking(0, 0, |v| v != 0), MIN_Y + 6);
+                }
+            });
+        }
     }
     /// MOTION_BLOCKING ignores states that don't count (air, grass) and
     /// follows writes as the surface map does, both maps kept at once.

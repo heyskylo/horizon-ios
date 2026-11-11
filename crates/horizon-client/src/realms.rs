@@ -8,6 +8,7 @@
 //! launcher hands over after its owner check (`auth::current`). Without one (offline play, an
 //! expired token) the screen says so and makes no request. Every request runs on a worker
 //! thread; the title polls the results once a frame (`poll`).
+pub mod availability;
 pub mod client;
 pub mod download;
 pub mod upload;
@@ -929,8 +930,7 @@ pub enum Popup {
     },
 }
 
-/// `RealmsResetWorldScreen`'s entry points: the slot's world is replaced. `forNewRealm`
-/// belongs to the realm-creation screen, which the port has no equivalent of.
+/// `RealmsResetWorldScreen`'s entry points (`forResetSlot`, `forEmptySlot`, `forNewRealm`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResetKind {
     /// `forResetSlot`: the world is replaced after a warning; the active slot's.

@@ -43,6 +43,17 @@ class BakeBricolageTests(MissingArgumentTests):
     def test_one_font_is_not_enough(self):
         self.assert_asked_for_arguments("bake_bricolage.py", "source.ttf")
 
+class PadGlyphsTests(MissingArgumentTests):
+    def test_a_flag_is_not_an_output_directory(self):
+        # It used to create ./--help and fill it with 14 glyphs.
+        self.assert_asked_for_arguments("pad_glyphs/gen.py", "--help")
+
+
+class FetchDxcTests(MissingArgumentTests):
+    def test_a_flag_is_not_a_folder(self):
+        # It used to download Microsoft's 22 MB archive into ./--help.
+        self.assert_asked_for_arguments("ci/fetch_dxc.py", "--help")
+
 
 class CommandFixtureTests(MissingArgumentTests):
     """The command fixtures write into the directory they are told to, and ask for it when nobody said."""
