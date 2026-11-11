@@ -1117,3 +1117,41 @@ mod bell_ownership_tests {
         assert!(anims.bells.is_empty());
     }
 }
+
+#[cfg(test)]
+mod gateway_age_tests {
+    use super::*;
+    use crate::game::native_machines::tests::server_game;
+
+    /// `TheEndGatewayBlockEntity.portalTick`: an age that moved is a change
+    /// to save.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_gateway_that_ages_marks_the_chunk() {
+        let mut game = server_game();
+        let state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:end_gateway")
+            .unwrap();
+        let pos = (2, 4, 3);
+        game.world.set(pos.0, pos.1, pos.2, state).unwrap();
+        game.world.block_entities.insert(
+            pos,
+            BlockEntity::EndGateway(horizon_client::containers::EndGateway::default()),
+        );
+        game.world.modified.clear();
+
+        game.tick_end_gateway(pos);
+
+        let Some(BlockEntity::EndGateway(g)) = game.world.block_entities.get(&pos) else {
+            panic!("no gateway");
+        };
+        assert_eq!(g.age, 1, "the tick aged the gateway");
+        assert!(
+            game.world.modified.contains(&(0, 0)),
+            "the aged gateway left the chunk unmarked"
+        );
+    }
+}
