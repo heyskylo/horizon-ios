@@ -55,7 +55,7 @@ fn pair(g: &mut Game<'_>, slot: usize) -> Damage {
         m.health = 100.0;
         g.mobs.push(m);
     }
-    g.mobs[0].random = LegacyRandom::new(1);
+    g.mobs[0].random.set_seed(1);
     f::set_item_stack(&mut g.mobs[0], f::MAINHAND, thorny()); // Retaliation must not recurse.
     f::set_item_stack(&mut g.mobs[1], slot, thorny());
     Damage::mob(41, [10.5, 64.0, 0.5])
