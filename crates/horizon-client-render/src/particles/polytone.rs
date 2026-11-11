@@ -1255,10 +1255,11 @@ pub(super) fn make(
         }
     }
     // `exclusion_radius`: none spawns within that distance of a live one of its type (rain
-    // splashes, one per patch of ground).
+    // splashes, one per patch of ground from tick to tick). Only those already in the world count: measured on
+    // the mod, two spawned in the same tick a block apart both show, with or without physics.
     if def.exclusion_radius > 0.0 && def.gpu.is_none() {
         let r2 = def.exclusion_radius * def.exclusion_radius;
-        let crowded = engine.particles.iter().chain(&engine.pending).any(|p| {
+        let crowded = engine.particles.iter().any(|p| {
             !p.removed
                 && p.polytone_type.as_deref() == Some(name)
                 && (0..3)
@@ -1883,7 +1884,8 @@ mod tests {
         let root = pack(&[
             (
                 "assets/test/polytone/custom_particles/splash.json",
-                serde_json::json!({"has_physics": false, "exclusion_radius": 1, "render_type": "invisible"}),
+                serde_json::json!({"has_physics": false, "exclusion_radius": 1, "render_type": "invisible",
+                    "initializer": {"lifetime": "100"}}),
             ),
             (
                 "assets/test/polytone/custom_particles/drop.json",
@@ -1893,7 +1895,8 @@ mod tests {
                 "assets/minecraft/polytone/entity_modifiers/player.json",
                 serde_json::json!({"emitters": [
                     {"particle": "test:splash", "x": "0", "chance": "1"},
-                    // 0.5 from the first: excluded.
+                    // 0.5 from the first, in the same tick: the first isn't in the world yet,
+                    // so it spawns (measured on the mod).
                     {"particle": "test:splash", "x": "0.5", "chance": "1"},
                     // 3 away: spawns.
                     {"particle": "test:splash", "x": "3", "chance": "1"},
@@ -1915,7 +1918,15 @@ mod tests {
         engine.polytone_entity(&level, "minecraft:player", [1.0, 64.0, 1.0]);
         let mut xs: Vec<f64> = engine.pending.iter().map(|p| p.position[0]).collect();
         xs.sort_by(f64::total_cmp);
-        assert_eq!(xs, [1.0, 1.5, 4.0]);
+        assert_eq!(xs, [1.0, 1.5, 1.5, 4.0]);
+        // Once they are in the world, the next tick's splashes near them are excluded; ones
+        // farther than the radius from all of them spawn, again without excluding each other.
+        engine.tick(&level);
+        let splashes = |p: &&Particle| p.polytone_type.as_deref() == Some("test:splash");
+        engine.polytone_entity(&level, "minecraft:player", [1.0, 64.0, 1.0]);
+        assert_eq!(engine.pending.iter().filter(splashes).count(), 0);
+        engine.polytone_entity(&level, "minecraft:player", [9.0, 64.0, 1.0]);
+        assert_eq!(engine.pending.iter().filter(splashes).count(), 3);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -2468,6 +2479,20 @@ mod tests {
                 "assets/minecraft/polytone/entity_modifiers/zombie.json",
                 serde_json::json!({"emitters": [lim("3"), lim("6")]}),
             ),
+            // `exclusion_radius` with physics: the one inside the block doesn't keep the clear
+            // one a block away from spawning.
+            (
+                "assets/test/polytone/custom_particles/exc.json",
+                serde_json::json!({"has_physics": true, "render_type": "invisible",
+                    "exclusion_radius": 2,
+                    "initializer": {"lifetime": "20", "hitbox_size": "0.08"}}),
+            ),
+            (
+                "assets/minecraft/polytone/entity_modifiers/skeleton.json",
+                serde_json::json!({"emitters": [
+                    {"particle": "test:exc", "chance": "1", "x": "0"},
+                    {"particle": "test:exc", "chance": "1", "x": "1"}]}),
+            ),
         ]);
         let scene = solid_scene(blocks);
         let level = ParticleLevel {
@@ -2492,6 +2517,7 @@ mod tests {
         };
         assert_eq!(joined("minecraft:player"), vec![4.5]);
         assert_eq!(joined("minecraft:zombie"), vec![4.5]);
+        assert_eq!(joined("minecraft:skeleton"), vec![2.5]);
         std::fs::remove_dir_all(root).unwrap();
     }
 
