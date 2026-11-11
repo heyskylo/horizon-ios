@@ -3513,13 +3513,7 @@ impl Game<'_> {
         if host.hub.guests[gi].spectator() {
             return;
         }
-        // handleAttack: a target inside the world border, then
-        // `isWithinAttackRange(mainHandItem, box, 3.0)` before anything else, players,
-        // mobs, objects and fireballs alike.
-        if let Some(target) = self.guest_target_box(host, gi, id)
-            && (!self.inside_border(&target)
-                || self.as_guest(host, conn, |g| g.within_attack_range(&target)) != Some(true))
-        {
+        if self.guest_attack_stops(host, gi, id) {
             return;
         }
         // Native mods, where Player.attack starts: a canceled blow does
@@ -6271,6 +6265,7 @@ fn eye_columns(at: [f64; 3], body: Dimensions) -> [std::ops::RangeInclusive<i32>
     [range(at[0]), range(at[2])]
 }
 
+mod attack_checks;
 mod dig_stop;
 use dig_stop::{StopDig, stop_dig};
 
