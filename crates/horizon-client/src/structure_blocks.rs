@@ -8,6 +8,7 @@ use horizon_world::{
     worldgen::generator::ProtoChunk,
 };
 use std::{
+    cell::RefCell,
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -125,6 +126,30 @@ pub fn has_pending_map(item: &ItemStack) -> bool {
 type LoadedLoot = (u64, Option<Arc<LootData>>);
 static LOOT: Mutex<Option<LoadedLoot>> = Mutex::new(None);
 
+thread_local! {
+    /// Loot data this thread keeps to itself, read ahead of [`LOOT`]. A game
+    /// never sets it: a test that installs a world pack's tables does, so the
+    /// tables reach its own rolls only and never a test running beside it
+    /// (each test runs on its own thread; #14266).
+    static THREAD_LOOT: RefCell<Option<Arc<LootData>>> = const { RefCell::new(None) };
+}
+
+fn thread_loot() -> Option<Arc<LootData>> {
+    THREAD_LOOT.with(|own| own.borrow().clone())
+}
+
+/// Load the loot data of `root` with `overlay` for this thread alone:
+/// [`loot_data`] and [`loaded_loot_data`] return it on this thread, while
+/// other threads keep the process's copy. For tests whose world has packs.
+pub fn load_thread_loot_data(
+    root: &Path,
+    overlay: &horizon_world::loot::PackOverlay,
+) -> Option<Arc<LootData>> {
+    let data = load_loot(root, overlay).1;
+    THREAD_LOOT.with(|own| *own.borrow_mut() = data.clone());
+    data
+}
+
 /// The resource root and the packs' files the loot data was loaded from.
 fn loot_key(root: &Path, overlay: &horizon_world::loot::PackOverlay) -> u64 {
     use std::hash::{DefaultHasher, Hash, Hasher};
@@ -149,6 +174,9 @@ fn load_loot(root: &Path, overlay: &horizon_world::loot::PackOverlay) -> LoadedL
 /// once per process (a world open with other packs, or `/reload`, loads it
 /// again).
 pub fn loot_data(root: &Path, overlay: &horizon_world::loot::PackOverlay) -> Option<Arc<LootData>> {
+    if let Some(own) = thread_loot() {
+        return Some(own);
+    }
     let mut loot = LOOT.lock().unwrap_or_else(|e| e.into_inner());
     loot.get_or_insert_with(|| load_loot(root, overlay))
         .1
@@ -183,6 +211,9 @@ fn reuse_or_load(
 
 /// The loot data `loot_data` loaded, if it ran.
 pub fn loaded_loot_data() -> Option<Arc<LootData>> {
+    if let Some(own) = thread_loot() {
+        return Some(own);
+    }
     LOOT.lock()
         .unwrap_or_else(|e| e.into_inner())
         .as_ref()
