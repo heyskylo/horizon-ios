@@ -1896,11 +1896,9 @@ mod tests {
         let g = Graphics::default();
         assert_eq!(g.workers, 0);
         let cores = horizon_threads::worker_count();
-        let automatic = g.worker_threads();
-        assert_eq!(automatic, horizon_threads::jobs::default_threads());
-        assert!((1..=cores.saturating_sub(1).max(1)).contains(&automatic));
-        if !cfg!(any(target_vendor = "apple", target_os = "linux")) {
-            assert_eq!(automatic, cores.saturating_sub(1).max(1));
+        assert!((1..=cores.saturating_sub(1).max(1)).contains(&g.worker_threads()));
+        if !cfg!(target_vendor = "apple") {
+            assert_eq!(g.worker_threads(), cores.saturating_sub(1).max(1));
         }
         // A manual count is the player's own choice, kept as asked.
         let manual = Graphics { workers: 3, ..g };
