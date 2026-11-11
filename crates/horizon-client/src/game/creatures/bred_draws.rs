@@ -75,7 +75,8 @@ mod tests {
             let parent_seed = 4_242 + 1_009 * n as i64;
             let mut outcomes = Vec::new();
             for (r, level_seed) in [11i64, 2_000_003].into_iter().enumerate() {
-                game.world.random = LegacyRandom::new(level_seed);
+                game.world.random =
+                    horizon_core::random::LevelRandom::for_level(LegacyRandom::new(level_seed));
                 game.mobs.clear();
                 let (part, mate_id) = (7u32, 8u32);
                 // Ids the spawner hands out stay clear of the pair's.
@@ -88,7 +89,9 @@ mod tests {
                     .clone();
                 for (id, variant) in [(part, own), (mate_id, mate)] {
                     let mut m = Mob::new(id, t.clone(), Vec3::new(8.5, 64.0, 8.5), 0.0);
-                    m.random = LegacyRandom::new(parent_seed + i64::from(id));
+                    m.random = horizon_core::random::EntityRandom::own(LegacyRandom::new(
+                        parent_seed + i64::from(id),
+                    ));
                     m.extra.variant = variant;
                     m.extra.in_love = 600;
                     game.mobs.push(m);
