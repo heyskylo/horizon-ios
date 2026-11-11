@@ -518,6 +518,7 @@ impl Split<'_> {
             None,
             host.settings.horizon.api,
             host.settings.horizon.translucent_batching,
+            host.settings.vsync,
             &host.settings.horizon,
             // The pack its own game loads, from its profile.
             crate::game::shader_packs::picked_pack_shape(&guest.settings),
