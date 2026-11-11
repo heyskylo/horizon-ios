@@ -7184,6 +7184,32 @@ def projectile_fall_distance():
                        f'/forceload remove {x0} {z0}')
 
 
+def ominous_spawner_loaded_entity_fields():
+    """`Entity.load` reads Rotation (the pitch through `setXRot`: `% 360`, then within -90..90),
+    OnGround and fall_distance, and `OminousItemSpawner` never moves or turns, so it saves them as
+    loaded, before its first tick, after it and across a chunk reload."""
+    x0, y0, z0 = 5440, 300, 5120
+    cases = ['Rotation:[30.0f,20.0f],OnGround:1b,fall_distance:3.5d', 'Rotation:[-560.0f,100.0f]',
+             'Rotation:[10.0f,-450.0f],fall_distance:-1.0d', '']
+    ops = [*setup(f'/forceload add {x0} {z0}'), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]}]
+    for n, fields in enumerate(cases, 1):
+        sep = ',' if fields else ''
+        ops.append(cmd(f'/summon ominous_item_spawner {x0 + 3 * n}.5 {y0} {z0 + 8}.5 {{UUID:[I;14700,0,{n},1],'
+                       f'spawn_item_after_ticks:2000L,item:{{id:"minecraft:stone",count:1}}{sep}{fields}}}',
+                       expect_result=1))
+
+    def reads():
+        return [cmd(f'/data get entity 0000396c-0000-0000-0000-{n:04x}00000001 {key}')
+                for n in range(1, len(cases) + 1) for key in ('Rotation', 'OnGround', 'fall_distance')]
+
+    ops += reads() + [{'op': 'tick', 'n': 1}] + reads()
+    ops += [*setup(f'/forceload remove {x0} {z0}'), {'op': 'tick', 'n': 60},
+            cmd(f'/execute unless loaded {x0} {y0} {z0}', expect_result=1),
+            *setup(f'/forceload add {x0} {z0}'), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]}]
+    return ops + reads() + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16]',
+                                 f'/forceload remove {x0} {z0}')
+
+
 def thrown_projectile_rotation():
     """`ThrowableProjectile.tick` and `LlamaSpit.tick` end their move with `Projectile.updateRotation`:
     the pitch and yaw go a fifth of the way (`lerpRotation`) from the last tick's towards the
@@ -7944,6 +7970,7 @@ def groups():
         ('glide fall accumulation', glide_fall_accumulation()),
         ('living short timers', living_short_timers()),
         ('projectile fall distance', projectile_fall_distance()),
+        ('ominous spawner loaded fields', ominous_spawner_loaded_entity_fields()),
         ('thrown projectile rotation', thrown_projectile_rotation()),
         ('item fall distance', item_fall_distance()),
         ('beacon levels load', beacon_levels_load()),
