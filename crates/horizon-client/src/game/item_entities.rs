@@ -502,6 +502,7 @@ impl Game<'_> {
             count: 1,
             ticks: 0,
             health: 5,
+            air: 300,
             following: None,
         });
         // ServerLevel.addFreshEntity.

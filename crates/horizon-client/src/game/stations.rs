@@ -682,7 +682,7 @@ impl Game<'_> {
             return;
         };
         let creative = self.creative;
-        let data = self.stations();
+        let (enchantments, data) = (std::sync::Arc::clone(self.enchantments()), self.stations());
         let items = self.items();
         match s.kind {
             // A server's table: its data slots carry the offers, and its
@@ -690,7 +690,7 @@ impl Game<'_> {
             Kind::Enchanting if self.remote.is_some() => {
                 let enchantable = s.inputs[0]
                     .as_ref()
-                    .is_some_and(|i| stations::is_enchantable(&data.enchantments, i));
+                    .is_some_and(|i| stations::is_enchantable(&enchantments, i));
                 if !enchantable {
                     s.offers = Default::default();
                 }
@@ -698,7 +698,7 @@ impl Game<'_> {
             Kind::Enchanting => {
                 s.bookcases = self.count_bookshelves(s.pos);
                 s.offers = stations::enchant_offers(
-                    &data.enchantments,
+                    &enchantments,
                     items,
                     self.level.xp_seed,
                     s.bookcases,
@@ -712,7 +712,7 @@ impl Game<'_> {
                     .map(|i| stations::hover_name(&self.pack.names, i))
                     .unwrap_or_default();
                 s.anvil = stations::anvil_result(
-                    &data.enchantments,
+                    &enchantments,
                     items,
                     s.inputs[0].as_ref(),
                     s.inputs[1].as_ref(),
@@ -731,7 +731,7 @@ impl Game<'_> {
             }
             Kind::Grindstone => {
                 s.result = stations::grindstone_result(
-                    &data.enchantments,
+                    &enchantments,
                     items,
                     s.inputs[0].as_ref(),
                     s.inputs[1].as_ref(),
@@ -739,7 +739,7 @@ impl Game<'_> {
             }
             Kind::Smithing => {
                 s.result = data.recipes.smithing_result(
-                    &data.enchantments,
+                    &enchantments,
                     s.inputs[0].as_ref(),
                     s.inputs[1].as_ref(),
                     s.inputs[2].as_ref(),
