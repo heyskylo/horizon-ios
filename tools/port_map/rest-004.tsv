@@ -1,7 +1,7 @@
 OptionInstance.SliderableEnum.toSliderValue	port	crates/horizon-client-render/src/options_ui.rs::Opt::kind	slider position of the graphics preset (index / 3)
 OptionInstance.SliderableEnum.next	inline	crates/horizon-client-render/src/options_ui.rs::Opt::set_slider	Opt::Preset is a 0..3 slider (unit/step at options_ui.rs:335, 417, 844), so stepping happens through the slider rather than a cycle arm
 OptionInstance.SliderableEnum.previous	inline	crates/horizon-client-render/src/options_ui.rs::Opt::set_slider	same slider
-OptionInstance.SliderableEnum.fromSliderValue	port	crates/horizon-client-render/src/options_ui.rs::Opt::set_slider	gap: minor: rounds v*3 where vanilla floors v*4
+OptionInstance.SliderableEnum.fromSliderValue	port	crates/horizon-client-render/src/options_ui.rs::preset_from_slider	floor(v * values.size()) with 1.0 just below and the last value clamped; the graphics preset slider's four stops
 OptionInstance.SliderableEnum.validateValue	port	crates/horizon-client-render/src/options_file.rs::Spec::validate	named spec accepts the four preset indexes
 OptionInstance.SliderableOrCyclableValueSet.createButton	port	crates/horizon-client-render/src/options_ui.rs::option_widget	cycle or slider button by option kind
 OptionInstance.SliderableValueSet.createButton	port	crates/horizon-client-render/src/options_ui.rs::option_widget	slider button
