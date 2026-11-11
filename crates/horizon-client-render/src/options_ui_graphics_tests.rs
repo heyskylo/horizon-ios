@@ -200,3 +200,16 @@ fn the_chat_delay_slider_steps_in_tenths() {
     set_slider(Opt::ChatDelay, &mut s, 1.0);
     assert!((s.file.double("chatDelay") - 6.0).abs() < 1e-9);
 }
+
+/// `Options.chatDelay`'s message: None at zero, else the delay to one decimal.
+#[test]
+fn the_chat_delay_slider_says_its_delay() {
+    let mut s = Settings::default();
+    assert_eq!(chat_delay_label(&s).plain(), "options.chat.delay_none");
+    s.file.set("chatDelay", crate::options_file::V::Double(2.0));
+    assert_eq!(chat_delay_label(&s).plain(), "Chat Delay: 2.0 second(s)");
+    s.file.set("chatDelay", crate::options_file::V::Double(6.0));
+    assert_eq!(chat_delay_label(&s).plain(), "Chat Delay: 6.0 second(s)");
+    s.file.set("chatDelay", crate::options_file::V::Double(0.0));
+    assert_eq!(chat_delay_label(&s).plain(), "options.chat.delay_none");
+}
