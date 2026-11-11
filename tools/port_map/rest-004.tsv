@@ -17,6 +17,7 @@ Options.dataFix	port	crates/horizon-client-render/src/options_fixes.rs::update
 Options.getFullscreenVideoModeString	inline	crates/horizon-client-input/src/window.rs::VideoMode::write	options.txt keeps fullscreenResolution as `VideoMode::write`'s mode JSON, not as a separate 'WxH@Hz' string; `Settings.video_mode_index` reads it back to place the Video screen's mode slider
 Options.buildPlayerInformation	port	crates/horizon-client/src/net.rs::run	gap: player: only view distance and chat visibility are sent; language, skin parts, main hand, particles and text filtering stay at defaults
 Options.setModelPart	port	crates/horizon-client-render/src/options_file.rs::OptionsFile::model_customisation	the seven modelPart_* options are read back and sent as the PlayerModelPart set
+Options.chatDelay	port	crates/horizon-client-render/src/options_ui_values.rs::chat_delay_label	options.chat.delay_none at zero, options.chat.delay with the delay to one decimal otherwise; the IntRange(0, 60) slider's tenths are in the same module
 Options.loadSelectedResourcePacks	port	crates/horizon-client-render/src/packs.rs::enabled	gap: minor: dropped packs are not written back to resourcePacks
 Options.readListOfStrings	port	crates/horizon-client-render/src/options_file.rs::read_list	
 Options.dumpOptionsForReport	skip:debug		options dump for the debug report
