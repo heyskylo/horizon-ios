@@ -4,10 +4,7 @@ use horizon_client::{
     Result,
     mobs::{Anim, Brain, Flags, Mob, MobEvent, MobType, Part, Species, zombie_villager},
 };
-use horizon_core::{
-    geometry::Vec3,
-    random::{LegacyRandom, RandomSource},
-};
+use horizon_core::{geometry::Vec3, random::RandomSource};
 use std::{
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
@@ -76,7 +73,7 @@ pub fn main() -> Result<()> {
             Vec3::new(p[2].parse()?, p[3].parse()?, p[4].parse()?),
             0.0,
         );
-        m.random = LegacyRandom::new(p[0].parse()?);
+        m.random.set_seed(p[0].parse()?);
         m.silent = p[1] == "1";
         if let Some(MobEvent::Sound(name, at, volume, pitch)) = zombie_villager::cure_sound(&mut m)
         {

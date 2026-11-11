@@ -837,13 +837,19 @@ pub fn register(m: &mut Mob) {
     set_size(m, 1, false);
     m.health = m.attrs.max_health;
 }
-/// `setSize`: health 4 per size, speed 0.2 + 0.1 * size; size 1 makes an
-/// adult a baby.
+/// `setSize`: the max health (`setCubeMobHealth`, 4 per size) and movement
+/// speed (0.2 + 0.1 * size, in floats) bases, which the save then holds;
+/// size 1 makes an adult a baby.
 pub fn set_size(m: &mut Mob, size: i32, update_health: bool) {
+    use super::finalize::{Attr, set_base};
     let size = size.clamp(1, 127);
     m.extra.size = size;
-    m.attrs.max_health = (4 * size) as f32;
-    m.attrs.speed = f64::from(0.2f32 + 0.1f32 * size as f32);
+    set_base(m, Attr::MaxHealth, f64::from(4 * size));
+    set_base(
+        m,
+        Attr::MovementSpeed,
+        f64::from(0.2f32 + 0.1f32 * size as f32),
+    );
     if update_health {
         m.health = m.attrs.max_health;
         if size == 1 && !m.is_baby() {
@@ -1475,13 +1481,24 @@ pub fn from_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
     };
     m.extra.age = int("Age").unwrap_or(0);
     m.extra.age_locked = int("AgeLocked").unwrap_or(0) != 0;
-    let health = m.health;
     set_size(m, int("Size").unwrap_or(0) + 1, false);
-    m.health = if tag.get("Health").is_some() {
-        health
-    } else {
-        m.attrs.max_health
-    };
+    // LivingEntity's load applies the saved bases after the size, so they win.
+    if let Some(Tag::List(saved)) = tag.get("attributes") {
+        use super::finalize::{Attr, set_base};
+        for a in saved {
+            let attr = match crate::save::text(a.get("id")).as_deref() {
+                Some("minecraft:max_health") => Attr::MaxHealth,
+                Some("minecraft:movement_speed") => Attr::MovementSpeed,
+                _ => continue,
+            };
+            if let Some(base) = crate::save::float(a.get("base")) {
+                set_base(m, attr, base);
+            }
+        }
+    }
+    // The saved Health, not the one the living load's Health Boost clamp cut
+    // to the unsized maximum: vanilla sizes the cube before `setHealth`.
+    m.health = crate::save::float(tag.get("Health")).map_or(m.attrs.max_health, |h| h as f32);
     m.extra.flag2 = int("wasOnGround").unwrap_or(0) != 0;
     m.extra.ints[3] = int("pickup_timer").unwrap_or(0);
     m.extra.scratch[3] = int("from_bucket").unwrap_or(0);

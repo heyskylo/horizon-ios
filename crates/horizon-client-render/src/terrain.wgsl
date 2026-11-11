@@ -303,8 +303,12 @@ fn faded(code: u32, local: vec3<f32>, dx: vec3<f32>, dy: vec3<f32>) -> bool {
     let pixel = max(length(dx), length(dy));
     let unit = exp2(ceil(log2(max(pixel * 1.5, 1.0 / 16.0))));
     let p = vec2<u32>(bitcast<vec2<u32>>(vec2<i32>(floor(plane / unit)))) & vec2(3u);
-    let bayer = array<u32, 16>(0u, 8u, 2u, 10u, 12u, 4u, 14u, 6u, 3u, 11u, 1u, 9u, 15u, 7u, 13u, 5u);
-    return (f32(bayer[p.y * 4u + p.x]) + 0.5) / 16.0 >= shown;
+    // The 4x4 Bayer matrix by rows, 0 8 2 10, 12 4 14 6, 3 11 1 9, 15 7 13 5: four bits each,
+    // two rows a word (a constant array indexed by the pixel would be a private array, which
+    // Adreno's Vulkan compiler, build 0676.41, fails to link).
+    let rows = select(0x6e4ca280u, 0x5d7f91b3u, p.y >= 2u);
+    let bayer = (rows >> (((p.y & 1u) * 4u + p.x) * 4u)) & 0xfu;
+    return (f32(bayer) + 0.5) / 16.0 >= shown;
 }
 // A fading tile or section is drawn a hair toward the camera (depth is
 // reversed: nearer is larger), the newer the more, so it wins where it draws
@@ -786,7 +790,7 @@ fn solid_light(finished: vec4<f32>) -> vec4<f32> {
         if globals.hdr_light.w != 0.0 {
             return vec4(hdr_written(finished.rgb, finished.a, globals.hdr_settings, globals.hdr_shares), 1.0);
         }
-        return vec4(finished.rgb, 1.0);
+        return frame_stored(vec4(finished.rgb, 1.0));
     }
     return finished;
 }
@@ -868,7 +872,7 @@ fn solid_finish_at(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>, du: vec2<
         let mark = hdr_scene_alpha(mix(hdr_scene(in.scene.x, in.scene.y, hdr_facing()), globals.hdr_light.y, fogged));
         return vec4(hdr_written(finished.rgb, mark, globals.hdr_settings, globals.hdr_shares), finished.a);
     }
-    return finished;
+    return frame_stored(finished);
 }
 
 // Native still-fluid boxes use block sprites and lightmap without terrain AO/emission
@@ -1074,7 +1078,7 @@ fn sky_finished(color: vec3<f32>) -> vec4<f32> {
         if globals.hdr_light.w != 0.0 {
             return vec4(hdr_written(color, mark, globals.hdr_settings, globals.hdr_shares), 1.0);
         }
-        return vec4(color, 1.0);
+        return frame_stored(vec4(color, 1.0));
     }
     return vec4(color, mark);
 }
@@ -1107,7 +1111,7 @@ struct SunriseOut {
     let d = view_ray(in.ndc);
     let dist = disc_distance(d, -4.0);
     if dist.x < 0.0 { discard; }
-    return vec4(sky_fog(vec3(0.0), dist), 1.0);
+    return frame_stored(vec4(sky_fog(vec3(0.0), dist), 1.0));
 }
 
 // rendertype_lines.vsh: screen-space stroke and camera-space depth separation.
@@ -1145,7 +1149,7 @@ struct LineOut {
     return out;
 }
 @fragment fn fs_line(in: LineOut) -> @location(0) vec4<f32> {
-    return apply_fog(in.color, in.spherical, in.cylindrical);
+    return frame_stored(apply_fog(in.color, in.spherical, in.cylindrical));
 }
 // Gizmo lines (rendertype_lines with a per-vertex colour and LineWidth in
 // pixels; no layering transform).
@@ -1178,5 +1182,5 @@ struct DebugLineOut {
     return out;
 }
 @fragment fn fs_debug_line(in: DebugLineOut) -> @location(0) vec4<f32> {
-    return apply_fog(in.color, in.spherical, in.cylindrical);
+    return frame_stored(apply_fog(in.color, in.spherical, in.cylindrical));
 }
