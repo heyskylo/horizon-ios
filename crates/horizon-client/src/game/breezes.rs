@@ -173,7 +173,7 @@ mod tests {
             ([8, 64, 8], fence),
             "the feet's own cell is air; the fence is what holds them up"
         );
-        game.world.random = LegacyRandom::new(1234);
+        game.world.random = horizon_core::random::LevelRandom::for_level(LegacyRandom::new(1234));
         let level = game.world.random.state();
 
         game.tick_breeze_effects();
@@ -204,7 +204,7 @@ mod tests {
             .unwrap();
         game.world.set(8, 63, 8, stone).unwrap();
         game.mobs[0].on_ground = true;
-        game.world.random = LegacyRandom::new(1234);
+        game.world.random = horizon_core::random::LevelRandom::for_level(LegacyRandom::new(1234));
         let level = game.world.random.state();
 
         game.tick_breeze_effects();
