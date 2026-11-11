@@ -12,7 +12,7 @@ use crate::{
     websocket::{Link, Socket},
 };
 use horizon_platform::server_files::properties::{
-    ServerProperties, SystemEntropy, generate_secret_key,
+    OsEntropy, ServerProperties, SystemEntropy, generate_secret_key,
 };
 use serde_json::{Value, json};
 use std::{
@@ -225,7 +225,7 @@ fn settings(dir: &Path) -> Result<Option<Settings>, String> {
     let heartbeat = p.status_heartbeat_interval;
     let mut secret = p.management_server_secret;
     if generated {
-        secret = generate_secret_key(&mut SystemEntropy::default());
+        secret = generate_secret_key(&mut OsEntropy);
         crate::config::update_all(
             dir,
             &[(

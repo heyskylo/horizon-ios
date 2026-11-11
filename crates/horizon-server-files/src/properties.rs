@@ -113,14 +113,14 @@ pub trait Entropy {
     /// SecureRandom.nextInt(bound).
     fn next_int(&mut self, bound: u32) -> u32;
 }
-/// Entropy from the operating system (/dev/urandom), else the clock.
+/// RandomSource.create(): a fast stream seeded once from the operating system (the clock only
+/// if that fails). Never for secrets: one output gives away the rest of the stream, and the world
+/// seed is one of them. Secrets use [`OsEntropy`].
 pub struct SystemEntropy(u64);
 impl Default for SystemEntropy {
     fn default() -> Self {
         let mut seed = [0u8; 8];
-        let ok = std::fs::File::open("/dev/urandom")
-            .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut seed))
-            .is_ok();
+        let ok = getrandom::fill(&mut seed).is_ok();
         let mut s = u64::from_le_bytes(seed);
         if !ok || s == 0 {
             s = now_millis() as u64 ^ 0x9E37_79B9_7F4A_7C15;
@@ -144,6 +144,34 @@ impl Entropy for SystemEntropy {
     }
     fn next_int(&mut self, bound: u32) -> u32 {
         (self.next() % u64::from(bound)) as u32
+    }
+}
+
+/// SecureRandom: every draw straight from the operating system, for secrets (the management
+/// secret, the keystore password). Vanilla draws them from SecureRandom, never from the stream
+/// the world seed comes from: splitmix64's output is invertible, so a seed anyone can read
+/// (`/seed`, seed crackers) gave the secret's state back.
+pub struct OsEntropy;
+impl OsEntropy {
+    fn bytes<const N: usize>() -> [u8; N] {
+        let mut b = [0u8; N];
+        getrandom::fill(&mut b).expect("the operating system's random generator");
+        b
+    }
+}
+impl Entropy for OsEntropy {
+    fn next_long(&mut self) -> i64 {
+        i64::from_le_bytes(Self::bytes())
+    }
+    fn next_int(&mut self, bound: u32) -> u32 {
+        // Rejection sampling: no modulo bias.
+        let zone = u32::MAX - u32::MAX % bound;
+        loop {
+            let v = u32::from_le_bytes(Self::bytes());
+            if v < zone {
+                return v % bound;
+            }
+        }
     }
 }
 
@@ -281,7 +309,8 @@ impl ServerProperties {
         let management_server_enabled = r.boolean("management-server-enabled", false);
         let management_server_host = r.string("management-server-host", "localhost");
         let management_server_port = r.int("management-server-port", 0);
-        let secret = generate_secret_key(entropy);
+        // SecurityConfig.generateSecretKey draws from SecureRandom, apart from the seed's stream.
+        let secret = generate_secret_key(&mut OsEntropy);
         let management_server_secret = r.string("management-server-secret", &secret);
         let management_server_tls_enabled = r.boolean("management-server-tls-enabled", true);
         let management_server_tls_keystore = r.string("management-server-tls-keystore", "");
@@ -643,6 +672,18 @@ mod tests {
     }
 
     #[test]
+    fn the_secret_never_comes_from_the_seed_stream() {
+        // Two first starts from the same seed stream: the same world seed, never the same secret.
+        let a = ServerProperties::new(Properties::default(), &mut SystemEntropy(42)).unwrap();
+        let b = ServerProperties::new(Properties::default(), &mut SystemEntropy(42)).unwrap();
+        assert_eq!(a.seed, b.seed);
+        assert_ne!(a.management_server_secret, b.management_server_secret);
+        // And not the first 40 draws of that stream either.
+        let from_stream = generate_secret_key(&mut SystemEntropy(42));
+        assert_ne!(a.management_server_secret, from_stream);
+    }
+
+    #[test]
     fn defaults_match_vanilla_init_settings() {
         let p = ServerProperties::new(Properties::default(), &mut Fixed).unwrap();
         // Lines end in System.lineSeparator() (java_properties checks that): read them as "\n".
@@ -651,10 +692,11 @@ mod tests {
             "#Minecraft server properties\n#Thu Jan 01 00:00:00 UTC 1970\naccepts-transfers=false\n"
         ));
         assert!(stored.contains("\nlevel-type=minecraft\\:normal\n"));
-        assert!(
-            stored
-                .contains("\nmanagement-server-secret=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n")
-        );
+        // 40 random letters and digits, as vanilla's.
+        let secret = p.management_server_secret.clone();
+        assert_eq!(secret.len(), 40);
+        assert!(secret.bytes().all(|b| b.is_ascii_alphanumeric()));
+        assert!(stored.contains(&format!("\nmanagement-server-secret={secret}\n")));
         assert!(stored.ends_with("\nview-distance=10\nwhite-list=true\n"));
         assert_eq!(stored.lines().count(), 71);
         assert!(p.random_seed);
