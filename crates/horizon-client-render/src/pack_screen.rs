@@ -1718,6 +1718,19 @@ impl PackScreen {
             [32, 2],
         );
         if l.scrollable() {
+            // AbstractScrollArea.extractScrollbar: over the bar, the pointer
+            // points, or resizes while the bar is held.
+            let over_bar = mouse.0 >= l.scroll_bar_x()
+                && mouse.0 < l.scroll_bar_x() + 6
+                && mouse.1 >= l.y
+                && mouse.1 < l.bottom();
+            if over_bar {
+                crate::widgets::request_cursor(if l.held.is_some() {
+                    crate::widgets::Cursor::ResizeNs
+                } else {
+                    crate::widgets::Cursor::PointingHand
+                });
+            }
             let sh = l.scroller_height().clamp(32, l.height - 8);
             let sy = (l.scroll as i32 * (l.height - sh) / l.max_scroll() + l.y).max(l.y);
             d::sprite(
