@@ -39,6 +39,8 @@ pub fn conversion_tags(raw: Option<&Tag>) -> Option<Tag> {
 fn string(s: &str) -> Tag {
     Tag::String(s.into())
 }
+mod refs;
+pub use refs::who_by_uuid;
 /// Entity type ID (`id`).
 pub fn kind(tag: &Tag) -> Option<String> {
     horizon_client_core::identifier::normalize_id(&text(tag.get("id"))?)
@@ -283,28 +285,6 @@ pub fn migrate_player_uuid(tag: &mut Tag, old: [i32; 4], new: [i32; 4]) {
         }
         _ => {}
     }
-}
-/// The entity a stored UUID names, while it is in the level: `player` (the
-/// player's own UUID, when one is in the level), or the mob `uuids` gives that
-/// UUID to. `uuids` is the game layer's id -> UUID map, so this is the read half
-/// of the pair [`who_uuid`] and `mob_to_nbt`'s `uuid_of` form. A UUID nothing
-/// loaded has, or one naming a kind `Who` cannot carry (an item, a projectile, a
-/// guest), is `None` - never some other entity as a stand-in.
-pub fn who_by_uuid(
-    uuids: &HashMap<u32, [i32; 4]>,
-    mobs: &[Mob],
-    player: Option<[i32; 4]>,
-    uuid: [i32; 4],
-) -> Option<Who> {
-    if player == Some(uuid) {
-        return Some(Who::Player);
-    }
-    // Only a loaded mob: the map also holds projectiles, vehicles and items,
-    // whose ids mean nothing to `Who`.
-    uuids
-        .iter()
-        .find(|(id, u)| **u == uuid && mobs.iter().any(|m| m.id == **id))
-        .map(|(id, _)| Who::Mob(*id))
 }
 /// `AngerManagement.SUSPECT_ANGER_PAIR`: one suspect's UUID and how angry the
 /// warden is at it.
@@ -1257,11 +1237,11 @@ pub fn mob_to_nbt(
                 ));
             }
             // ITEM_PICKUP_COOLDOWN_TICKS (`Codec.INT`), which a throw sets to 60,
-            // while it runs.
-            if m.extra.ints[3] > 0 {
+            // while the memory is there (its value 0 included).
+            if let Some(ticks) = crate::mobs::allay::pickup_cooldown(m) {
                 memories.push((
                     "minecraft:item_pickup_cooldown_ticks",
-                    Tag::compound([("value", Tag::Int(m.extra.ints[3]))]),
+                    Tag::compound([("value", Tag::Int(ticks))]),
                 ));
             }
             // Always written, so a forgotten note block does not come back
@@ -2063,6 +2043,7 @@ pub fn mob_from_nbt_with_random(
     m.extra.death_loot_table = text(tag.get("DeathLootTable"))
         .and_then(|t| horizon_client_core::identifier::normalize_id(&t));
     m.extra.death_loot_seed = number(tag.get("DeathLootTableSeed")).unwrap_or(0);
+    refs::read_last_hurt_by(&mut m, tag);
     // `NeutralMob.readPersistentAngerSaveData`: the anger end time and the
     // target come back with the mob.
     if persistent_anger(m.species()) {
@@ -2488,8 +2469,8 @@ pub fn mob_from_nbt_with_random(
         };
         m.extra.ints[2] =
             number(memory("minecraft:liked_noteblock_cooldown_ticks")).unwrap_or(0) as i32;
-        m.extra.ints[3] =
-            number(memory("minecraft:item_pickup_cooldown_ticks")).unwrap_or(0) as i32;
+        let pickup = number(memory("minecraft:item_pickup_cooldown_ticks")).map(|t| t as i32);
+        crate::mobs::allay::set_pickup_cooldown(&mut m, pickup);
         if let Some(st) = m.extra.allay.as_mut()
             && let Some(noteblock) = memory("minecraft:liked_noteblock")
             && let Some(Tag::IntArray(p)) = noteblock.get("pos")
