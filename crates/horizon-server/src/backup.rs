@@ -236,8 +236,15 @@ pub fn restore(dir: &Path, config: &Config, name: &str) -> Result<Option<PathBuf
     } else {
         None
     };
-    std::fs::rename(&restored, &current)
-        .map_err(|e| format!("putting the backup in place: {e}"))?;
+    if let Err(e) = std::fs::rename(&restored, &current) {
+        // The world goes back where it was: the game must not start on an empty folder and
+        // make a new world.
+        if let Some(old) = &moved {
+            let _ = std::fs::rename(old, &current);
+        }
+        let _ = std::fs::remove_dir_all(&scratch);
+        return Err(format!("putting the backup in place: {e}"));
+    }
     let _ = std::fs::remove_dir_all(&scratch);
     Ok(moved)
 }
