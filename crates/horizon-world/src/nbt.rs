@@ -231,7 +231,8 @@ impl<'a> Reader<'a, '_> {
         let len = u16::from_be_bytes(self.number()?) as usize;
         Ok(modified_utf8(self.take(len)?).unwrap_or_default())
     }
-    fn payload(&mut self, id: u8, depth: usize) -> Result<Tag, Error> {
+    /// `payload`'s prologue: the node and depth accounting every tag pays.
+    fn entry(&mut self, id: u8, depth: usize) -> Result<(), Error> {
         if self.nodes >= self.limits.max_nodes {
             return Err(self.error("node limit exceeded"));
         }
@@ -239,6 +240,28 @@ impl<'a> Reader<'a, '_> {
         if matches!(id, 9 | 10) && depth >= self.limits.max_depth {
             return Err(self.error("depth limit exceeded"));
         }
+        Ok(())
+    }
+    /// A list's header after its entry: element type and length, checked
+    /// against the remaining nodes and bytes (no unchecked count is
+    /// allocated from).
+    fn list_header(&mut self) -> Result<(u8, usize), Error> {
+        let element_id = self.byte()?;
+        let len = self.count(0)?;
+        if len > 0 && (element_id == 0 || element_id > 12) {
+            return Err(self.error("invalid list element type"));
+        }
+        if len > self.limits.max_nodes.saturating_sub(self.nodes) {
+            return Err(self.error("node limit exceeded"));
+        }
+        // At least one byte per valid non-End payload; do not allocate from an unchecked count.
+        if len > self.bytes.len().saturating_sub(self.offset) {
+            return Err(self.error("truncated list"));
+        }
+        Ok((element_id, len))
+    }
+    fn payload(&mut self, id: u8, depth: usize) -> Result<Tag, Error> {
+        self.entry(id, depth)?;
         Ok(match id {
             0 => Tag::End,
             1 => Tag::Byte(self.byte()? as i8),
@@ -259,18 +282,7 @@ impl<'a> Reader<'a, '_> {
             }
             8 => Tag::String(self.string()?),
             9 => {
-                let element_id = self.byte()?;
-                let len = self.count(0)?;
-                if len > 0 && (element_id == 0 || element_id > 12) {
-                    return Err(self.error("invalid list element type"));
-                }
-                if len > self.limits.max_nodes.saturating_sub(self.nodes) {
-                    return Err(self.error("node limit exceeded"));
-                }
-                // At least one byte per valid non-End payload; do not allocate from an unchecked count.
-                if len > self.bytes.len().saturating_sub(self.offset) {
-                    return Err(self.error("truncated list"));
-                }
+                let (element_id, len) = self.list_header()?;
                 let mut values = Vec::with_capacity(len);
                 for _ in 0..len {
                     let mut value = self.payload(element_id, depth + 1)?;
@@ -396,6 +408,106 @@ impl ListElements<'_, '_, '_> {
     /// An error at the current position in the input.
     pub fn error(&self, reason: &'static str) -> Error {
         self.reader.error(reason)
+    }
+}
+
+/// A read position in a file's bytes for readers that decode a known layout
+/// without building a `Tag` tree (structure templates). Each method runs what
+/// the tree reader runs for the tags it reads, so a streamed read accepts
+/// and rejects the same bytes as [`read_named`]; the caller walks the root
+/// compound key by key and reads each value's payload in file order.
+pub(crate) struct Cursor<'a> {
+    reader: Reader<'a, 'static>,
+}
+
+/// A compound key read by [`Cursor::next_key`]. ASCII names (every name a
+/// template uses) are compared as the file's bytes, so no key allocates;
+/// other names go through the decoded string, so an overlong-encoded name
+/// matches the keys [`read_named`] would match.
+pub(crate) struct Key<'a> {
+    bytes: &'a [u8],
+    decoded: Option<JavaString>,
+}
+impl Key<'_> {
+    pub(crate) fn is(&self, name: &str) -> bool {
+        match &self.decoded {
+            None => self.bytes == name.as_bytes(),
+            Some(key) => with_key(name, |wanted| key == wanted),
+        }
+    }
+    pub(crate) fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+}
+
+impl<'a> Cursor<'a> {
+    /// The root of a file; `None` when it is not a compound (its payload is
+    /// still read and checked, as [`read_named`] does).
+    pub(crate) fn file(bytes: &'a [u8], limits: Limits) -> Result<Option<Self>, Error> {
+        let mut reader = Reader {
+            bytes,
+            offset: 0,
+            limits,
+            nodes: 0,
+            stream: None,
+        };
+        let id = reader.byte()?;
+        if id == 0 {
+            reader.payload(id, 0)?;
+            return Ok(None);
+        }
+        reader.root_name()?;
+        if id != 10 {
+            reader.payload(id, 0)?;
+            return Ok(None);
+        }
+        let mut cursor = Self { reader };
+        cursor.reader.entry(10, 0)?;
+        Ok(Some(cursor))
+    }
+    /// The next key of the open compound and its value's tag type, `None` at
+    /// the compound's end; the payload that follows is the caller's to read.
+    pub(crate) fn next_key(&mut self) -> Result<Option<(Key<'a>, u8)>, Error> {
+        let id = self.reader.byte()?;
+        if id == 0 {
+            return Ok(None);
+        }
+        let len = u16::from_be_bytes(self.reader.number()?) as usize;
+        let bytes = self.reader.take(len)?;
+        let decoded = if bytes.is_ascii() {
+            None
+        } else {
+            Some(
+                modified_utf8(bytes)
+                    .ok_or_else(|| self.reader.error("invalid Java modified UTF-8"))?,
+            )
+        };
+        Ok(Some((Key { bytes, decoded }, id)))
+    }
+    /// A whole tag payload, using the tree reader.
+    pub(crate) fn tag(&mut self, id: u8, depth: usize) -> Result<Tag, Error> {
+        self.reader.payload(id, depth)
+    }
+    /// A list element, unwrapped as `ListTag.addAndUnwrap` unwraps
+    /// it: a compound with a single empty-named member is that member.
+    pub(crate) fn element(&mut self, id: u8, depth: usize) -> Result<Tag, Error> {
+        let mut value = self.reader.payload(id, depth)?;
+        if let Tag::Compound(map) = &mut value
+            && map.len() == 1
+            && map.contains_key(&JavaString::default())
+        {
+            value = map.remove(&JavaString::default()).unwrap();
+        }
+        Ok(value)
+    }
+    /// A compound tag's entry checks (the caller saw type 10), then its keys.
+    pub(crate) fn compound(&mut self, depth: usize) -> Result<(), Error> {
+        self.reader.entry(10, depth)
+    }
+    /// A list tag's entry and header (the caller saw type 9).
+    pub(crate) fn list(&mut self, depth: usize) -> Result<(u8, usize), Error> {
+        self.reader.entry(9, depth)?;
+        self.reader.list_header()
     }
 }
 

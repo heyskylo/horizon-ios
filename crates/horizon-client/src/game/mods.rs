@@ -94,13 +94,36 @@ pub(super) fn register_layer_definitions() {
 pub(super) fn content_root(
     root: &std::path::Path,
     enabled: &std::collections::BTreeSet<String>,
+    disabled: &std::collections::BTreeSet<String>,
     dev: &[std::path::PathBuf],
 ) -> std::path::PathBuf {
-    use horizon_client::mod_content::{self, ContentMod};
-    use horizon_mods::{Capability, Content, Package};
-    let _step = horizon_client::spans::startup::step("mods.content_root");
     let here = std::env::current_dir().unwrap_or_default();
-    let mut paths = horizon_mods::find(&here.join(mod_list::DIR));
+    let version = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_owned()));
+    content_root_at(root, enabled, disabled, dev, &here, version.as_deref())
+}
+
+fn content_root_at(
+    root: &std::path::Path,
+    enabled: &std::collections::BTreeSet<String>,
+    disabled: &std::collections::BTreeSet<String>,
+    dev: &[std::path::PathBuf],
+    here: &std::path::Path,
+    version: Option<&std::path::Path>,
+) -> std::path::PathBuf {
+    use horizon_client::mod_content::{self, ContentMod};
+    use horizon_mods::{Capability, Package};
+    let _step = horizon_client::spans::startup::step("mods.content_root");
+    let native = version
+        .map(|p| horizon_mods::find(&p.join("native-content")))
+        .unwrap_or_default();
+    let native_ids: std::collections::BTreeSet<_> = native
+        .iter()
+        .filter_map(|path| Package::read(path).ok().map(|p| p.manifest.id))
+        .collect();
+    let mut paths = native.clone();
+    paths.extend(horizon_mods::find(&here.join(mod_list::DIR)));
     paths.retain(|p| !dev.contains(p));
     paths.extend(dev.iter().cloned());
     let mut known = None;
@@ -108,36 +131,37 @@ pub(super) fn content_root(
     // The first load's list stays (`set_local`): a reload does not hash the files again.
     let announce = !horizon_protocol::mod_list::is_set();
     let mut announced = Vec::new();
-    for path in &paths {
-        let Ok(package) = Package::read(path) else {
-            continue;
-        };
+    let packages: Vec<(&PathBuf, Package)> = paths
+        .iter()
+        .filter_map(|path| Some((path, Package::read(path).ok()?)))
+        .filter(|(path, package)| {
+            let m = &package.manifest;
+            // A legacy content copy kept for an older build cannot replace this build's
+            // snapshot, including when the native mod is off.
+            if !native.contains(path) && native_ids.contains(&m.id) && !dev.contains(path) {
+                return false;
+            }
+            let on = if native.contains(path) {
+                !disabled.contains(&m.id)
+            } else {
+                enabled.contains(&m.id)
+            } || dev.contains(path);
+            on && m.capabilities.contains(&Capability::Registries)
+        })
+        .collect();
+    let read = read_contents(&packages);
+    for ((path, package), content) in packages.iter().zip(read) {
         let m = &package.manifest;
-        let on = enabled.contains(&m.id) || dev.contains(path);
-        if !on
-            || !m.capabilities.contains(&Capability::Registries)
-            || mods.iter().any(|c| c.id == m.id)
-        {
+        if mods.iter().any(|c| c.id == m.id) {
             continue;
         }
-        // The items this mod's native code declares may be a file item's crafting remainder.
-        let declared: Vec<String> = native_declared()
-            .1
-            .iter()
-            .filter(|i| i.id.split_once(':').is_some_and(|(ns, _)| ns == m.id))
-            .map(|i| i.id.clone())
-            .collect();
-        let content = match Content::read_declaring(path, m, &declared) {
+        let content = match content {
             Ok(content) => content,
             Err(e) => {
                 log::warn!("Horizon: mod {} content not loaded: {e}", m.id);
                 continue;
             }
         };
-        // Read as `Content::read` reads it: `start_mods` need not read it again.
-        if declared.is_empty() {
-            remember_verdict(path, &content);
-        }
         let known = match &mut known {
             Some(types) => types,
             None => match mod_content::known_components(root) {
@@ -207,6 +231,57 @@ pub(super) fn content_root(
             root.to_owned()
         }
     }
+}
+
+/// Each package's content (`Content::read_declaring`, with the item ids its native code
+/// declares), in `packages`' order. Listing a mod folder and reading its declarations wait on
+/// the file system, file by file (about 3.5 s for a large modpack's 150k files on one thread), so
+/// the mods are read on threads at once.
+fn read_contents(
+    packages: &[(&PathBuf, horizon_mods::Package)],
+) -> Vec<Result<horizon_mods::Content, String>> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    // Asked here once: native mods' hooks run on this thread.
+    let native_items = &native_declared().1;
+    let read = |(path, package): &(&PathBuf, horizon_mods::Package)| {
+        let m = &package.manifest;
+        // The items this mod's native code declares may be a file item's crafting remainder.
+        let declared: Vec<String> = native_items
+            .iter()
+            .filter(|i| i.id.split_once(':').is_some_and(|(ns, _)| ns == m.id))
+            .map(|i| i.id.clone())
+            .collect();
+        let content = horizon_mods::Content::read_declaring(path, m, &declared)?;
+        // Read as `Content::read` reads it: `start_mods` need not read it again.
+        if declared.is_empty() {
+            remember_verdict(path, &content);
+        }
+        Ok(content)
+    };
+    let next = AtomicUsize::new(0);
+    let threads = horizon_threads::worker_count().clamp(1, packages.len().max(1));
+    let mut done: Vec<_> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(package) = packages.get(i) else {
+                            return done;
+                        };
+                        done.push((i, read(package)));
+                    }
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|w| w.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+            .collect()
+    });
+    done.sort_by_key(|(i, _)| *i);
+    done.into_iter().map(|(_, read)| read).collect()
 }
 
 /// A loaded mod as a server tells joining clients (`horizon_protocol::mod_list`): its manifest's
@@ -800,6 +875,50 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    #[test]
+    #[ignore = "prepared resources: run explicitly for native content"]
+    fn built_native_sound_content_reaches_the_resource_root_and_obeys_disable() {
+        let base = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
+        );
+        let scratch =
+            std::env::temp_dir().join(format!("horizon-native-content-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let version = scratch.join("version");
+        let home = scratch.join("game");
+        std::fs::create_dir_all(&home).unwrap();
+        let content = version.join("native-content/soundproof");
+        std::fs::create_dir_all(content.join("assets/soundproof/sounds")).unwrap();
+        std::fs::write(content.join("horizon-mod.toml"), "id=\"soundproof\"\nname=\"Sound proof\"\nversion=\"1\"\napi=\"0.2\"\ncapabilities=[\"registries\"]\n").unwrap();
+        std::fs::write(
+            content.join("assets/soundproof/sounds.json"),
+            r#"{"proof":{"sounds":["soundproof:proof"]}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            content.join("assets/soundproof/sounds/proof.ogg"),
+            b"synthetic existence marker; no audio decode",
+        )
+        .unwrap();
+        let legacy = home.join(mod_list::DIR).join("soundproof");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::copy(
+            content.join("horizon-mod.toml"),
+            legacy.join("horizon-mod.toml"),
+        )
+        .unwrap();
+        let enabled = ["soundproof".to_owned()].into();
+        let empty = Default::default();
+        let root = content_root_at(&base, &empty, &empty, &[], &home, Some(&version));
+        assert_ne!(root, base);
+        let sounds = horizon_client::sound_events::SoundRegistry::load(&root);
+        assert!(!sounds.tracks("soundproof:proof").is_empty());
+        let disabled = ["soundproof".to_owned()].into();
+        let off = content_root_at(&base, &enabled, &disabled, &[], &home, Some(&version));
+        assert_eq!(off, base, "disabled native mods contribute no assets");
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
     /// A content mod's living type is a mob of its template's species under
     /// its own id, with its own attributes: it saves its id with every field
     /// its template's class saves, loads back as itself, and rolls its own
@@ -926,11 +1045,67 @@ mod tests {
         assert_eq!(verdict(&ruby, &manifest, true), switches_on_restart);
         assert_eq!(verdict(&ruby, &manifest, false), Some(Ok(())));
         let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
-        std::fs::File::open(&ruby)
-            .unwrap()
-            .set_modified(later)
-            .unwrap();
+        let mut folder = std::fs::OpenOptions::new();
+        folder.read(true);
+        // Windows opens a folder only with FILE_FLAG_BACKUP_SEMANTICS, and sets its time only
+        // with write access.
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            folder.write(true).custom_flags(0x0200_0000);
+        }
+        folder.open(&ruby).unwrap().set_modified(later).unwrap();
         assert_eq!(verdict(&ruby, &manifest, false), switches_on_restart);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The mods read on threads at once come back in the order given, each with its own
+    /// files, and a refused mod's error stays with that mod alone.
+    #[test]
+    fn mods_read_at_once_keep_their_order_and_their_own_errors() {
+        let dir = std::env::temp_dir().join(format!("horizon-read-at-once-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths: Vec<PathBuf> = (0..12).map(|i| dir.join(format!("m{i}"))).collect();
+        for (i, path) in paths.iter().enumerate() {
+            std::fs::create_dir_all(path).unwrap();
+            std::fs::write(
+                path.join("horizon-mod.toml"),
+                format!(
+                    "id = \"m{i}\"\nname = \"M\"\nversion = \"0.1.0\"\napi = \"0.2\"\n\
+                     side = \"both\"\ncapabilities = [\"registries\"]\n"
+                ),
+            )
+            .unwrap();
+            // Mod i has i + 1 language files; mod 5 also writes into another mod's namespace.
+            let lang = path.join(format!("assets/m{i}/lang"));
+            std::fs::create_dir_all(&lang).unwrap();
+            for n in 0..=i {
+                std::fs::write(lang.join(format!("l{n}.json")), "{}").unwrap();
+            }
+            if i == 5 {
+                std::fs::create_dir_all(path.join("assets/m0/lang")).unwrap();
+                std::fs::write(path.join("assets/m0/lang/x.json"), "{}").unwrap();
+            }
+        }
+        let packages: Vec<(&PathBuf, horizon_mods::Package)> = paths
+            .iter()
+            .map(|p| (p, horizon_mods::Package::read(p).unwrap()))
+            .collect();
+        let read = read_contents(&packages);
+        assert_eq!(read.len(), 12);
+        for (i, content) in read.iter().enumerate() {
+            if i == 5 {
+                assert!(content.as_ref().unwrap_err().contains("own namespaces"));
+                continue;
+            }
+            let files = &content.as_ref().unwrap().files;
+            assert_eq!(files.len(), i + 1, "mod {i}");
+            assert!(
+                files
+                    .iter()
+                    .all(|f| f.starts_with(&format!("assets/m{i}/")))
+            );
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1083,6 +1258,7 @@ mod tests {
             ingredient: |_, _, _| {},
             ingredient_test: |_, _, _, _| {},
             log_line: |_, _, _, _| {},
+            living_death_message: |_, _, _| {},
             handshake: |_, _, _, _, _| {},
         });
         assert!(installed.is_ok());

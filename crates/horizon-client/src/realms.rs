@@ -8,6 +8,7 @@
 //! launcher hands over after its owner check (`auth::current`). Without one (offline play, an
 //! expired token) the screen says so and makes no request. Every request runs on a worker
 //! thread; the title polls the results once a frame (`poll`).
+pub mod availability;
 pub mod client;
 pub mod download;
 pub mod upload;
@@ -929,8 +930,7 @@ pub enum Popup {
     },
 }
 
-/// `RealmsResetWorldScreen`'s entry points: the slot's world is replaced. `forNewRealm`
-/// belongs to the realm-creation screen, which the port has no equivalent of.
+/// `RealmsResetWorldScreen`'s entry points (`forResetSlot`, `forEmptySlot`, `forNewRealm`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResetKind {
     /// `forResetSlot`: the world is replaced after a warning; the active slot's.
@@ -5073,6 +5073,7 @@ impl Screen {
                     slot,
                     kind,
                     creation,
+                    reset: None,
                     ..
                 } = &self.subscreen
                 {
@@ -6562,15 +6563,7 @@ impl Screen {
             }
         }
         // `RealmsResetWorldScreen`'s tiles are drawn, not widgets: the click is a rectangle.
-        if let SubScreen::ResetWorld {
-            server,
-            slot,
-            kind,
-            creation,
-            reset,
-            ..
-        } = &self.subscreen
-        {
+        if let SubScreen::ResetWorld { reset, .. } = &self.subscreen {
             if reset.is_some() {
                 return Outcome::None;
             }
@@ -6582,15 +6575,7 @@ impl Screen {
                 x >= tx && x < tx + 60.0 && y >= ty && y < ty + 69.0
             });
             if let Some(tile) = tile {
-                let (server, slot, kind) = (server.clone(), *slot, *kind);
-                let creation = creation.clone();
-                if tile == 1 {
-                    self.open_upload_select(server, slot, kind, creation);
-                } else if tile >= 2
-                    && let Some(group) = TemplateGroup::ALL.get(tile - 2)
-                {
-                    self.open_template_list(server, slot, kind, creation, Some(*group));
-                }
+                return self.click(Some(70 + tile as u8), x, y, (w, h));
             }
             return Outcome::None;
         }
@@ -8899,8 +8884,7 @@ impl Screen {
                                             );
                                         }
                                     }
-                                    SlotPicture::Preset => crate::ui::blit_sprite(
-                                        batch,
+                                    SlotPicture::Preset => batch.picture(
                                         atlas,
                                         "gui/presets/isles",
                                         x + 1.0,
@@ -8909,8 +8893,7 @@ impl Screen {
                                         size - 2.0,
                                         tint,
                                     ),
-                                    SlotPicture::Panorama(panorama) => crate::ui::blit_sprite(
-                                        batch,
+                                    SlotPicture::Panorama(panorama) => batch.picture(
                                         atlas,
                                         &format!("gui/title/background/{panorama}"),
                                         x + 1.0,
@@ -12683,24 +12666,70 @@ mod tests {
     /// the Realm, slot and reset kind to upload into.
     #[test]
     fn the_generate_tile_asks_for_the_create_world_screen() {
-        let mut screen = listed(vec![server(7, None)]);
-        screen.subscreen = SubScreen::ResetWorld {
-            server: server(7, None),
-            slot: 2,
-            kind: ResetKind::Empty,
-            creation: None,
-            templates: None,
-            job: None,
-            reset: None,
-            error: None,
-        };
-        match screen.click(Some(70), 0.0, 0.0, (854.0, 480.0)) {
-            Outcome::CreateWorld(request) => {
-                assert_eq!((request.server.id, request.slot), (7, 2));
-                assert_eq!(request.kind, ResetKind::Empty);
-                assert!(request.creation.is_none());
+        for (size, (tx, ty)) in [
+            ((854.0, 480.0), (305.0, 63.0)),
+            ((400.0, 243.0), (78.0, 56.0)),
+        ] {
+            for kind in [ResetKind::Reset, ResetKind::Empty, ResetKind::NewRealm] {
+                let creation = (kind == ResetKind::NewRealm)
+                    .then(|| ("Realm name".to_owned(), "Description".to_owned()));
+                let mut screen = listed(vec![server(7, None)]);
+                screen.subscreen = SubScreen::ResetWorld {
+                    server: server(7, None),
+                    slot: 2,
+                    kind,
+                    creation: creation.clone(),
+                    templates: None,
+                    job: None,
+                    reset: None,
+                    error: None,
+                };
+                for (hit, (x, y)) in [
+                    (Some(70), (0.0, 0.0)),
+                    (None, (tx, ty)),
+                    (None, (tx + 30.0, ty + 34.0)),
+                    (None, (tx + 59.5, ty + 68.5)),
+                ] {
+                    match screen.click(hit, x, y, size) {
+                        Outcome::CreateWorld(request) => {
+                            assert_eq!((request.server.id, request.slot), (7, 2));
+                            assert_eq!(request.kind, kind);
+                            assert_eq!(request.creation, creation);
+                        }
+                        _ => panic!("the Generate New World tile asks for Create World"),
+                    }
+                }
+                for (dx, dy) in [(-1.0, 0.0), (60.0, 0.0), (0.0, -1.0), (0.0, 69.0)] {
+                    assert!(matches!(
+                        screen.click(None, tx + dx, ty + dy, size),
+                        Outcome::None
+                    ));
+                }
+                let abort = Arc::new(AtomicBool::new(false));
+                if let SubScreen::ResetWorld { reset, .. } = &mut screen.subscreen {
+                    *reset = Some(RunningTask {
+                        job: Arc::new(Mutex::new(None)),
+                        title: Arc::new(Mutex::new(String::new())),
+                        abort: Arc::clone(&abort),
+                    });
+                }
+                for hit in [
+                    None,
+                    Some(70),
+                    Some(71),
+                    Some(72),
+                    Some(73),
+                    Some(74),
+                    Some(75),
+                ] {
+                    assert!(matches!(screen.click(hit, tx, ty, size), Outcome::None));
+                    assert!(matches!(
+                        screen.subscreen,
+                        SubScreen::ResetWorld { reset: Some(_), .. }
+                    ));
+                    assert!(!abort.load(Ordering::Relaxed));
+                }
             }
-            _ => panic!("the Generate New World tile asks for Create World"),
         }
     }
 

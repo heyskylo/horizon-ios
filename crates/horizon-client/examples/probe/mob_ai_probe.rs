@@ -364,7 +364,7 @@ fn summon_golem(
     let Some(mut golem) = golem else {
         return;
     };
-    golem.random = LegacyRandom::new(spawn_seed(index));
+    golem.random.set_seed(spawn_seed(index));
     born.push(golem);
     for j in near {
         villager_brain::golem_detected(&mut mobs[j], w.game_time);
@@ -438,7 +438,7 @@ fn villager_events(
                 child.extra.age = -24000;
                 child.extra.bed = Some(bed);
                 let seed = spawn_seed(index);
-                child.random = LegacyRandom::new(seed);
+                child.random.set_seed(seed);
                 horizon_client::mobs::villager_brain::init(&mut child, w.game_time, day_time, seed);
                 born.push(child);
             }
@@ -494,7 +494,7 @@ impl HeartHost for Host<'_> {
         let seed = 1000 + *self.created;
         *self.created += 1;
         let mut m = Mob::new(200_000 + seed as u32, kind, at, 0.0);
-        m.random = LegacyRandom::new(seed);
+        m.random.set_seed(seed);
         horizon_client::mobs::monster_brain::init(&mut m, seed);
         m
     }
@@ -541,7 +541,7 @@ impl HiveHost for ProbeHive<'_, '_> {
         if m.species() != Species::Bee {
             return None;
         }
-        m.random = LegacyRandom::new(spawn_seed(index));
+        m.random.set_seed(spawn_seed(index));
         horizon_client::mobs::bee::draw_cooldowns(&mut m);
         Some(m)
     }
@@ -552,6 +552,7 @@ impl HiveHost for ProbeHive<'_, '_> {
     fn sound(&mut self, name: &'static str, at: [f64; 3]) {
         self.events.push(MobEvent::Sound(name, at, 1.0, 1.0));
     }
+    fn set_changed(&mut self, _at: [i32; 3]) {}
 }
 /// The hive's honey level and front from its block state.
 fn hive_state(registry: &BlockRegistry, world: &World, at: [i32; 3]) -> (Option<i32>, [i32; 2]) {
@@ -1085,7 +1086,7 @@ pub fn main() -> horizon_client::Result<()> {
                     other => villager_flag(&mut m, other),
                 }
             }
-            m.random = LegacyRandom::new(spec.seed);
+            m.random.set_seed(spec.seed);
             if matches!(
                 m.species(),
                 Species::Cod | Species::Salmon | Species::TropicalFish

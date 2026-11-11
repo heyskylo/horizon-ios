@@ -13,6 +13,9 @@
 //! game rules) is kept from the loaded files and written back unchanged.
 //! Worlds saved by older Horizon builds (`region/`, `DIM-1/`, `Player` in
 //! `level.dat`) are migrated on open.
+mod backpressure;
+mod respawn;
+
 use crate::{
     Result,
     beehive::BeehiveExt,
@@ -900,7 +903,7 @@ pub fn decode_end_gateway(tag: &Tag) -> crate::containers::EndGateway {
         exit_portal: tag
             .get("exit_portal")
             .and_then(crate::block_entity_nbt::gateway_exit),
-        exact_teleport: number(tag.get("ExactTeleport")).unwrap_or(0) != 0,
+        exact_teleport: crate::entity_nbt::flag(tag, "ExactTeleport"),
     }
 }
 /// A mod's block entity: its compound without `id` and the position, and
@@ -994,7 +997,7 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
     }
     if id == "minecraft:beacon" {
         let beacon = crate::containers::Beacon {
-            levels: int("Levels").unwrap_or(0),
+            // BeaconBlockEntity.loadAdditional never reads `Levels`: updateBase sets them.
             primary: text(tag.get("primary_effect")),
             secondary: text(tag.get("secondary_effect")),
             last_check_y: i32::MIN / 2,
@@ -1071,10 +1074,7 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
             }
             b.fuel = int("Fuel").unwrap_or(0);
             b.total_fuel = int("total_fuel").unwrap_or(20);
-            b.speed = match tag.get("speed_multiplier") {
-                Some(Tag::Float(f)) => f32::from_bits(*f),
-                _ => 1.0,
-            };
+            b.speed = float(tag.get("speed_multiplier")).map_or(1.0, |v| v as f32);
         }
         BlockEntity::Brushable(b) => {
             b.loot_table = tag.get("LootTable").cloned();
@@ -1169,7 +1169,7 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
         BlockEntity::StructureBlock(b) => **b = crate::structure_block::StructureBlock::load(tag),
         BlockEntity::TestBlock(b) => **b = crate::test_block::TestBlock::load(tag),
         BlockEntity::TestInstanceBlock(b) => b.load(tag),
-        // The state is not known here; a saved jigsaw always has its joint.
+        // The state is not known here (Game::decode_block_entity_at applies it).
         BlockEntity::JigsawBlock(b) => {
             **b = crate::jigsaw_block::JigsawBlock::load(
                 tag,
@@ -2542,6 +2542,7 @@ pub struct SaveDir {
     /// (installed where `SavedOldWorld` is made for this same folder).
     blending_lookup: OnceLock<BlendingLookup>,
 }
+
 fn is_forced_ticket(ticket: &Tag) -> bool {
     matches!(ticket.get("type"), Some(Tag::String(t)) if *t == JavaString::from("minecraft:forced"))
 }
@@ -2885,6 +2886,7 @@ impl SaveDir {
         let tables = self.tables.get().map(|t| &**t);
         let mut chunk = decode_with(&root, registry, biomes, tables, self.shape.column())?;
         load_light(&root.tag, &mut chunk, self.shape.sky_light);
+        chunk.entities = horizon_world::chunk::legacy_entities(&root.tag);
         Some(chunk)
     }
     /// A saved full chunk read for a player's far ring (`lan::far`), as `load` but past the gameplay
@@ -2963,8 +2965,7 @@ impl SaveDir {
             .collect();
         self.queue(Folder::Region, records, false)
     }
-    /// Entities saved for a chunk (`entities/`; older chunks may still keep
-    /// them in the chunk's own `entities` list).
+    /// Entities saved for a chunk in `entities/` (an old chunk's own list: [`Self::load`]).
     pub fn load_entities(&self, x: i32, z: i32) -> Vec<Tag> {
         let mut out = Vec::new();
         if let Some(root) = self.read_record("entities", x, z)
@@ -3187,12 +3188,7 @@ impl SaveDir {
         registry: &'static BlockRegistry,
         biomes: &Arc<Biomes>,
     ) -> Result<usize> {
-        let encoding = Arc::new(Encoding {
-            registry,
-            biomes: biomes.clone(),
-            tables: self.tables.get().cloned(),
-            shape: self.shape,
-        });
+        let encoding = self.encoding_for_save_later(chunks, registry, biomes)?;
         let records = chunks
             .iter()
             .map(|c| {
@@ -3948,8 +3944,8 @@ pub struct Level {
     pub spawn: Option<[f64; 3]>,
     /// A respawn point resolved through its block when the player respawns
     /// (a bed, a respawn anchor, a forced point in any dimension):
-    /// dimension, block, yaw and `forced`.
-    pub respawn_elsewhere: Option<(String, [i32; 3], f32, bool)>,
+    /// dimension, block, yaw, pitch and `forced`.
+    pub respawn_elsewhere: Option<(String, [i32; 3], f32, f32, bool)>,
     pub position: Option<[f64; 3]>,
     pub rotation: [f32; 2],
     pub health: f32,
@@ -4295,20 +4291,8 @@ impl Level {
         if let Some(d) = text(p.get("Dimension")) {
             self.dimension = d;
         }
-        if let Some(respawn) = p.get("respawn")
-            && let Some(Tag::IntArray(pos)) = respawn.get("pos")
-            && pos.len() == 3
-        {
-            let dimension =
-                text(respawn.get("dimension")).unwrap_or_else(|| "minecraft:overworld".into());
-            let forced = number(respawn.get("forced")).is_some_and(|v| v != 0);
-            // Forced points, including Overworld ones, are validated through
-            // their blocks on death, just like beds and respawn anchors.
-            let yaw = match respawn.get("yaw") {
-                Some(Tag::Float(b)) => f32::from_bits(*b),
-                _ => 0.0,
-            };
-            self.respawn_elsewhere = Some((dimension, [pos[0], pos[1], pos[2]], yaw, forced));
+        if let Some(respawn) = respawn::read(p) {
+            self.respawn_elsewhere = Some(respawn);
         }
         let mut inventory = Vec::new();
         let mut inventory_components = HashMap::new();
@@ -4539,17 +4523,8 @@ impl Level {
             ));
         }
         // A respawn point other than the world spawn: an anchor elsewhere, or a bed.
-        if let Some((dimension, block, yaw, forced)) = &self.respawn_elsewhere {
-            let mut respawn = vec![
-                ("dimension", string(dimension)),
-                ("pos", Tag::IntArray(block.to_vec())),
-                ("yaw", Tag::Float(yaw.to_bits())),
-                ("pitch", Tag::Float(0f32.to_bits())),
-            ];
-            if *forced {
-                respawn.push(("forced", Tag::Byte(1)));
-            }
-            entries.push(("respawn", Tag::compound(respawn)));
+        if let Some(saved) = &self.respawn_elsewhere {
+            entries.push(("respawn", respawn::write(saved)));
         } else if let Some(s) = self.spawn {
             let block = [
                 s[0].floor() as i32,
@@ -5378,7 +5353,7 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
         for s in &mut chunk.sections {
             Arc::make_mut(s).compact();
         }
-        chunk.entities = self.save.load_entities(x, z);
+        chunk.entities.extend(self.save.load_entities(x, z));
         Some(chunk)
     }
     fn lod_surface(&self, worker: &mut G::Worker, x: i32, z: i32) -> Option<crate::lod::Surface> {
@@ -7134,6 +7109,21 @@ mod tests {
     use super::*;
     use crate::chunk::{MIN_Y, SECTIONS};
 
+    /// `TheEndGatewayBlockEntity.loadAdditional` reads `ExactTeleport` with
+    /// `getBooleanOr`: a number is true when its byte value is not 0, so an
+    /// int 256 is false and 257 true.
+    #[test]
+    fn an_end_gateways_exact_teleport_is_read_as_a_byte() {
+        let exact = |saved: Tag| {
+            decode_end_gateway(&Tag::compound([("ExactTeleport", saved)])).exact_teleport
+        };
+        assert!(exact(Tag::Byte(1)));
+        assert!(!exact(Tag::Byte(0)));
+        assert!(!exact(Tag::Int(256)));
+        assert!(exact(Tag::Int(257)));
+        assert!(!decode_end_gateway(&Tag::compound([("Age", Tag::Long(1))])).exact_teleport);
+    }
+
     #[test]
     fn end_gateway_block_entity_round_trips() {
         use crate::containers::{BlockEntity, EndGateway};
@@ -7701,7 +7691,7 @@ mod tests {
         assert_eq!(back.spawn, Some([8.0, 64.0, 8.0]));
         assert_eq!(
             back.respawn_elsewhere,
-            Some(("minecraft:overworld".into(), [20, 70, 20], 0.0, true))
+            Some(("minecraft:overworld".into(), [20, 70, 20], 0.0, 0.0, true))
         );
         assert!(back.difficulty_locked);
         assert!(back.weather.raining);
@@ -7972,7 +7962,7 @@ mod tests {
         // A personal point coinciding with the world spawn must still keep
         // its forced flag and yaw, rather than turning into a world fallback.
         for pos in [[5, 64, 5], [0, 80, 0]] {
-            let point = ("minecraft:overworld".to_owned(), pos, 37.0, true);
+            let point = ("minecraft:overworld".to_owned(), pos, 37.0, 0.0, true);
             let level = Level {
                 respawn_elsewhere: Some(point.clone()),
                 ..Level::default()
@@ -8718,6 +8708,73 @@ mod tests {
         let _ = std::fs::remove_dir_all(&world);
     }
 
+    /// A chunk last saved by 1.16.5 (DataVersion 2586) keeps its entities in its own
+    /// `Level.Entities`: the upgrade moves them to `entities` and the load adds them
+    /// (`SerializableChunkData.postLoadChunk`, `ServerLevel.addLegacyChunkEntities`), so its
+    /// minecart is in the world (#14424).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_chunk_from_before_1_17_loads_the_entities_it_keeps() {
+        let root = PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let assets = crate::assets::Assets::load(&root).expect("assets");
+        let biomes = Biomes::load(&root).expect("biomes");
+        let world = std::env::temp_dir().join(format!("horizon-lazy-116-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&world);
+        let save = SaveDir::new(
+            super::dimension_dir(&world, "minecraft:overworld"),
+            LevelShape::OVERWORLD,
+        );
+        let section = Tag::compound([
+            ("Y", Tag::Byte(0)),
+            (
+                "Palette",
+                Tag::List(vec![
+                    Tag::compound([("Name", string("minecraft:air"))]),
+                    Tag::compound([("Name", string("minecraft:stone"))]),
+                ]),
+            ),
+            (
+                "BlockStates",
+                Tag::LongArray(vec![0x1111_1111_1111_1111; 256]),
+            ),
+        ]);
+        let minecart = Tag::compound([
+            ("id", string("minecraft:minecart")),
+            (
+                "Pos",
+                Tag::List([3.5f64, 16.0, 7.5].map(|v| Tag::Double(v.to_bits())).into()),
+            ),
+            ("UUID", Tag::IntArray(vec![1, 2, 3, 4])),
+        ]);
+        write_old_record(
+            &save,
+            "region",
+            Tag::compound([
+                ("DataVersion", Tag::Int(2586)),
+                (
+                    "Level",
+                    Tag::compound([
+                        ("xPos", Tag::Int(0)),
+                        ("zPos", Tag::Int(0)),
+                        ("Status", string("full")),
+                        ("Biomes", Tag::IntArray(vec![1; 1024])),
+                        ("Sections", Tag::List(vec![section])),
+                        ("Entities", Tag::List(vec![minecart])),
+                    ]),
+                ),
+            ]),
+        );
+        let id = |e: &Tag| text(e.get("id"));
+        let chunk = save
+            .load(0, 0, assets.registry, &biomes)
+            .expect("the chunk loads");
+        let ids: Vec<_> = chunk.entities.iter().map(id).collect();
+        assert_eq!(ids, [Some("minecraft:minecart".to_owned())]);
+        // There is no `entities/` record for it: these are all it has.
+        assert!(save.load_entities(0, 0).is_empty());
+        let _ = std::fs::remove_dir_all(&world);
+    }
+
     /// A chunk as Bobby leaves it on disk, its palettes in both shapes: a
     /// list of names, and compounds where a name without properties is
     /// wrapped as `{"": name}` (a mixed list), read back summarized by far
@@ -9094,7 +9151,8 @@ mod far_census {
         let limit: usize = std::env::var("HORIZON_FAR_TILES")
             .ok()
             .and_then(|n| n.parse().ok())
-            .unwrap_or(48);
+            .unwrap_or(48)
+            .max(1);
         for level in 1..=6u8 {
             let size = 16 << level;
             let width = size / 16;

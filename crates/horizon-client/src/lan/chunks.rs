@@ -824,6 +824,12 @@ impl ChunkEncoder {
         )
     }
 
+    /// A lit resident far column, with its live block entities and every light layer:
+    /// neighbours outside the loading buffer need not be loaded just to send it.
+    pub(super) fn body_far(&self, chunk: &Chunk, world: &crate::world::World) -> Vec<u8> {
+        self.body(chunk, &world.block_entities, SectionMask::ALL)
+    }
+
     /// An encoder of the same level with caches of its own, for threads that encode saved chunks no
     /// level holds (`lan::far`).
     pub fn detached(&self) -> Self {
@@ -2311,12 +2317,16 @@ mod tests {
             secondary: Some("minecraft:regeneration".into()),
             ..Default::default()
         };
-        let BlockEntity::Beacon(b) =
-            load("minecraft:beacon", BlockEntity::Beacon(Box::new(beacon)))
-        else {
+        let beacon = BlockEntity::Beacon(Box::new(beacon));
+        // getUpdateTag (saveCustomOnly) carries Levels; loadAdditional never reads them.
+        assert_eq!(
+            entity_tag(&beacon, false).unwrap().get("Levels"),
+            Some(&Tag::Int(4))
+        );
+        let BlockEntity::Beacon(b) = load("minecraft:beacon", beacon) else {
             panic!("not a beacon");
         };
-        assert_eq!(b.levels, 4);
+        assert_eq!(b.levels, 0);
         assert_eq!(b.primary.as_deref(), Some("minecraft:speed"));
         assert_eq!(b.secondary.as_deref(), Some("minecraft:regeneration"));
         let gateway = EndGateway {

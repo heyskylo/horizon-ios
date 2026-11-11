@@ -7,7 +7,7 @@ we have to the max") every job that can runs on our own machines, and GitHub's p
 
 | Runner | Machine | Labels | Takes |
 | --- | --- | --- | --- |
-| `ludodesktop-checks-1`…`-3` | ludodesktop (the maintainer's desktop, 24 threads), isolated user `gha` | `horizon-checks` | `checks`' `verify` and `launcher` for the pull requests whose number ends in 0 or 1, forks included, `mod-registry`, `telemetry-server`, `pack load bench` |
+| `ludodesktop-checks-1`…`-3` | ludodesktop (the maintainer's desktop, 24 threads), isolated user `gha` | `horizon-checks` | `checks`' `verify` and `launcher` for this repository's own pull requests whose number ends in 0 or 1 (never a fork's), `mod-registry`, `telemetry-server`, `pack load bench` |
 | `playhorizon-light-1`…`-12` | playhorizon (partner's server, 8 vCPU) | `horizon-light`, `playhorizon-light` | The bots that run main's own scripts: `pr labels`, `overlap note`, `cancel-on-close`, `claim command`, `triage command`, `mojang republish`, `nightly build`'s `answer`, and `checks`' `parity-scope` |
 | `playhorizon-ci-1`, `playhorizon-ci-2` | playhorizon | `playhorizon-ci` | Nothing routed since 2026-11-03 (they took `checks` of this repository's own pull requests with the old `SELF_HOSTED_CI=all`) |
 | `playhorizon-horizon`, `ludodesktop-horizon`, `ludodesktop-parity-2` | playhorizon, ludodesktop | `horizon-game` | Parity ([release-flow.md](release-flow.md#the-parity-job)) |
@@ -15,6 +15,9 @@ we have to the max") every job that can runs on our own machines, and GitHub's p
 
 The desktop's runners are declared in the maintainer's NixOS configuration (his private fleet repository,
 `nixos/ludodesktop/horizon-runner.nix`), not installed from here; playhorizon's by `tools/ci/checks-runners.sh`.
+Every persistent checkout (the desktop's `/var/lib/gha/<runner>/horizon`, playhorizon's, the Mac mini's) is kept small by
+[`tools/ci/git-slim.sh`](../tools/ci/git-slim.sh) before a job or while the runner is idle; the desktop runs its own copy
+from a `ACTIONS_RUNNER_HOOK_JOB_STARTED` hook in the NixOS configuration.
 
 ## What stays on GitHub, and why
 
@@ -40,7 +43,7 @@ for):
 
 | `SELF_HOSTED_CI` | Bots (`horizon-light`) | `checks`, `mod-registry`, `telemetry-server`, `pack load bench` (`horizon-checks`) |
 | --- | --- | --- |
-| unset (default) | ours | `verify`, `launcher`: ours for the pull requests ending in 0 or 1, GitHub's for the others and main's pushes; the rest ours |
+| unset (default) | ours | `verify`, `launcher`: ours for this repository's own pull requests ending in 0 or 1, GitHub's for the others, forks' and main's pushes; the rest ours, forks' pull requests excepted |
 | `all` | ours | ours, every pull request |
 | `light` | ours | GitHub's: the desktop is paused |
 | `off` | GitHub's | GitHub's: everything back, in one switch |
@@ -55,7 +58,14 @@ would wait for it. Back to the default when they return.
 
 ## Forks
 
-A fork's pull request is code nobody here wrote. It may run on the checks runners only:
+A fork's pull request runs on GitHub's runners (since 2026-11-10). GitHub gives it no repository variable, so
+`SELF_HOSTED_CI` can't move it: when the desktop was off or paused, the required `verify` of every fork's pull
+request ending in 0 or 1 waited for it until GitHub failed the job a day later, and re-running it waited again
+(#14131 sat on `horizon-checks` with `SELF_HOSTED_CI=light`). The jobs check
+`github.event.pull_request.head.repo.full_name == github.repository` before they pick our runners.
+
+A fork's pull request is code nobody here wrote. Its own copy of the workflows could still name our labels, so the
+checks runners are the only ones it may reach:
 
 1. The checks runners are an isolated system user on the desktop (`gha`: no sudo, no logins, no SSH keys, `/home`
    invisible, the rest of the system read-only, no GPU or device), and their jobs' tokens write nothing and see no
@@ -88,9 +98,11 @@ ssh ludovic@playhorizon 'bash ~/horizon-install/checks-runners.sh status'
   the machine, `linux-runner.sh`). The checks runners have their own `horizon-ci-checks.slice` (memory ≤ 16 GB).
   CPUs 0–3 stay for `tools/remote.sh` runs, benchmarks and the servers.
 - `job-started.sh`, before every job: refuses a fork's pull request; empties a cargo build folder over 40 GB
-  (`MAX_TARGET_GB`); drops a checkout's `.git` over 2 GB (`MAX_GIT_GB`), which the checkout then clones again; removes the
-  runner's diagnostic logs older than a day. Every
-  job's fetch adds a pack and nothing repacks them: on 2026-11-03 each light runner's checkout held 6822 packs, 50 GB.
+  (`MAX_TARGET_GB`); collects a checkout's `.git` over 1.5 GB with `git-slim.sh` (`git gc --prune=now`, installed beside
+  the hook; it also folds many packs and removes the `tmp_pack_*` of cut-short fetches) and drops one still over 4 GB
+  (`MAX_GIT_GB`), which the checkout then clones again; removes the runner's diagnostic logs older than a day.
+  actions/checkout turns gc off in a persistent checkout and every job's fetch adds a pack: on 2026-11-03 each light
+  runner's checkout held 6822 packs, 50 GB; on 2026-11-09 the desktop's checks runners held 1051 packs (111 GB in one).
 - The checks runners share one cargo home (`~/.actions-runners/ci-shared/cargo`: registry and git sources). Each has
   its own rustup home and its own build folder (`CARGO_TARGET_DIR`, outside the checkout). `CARGO_BUILD_JOBS=4`.
 - Python is the host's 3.13 (`ci-shared/bin/python3`); the apt packages the jobs need are installed by the script, so
@@ -110,3 +122,12 @@ ssh desktop 'sudo -n rm -f /var/lib/gha-control/pause && sudo -n systemctl start
 ```
 
 With the desktop paused, set `SELF_HOSTED_CI=light`, or `checks` waits for it.
+
+## When our runners are offline
+
+`.github/workflows/runner-watch.yml` runs every 30 minutes on GitHub's runners (never ours) and calls
+`tools/ci/runner_watch.py`. When a job has waited over 2 hours for a self-hosted runner, in a pool where no job is
+running at all (offline, not just busy), it opens one issue, "CI: self-hosted runners are not taking jobs", listing
+each pool, what stops and what to do, and keeps its text current; it closes the issue once nothing waits. It needs
+only the workflow token (`actions: read`, `issues: write`). What the Team and the council do meanwhile:
+[operations.md](operations.md#self-hosted-runners-are-offline).

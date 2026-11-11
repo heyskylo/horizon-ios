@@ -26,21 +26,7 @@ impl Game<'_> {
         self.sync_tick_chunks();
         self.start_ticking_chunks();
         laps.lap("tb_tickets");
-        let levels = self.tickets.levels();
-        let bounds = levels.random_tick_bounds();
-        // Keep the world map's chunk order, including empty chunks
-        // (tick_chunk_random still draws for precipitation in those).
-        scratch.ticking.clear();
-        scratch
-            .ticking
-            .extend(self.world.chunks.keys().copied().filter(|&(x, z)| {
-                if let Some((min_x, min_z, max_x, max_z)) = bounds
-                    && (x < min_x || x > max_x || z < min_z || z > max_z)
-                {
-                    return false;
-                }
-                levels.random_ticking(x, z) && ticking_chunk(&self.world, x, z)
-            }));
+        self.random_tick_chunks(&mut scratch.ticking);
         laps.lap("tb_chunks");
         // Entity.checkInsideBlocks for the plates, tripwires, detector rails and
         // buttons under the players (the host and the LAN guests), the minecarts
@@ -239,6 +225,19 @@ impl Game<'_> {
             self.tick_scheduled()?;
         }
         self.with_level(|b, level, ticks| {
+            // The masks the random ticks will read, built on helper threads first while the
+            // parallel tick is on (`HORIZON_PARALLEL_TICK`): the draws and ticks don't depend on them.
+            if !debug && horizon_client::parallel::lanes() > 1 {
+                horizon_client::spans::time("random_tick_masks", || {
+                    let chunks = &level.world.chunks;
+                    level.random_tick_sections.prepare_masks(
+                        &scratch.ticking,
+                        |key| chunks.get(&key).cloned(),
+                        level.facts,
+                        &|id| b.random_tick_candidate(BlockStateId(id)),
+                    );
+                });
+            }
             horizon_client::spans::time("random_ticks", || {
                 for (x, z) in scratch.ticking.drain(..).filter(|_| !debug) {
                     // The last answer, asked from Y `from` at a world revision:
@@ -286,4 +285,104 @@ impl Game<'_> {
         laps.lap("tb_pistons");
         Ok(sent)
     }
+
+    /// `ChunkMap.forEachBlockTickingChunk`: the chunks that random tick this
+    /// tick, empty ones included (`tickChunk` still draws for precipitation in
+    /// those).
+    ///
+    /// Vanilla walks the simulation tracker's own table, whose order doesn't
+    /// follow chunk loading. The world map's order does: it is filled as the
+    /// streaming workers finish, so the level random's draws landed on other
+    /// blocks from one run of a world to the next (#15164). Chunk position
+    /// order is the same every run; vanilla's exact order is its fastutil
+    /// table's slot order, which follows that table's whole history.
+    pub(super) fn random_tick_chunks(&self, out: &mut Vec<(i32, i32)>) {
+        let levels = self.tickets.levels();
+        let bounds = levels.random_tick_bounds();
+        out.clear();
+        out.extend(self.world.chunks.keys().copied().filter(|&(x, z)| {
+            if let Some((min_x, min_z, max_x, max_z)) = bounds
+                && (x < min_x || x > max_x || z < min_z || z > max_z)
+            {
+                return false;
+            }
+            levels.random_ticking(x, z) && ticking_chunk(&self.world, x, z)
+        }));
+        out.sort_unstable();
+    }
+    /// Track which chunks are ticking (Ticks needs chunk load/unload).
+    pub(super) fn sync_tick_chunks(&mut self) {
+        if !self.tick_chunks.synchronize(&self.world.chunks) {
+            return;
+        }
+        // Move only the added keys out so registration can borrow all of Game.
+        let added = self.tick_chunks.take_added();
+        for &key in &added {
+            self.register_chunk_ticks(key);
+        }
+        for &key in self.tick_chunks.removed() {
+            self.random_tick_sections.remove(&key);
+            self.portals.sections.remove(&key);
+            self.block_ticks
+                .remove_chunk(horizon_core::position::ChunkPos::new(key.0, key.1));
+            self.block_ticks
+                .comparator_outputs
+                .retain(|p, _| (p.x >> 4, p.z >> 4) != key);
+            self.hoppers.retain(|p, _| (p.0 >> 4, p.2 >> 4) != key);
+            // Its moving pistons were saved with it and load back with it.
+            self.block_ticks
+                .moving_pistons
+                .retain(|(p, _)| (p.x >> 4, p.z >> 4) != key);
+        }
+        self.tick_chunks.recycle_added(added);
+    }
+
+    /// `ServerLevel.tick`: moving block entities push after entity travel.
+    pub(super) fn tick_moving_pistons(&mut self) -> Result<()> {
+        self.with_level(|b, level, ticks| b.tick_block_entities(level, ticks));
+        let pushes = std::mem::take(&mut self.block_ticks.piston_pushes);
+        self.push_piston_entities(pushes);
+        self.process_level_events()?;
+        self.sync_moving_pistons();
+        Ok(())
+    }
+
+    /// `ServerLevel.tick`'s scheduled block then fluid ticks, one at a time:
+    /// the side effects of each (a shrieker summoning a warden, drops, game
+    /// events) happen before the next tick runs, as they do inline in vanilla.
+    pub(super) fn tick_scheduled(&mut self) -> Result<()> {
+        for fluids in [false, true] {
+            let mut laps = horizon_client::spans::laps();
+            let name = if fluids { "tb_fluids" } else { "tb_scheduled" };
+            if !self.with_level(|b, level, ticks| b.scheduled_begin(level, ticks, fluids)) {
+                laps.lap(name);
+                continue;
+            }
+            loop {
+                // Due ticks run against one level while each leaves nothing for
+                // the game to apply (level events, spilled items or orbs): the
+                // next one would see the same level built again.
+                let more = self.with_level(|b, level, ticks| {
+                    loop {
+                        let more = b.scheduled_step(level, ticks, fluids);
+                        if !more || !level.events.is_empty() || !level.spill.is_empty() {
+                            break more;
+                        }
+                    }
+                });
+                if !self.level_events.is_empty() {
+                    self.process_level_events()?;
+                }
+                if !more {
+                    break;
+                }
+            }
+            self.with_level(|b, _, ticks| b.scheduled_finish(ticks, fluids));
+            laps.lap(name);
+        }
+        Ok(())
+    }
 }
+
+#[cfg(test)]
+mod random_order_tests;

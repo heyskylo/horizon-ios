@@ -12,6 +12,13 @@ use horizon_client::{
 };
 use horizon_core::geometry::{Aabb, Vec3};
 
+/// The point a `ServerboundInteractPacket` carries: `EntityHitResult.getLocation()
+/// - entity.position()`, measured from the entity's feet, as
+/// `MultiPlayerGameMode.interact` computes it.
+pub(super) fn interact_location(point: Vec3, feet: Vec3) -> [f64; 3] {
+    [point.x - feet.x, point.y - feet.y, point.z - feet.z]
+}
+
 /// The off hand's place in `visible_hands` (the main hand uses its hotbar slot).
 const OFFHAND: usize = usize::MAX;
 
@@ -117,6 +124,31 @@ impl Game<'_> {
             .unwrap_or(otherwise)
     }
 
+    /// A stack's `minecraft:attack_range` component, falling back to the spear's
+    /// default reach (`spear::REACH`) for spear items unless explicitly removed.
+    fn stack_attack_range(&self, stack: &ItemStack) -> Option<serde_json::Value> {
+        let view_stack = horizon_client::item_render::stack_view(stack);
+        let view = self.pack.item_renderer.models.components_view(&view_stack);
+        if let Some(val) = view.get("minecraft:attack_range") {
+            return Some(val.clone());
+        }
+        if stack
+            .data()
+            .is_some_and(|d| d.other("!minecraft:attack_range").is_some())
+        {
+            return None;
+        }
+        horizon_client::spear::Kinetic::of(&stack.item).map(|_| {
+            serde_json::json!({
+                "min_reach": horizon_client::spear::REACH.min,
+                "max_reach": horizon_client::spear::REACH.max,
+                "min_creative_reach": horizon_client::spear::REACH.min_creative,
+                "max_creative_reach": horizon_client::spear::REACH.max_creative,
+                "hitbox_margin": horizon_client::spear::REACH.hitbox_margin,
+            })
+        })
+    }
+
     /// ServerGamePacketListenerImpl.handleAttack's
     /// `Player.isWithinAttackRange(mainHandItem, box, 3.0)` for the player in
     /// place: the held item's `attack_range`, else `AttackRange.defaultFor`
@@ -126,14 +158,7 @@ impl Game<'_> {
         let Some(eye) = self.eye_position() else {
             return false;
         };
-        let range = self.held().and_then(|stack| {
-            self.pack
-                .item_renderer
-                .models
-                .components_view(&horizon_client::item_render::stack_view(stack))
-                .get("minecraft:attack_range")
-                .cloned()
-        });
+        let range = self.held().and_then(|stack| self.stack_attack_range(stack));
         let reach = match &range {
             Some(r) => attack_reach(r, self.creative),
             None => {
@@ -255,14 +280,7 @@ impl Game<'_> {
     /// `Minecraft.startAttack` on an entity: a main-hand item with an
     /// `attack_range` attacks only a hit inside it.
     pub(super) fn held_range_allows(&self, distance: f64) -> bool {
-        let range = self.held().and_then(|stack| {
-            self.pack
-                .item_renderer
-                .models
-                .components_view(&horizon_client::item_render::stack_view(stack))
-                .get("minecraft:attack_range")
-                .cloned()
-        });
+        let range = self.held().and_then(|stack| self.stack_attack_range(stack));
         range.is_none_or(|r| attack_range_contains(&r, distance, self.creative))
     }
     /// `LocalPlayer.raycastHitResult`'s item (`getActiveItem`: the one in
@@ -272,12 +290,7 @@ impl Game<'_> {
             .using
             .and_then(|(slot, _)| self.inventory.get(slot).and_then(Option::as_ref))
             .or_else(|| self.held())?;
-        self.pack
-            .item_renderer
-            .models
-            .components_view(&horizon_client::item_render::stack_view(active))
-            .get("minecraft:attack_range")
-            .cloned()
+        self.stack_attack_range(active)
     }
     /// `AttackRange.getClosesetHit` against the mobs `mob_hit` can pick
     /// (`EntitySelector.CAN_BE_PICKED`), as `raycastHitResult` reads it: the
@@ -313,7 +326,7 @@ impl Game<'_> {
                 (
                     i,
                     eye.distance_squared(at).sqrt(),
-                    super::interact_location(at, feet),
+                    interact_location(at, feet),
                 )
             })
             .reduce(|a, b| if b.1 < a.1 { b } else { a });
@@ -561,7 +574,7 @@ impl Game<'_> {
             self.hands_busy(),
             self.hand_strength.swap_scale(1.0, speed),
             changed,
-            self.settings.extras.pvp.combat.legacy,
+            self.pvp_legacy_look(),
         );
         for h in 0..2 {
             if replace[h] {
@@ -603,14 +616,7 @@ impl Game<'_> {
             .using
             .and_then(|(slot, _)| self.inventory.get(slot).and_then(Option::as_ref))
             .or_else(|| self.held());
-        let range = active.and_then(|stack| {
-            self.pack
-                .item_renderer
-                .models
-                .components_view(&horizon_client::item_render::stack_view(stack))
-                .get("minecraft:attack_range")
-                .cloned()
-        });
+        let range = active.and_then(|stack| self.stack_attack_range(stack));
         let spear = range.as_ref().and_then(|r| {
             let eye = self.eye_position()?;
             let look = super::view_vector(self.yaw, self.pitch);
@@ -733,18 +739,24 @@ impl Game<'_> {
     /// Haste and Mining Fatigue modifiers (`ADD_MULTIPLIED_TOTAL`), clamped to
     /// the attribute's range.
     pub(super) fn main_hand_attack_speed(&self) -> f64 {
-        // The base comes from the player's attribute map so `/attribute ... base set` applies.
+        if let Some(player) = &self.player
+            && let Ok(speed) = player
+                .attributes
+                .computed_value_of("minecraft:attack_speed")
+            && (self.remote.is_some()
+                || !self.applied_modifiers.is_empty()
+                || !self.potions.applied.is_empty())
+        {
+            return speed.clamp(0.0, 1024.0);
+        }
         let base = self
             .player
             .as_ref()
             .and_then(|player| {
-                let key = player.attributes.key("minecraft:attack_speed")?;
-                let handle = player.attributes.lookup(Some(&key))?;
                 player
                     .attributes
-                    .instance(&handle)
+                    .computed_value_of("minecraft:attack_speed")
                     .ok()
-                    .map(|value| value.base_value())
             })
             .unwrap_or(horizon_client::attack_strength::BASE_ATTACK_SPEED);
         let value = base
@@ -1018,6 +1030,30 @@ mod tests {
         let reach = attack_reach(&spear, false);
         assert!(in_attack_range(7.625, reach, 3.0));
         assert!(!in_attack_range(7.7, reach, 3.0));
+    }
+
+    #[test]
+    fn spear_default_reach_and_bounds() {
+        // #14092: A spear's default reach matches REACH (min 2.0, max 4.5, creative 6.5, margin 0.125).
+        let r = &horizon_client::spear::REACH;
+        let spear = serde_json::json!({
+            "min_reach": r.min, "max_reach": r.max,
+            "min_creative_reach": r.min_creative, "max_creative_reach": r.max_creative,
+            "hitbox_margin": r.hitbox_margin,
+        });
+        let survival = attack_reach(&spear, false);
+        assert_eq!(survival, (2.0, 4.5, 0.125));
+        let creative = attack_reach(&spear, true);
+        assert_eq!(creative, (2.0, 6.5, 0.125));
+        // Serverbound handleAttack allows reach plus 3.0 buffer:
+        // Survival: 4.5 + 0.125 + 3.0 = 7.625
+        assert!(in_attack_range(7.625, survival, 3.0));
+        assert!(!in_attack_range(7.626, survival, 3.0));
+        // Minimum reach boundary: 2.0 - 0.125 = 1.875
+        assert!(attack_range_contains(&spear, 1.875, false));
+        assert!(!attack_range_contains(&spear, 1.874, false));
+        assert!(attack_range_contains(&spear, 4.625, false));
+        assert!(!attack_range_contains(&spear, 4.626, false));
     }
 
     fn stack(item: &str, count: u32, damage: u32) -> Option<ItemStack> {

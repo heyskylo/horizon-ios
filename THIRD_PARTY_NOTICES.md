@@ -129,8 +129,9 @@ ports to WGSL of the optical flow and frame interpolation shaders of the
 [AMD FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK) 1.1.4
 (`sdk/include/FidelityFX/gpu/{opticalflow,frameinterpolation}`, at commit
 [c6efa6bf7f20](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/tree/c6efa6bf7f2027b3ec94f28578bb5965eabb9e55)),
-and `optical_flow.rs` follows the SDK's `sdk/src/components/opticalflow/ffx_opticalflow.cpp`
-(its passes, their order and their dispatch sizes). Copyright (C) 2024 Advanced Micro Devices,
+and `optical_flow.rs` and `interpolation.rs` follow the SDK's
+`sdk/src/components/{opticalflow/ffx_opticalflow.cpp,frameinterpolation/ffx_frameinterpolation.cpp}`
+(their passes, their order and their dispatch sizes). Copyright (C) 2024 Advanced Micro Devices,
 Inc., under the MIT license, whose text heads each file. AMD and FidelityFX are AMD's
 trademarks; Horizon is not affiliated with AMD.
 
@@ -354,3 +355,32 @@ Horizon (Copyright (c) 2026 Ludovic Marie and the Horizon contributors).
 
 `crates/horizon-client-render/src/touch.rs` and `touch/tests/` are adapted from the touch input
 state of Starling's `crates/horizon-client-render/src/touch.rs` at the same commit.
+
+`crates/horizon-client-render/src/android_runtime.rs` and `android_runtime/tests/` are adapted from the
+input part of Starling's `crates/horizon-client-render/src/android_runtime.rs` at the same commit.
+
+## PCG3D hash
+
+`hash3` in `crates/horizon-client-render/src/hdr.wgsl`, the noise HDR10 output's dither is made from, is the
+`pcg3d` hash of Mark Jarzynski and Marc Olano ("Hash Functions for GPU Rendering", Journal of Computer Graphics
+Techniques 9(3), 2020), from <https://github.com/markjarzynski/PCG3D>. Copyright 2020 Mark Jarzynski & Marc Olano,
+licensed under MIT:
+
+```
+Copyright 2020 Mark Jarzynski & Marc Olano
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
+associated documentation files (the "Software"), to deal in the Software without restriction,
+including without limitation the rights to use, copy, modify, merge, publish, distribute,
+sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial
+portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
+NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES
+OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```

@@ -138,7 +138,7 @@ mod growth_tests;
 mod tests;
 
 pub use bonemeal::TemplateSettings;
-pub use buckets::BucketContent;
+pub use buckets::{BucketContent, is_lava_bucket, mod_bucket_contents};
 pub use data::{BlockData, ItemBinding, ItemKind, Named, Props, PushReaction, StateFacts, Tags};
 pub use falling::Landing;
 pub use interact::{InteractionResult, PlayerContext, PlayerEffect, UseBranch, hit_slot};
@@ -1194,6 +1194,22 @@ impl Behaviours {
         if sim.has_analog_output(state) {
             sim.update_neighbour_for_output_signal(pos, block);
         }
+    }
+    /// `ShulkerBoxBlockEntity.doNeighborUpdates`: the box's collision shape
+    /// changes with its lid, so the neighbours' shapes are updated (flag 3)
+    /// and then their `neighborChanged` runs, at the four points in `tick`
+    /// where the lid starts or finishes opening or closing.
+    pub fn shulker_neighbor_updates<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        state: BlockStateId,
+    ) {
+        let mut sim = self.sim(level, ticks);
+        sim.update_neighbour_shapes(state, pos, 3, flags::UPDATE_LIMIT);
+        let block = sim.block_of(state);
+        sim.update_neighbors_at(pos, block);
     }
     /// `Level.updateNeighborsAt(pos, block)`: notify the six neighbours.
     pub fn update_neighbors_at<L: LevelAccess + ?Sized>(

@@ -92,6 +92,9 @@ pub struct BlockEntities {
     /// instance blocks, `shows_box`), so a frame looks at them without scanning the map.
     /// Like `mods`, one taken out stays listed until `put` or `remove`.
     boxes: FxHashSet<Pos>,
+    /// The signs a player's editor is on (`SignBlockEntity.playerWhoMayEdit`
+    /// set), so the level's tick checks those alone instead of every sign.
+    sign_editors: FxHashSet<Pos>,
     asleep: FxHashSet<Pos>,
 }
 
@@ -312,6 +315,44 @@ impl BlockEntities {
             .filter(move |((cx, cz), _)| !far(*cx, x) && !far(*cz, z))
             .flat_map(|(_, set)| set)
     }
+    /// `SignBlockEntity.playerWhoMayEdit` of the sign at `pos`.
+    pub fn sign_editor(&self, pos: &Pos) -> Option<u128> {
+        match self.map.get(pos) {
+            Some(BlockEntity::Sign(sign)) => sign.allowed_editor,
+            _ => None,
+        }
+    }
+    /// `SignBlockEntity.setAllowedPlayerEditor`: the one player whose editor
+    /// is on the sign at `pos`, or `None` for nobody's.
+    pub fn set_sign_editor(&mut self, pos: Pos, who: Option<u128>) {
+        let Some(BlockEntity::Sign(sign)) = self.map.get_mut(&pos) else {
+            return;
+        };
+        sign.allowed_editor = who;
+        if who.is_some() {
+            self.sign_editors.insert(pos);
+        } else {
+            self.sign_editors.remove(&pos);
+        }
+    }
+    /// The positions of the signs a player's editor is on, in no order.
+    pub fn sign_editors(&self) -> impl Iterator<Item = &Pos> {
+        self.sign_editors.iter()
+    }
+    /// Drops `pos` from the signs an editor is on, for a sign that is gone or
+    /// no longer holds one. `set_sign_editor` keeps the list itself.
+    pub fn forget_sign_editor(&mut self, pos: Pos) {
+        self.sign_editors.remove(&pos);
+    }
+    /// Keeps `pos` listed in `sign_editors` exactly while `entity` holds an
+    /// editor, as `note_box` does for the boxes.
+    fn note_sign_editor(&mut self, pos: Pos, entity: &BlockEntity) {
+        if matches!(entity, BlockEntity::Sign(sign) if sign.allowed_editor.is_some()) {
+            self.sign_editors.insert(pos);
+        } else {
+            self.sign_editors.remove(&pos);
+        }
+    }
     /// `LevelChunk.getBlockEntity`: the block entity at `pos`, if any.
     pub fn get(&self, pos: &Pos) -> Option<&BlockEntity> {
         self.map.get(pos)
@@ -351,6 +392,7 @@ impl BlockEntities {
             self.attachments.remove(&pos);
         }
         let new_box = shows_box(&entity);
+        self.note_sign_editor(pos, &entity);
         self.asleep.remove(&pos);
         let old = self.map.insert(pos, entity);
         if old.is_none() {
@@ -398,6 +440,7 @@ impl BlockEntities {
             forget_mod(&mut self.mods, *pos);
         }
         self.boxes.remove(pos);
+        self.sign_editors.remove(pos);
         removed
     }
     /// The block entity at `pos`, out of the map for a while: its slot stays
@@ -418,6 +461,7 @@ impl BlockEntities {
             self.mods.entry(chunk_of(pos)).or_default().insert(pos);
         }
         self.note_box(pos, Some(&entity));
+        self.note_sign_editor(pos, &entity);
         if self.map.insert(pos, entity).is_none()
             && !self.live.contains_key(&pos)
             && !self.pending.contains_key(&pos)
@@ -445,6 +489,7 @@ impl BlockEntities {
             &mut self.attachments,
         );
         let (mods, boxes) = (&mut self.mods, &mut self.boxes);
+        let sign_editors = &mut self.sign_editors;
         self.asleep.clear();
         self.map.retain(|p, e| {
             let kept = keep(p, e);
@@ -454,6 +499,7 @@ impl BlockEntities {
                 pending.remove(p);
                 forget_mod(mods, *p);
                 boxes.remove(p);
+                sign_editors.remove(p);
             }
             kept
         });
@@ -463,6 +509,7 @@ impl BlockEntities {
         self.map.clear();
         self.mods.clear();
         self.boxes.clear();
+        self.sign_editors.clear();
         self.asleep.clear();
         self.tickers = Arc::default();
         self.live.clear();
@@ -484,6 +531,7 @@ impl BlockEntities {
             self.asleep.remove(&p);
             let new_is_mod = matches!(e, BlockEntity::Mod(_));
             self.note_box(p, Some(&e));
+            self.note_sign_editor(p, &e);
             let old = self.map.insert(p, e);
             if old.is_some() {
                 self.replaced.insert(p);

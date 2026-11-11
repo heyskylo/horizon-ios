@@ -25,10 +25,17 @@ pub(super) fn write_table(overlay: &Overlay<'_>, fluids: &[&Fluid]) -> Result<()
             flowing: f.flowing_id(),
             template: f.template.clone(),
             block: f.block.clone(),
+            bucket: f.bucket.clone(),
             tick_delay: f.tick_rate.map(|t| t as i32),
             drop_off: f.level_decrease_per_block.map(|d| d as i32),
             slope_find_distance: f.slope_find_distance.map(|d| d as i32),
             convert_to_source: f.can_convert_to_source,
+            motion_scale: f.motion_scale,
+            can_push_entity: f.can_push_entity,
+            can_swim: f.can_swim,
+            can_drown: f.can_drown,
+            can_extinguish: f.can_extinguish,
+            fall_distance_modifier: f.fall_distance_modifier,
         })
         .collect();
     overlay.write(

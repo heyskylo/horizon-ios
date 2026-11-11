@@ -426,7 +426,8 @@ def run_once(kind, bots, behaviour, args, out):
              '--behaviour', behaviour, '--join-every', str(args.join_every), '--seconds', str(int(total)),
              '--seed', str(args.seed), '--report', '-',
              *(['--explore-speed', str(args.explore_speed)] if args.explore_speed else []),
-             *(['--height', '0', '--ground'] if args.ground else [])],
+             *(['--height', '0', '--ground'] if args.ground else []),
+             *(['--capture', str(args.capture)] if args.capture else [])],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         bot_lines = []
         threading.Thread(target=lambda: bot_lines.extend(bot_process.stdout), daemon=True).start()
@@ -555,6 +556,7 @@ def main():
     parser.add_argument('--bots', default='1,10,25,50')
     parser.add_argument('--behaviour', default='walk,explore', help='one pass per behaviour (comma-separated)')
     parser.add_argument('--join-every', type=float, default=1.0)
+    parser.add_argument('--capture', type=Path, help='capture first bot play packets for protocol replay (overwritten each run)')
     parser.add_argument('--warmup', type=int, default=60)
     parser.add_argument('--seconds', type=int, default=300)
     parser.add_argument('--seed', type=int, default=12345)
@@ -600,7 +602,8 @@ def main():
         'java': subprocess.run(['java', '--version'], capture_output=True, text=True).stdout.splitlines()[:1],
         'versions': versions(args.servers.split(',')),
         'settings': {**{k: v for k, v in vars(args).items() if k != 'pumpkin_files'}, 'out': str(args.out),
-                     'pumpkin': str(args.pumpkin) if args.pumpkin else None, 'properties': PROPERTIES},
+                     'pumpkin': str(args.pumpkin) if args.pumpkin else None,
+                     'capture': str(args.capture) if args.capture else None, 'properties': PROPERTIES},
         'runs': runs,
         'work': work(runs),
     }

@@ -118,7 +118,7 @@ pub struct BodyRotation {
 impl Mob {
     /// `Mob.getMaxHeadXRot`, with `Wolf`'s 20 degrees while sitting.
     pub fn max_head_x_rot(&self) -> f32 {
-        if self.species() == Species::Wolf && self.extra.sitting {
+        if self.species() == Species::Wolf && self.extra.sitting_pose {
             20.0
         } else {
             self.kind.max_head_x_rot
@@ -338,6 +338,11 @@ impl Mob {
     }
     /// LookControl.tick (and SmoothSwimmingLookControl).
     pub fn look_control_tick(&mut self) {
+        // Phantom.PhantomLookControl.tick is empty: the pitch the move control
+        // sets from the flight stays.
+        if self.species() == super::Species::Phantom {
+            return;
+        }
         let look = self.ai.look.clone();
         let fox = self.species() == super::Species::Fox;
         // Fox.FoxLookControl: no turning in sleep.
