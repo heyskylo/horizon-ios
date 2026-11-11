@@ -7,7 +7,7 @@ ClientBundleTooltip.extractSlot	port	crates/horizon-client/src/game/stations.rs:
 ClientBundleTooltip.extractCount	port	crates/horizon-client/src/game/stations.rs::Game::draw_bundle_tooltip	the +N label in the overflow cell
 ClientBundleTooltip.extractSelectedItemTooltip	port	crates/horizon-client/src/game/stations.rs::Game::draw_bundle_selected_name	the selected item's name in its own box, centred over the grid and kept on screen
 ClientBundleTooltip.extractProgressbar	port	crates/horizon-client/src/game/stations.rs::Game::draw_bundle_tooltip	fill, border and label sprites at the layout's bar position
-ClientBundleTooltip.getEmptyBundleDescriptionTextHeight	inline	crates/horizon-items/src/bundle.rs::tooltip_layout	gap: minor: fixed at two lines (18 px) instead of measuring the wrapped text
+ClientBundleTooltip.getEmptyBundleDescriptionTextHeight	inline	crates/horizon-items/src/bundle.rs::tooltip_layout	font.split(description, 96).size() * 9, the line count the tooltip's probe and draw pass in
 ClientBundleTooltip.getProgressBarFillText	port	crates/horizon-items/src/bundle.rs::tooltip_layout	empty and full labels (the label field), drawn by draw_bundle_tooltip
 ClientTooltipComponent.create	inline	crates/horizon-client/src/game/stations.rs::Game::draw_stack_tooltip	gap: minor: bundles, text lines and native mod image components (native_tooltip_component); no ActivePlayersTooltip
 DefaultTooltipPositioner.positionTooltip	port	crates/horizon-client-render/src/ui.rs::tooltip	gap: minor: also clamps y to at least 4, which vanilla does not do; the text height is Horizon's own estimate
@@ -65,7 +65,8 @@ InWorldGameRulesScreen.onGamemasterPermissionChanged	port	crates/horizon-client/
 LanguageSelectScreen.addTitle	inline	crates/horizon-client-render/src/options_ui.rs::OptionsUi::layout	language search box at the top of the Language page
 LanguageSelectScreen.setInitialFocus	skip:ui		focus only: typed text goes to the language search whatever has focus (type_text)
 LanguageSelectScreen.addContents	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::layout	language rows of the Language page
-LanguageSelectScreen.addFooter	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::layout	gap: minor: unsure whether the translation warning line is drawn; Font... and Done buttons
+LanguageSelectScreen.addFooter	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::layout	the options.languageAccuracyWarning line above the Font... and Done buttons
+LanguageSelectScreen.LanguageSelectionList.Entry.getNarration	skip:other		narration text for screen readers
 LanguageSelectScreen.repositionElements	skip:ui		layout only: rows are laid out from the window size each frame
 LanguageSelectScreen.onDone	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::back	Done applies the chosen language (language_choice)
 LanguageSelectScreen.LanguageSelectionList.filterEntries	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::layout	filter by the search text against name and region (Page::Language)

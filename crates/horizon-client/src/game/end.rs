@@ -380,11 +380,7 @@ impl Game<'_> {
 
     /// The environment attributes of the current dimension.
     pub(super) fn dim_environment(&self) -> &Environment {
-        match self.dim {
-            Dim::Overworld => self.res.environment(),
-            Dim::Nether => self.res.nether_environment(),
-            Dim::End => self.res.end_environment(),
-        }
+        self.res.environment_of(&self.dimension_type().id)
     }
 
     /// SkyRenderer.renderEndFlash, drawn after the renderer's resident sky mesh.

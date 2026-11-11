@@ -650,9 +650,12 @@ pub struct GameInputs {
     pub lines: Option<GbuffersInputs>,
     /// The first-person hand and held items.
     pub hand: Option<GbuffersInputs>,
-    /// `terrain`, drawing only its solid quads, then only its cutout ones: given, every pack
-    /// draws terrain in these two parts.
+    /// `terrain`, drawing only its solid quads, then only its cutout ones: given, a pack with
+    /// `gbuffers_terrain_solid` or `gbuffers_terrain_cutout` draws terrain in these two parts.
     pub terrain_parts: Option<[GbuffersInputs; 2]>,
+    /// `terrain` with both parts in one draw (`GbuffersInputs::parts`): given, a pack drawing
+    /// both with one program draws them in one pass.
+    pub terrain_one_pass: Option<GbuffersInputs>,
     /// Terrain read vertex by vertex, for a shadow program with a geometry stage.
     pub terrain_geometry: Option<crate::GeometryInputs>,
     /// Entities and block entities read vertex by vertex, for the same.
@@ -801,6 +804,10 @@ pub fn load_post(
             let mut inputs = inputs.clone();
             if let Some(test) = test {
                 inputs.alpha_test = test;
+                // One program's solid and cutout parts in one pass: both, as in two.
+                if let Some(parts) = &mut inputs.parts {
+                    parts.cutout_alpha_test = test;
+                }
             }
             loader.load(name.to_string(), group, |v, f| {
                 translate_gbuffers(v, f, Target::Buffers, &inputs)
@@ -934,18 +941,20 @@ pub fn load_post(
         // gbuffers_terrain alone or gbuffers_terrain_cutout: cutout fragments written with alpha
         // 0.5 and below were discarded, 0.51 and above kept, and alphaTestRef read 0.5. Vanilla's
         // cutout terrain cuts at 0.5 too (`RenderPipelines.CUTOUT_TERRAIN`'s `ALPHA_CUTOUT`).
+        let cut = Some(crate::AlphaTest {
+            op: ">",
+            reference: 0.5,
+        });
         let cutout = |inputs: &GbuffersInputs| {
             let mut cutout = inputs.clone();
-            cutout.alpha_test = cutout.alpha_test.or(Some(crate::AlphaTest {
-                op: ">",
-                reference: 0.5,
-            }));
+            cutout.alpha_test = cutout.alpha_test.or(cut);
             cutout
         };
-        // Solid and cutout terrain draw apart. A pack with Iris's gbuffers_terrain_solid or
-        // gbuffers_terrain_cutout draws each with its own, falling back to gbuffers_terrain's
+        // A pack with Iris's gbuffers_terrain_solid or gbuffers_terrain_cutout draws solid and
+        // cutout terrain apart, each with its own program, falling back to gbuffers_terrain's
         // chain (Iris 1.11.7 with probe packs having both, or one of them); any other pack draws
-        // both parts with gbuffers_terrain's chain, each with its own alpha test (#9307). Solid
+        // both parts with gbuffers_terrain's chain, each quad with its part's alpha test (#9307),
+        // in one pass: two passes would run every vertex of solid terrain twice. Solid
         // terrain gets no default alpha test, and alphaTestRef 0: in those probes Iris kept
         // solid fragments written with alpha 0.05, through either program, and also 0.0
         // through gbuffers_terrain alone or gbuffers_terrain_solid (#9307).
@@ -984,15 +993,14 @@ pub fn load_post(
                     None => (solid, cut),
                 }
             }
-            None => match &inputs.terrain_parts {
-                // One program draws both parts, so both load or neither does.
-                Some([solid, cut]) => match (
-                    gbuffers(&TERRAIN, Group::Gbuffers, solid),
-                    gbuffers(&TERRAIN, Group::Gbuffers, &cutout(cut)),
-                ) {
-                    (Some(solid), Some(cut)) => (Some(solid), Some(cut)),
-                    _ => (None, None),
-                },
+            None => match &inputs.terrain_one_pass {
+                Some(both) => {
+                    let mut both = both.clone();
+                    if let Some(parts) = &mut both.parts {
+                        parts.cutout_alpha_test = parts.cutout_alpha_test.or(cut);
+                    }
+                    (gbuffers(&TERRAIN, Group::Gbuffers, &both), None)
+                }
                 // A game that draws terrain in one part: all of it with the cutout test.
                 None => (gbuffers(&TERRAIN, Group::Gbuffers, &cutout(terrain)), None),
             },
@@ -2961,8 +2969,16 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
             body: "    hz_Vertex = vec4(hz_v_pos, 1.0);\n    hz_Color = vec4(1.0);\n".into(),
             ..Default::default()
         };
+        let one_pass = crate::GbuffersInputs {
+            parts: Some(crate::Parts {
+                solid: "hz_v_pos.x > 0.0".into(),
+                cutout_alpha_test: None,
+            }),
+            ..inputs.clone()
+        };
         let inputs = GameInputs {
             terrain_parts: parts.then(|| [inputs.clone(), inputs.clone()]),
+            terrain_one_pass: parts.then_some(one_pass),
             terrain: Some(inputs),
             ..Default::default()
         };
@@ -2998,8 +3014,8 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
 
     /// Iris 1.11.7 with our probe packs (#9137): `gbuffers_terrain_solid` draws solid terrain
     /// and `gbuffers_terrain_cutout` cutout terrain, each falling back to `gbuffers_terrain`;
-    /// a pack with only `gbuffers_terrain` draws both parts with it, each with its own alpha
-    /// test (#9307).
+    /// a pack with only `gbuffers_terrain` draws both parts with it, in one pass, each with its
+    /// own alpha test (#9307).
     #[test]
     fn terrain_solid_and_cutout_fall_back_to_terrain() {
         let names = |programs: &[&str], parts: bool| terrain_names(programs, "", parts);
@@ -3014,7 +3030,7 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
             names(&[terrain, cutout], true),
             [some(terrain), some(cutout)]
         );
-        assert_eq!(names(&[terrain], true), [some(terrain), some(terrain)]);
+        assert_eq!(names(&[terrain], true), [some(terrain), None]);
         // Without the game's two parts, terrain draws whole.
         assert_eq!(
             names(&[terrain, solid, cutout], false),
@@ -3067,7 +3083,7 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
         let some = |name: &str| Some(name.to_owned());
         assert_eq!(
             terrain_names(&[terrain, solid], off, true),
-            [some(terrain), some(terrain)]
+            [some(terrain), None]
         );
         let on = "program.gbuffers_terrain_solid.enabled = true\n";
         assert_eq!(
@@ -3168,6 +3184,7 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
             lines: Some(inputs.clone()),
             hand: Some(inputs),
             terrain_parts: None,
+            terrain_one_pass: None,
             terrain_geometry: None,
             entity_geometry: None,
         };
