@@ -647,6 +647,18 @@ pub struct Blocking {
     /// Angle between the head's view and the source position (pi without one).
     pub angle: f64,
 }
+impl Blocking {
+    /// `BlocksAttacks.resolveBlockedDamage`: what the item stops of `damage`,
+    /// nothing for a source it bypasses or an arrow that pierces it.
+    pub fn blocked(&self, damage: f32) -> f32 {
+        if damage <= 0.0 || self.bypassed || self.pierce {
+            return 0.0;
+        }
+        self.rules
+            .resolve(&mut MatchedSets, damage, self.angle)
+            .unwrap_or(0.0)
+    }
+}
 /// How many hurts `PlayerMotion::hurt_log` keeps.
 const HURT_LOG: usize = 64;
 /// One hurt as it was taken: what came in, what a raised blocking item

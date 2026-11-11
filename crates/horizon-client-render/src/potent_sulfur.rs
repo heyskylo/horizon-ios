@@ -7,13 +7,16 @@ use horizon_core::{
     geometry::{Vec3, traverse_blocks},
     position::BlockPos,
 };
+use horizon_world::collision_context::CollisionContext;
 
 /// `PotentSulfurBlock.ALLOWED_WATER_BLOCKS_ABOVE`.
 const ALLOWED_WATER_BLOCKS_ABOVE: i32 = 4;
 
 /// `PotentSulfurBlockEntity.isGeyserPassableBlock`: air, water, or a block
-/// with no collision shape.
-pub fn is_geyser_passable_block(level: &ParticleLevel, pos: [i32; 3]) -> bool {
+/// with no collision shape for `CollisionContext.positionContext(context_y)`.
+/// Vanilla passes the height of the block under the column it reads, so
+/// scaffolding seen from below lets the gas and the geyser through.
+pub fn is_geyser_passable_block(level: &ParticleLevel, pos: [i32; 3], context_y: i32) -> bool {
     let state = level.world.block(pos[0], pos[1], pos[2]);
     if level.facts.is_air(state) || &*level.facts.get(state).name == "minecraft:water" {
         return true;
@@ -23,7 +26,9 @@ pub fn is_geyser_passable_block(level: &ParticleLevel, pos: [i32; 3]) -> bool {
         binding: level.collision,
         subject: None,
     };
-    match level.collision.collision_shape(&mut scene, state, pos) {
+    let context = CollisionContext::position(f64::from(context_y));
+    let position = BlockPos::new(pos[0], pos[1], pos[2]);
+    match (level.collision).collision_shape_with_context(&mut scene, state, position, &context) {
         Ok(shape) => shape.is_empty(),
         Err(_) => !level.facts.get(state).full_collision,
     }
@@ -46,9 +51,9 @@ pub fn find_noxious_gas_source_block(level: &ParticleLevel, origin: [i32; 3]) ->
         let state = level.world.block(pos[0], pos[1], pos[2]);
         let is_water_block = &*level.facts.get(state).name == "minecraft:water";
         if !is_water_source(level, pos)
-            || (!is_water_block && !is_geyser_passable_block(level, pos))
+            || (!is_water_block && !is_geyser_passable_block(level, pos, origin[1]))
         {
-            if level.facts.is_air(state) || is_geyser_passable_block(level, pos) {
+            if level.facts.is_air(state) || is_geyser_passable_block(level, pos, origin[1]) {
                 return Some(pos);
             }
             break;
@@ -63,7 +68,7 @@ pub fn find_noxious_gas_source_block(level: &ParticleLevel, origin: [i32; 3]) ->
 pub fn unobstructed_block_count(level: &ParticleLevel, pos: [i32; 3], water_blocks: i32) -> i32 {
     let geyser_force_height = 6 * water_blocks;
     for i in 0..geyser_force_height {
-        if !is_geyser_passable_block(level, [pos[0], pos[1] + i, pos[2]]) {
+        if !is_geyser_passable_block(level, [pos[0], pos[1] + i, pos[2]], pos[1] - 1) {
             return i;
         }
     }
@@ -79,7 +84,7 @@ pub fn can_be_reached_by_noxious_gas(
     pos: [f64; 3],
 ) -> bool {
     let block = ParticleLevel::block_at(pos);
-    if !is_geyser_passable_block(level, block) {
+    if !is_geyser_passable_block(level, block, block[1] - 1) {
         return false;
     }
     let center = source_block.map(|c| f64::from(c) + 0.5);
