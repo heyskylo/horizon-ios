@@ -3,6 +3,7 @@ use super::{
     BoundingBox,
     legacy::{LegacyPiece, PieceContext, PieceFrame, Result, solid_render},
 };
+use crate::datafix::dynamic::as_number;
 use crate::nbt::Tag;
 use crate::worldgen::biome::BiomeId;
 use horizon_core::{geometry::Direction, random::RandomSource};
@@ -730,7 +731,112 @@ impl MineshaftPiece {
         }
         Ok(())
     }
+
+    /// `MineshaftPieces.MineShaftPiece(StructurePieceType, CompoundTag)` and
+    /// the subclasses' tag constructors, which only read their own fields: the
+    /// box is rebuilt by `saved_legacy::read_frame`.
+    pub(crate) fn from_saved(
+        id: &str,
+        tag: &Tag,
+        frame: PieceFrame,
+        depth: i32,
+        blocking: Arc<BTreeSet<BiomeId>>,
+    ) -> Option<Self> {
+        // MineshaftStructure.Type.byId: everything but MESA (1) is NORMAL.
+        let wood = if super::saved_legacy::int(tag, "MST") == 1 {
+            MESA
+        } else {
+            NORMAL
+        };
+        let int = |key| super::saved_legacy::int(tag, key);
+        let flag = |key| super::saved_legacy::flag(tag, key);
+        let kind = match id {
+            "msroom" => {
+                // A failed codec read defaults to no entrances, as does a missing tag.
+                let entrances = tag
+                    .get("Entrances")
+                    .and_then(|tag| match tag {
+                        Tag::List(items) => items
+                            .iter()
+                            .map(super::saved_legacy::read_box)
+                            .collect::<Option<Vec<_>>>(),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                Kind::Room(entrances)
+            }
+            "mscorridor" => Kind::Corridor {
+                rails: flag("hr"),
+                spider: flag("sc"),
+                placed_spider: Mutex::new(flag("hps")),
+                sections: int("Num"),
+            },
+            "mscrossing" => Kind::Crossing {
+                two_floored: flag("tf"),
+                // `read("D", LEGACY_ID_CODEC_2D).orElse(SOUTH)`.
+                direction: match tag.get("D").and_then(as_number) {
+                    Some(n) => super::saved_legacy::direction_2d(i32::from(n.byte_value())),
+                    None => Direction::South,
+                },
+            },
+            "msstairs" => Kind::Stairs,
+            _ => return None,
+        };
+        let mut frame = frame;
+        frame.keep = wood.keep;
+        Some(MineshaftPiece {
+            kind,
+            frame,
+            depth,
+            wood,
+            blocking,
+        })
+    }
+
+    /// One piece of each kind and wood, with distinct field values, for the
+    /// saved-piece round trip.
+    #[cfg(test)]
+    pub(crate) fn saved_test_pieces(blocking: Arc<BTreeSet<BiomeId>>) -> Vec<Box<dyn LegacyPiece>> {
+        let mut out = Vec::new();
+        for (i, wood) in [NORMAL, MESA].into_iter().enumerate() {
+            let kinds = [
+                Kind::Room(vec![
+                    BoundingBox::new([1, 2, 3], [4, 5, 6]),
+                    BoundingBox::new([-1, -2, -3], [0, 0, 0]),
+                ]),
+                Kind::Corridor {
+                    rails: i == 0,
+                    spider: i == 1,
+                    sections: 3 + i as i32,
+                    placed_spider: Mutex::new(i == 1),
+                },
+                Kind::Crossing {
+                    direction: [Direction::North, Direction::East][i],
+                    two_floored: i == 1,
+                },
+                Kind::Stairs,
+            ];
+            for (j, kind) in kinds.into_iter().enumerate() {
+                let orientation = (j != 0).then(|| [Direction::South, Direction::West][j % 2]);
+                let mut frame = PieceFrame::new(
+                    BoundingBox::new([10 * i as i32 + j as i32, 50, -20], [13, 53, -15]),
+                    orientation,
+                );
+                frame.keep = wood.keep;
+                let piece: Box<dyn LegacyPiece> = Box::new(MineshaftPiece {
+                    kind,
+                    frame,
+                    depth: j as i32,
+                    wood,
+                    blocking: blocking.clone(),
+                });
+                out.push(piece);
+            }
+        }
+        out
+    }
 }
+
 impl LegacyPiece for MineshaftPiece {
     fn bounding_box(&self) -> BoundingBox {
         self.frame.bounding_box

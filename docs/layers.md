@@ -363,7 +363,7 @@ pub trait Store: Sync {
 A page lives in the options screen's shell, and its entry sits on one of the game's menus.
 
 ```rust
-pub enum Place { HorizonSettings, Title, Pause }
+pub enum Place { HorizonSettings, Pause, Extras, Title }
 pub trait Page: Sync {
     fn id(&self) -> &'static str;            // stable, for horizon-ctl and the page stack
     fn title(&self) -> &'static str;         // translation key
@@ -371,6 +371,7 @@ pub trait Page: Sync {
     fn rows(&self, rows: &mut Vec<Row>);     // asked when the page is drawn, not every frame elsewhere
     fn act(&self, row: usize, act: Act);     // a click, a reverse click, a slider's value, a key
     fn tooltip(&self, row: usize) -> Option<Label> { None }   // hover text, may follow the value
+    fn back(&self) -> &'static str { "gui.done" }            // the leave button of a page drawn as a screen
 }
 pub enum Row {
     Heading(&'static str),                   // translation key
@@ -382,9 +383,11 @@ pub enum Row {
     Key { label: &'static str, key: String },                 // a binding: `key.keyboard.z`
     Text { text: String, quiet: bool, groups: bool },         // Row::text(..): white or grey, wrapped
     Space(u8),                                                // GUI pixels, on a page drawn as a screen
+    Field { label: &'static str, text: String, max: usize },  // Row::field(..).max(n): an EditBox, on a page drawn as a screen
 }
 pub enum Label { Key(&'static str), Value(String) }
-pub enum Act { Press, PressBack, Slide(f32), Bind(String) }
+pub enum Act { Press, PressBack, Slide(f32), Bind(String), Edit(String), Submit }
+pub fn connect(address: impl Into<String>);                   // from a Title page's act: join that server
 ```
 
 - `HorizonSettings`: a row of the Horizon Settings page, after the engine's own pages. `Title` and `Pause`: a
@@ -395,6 +398,17 @@ pub enum Act { Press, PressBack, Slide(f32), Bind(String) }
   button, `.half()` puts two side by side, `.footer()` sets one beside Done on a page drawn as its own screen,
   `.quiet()` greys text, `.groups()` breaks it only between `-`-separated groups (an invite code). In the options
   shell, text is notes and space is nothing.
+- `Title` is the title screen's Friends icon slot (vanilla's `CommonButtons.friends`), not a new row: the icon
+  keeps its place and look at every GUI scale, and opens the first page registered there as a form drawn as Join a
+  Friend is (`multiplayer/page.rs`): the title, the rows from y 53 (a field's grey label, its 200-wide box 11
+  below, 41 a field), the buttons in a column from a quarter of the height + 114, the back button last
+  (`Page::back`, `gui.cancel` for a form). It shows heading, note, text, space, field and button rows. With no page
+  there the icon opens the engine's Join a Friend while an invite-code resolver is registered, else it is
+  inactive.
+- `Field` is vanilla's `EditBox` on a page drawn as its own screen: focus by click or Tab, typing, the caret keys,
+  selection, copy and paste, at most `max` characters (32 by default). The engine keeps its text while the page is
+  open and sends each change (`Act::Edit`, before any other act or redraw reaches the page) and Enter
+  (`Act::Submit`). The options shell has no field.
 - Rows are rebuilt when the page is drawn or acted on, like the engine's own pages: no cost while no page is
   open.
 - The engine keeps native mods' pages (`Page::NativeMod`) as they are. Both kinds sit in one module that
