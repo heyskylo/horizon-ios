@@ -2302,11 +2302,10 @@ pub enum MobEvent {
         ticks: i32,
         amplifier: i32,
     },
-    /// Set an entity on fire.
-    Ignite {
-        target: Who,
-        seconds: i32,
-    },
+    /// Set an entity on fire for so many seconds.
+    Ignite(Who, i32),
+    /// `Zombie.doHurtTarget`'s burn: lit only if the attack event before it hurt.
+    ZombieIgnite(Who, i32),
     /// Two animals bred: the game spawns the baby and resets the partner.
     Breed {
         parent: u32,
