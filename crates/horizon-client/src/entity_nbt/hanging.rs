@@ -39,10 +39,16 @@ fn attached_block_pos(tag: &Tag) -> Option<[i32; 3]> {
         }
     }
 }
+/// `Direction.from3DDataValue` / `from2DDataValue`: the byte read by
+/// `LEGACY_ID_CODEC` indexes the table as `abs(data % modulus)`, never clamped.
+fn wrap_data_value(raw: impl TryInto<i64> + Copy, modulus: i64) -> u8 {
+    let byte = raw.try_into().unwrap_or(0) as i8;
+    (i64::from(byte) % modulus).unsigned_abs() as u8
+}
 /// The block position, facing and variant (if saved) of a painting.
 pub fn painting_from_nbt(tag: &Tag) -> Option<([i32; 3], u8, Option<String>)> {
     let pos = attached_block_pos(tag)?;
-    let facing = (number(tag.get("facing")).unwrap_or(0) & 3) as u8;
+    let facing = wrap_data_value(number(tag.get("facing")).unwrap_or(0), 4);
     Some((pos, facing, text(tag.get("variant"))))
 }
 /// ItemFrame.addAdditionalSaveData.
@@ -92,7 +98,7 @@ pub fn item_frame_from_nbt(tag: &Tag, id: u32) -> Option<ItemFrame> {
     Some(ItemFrame {
         id,
         pos,
-        facing: number(tag.get("Facing")).unwrap_or(0).clamp(0, 5) as u8,
+        facing: wrap_data_value(number(tag.get("Facing")).unwrap_or(0), 6),
         glow: kind(tag).as_deref() == Some("minecraft:glow_item_frame"),
         item: tag
             .get("Item")
@@ -106,4 +112,27 @@ pub fn item_frame_from_nbt(tag: &Tag, id: u32) -> Option<ItemFrame> {
         custom_name: tag.get("CustomName").cloned(),
         random: crate::random_source::entity(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn negative_facing_wraps_like_vanilla_direction_codecs() {
+        // from3DDataValue: abs(-1 % 6) = 1 (UP); 7 -> 1; -6 -> 0.
+        for (raw, want) in [(-1i8, 1u8), (7, 1), (-6, 0), (5, 5), (0, 0)] {
+            let tag = Tag::compound([
+                ("Facing", Tag::Byte(raw)),
+                ("block_pos", Tag::IntArray(vec![0, 0, 0])),
+            ]);
+            assert_eq!(item_frame_from_nbt(&tag, 1).unwrap().facing, want);
+        }
+        // from2DDataValue: abs(-1 % 4) = 1.
+        let tag = Tag::compound([
+            ("facing", Tag::Byte(-1)),
+            ("block_pos", Tag::IntArray(vec![0, 0, 0])),
+        ]);
+        assert_eq!(painting_from_nbt(&tag).unwrap().1, 1);
+    }
 }

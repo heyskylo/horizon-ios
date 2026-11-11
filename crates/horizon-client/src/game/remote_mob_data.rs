@@ -188,6 +188,8 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
             // Enderman.DATA_CREEPY (after DATA_CARRY_STATE): the open mouth
             // and raised head of an angry enderman.
             (Species::Enderman, 17, Value::Bool(creepy)) => m.extra.flag = *creepy,
+            // Enderman.DATA_STARED_AT: kept in scratch[0] for the stare sound.
+            (Species::Enderman, 18, Value::Bool(stared)) => m.extra.scratch[0] = i32::from(*stared),
             // Warden.CLIENT_ANGER_LEVEL: the heartbeat's pace.
             (Species::Warden, 16, Value::Int(anger)) => {
                 if let Some(st) = m.extra.warden.as_mut() {
@@ -498,7 +500,9 @@ impl Game<'_> {
             (14, _, Value::OptPos(bed)) => Some(bed.map_or(0, |b| self.bed_facing(b))),
             _ => None,
         });
+        let mut stare_at = None;
         if let Some(m) = self.mob_index.get_mut(&mut self.mobs, id as u32) {
+            stare_at = stare_sound(m, values);
             apply(m, values, &r.builtin, r.entity_id);
             apply_registry_data(m, values, &r.registries, self.world.game_time);
             if let Some(code) = bed
@@ -507,7 +511,41 @@ impl Game<'_> {
                 m.extra.ints[1] = code;
             }
         }
+        if let Some(at) = stare_at {
+            // Level.playLocalSound: heard here only, never shared.
+            self.audio
+                .play_unshared("minecraft:entity.enderman.stare", Some(at), 2.5, 1.0);
+        }
     }
+}
+
+/// `Enderman.onSyncedDataUpdated` / `playStareSound`: DATA_CREEPY changing
+/// while DATA_STARED_AT is set plays the stare sound at the eye, at most once
+/// per 400 ticks and never when silent. Entries are handled in index order, so
+/// a stared-at flag sent in the same packet counts only for later entries.
+/// Returns the sound position and records the tick in scratch[1].
+fn stare_sound(m: &mut Mob, values: &[(u8, i32, Value)]) -> Option<[f64; 3]> {
+    if m.species() != Species::Enderman {
+        return None;
+    }
+    let mut stared = m.extra.scratch[0] != 0;
+    let mut sound = None;
+    for (index, _, value) in values {
+        match (*index, value) {
+            (18, Value::Bool(b)) => stared = *b,
+            (17, Value::Bool(_)) if stared => {
+                let tick = m.age as i32;
+                if tick >= m.extra.scratch[1].wrapping_add(400) {
+                    m.extra.scratch[1] = tick;
+                    if !m.silent {
+                        sound = Some([m.position.x, m.eye_y(), m.position.z]);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    sound
 }
 
 /// A mob as a client constructs it before its data arrives: the synched
@@ -950,6 +988,26 @@ mod tests {
     /// #2920: a server's horse is moved by its rider's client, which jumps
     /// it by the type's jump strength (`createBaseHorseAttributes`,
     /// `createBaseChestedHorseAttributes`) until the server syncs its own.
+    /// Enderman.playStareSound: only a DATA_CREEPY change while staring, once
+    /// per 400 ticks, at the eye height.
+    #[test]
+    fn an_endermans_stare_sound_follows_synced_data() {
+        let Some(mut m) = mob("minecraft:enderman") else {
+            return;
+        };
+        let creepy = [(17, s::BOOLEAN, Value::Bool(true))];
+        let stared = [(18, s::BOOLEAN, Value::Bool(true))];
+        assert!(stare_sound(&mut m, &creepy).is_none());
+        apply(&mut m, &stared);
+        m.age = 500;
+        let at = stare_sound(&mut m, &creepy).expect("stare sound");
+        assert!((at[1] - m.eye_y()).abs() < 1e-9);
+        m.age = 899;
+        assert!(stare_sound(&mut m, &creepy).is_none());
+        m.age = 900;
+        assert!(stare_sound(&mut m, &creepy).is_some());
+    }
+
     #[test]
     fn a_servers_horse_jumps_its_types_strength() {
         for (kind, strength) in [("horse", 0.7), ("donkey", 0.5), ("mule", 0.5)] {

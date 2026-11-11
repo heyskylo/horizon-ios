@@ -44,6 +44,8 @@ mod transfer;
 /// What the tick loop tells `ServerWatchdog`: when the tick in progress was
 /// due (`getNextTickTime`), how long a tick is, and whether the server runs.
 struct Watchdog {
+    /// The thread running the ticks, whose stack the report carries.
+    server: horizon_threads::stack_dump::Watched,
     base: Instant,
     next_nanos: AtomicU64,
     tick_nanos: AtomicU64,
@@ -53,9 +55,11 @@ struct Watchdog {
 impl Watchdog {
     /// `DedicatedServer.initServer`: a thread that stops a server whose tick
     /// runs `max_tick_time` ms past its due time; none when that is 0 or less.
+    /// Started from the thread that runs the ticks.
     fn start(max_tick_time: i64) -> Option<Arc<Self>> {
         let max = Duration::from_millis(u64::try_from(max_tick_time).ok().filter(|m| *m > 0)?);
         let watchdog = Arc::new(Self {
+            server: horizon_threads::stack_dump::Watched::current(),
             base: Instant::now(),
             next_nanos: AtomicU64::new(0),
             tick_nanos: AtomicU64::new(50_000_000),
@@ -84,6 +88,8 @@ impl Watchdog {
             let now = u64::try_from(self.base.elapsed().as_nanos()).unwrap_or(u64::MAX);
             let behind = now.saturating_sub(next);
             if behind > max {
+                // ServerWatchdog: the server thread's stack first, while it is still stuck.
+                let stack = self.server.stack(Duration::from_secs(5));
                 let took = format!("{:.2}", behind as f32 / 1e9);
                 let should = format!(
                     "{:.2}",
@@ -106,6 +112,7 @@ impl Watchdog {
                     std::path::Path::new("."),
                     "server",
                     message,
+                    stack,
                 ) {
                     Some(path) => log_from(
                         "Server Watchdog",

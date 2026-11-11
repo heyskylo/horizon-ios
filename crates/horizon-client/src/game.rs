@@ -497,7 +497,7 @@ use horizon_client::random_source;
 pub use advancements::AdvancementDisplay;
 use horizon_client::actions::Action as Mapping;
 use horizon_client::held::Source;
-use horizon_client::spans::startup;
+use horizon_client::spans::{startup, time as span};
 use horizon_client::{
     Result,
     assets::{Assets, RenderAssets},
@@ -5542,7 +5542,7 @@ impl Game<'_> {
         // the activated item counts down.
         self.boss_overlay.tick_darken(running);
         self.tick_item_activation();
-        self.native_inventory_ticks();
+        span("mods_inventory_ticks", || self.native_inventory_ticks());
         if running {
             // `MinecraftServer.tickChildren`: `commandFunctions` runs before
             // any level ticks, so a tick function reads the game time and the
@@ -5550,7 +5550,7 @@ impl Game<'_> {
             // long before this point; the lazy scoreboard/storage read has to
             // be done by then too, or a load tag writes over what it restores.
             self.load_scoreboard();
-            self.tick_functions();
+            span("tick_functions", || self.tick_functions());
             self.world.game_time += 1;
             if self.ui.rules.bool("advance_weather") {
                 self.world.weather.tick_timers(&mut self.world.random);
@@ -5564,7 +5564,7 @@ impl Game<'_> {
         }
         // ClientLevel.tick: the sky flash fades in a frozen level too.
         self.tick_weather_effects();
-        let _ = self.finish_player_autosaves(false);
+        let _ = span("player_autosaves", || self.finish_player_autosaves(false));
         // MinecraftServer.tickServer's countdown, then autoSave: three
         // hundred seconds of ticks at the rate the server runs at now.
         self.ticks_until_autosave -= 1;
@@ -5573,7 +5573,7 @@ impl Game<'_> {
             serving.set_saving(self.autosaving);
         }
         if self.autosaving {
-            self.save_game_with(false)?;
+            span("autosave", || self.save_game_with(false))?;
             self.ticks_until_autosave = self.next_autosave_interval();
             if let Some(serving) = &self.serving {
                 serving.set_saving(false);
@@ -5582,27 +5582,27 @@ impl Game<'_> {
         if running {
             self.advance_clock();
             // `ServerLevel.tickTime`, once the clock has moved on.
-            self.run_scheduled_functions();
+            span("scheduled_functions", || self.run_scheduled_functions());
         }
         if self.use_delay > 0 {
             self.use_delay -= 1;
         }
         self.tick_totem();
         self.update_totem_ready();
-        self.tick_command_extras();
-        self.native_tick();
-        self.tell_native_now();
+        span("tick_command_extras", || self.tick_command_extras());
+        span("mods_tick", || self.native_tick());
+        span("mods_tick", || self.tell_native_now());
         self.tick_world(running)
     }
     /// What the tick runs after the local player's own update: effects, the
     /// world's entities and blocks, and the network hub.
     fn tick_world(&mut self, running: bool) -> Result<()> {
         // Entities added since the last tick join the level before it ticks.
-        self.native_joins_flush(false, 0);
-        self.share_spawn_conditions();
+        span("mods_joins_flush", || self.native_joins_flush(false, 0));
+        span("share_spawn_conditions", || self.share_spawn_conditions());
         horizon_client::mobs::sulfur_cube::set_tnt_explodes(self.ui.rules.bool("tnt_explodes"));
-        self.update_chunk_tickets();
-        self.score_destroyed_entities();
+        span("chunk_tickets", || self.update_chunk_tickets());
+        span("score_destroyed", || self.score_destroyed_entities());
         horizon_client::spans::time("tick_effects", || self.tick_effects(running));
         self.tick_sign_editor();
         // Player.tick's ItemCooldowns.tick for the window's player (a
@@ -5626,8 +5626,8 @@ impl Game<'_> {
             sent = horizon_client::spans::time("tick_blocks", || self.tick_blocks())?;
             // What the blocks spawned (a dispensed minecart, a lit TNT, a
             // placed boat) joins before the entities tick.
-            self.native_joins_flush(false, 0);
-            self.lan_mark_synced();
+            span("mods_joins_flush", || self.native_joins_flush(false, 0));
+            span("lan_mark_synced", || self.lan_mark_synced());
             // `EntityTickList.forEach`: what joined before the entity pass
             // (function summons, dropped or dispensed items) ticks in it;
             // what joins during it waits for the next tick
@@ -5637,7 +5637,7 @@ impl Game<'_> {
         }
         // ChunkMap still ticks while /tick freeze holds block/entity ticks.
         if !running {
-            self.save_chunks_eagerly();
+            span("save_chunks_eagerly", || self.save_chunks_eagerly());
         }
         self.begin_ordered_ticks();
         if running {
@@ -5651,8 +5651,8 @@ impl Game<'_> {
             // ServerLevel.tick: the arrivals of this server tick are in the level
             // (`addDuringTeleport`), and each vehicle handles its portal as its
             // own tick opens.
-            self.land_portal_arrivals();
-            self.handle_vehicle_portals();
+            span("portal_arrivals", || self.land_portal_arrivals());
+            span("vehicle_portals", || self.handle_vehicle_portals());
             self.ordered_before(ordered_tick::Batch::Boats)?;
             horizon_client::spans::time("tick_boats", || self.tick_boats());
             self.ordered_before(ordered_tick::Batch::Carts)?;
@@ -5682,11 +5682,11 @@ impl Game<'_> {
             self.ordered_before(ordered_tick::Batch::Items)?;
             horizon_client::spans::time("tick_items", || self.tick_items());
             if self.remote.is_none() {
-                self.hoppers_catch_items();
+                span("hoppers_catch_items", || self.hoppers_catch_items());
             }
             // Merged, burnt, despawned or picked up.
-            self.native_leaves_flush();
-            self.native_joins_flush(false, 0);
+            span("mods_leaves_flush", || self.native_leaves_flush());
+            span("mods_joins_flush", || self.native_joins_flush(false, 0));
             horizon_client::spans::time("touch_arrows", || self.touch_arrows());
         }
         horizon_client::spans::time("spawn_loaded_entities", || self.spawn_loaded_entities());
@@ -5696,22 +5696,22 @@ impl Game<'_> {
             self.ordered_before(ordered_tick::Batch::Mobs)?;
             horizon_client::spans::time("tick_mobs", || self.tick_mobs())?;
             // Dead, despawned or gone into a hive.
-            self.native_leaves_flush();
+            span("mods_leaves_flush", || self.native_leaves_flush());
             horizon_client::spans::time("recheck_golem_openers", || self.recheck_golem_openers());
-            self.tick_mod_container_viewers();
+            span("mod_viewers", || self.tick_mod_container_viewers());
             // Orbs, primed TNT and falling blocks still to tick, in join order.
             self.run_ordered_ticks(horizon_client::join_seq::JoinSeq::MAX, false)?;
             horizon_client::spans::time("tick_experience", || self.tick_experience());
             // Merged, despawned or picked up.
-            self.native_leaves_flush();
+            span("mods_leaves_flush", || self.native_leaves_flush());
             horizon_client::spans::time("entity_portals", || {
                 self.find_entity_portals();
                 self.resolve_arrivals();
             });
         }
         // The rest of the tick's spawns join, and what left is told of.
-        self.native_joins_flush(false, 0);
-        self.native_leaves_flush();
+        span("mods_joins_flush", || self.native_joins_flush(false, 0));
+        span("mods_leaves_flush", || self.native_leaves_flush());
         // ServerLevel.tick broadcasts the changed blocks after the scheduled and
         // random ticks (`tick_blocks`), before the block events, the entities
         // and the block entities: what those change goes out with the next
@@ -5726,23 +5726,23 @@ impl Game<'_> {
         if let Some(log) = self.world.block_log.as_mut() {
             log.extend(held);
         }
-        self.tick_friends();
+        span("tick_friends", || self.tick_friends());
         horizon_client::spans::time("tick_hand", || self.tick_hand());
         horizon_client::spans::time("tick_sleep", || self.tick_sleep());
-        self.announce_sleep_status();
-        self.free_left_beds();
+        span("sleep_status", || self.announce_sleep_status());
+        span("sleep_status", || self.free_left_beds());
         if running {
             horizon_client::spans::time("tick_end", || self.tick_end())?;
             horizon_client::spans::time("end_gateways", || {
                 self.find_end_gateway_portals();
                 self.resolve_end_gateway_arrivals()
             })?;
-            self.keep_gateway_destinations();
+            span("end_gateways", || self.keep_gateway_destinations());
         }
         if running {
             // Primed TNT and falling blocks that joined since the spawn packets.
             self.run_ordered_ticks(horizon_client::join_seq::JoinSeq::MAX, true)?;
-            self.apply_late_wind_pushes();
+            span("late_wind_pushes", || self.apply_late_wind_pushes());
         }
         // Everything that has joined has had its spawn packet and, if it joined
         // before the entity passes (TNT a piston or repeater primed), its first
@@ -5761,21 +5761,21 @@ impl Game<'_> {
                 self.tick_block_entity_anims()
             });
             // A conduit's hurt teleports an enderman now (`Enderman.hurtServer`).
-            self.settle_hurt_teleports()?;
+            span("settle_hurt_teleports", || self.settle_hurt_teleports())?;
             horizon_client::spans::time("tick_particles", || self.tick_particles());
-            self.tick_client_ambient();
+            span("tick_client_ambient", || self.tick_client_ambient());
         }
         // ServerLevel.tick's `entityManager.tick()`, frozen or not, after every
         // block entity ticker (the bells, conduits and gateways above too): the
         // chunks loaded before this pass have their entities loaded from the next.
         self.world.entities_pending.clear();
-        self.tick_frame_visuals(running);
+        span("tick_frame_visuals", || self.tick_frame_visuals(running));
         if running {
             // MinecraftServer.tickServer: GameTestTicker.SINGLETON.tick().
-            self.tick_game_tests();
+            span("tick_game_tests", || self.tick_game_tests());
         }
         // ServerBossEvent broadcasts, after this level's entities have ticked.
-        self.publish_boss_bars();
+        span("publish_boss_bars", || self.publish_boss_bars());
         // Minecraft.handleKeybinds: held use repeats only while no item is in
         // use (a raised shield or a drawn bow places and uses nothing).
         if self.right
