@@ -6,10 +6,6 @@ use std::time::Instant;
 
 pub use crate::settings::Opt;
 
-#[path = "options_ui_values.rs"]
-mod values;
-pub(crate) use values::{chat_px, generic, on_off};
-
 use crate::{
     gamepad::{self, GlyphStyle},
     hdr_calibration::Picture,
@@ -21,6 +17,10 @@ use crate::{
     text::{self, Style, Text},
     ui,
 };
+
+#[path = "options_ui_values.rs"]
+mod values;
+pub(crate) use values::{chat_delay_label, chat_px, generic, on_off, percent};
 
 mod shell_pages;
 
@@ -34,15 +34,6 @@ fn tr(key: &str) -> Text {
 pub static HORIZON_EXTRAS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 fn horizon_extras() -> bool {
     HORIZON_EXTRAS.load(std::sync::atomic::Ordering::Relaxed)
-}
-fn percent(caption: &str, value: f32) -> Text {
-    Text::translate(
-        "options.percent_value",
-        &[
-            tr(caption),
-            Text::literal(((f64::from(value) * 100.0) as i32).to_string()),
-        ],
-    )
 }
 /// `text` cut into lines of at most `width` characters, at spaces where it has them.
 fn wrap(text: &str, width: usize) -> Vec<String> {
@@ -341,6 +332,7 @@ impl Opt {
     pub(crate) fn kind(self, s: &Settings) -> Kind {
         let unit = |v: f32, lo: f32, hi: f32| Kind::Slider(((v - lo) / (hi - lo)).clamp(0.0, 1.0));
         match self {
+            Opt::ChatDelay => values::kind(s.file.double("chatDelay")),
             Opt::FovEffects | Opt::DarknessPulsing => {
                 Kind::Slider(s.file.double(self.file_key().unwrap()).sqrt() as f32)
             }
@@ -358,7 +350,6 @@ impl Opt {
             Opt::SimulationDistance => unit(s.simulation_distance as f32, 5.0, 32.0),
             Opt::Sensitivity => Kind::Slider(s.sensitivity),
             Opt::WheelSensitivity => unit(s.mouse_wheel_sensitivity, 0.01, 10.0),
-            Opt::ChatDelay => values::kind(s.file.double("chatDelay")),
             Opt::Volume(i) => Kind::Slider(if i == 0 {
                 s.master_volume
             } else {
@@ -450,11 +441,11 @@ impl Opt {
     /// The discrete step count for stepped sliders, or `None` if continuous.
     pub fn slider_steps(self) -> Option<u32> {
         match self {
+            Opt::ChatDelay => Some(60),
             Opt::Fov => Some(80),
             Opt::RenderDistance => Some((crate::options_file::MAX_RENDER_DISTANCE - 2) as u32),
             Opt::SimulationDistance => Some(27),
             Opt::MaxFps => Some(25),
-            Opt::ChatDelay => Some(60),
             Opt::CloudRange => Some(126),
             Opt::EntityDistance => Some(18),
             Opt::BiomeBlend => Some(7),
@@ -501,7 +492,7 @@ impl Opt {
     pub fn label(self, s: &Settings) -> Text {
         let c = self.caption();
         match self {
-            Opt::ChatDelay => tr("options.chat.delay_none"),
+            Opt::ChatDelay => chat_delay_label(s),
             Opt::FovEffects
             | Opt::DarknessPulsing
             | Opt::DistortionEffects
@@ -706,7 +697,7 @@ impl Opt {
             } else {
                 "options.narrator.notavailable"
             }),
-            Opt::ChatDelay => tr("options.chat.delay_none"),
+            Opt::ChatDelay => chat_delay_label(s),
             Opt::HideLightningFlashes => on_off(s.file.bool("hideLightningFlashes")),
             Opt::MonochromeLogo => on_off(s.file.bool("darkMojangStudiosBackground")),
             Opt::HideSplashTexts => on_off(s.file.bool("hideSplashTexts")),
@@ -891,6 +882,7 @@ impl Opt {
         let v = v.clamp(0.0, 1.0);
         let step = |lo: f32, hi: f32| (lo + v * (hi - lo)).round();
         match self {
+            Opt::ChatDelay => values::set(s, v),
             Opt::FovEffects | Opt::DarknessPulsing => s.file.set(
                 self.file_key().unwrap(),
                 crate::options_file::V::Double(f64::from(v).powi(2)),
@@ -911,7 +903,6 @@ impl Opt {
             Opt::SimulationDistance => s.simulation_distance = step(5.0, 32.0) as i32,
             Opt::Sensitivity => s.sensitivity = v,
             Opt::WheelSensitivity => s.mouse_wheel_sensitivity = 0.01 + v * 9.99,
-            Opt::ChatDelay => values::set(s, v),
             Opt::Volume(0) => s.master_volume = v,
             Opt::Volume(i) => s.volumes[i] = v,
             Opt::Gamma => s.gamma = v,
