@@ -7057,19 +7057,33 @@ def beacon_levels_load():
 def zombie_villager_summoned_data():
     """#13198: `ZombieVillager.defineSynchedData` picks a random profession in the constructor and
     leaves `villagerDataFinalized` false; `readAdditionalSaveData` sets it only for a save with
-    `VillagerDataFinalized` or `VillagerData`. `/summon` with NBT does not finalize the mob."""
+    `VillagerDataFinalized` or `VillagerData`. `/summon` with NBT does not finalize the mob.
+
+    The random profession (`VILLAGER_PROFESSION.getRandom(this.random)`, `none` 1 time in 15) comes
+    from `Entity.random`, which is `RandomSource.create()`: two vanilla runs disagree on it. Check the
+    first two professions' registry domain instead; the third subject's saved data stays exact."""
     x0, y0, z0 = 3776, 260, 3648
     ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
            cmd('/tick freeze', False)]
     subjects = ['NoAI:1b', 'NoAI:1b,VillagerDataFinalized:1b',
                 'NoAI:1b,VillagerData:{type:"minecraft:taiga",profession:"minecraft:cleric",level:2}']
+    # VillagerProfession's 26.3 built-in registry, including none and nitwit.
+    professions = ('none', 'armorer', 'butcher', 'cartographer', 'cleric', 'farmer', 'fisherman',
+                   'fletcher', 'leatherworker', 'librarian', 'mason', 'nitwit', 'shepherd',
+                   'toolsmith', 'weaponsmith')
     for n, fields in enumerate(subjects, 1):
         uuid = f'000033ce-0000-0000-0000-{n:04x}00000001'
         ops.append(cmd(f'/summon zombie_villager {x0 + 3 * n}.5 {y0} {z0 + 4}.5 {{UUID:[I;13262,0,{n},1],{fields}}}',
                        expect_result=1))
         ops.append(cmd(f'/data get entity {uuid} VillagerDataFinalized'))
-        ops.append(cmd(f'/execute if data entity {uuid} VillagerData{{profession:"minecraft:none"}}'))
-        if n == 3:
+        if n < 3:
+            # Every valid draw stops with the same empty feedback and callbacks. Invalid or
+            # missing data reaches /data get, whose feedback/callback must differ, without masking.
+            conditions = ''.join(f' unless data entity {uuid} VillagerData{{profession:"minecraft:{p}"}}'
+                                 for p in professions)
+            ops.append(cmd(f'/execute{conditions} run data get entity {uuid} VillagerData.profession'))
+        else:
+            ops.append(cmd(f'/execute if data entity {uuid} VillagerData{{profession:"minecraft:none"}}'))
             ops.append(cmd(f'/data get entity {uuid} VillagerData'))
     return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
                        f'/forceload remove {x0} {z0}')
