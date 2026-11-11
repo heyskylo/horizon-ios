@@ -280,7 +280,6 @@ impl Game<'_> {
                     // `hurtAndConvertOnBreak`: the stick breaks (the broken
                     // statistic and `onEquippedItemBroken`), then what is
                     // left is the rod, not a fresh plain one.
-                    self.award_stat("broken", &stack.item, 1);
                     self.player_equipment_broke(
                         horizon_world::player_inventory::EquipmentSlot::MainHand,
                         &stack,

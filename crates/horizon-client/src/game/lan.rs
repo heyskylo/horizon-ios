@@ -3134,17 +3134,17 @@ impl Game<'_> {
             self.remote_totem(id);
         }
     }
-    /// `LivingEntity.onEquippedItemBroken` for the acting player (the guest whose turn it
-    /// is, else the host): `level.broadcastEntityEvent` with `entityEventForEquipmentBreak`
-    /// of the slot, which each client answers with `breakItem` (the sound and the crumbs,
-    /// `remote_equipment_break`). Without a hub to tell, or in a window that runs the world
-    /// itself, the sound and the crumbs are played here.
+    /// `ServerPlayer.onEquippedItemBroken` for the acting player (the guest whose turn it
+    /// is, else the host): the broken statistic, then `level.broadcastEntityEvent` of the
+    /// slot's break event, which each client answers with `breakItem` (the sound and the
+    /// crumbs, `remote_equipment_break`). Without a hub to tell, they are played here.
     pub(super) fn player_equipment_broke(
         &mut self,
         slot: horizon_world::player_inventory::EquipmentSlot,
         stack: &horizon_client::items::ItemStack,
     ) {
         use horizon_world::player_inventory::EquipmentSlot;
+        self.award_stat("broken", &stack.item, 1);
         let event = match slot {
             EquipmentSlot::MainHand => 47,
             EquipmentSlot::OffHand => 48,
