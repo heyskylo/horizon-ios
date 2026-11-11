@@ -107,9 +107,21 @@ impl Game<'_> {
                 state: ElementState::Pressed,
                 ..
             }
-        ) && !self.pad.menu.synthetic
+        ) && !self.input_made_pointer_event()
         {
-            self.pad.keyboard_took_over = true;
+            self.input_keyboard_used();
+        }
+        // A key or a mouse button pressed while the pad holds the radial menu open closes it,
+        // and goes on to do what it does. Moving the mouse does neither (`device_event`).
+        let pressed = match &event {
+            WindowEvent::KeyboardInput { event, .. } => {
+                event.state == ElementState::Pressed && !event.repeat
+            }
+            WindowEvent::MouseInput { state, .. } => *state == ElementState::Pressed,
+            _ => false,
+        };
+        if pressed && !self.pad.menu.synthetic {
+            self.pad_radial_cancel();
         }
         if let WindowEvent::MouseInput { state, button, .. } = &event {
             if *state == ElementState::Pressed {
@@ -222,8 +234,10 @@ impl Game<'_> {
         horizon_client::spans::time("pads", || self.poll_pads(event_loop));
         self.settle_after_run(event_loop);
         self.pause_if_inactive();
-        if self.options.frames.is_some() && self.started.elapsed() > self.options.timeout {
-            self.error = Some("frame-limited run timed out".into());
+        if let Some(limit) = self.options.time_limit()
+            && self.started.elapsed() > limit
+        {
+            self.error = Some(format!("run timed out after {} s", limit.as_secs()).into());
             event_loop.exit();
             return;
         }
@@ -271,9 +285,8 @@ impl ApplicationHandler for Game<'_> {
         let fullscreen = self.settings.fullscreen || self.options.fullscreen;
         let size = self.options.window_size.map(f64::from);
         self.fullscreen = horizon_client::window::FullscreenState::new(fullscreen);
-        let attributes = horizon_client::window::with_horizon_icon(
-            Window::default_attributes().with_title("Horizon"),
-        );
+        let attributes =
+            horizon_client::window::with_icon(Window::default_attributes().with_title("Horizon"));
         // Wayland names the window by its app id, which the horizon.desktop entry matches.
         #[cfg(target_os = "linux")]
         let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
@@ -350,6 +363,13 @@ impl ApplicationHandler for Game<'_> {
             && self.screen == Screen::Playing
             && let DeviceEvent::MouseMotion { delta: (x, y) } = event
         {
+            // While the pad holds the radial menu open the mouse does nothing, as the right stick
+            // doesn't turn the view: it neither cancels the menu nor takes control back, nor
+            // turns the view. A thumb is on the opener, so the motion is a bumped desk.
+            if self.pad_radial_captures() {
+                return;
+            }
+            // Moving the mouse hands control back from the pad.
             if x != 0.0 || y != 0.0 {
                 self.pad_yield_input(event_loop);
             }

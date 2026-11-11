@@ -112,22 +112,22 @@ MinecartCommandBlock.activateMinecart	inline	crates/horizon-client/src/game/mine
 MinecartCommandBlock.defineSynchedData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::new	the cart's `synced_command` and `synced_output` start empty on the cart itself, as `DATA_ID_COMMAND_NAME` and `DATA_ID_LAST_OUTPUT` do
 MinecartCommandBlock.interact	port	crates/horizon-client/src/game/remote.rs::Game::remote_use_entity	the client opens the command editor of the cart it right-clicked
 MinecartCommandBlock.onSyncedDataUpdated	inline	crates/horizon-client/src/game/command_minecarts.rs::Game::cart_command_updated	the command is the cart's own field rather than synched entity data, which `onUpdated` copies out
-MinecartCommandBlock.readAdditionalSaveData	inline	crates/horizon-client/src/game/minecarts.rs::Minecart::from_nbt	loads the base command block and syncs its command/output; a changed command invokes setCommand and resets SuccessCount
+MinecartCommandBlock.readAdditionalSaveData	inline	crates/horizon-client/src/game/minecarts/nbt.rs::Minecart::from_nbt	loads the base command block and syncs its command/output; a changed command invokes setCommand and resets SuccessCount
 MinecartCommandBlock.MinecartCommandBase.createCommandSourceStack	port	crates/horizon-client/src/game/command_minecarts.rs::Game::perform_cart_command	the due command runs with the cart as its source: its position, rotation and game master level
 MinecartCommandBlock.MinecartCommandBase.onUpdated	inline	crates/horizon-client/src/game/command_minecarts.rs::Game::cart_command_updated	copies the command and the last output into the cart's synched fields
-MinecartFurnace.addAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::to_nbt	
+MinecartFurnace.addAdditionalSaveData	port	crates/horizon-client/src/game/minecarts/nbt.rs::Minecart::to_nbt	
 MinecartFurnace.addFuel	inline	crates/horizon-client/src/game/minecarts.rs::Game::interact_cart	furnace arm: coal or charcoal adds 3600 ticks of fuel up to 32000
 MinecartFurnace.applyNaturalSlowdown	port	crates/horizon-client/src/game/minecarts.rs::Game::natural_slowdown	
 MinecartFurnace.calculateNewPushAlong	port	crates/horizon-client/src/game/minecarts.rs::push_along	the push projected on the movement when both horizontal lengths pass 1.0E-4 and 0.001, else the push; the slow path and the cart tick both call it
 MinecartFurnace.getDefaultDisplayBlockState	port	crates/horizon-client/src/game/minecarts.rs::Game::display_state	lit furnace while it has fuel
 MinecartFurnace.getMaxSpeed	port	crates/horizon-client/src/game/minecarts.rs::Game::max_speed	half speed on land, three quarters of 0.2 in water
 MinecartFurnace.interact	inline	crates/horizon-client/src/game/minecarts.rs::Game::interact_cart	furnace arm
-MinecartFurnace.readAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::from_nbt	
+MinecartFurnace.readAdditionalSaveData	port	crates/horizon-client/src/game/minecarts/nbt.rs::Minecart::from_nbt	
 MinecartFurnace.tick	inline	crates/horizon-client/src/game/minecarts.rs::Game::tick_cart	furnace variant: fuel counts down, push clears at zero, smoke puffs
 MinecartSpawner.tick	port	crates/horizon-client/src/game/minecarts.rs::Game::tick_cart	BaseSpawner.serverTick at the cart's block (spawner.rs server_tick_spawner_of); its broadcastEvent is an entity event on the cart
 MinecartSpawner.createTicker	port	crates/horizon-client/src/game/minecarts.rs::Game::tick_cart	the server ticker: the CartKind::Spawner arm
-MinecartSpawner.readAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::from_nbt	BaseSpawner.load
-MinecartSpawner.addAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::to_nbt	BaseSpawner.save
+MinecartSpawner.readAdditionalSaveData	port	crates/horizon-client/src/game/minecarts/nbt.rs::Minecart::from_nbt	BaseSpawner.load
+MinecartSpawner.addAdditionalSaveData	port	crates/horizon-client/src/game/minecarts/nbt.rs::Minecart::to_nbt	BaseSpawner.save
 MinecartSpawner.getDefaultDisplayBlockState	port	crates/horizon-client/src/game/minecarts.rs::Game::display_state	the spawner block
 NewMinecartBehavior	skip:other		experimental minecart_improvements physics; Horizon always runs the old behaviour in minecarts.rs and writes that pack disabled in save.rs
 NewMinecartBehavior.TrackIteration	skip:other		part of the experimental minecart_improvements physics; see NewMinecartBehavior

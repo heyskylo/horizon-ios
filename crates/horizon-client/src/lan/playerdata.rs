@@ -53,6 +53,27 @@ pub fn exists(world: &Path, uuid: u128) -> bool {
     path(world, uuid).is_file()
 }
 
+/// The key `ServerPlayer.addAdditionalSaveData` stores the `WardenSpawnTracker` under.
+pub const WARDEN_TRACKER_KEY: &str = "warden_spawn_tracker";
+
+/// Put a player's `warden_spawn_tracker` into the compound `store` writes from
+/// (`guest.saved`), so a save keeps it rather than the older one loaded with
+/// the file (the LAN owner's tracker lives in `Game`, `save_warden_tracker`).
+/// Other saved keys are left as they are; no tracker (not loaded yet) changes
+/// nothing.
+pub fn with_warden(guest: &mut Guest, tracker: Option<Tag>) -> &mut Guest {
+    let Some(tracker) = tracker else {
+        return guest;
+    };
+    let saved = guest
+        .saved
+        .get_or_insert_with(|| Tag::Compound(Default::default()));
+    if let Tag::Compound(map) = saved {
+        map.insert(WARDEN_TRACKER_KEY.into(), tracker);
+    }
+    guest
+}
+
 /// `PlayerDataStorage.load`: a guest's saved state, if they have been here
 /// before. The player's file, else its `.dat_old` (what a save cut off
 /// between its two renames leaves, `write_dat`).
@@ -649,6 +670,42 @@ mod tests {
             [0.0, 64.0, 0.0],
             8,
         )
+    }
+
+    /// #9965: the owner's warden warning level and cooldown reach the file on
+    /// a save, instead of the ones the file was loaded with.
+    #[test]
+    fn a_stored_warden_tracker_replaces_the_loaded_one() {
+        let mut g = guest();
+        g.saved = Some(Tag::compound(vec![
+            (
+                "warden_spawn_tracker",
+                Tag::compound(vec![
+                    ("warning_level", Tag::Int(2)),
+                    ("cooldown_ticks", Tag::Int(77)),
+                    ("ticks_since_last_warning", Tag::Int(5)),
+                ]),
+            ),
+            ("unrelated_key", Tag::Int(9)),
+        ]));
+        let tracker = crate::sculk::WardenSpawnTracker {
+            ticks_since_last_warning: 0,
+            warning_level: 3,
+            cooldown_ticks: 200,
+        };
+        with_warden(&mut g, Some(tracker.to_nbt()));
+        let (tag, _) = round_trip(&g);
+        let mut back = guest();
+        let mut level = Level::default();
+        level.read_player(&tag);
+        level.player_extra = Some(tag);
+        apply(&mut back, &level);
+        let saved = back.saved.as_ref().unwrap();
+        let read =
+            crate::sculk::WardenSpawnTracker::from_nbt(saved.get("warden_spawn_tracker").unwrap());
+        assert_eq!((read.warning_level, read.cooldown_ticks), (3, 200));
+        assert_eq!(read.ticks_since_last_warning, 0);
+        assert!(matches!(saved.get("unrelated_key"), Some(Tag::Int(9))));
     }
 
     #[test]

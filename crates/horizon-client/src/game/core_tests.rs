@@ -235,8 +235,14 @@ fn glfw_button_indices_are_glfw_indices() {
 /// F3 left on when leaving a world kept the axes on the title screen.
 #[test]
 fn the_debug_crosshair_is_gone_once_the_world_is() {
-    assert!(debug_crosshair_drawn(true, true, false, false));
-    assert!(!debug_crosshair_drawn(true, true, false, true));
+    assert!(debug_crosshair_drawn(true, true, false, false, false));
+    assert!(!debug_crosshair_drawn(true, true, false, true, false));
+}
+
+/// F3's 3D crosshair drew beside the radial menu's stick, which the 2D one gives way to.
+#[test]
+fn the_debug_crosshair_gives_way_to_the_radial_menu() {
+    assert!(!debug_crosshair_drawn(true, true, false, false, true));
 }
 
 /// Opening a world in front of a block left its outline over Loading terrain's panorama (#12872).
@@ -319,6 +325,8 @@ fn an_interact_packet_cannot_name_a_mob_the_pick_would_refuse() {
     assert!(named_mob_pickable(true, 17, Some(23), Some(29)));
 }
 
+#[path = "mob_display_name_tests.rs"]
+mod mob_display_name_tests;
 #[path = "pet_order_tests.rs"]
 mod pet_order_tests;
 /// The packet's location is `EntityHitResult.getLocation() -
@@ -623,3 +631,6 @@ fn stack_drop_requires_ctrl_even_with_sprint_latched() {
         }
     }
 }
+
+#[path = "play_ping_tests.rs"]
+mod play_ping_tests;

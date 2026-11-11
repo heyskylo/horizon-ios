@@ -416,8 +416,9 @@ SESSIONS = {
     'float_hdr': ('hdr:true\n', {'HORIZON_HDR_FRAME': 'float', 'HORIZON_HDR_OUTPUT': 'pq'}, WORLD + list(HUD), False),
     'float_oit': ('hdr:true\n', {'HORIZON_HDR_FRAME': 'float', 'HORIZON_HDR_OUTPUT': 'pq'}, WORLD, False),
     # 🤖 Agent: On a display with little headroom (300 nits), the HUD at half brightness: the tone curve and the HUD's
-    # composite have the least room there (hdr_gates).
-    'float_visbuffer': ('hdr:true\nhdrPeak:300\nhdrUiBrightness:50\n', {'HORIZON_HDR_FRAME': 'float',
+    # composite have the least room there (hdr_gates). An older file's 50% of a 200-nit paper white: it reads as 100
+    # nits, so builds from before UI Brightness was in nits draw the same.
+    'float_visbuffer': ('hdr:true\nhdrPeak:300\nhdrPaperWhite:200\nhdrUiBrightness:50\n', {'HORIZON_HDR_FRAME': 'float',
                         'HORIZON_HDR_OUTPUT': 'pq', 'HORIZON_VISBUFFER': '1', 'HORIZON_FLAT_DRAWS': '1'},
                         WORLD + list(HUD), False),
     # 🤖 Agent: HDR Lighting off, at that headroom too, where the tone curve's knee is at white: the picture is SDR's

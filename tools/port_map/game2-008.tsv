@@ -48,9 +48,9 @@ BundleItem.getBarColor	port	crates/horizon-items/src/bundle.rs::Contents::bar
 BundleItem.removeOneItemFromBundle	port	crates/horizon-items/src/bundle.rs::Contents::remove_one	
 BundleItem.getTooltipImage	port	crates/horizon-client/src/item_tooltip.rs::bundle_tooltip	the contents grid, hidden when `minecraft:tooltip_display` hides `minecraft:bundle_contents` (or the whole tooltip); the geometry is `bundle.rs::tooltip_layout`
 BundleItem.onDestroyed	port	crates/horizon-client/src/entities.rs::ItemEntity::hurt	the damage that empties an item's health makes the bundle's contents item entities where it lay (`bundle::destroyed`)
-BundleItem.playRemoveOneSound	port	crates/horizon-client/src/game.rs::Game::drop_bundle_content	the menu queues the same sound in menu/bundle.rs
+BundleItem.playRemoveOneSound	port	crates/horizon-client/src/game/block_breaking.rs::Game::drop_bundle_content	the menu queues the same sound in menu/bundle.rs
 BundleItem.playInsertSound	port	crates/horizon-client/src/menu/bundle.rs::Menu::carried_bundle_click	queues the insert or insert-fail sound
-BundleItem.playDropContentsSound	port	crates/horizon-client/src/game.rs::Game::drop_bundle_content	
+BundleItem.playDropContentsSound	port	crates/horizon-client/src/game/block_breaking.rs::Game::drop_bundle_content	
 CompassItem.isFoil	port	crates/horizon-assets/src/item_model.rs::Resolve::has_foil	a compass with a lodestone_tracker component glints
 CrossbowItem.tryLoadProjectiles	port	crates/horizon-client/src/game/crossbow.rs::Game::tick_crossbow	the drawn ammo is stored on the crossbow once charged
 CrossbowItem.shootProjectile	port	crates/horizon-client/src/game/crossbow.rs::Game::shoot_crossbow	
@@ -68,7 +68,7 @@ HangingEntityItem.appendHoverText	port	crates/horizon-client/src/game/stations.r
 Item.getDestroySpeed	port	crates/horizon-items/src/items.rs::Items::mining_speed	
 Item.finishUsingItem	port	crates/horizon-client/src/game/using_item.rs::Game::consume_held	the consumable effects are applied by apply_consume_effect
 Item.getBarColor	port	crates/horizon-client-render/src/hud_overlays.rs::damage_bar	width and hue from the damage fraction
-Item.mineBlock	port	crates/horizon-client/src/game.rs::Game::mine_block_with_held	
+Item.mineBlock	port	crates/horizon-client/src/game/block_breaking.rs::Game::mine_block_with_held	
 Item.isCorrectToolForDrops	port	crates/horizon-items/src/items.rs::Items::correct_for_drops	
 Item.getUseAnimation	port	crates/horizon-items/src/use_animation.rs::consumable_animation	consumable animation; the block and spear poses are handled by the item pose code
 Item.getPlayerPOVHitResult	port	crates/horizon-client/src/game.rs::Game::pick	the view ray from the eyes; the fluid variant is Game::pick_fluid

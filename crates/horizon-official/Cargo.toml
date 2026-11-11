@@ -13,6 +13,15 @@ path = "src/main.rs"
 [dependencies]
 horizon-game = { path = "../horizon-game" }
 horizon-platform = { path = "../horizon-platform" }
+horizon-heartbeat = { path = "../horizon-heartbeat" }
+horizon-friends = { path = "../horizon-friends", features = ["game"] }
+horizon-official-servers = { path = "../horizon-official-servers" }
+horizon-discord = { path = "../horizon-discord" }
+log = "0.4"
+
+[build-dependencies]
+# The build script runs on the host, but embeds resources based on the target OS.
+winresource = "0.1"
 
 [lints]
 workspace = true

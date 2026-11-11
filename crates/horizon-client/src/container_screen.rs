@@ -1,9 +1,11 @@
-//! The mouse handling every survival and container screen shares
+//! The input handling every survival and container screen shares
 //! (`AbstractContainerScreen.mouseClicked` / `mouseReleased`): which slot id
 //! a click targets (-999 outside the window, `hasClickedOutside` with the
 //! recipe book's own rule) and which `ContainerInput` it sends. Shift is
 //! the event's own modifiers (`InputWithModifiers.hasShiftDown`: the
-//! physical Shift keys, never the remapped or toggled sneak key).
+//! physical Shift keys, never the remapped or toggled sneak key). The
+//! keyboard's hotbar and off-hand keys are the same screen's
+//! (`checkHotbarKeyPressed`).
 
 use crate::menu::Input;
 
@@ -111,11 +113,24 @@ pub fn double_click(
 }
 
 /// The input state `mouseClicked`/`mouseReleased` keep between events.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Clicks {
     /// `isQuickCrafting` with `quickCraftingButton`.
     quick_crafting: Option<Button>,
     skip_next_release: bool,
+}
+
+impl Default for Clicks {
+    fn default() -> Self {
+        Self {
+            quick_crafting: None,
+            // AbstractContainerScreen's constructor: `this.skipNextRelease =
+            // true`. The release of the click that opened the screen (a chest
+            // right-click opens it on the server's answer) is not a click on
+            // the slot now under the pointer.
+            skip_next_release: true,
+        }
+    }
 }
 
 /// What a release does.
@@ -150,7 +165,9 @@ impl Clicks {
     /// dead on every screen after it.
     pub fn cancel_drag(&mut self) {
         self.quick_crafting = None;
-        self.skip_next_release = false;
+        // A fresh `AbstractContainerScreen` starts with `skipNextRelease`
+        // true, so the next release without a press is swallowed.
+        self.skip_next_release = true;
     }
 
     /// `mouseClicked` (no double click): the `slotClicked` input it sends on
@@ -221,6 +238,32 @@ impl Clicks {
             Release::Click(Input::Pickup)
         }
     }
+}
+
+/// A key `AbstractContainerScreen.checkHotbarKeyPressed` acts on: one of the
+/// nine hotbar slots (`keyHotbarSlots`) or the off hand (`keySwapOffhand`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HotbarKey {
+    /// `key.hotbar.N`, in `0..9`.
+    Slot(usize),
+    /// `key.swapOffhand`, the menu's button 40.
+    Offhand,
+}
+
+/// What `AbstractContainerScreen.checkHotbarKeyPressed` answers: the menu
+/// button of the SWAP click, or `None` when the screen refuses it. The whole
+/// method is gated on `this.menu.getCarried().isEmpty() && this.hoveredSlot
+/// != null`, so a carried stack sends nothing; without that guard the
+/// server's SWAP would move the hotbar slot into the slot under the cursor
+/// while the stack stays on the cursor.
+pub fn hotbar_swap(hovered: Option<HotbarKey>, carried_empty: bool) -> Option<i32> {
+    if !carried_empty {
+        return None;
+    }
+    Some(match hovered? {
+        HotbarKey::Slot(slot) => i32::try_from(slot).ok()?,
+        HotbarKey::Offhand => 40,
+    })
 }
 
 #[cfg(test)]
@@ -399,6 +442,45 @@ mod tests {
         );
     }
 
+    /// `AbstractContainerScreen`'s constructor sets `skipNextRelease = true`:
+    /// a release with no press before it on this screen clicks nothing. This
+    /// is the release of the click that opened the screen (the server's
+    /// answer to a chest's right-click comes after the button went up), over
+    /// the slot now under the pointer. A carried stack is what makes the
+    /// release click, so that is the hand it is tested with.
+    #[test]
+    fn a_release_before_any_press_clicks_nothing() {
+        let slot = Target::<usize>::Slot(0);
+        let mut clicks = Clicks::default();
+        assert_eq!(
+            clicks.release(&slot, Button::Left, false, false, false, false),
+            Release::Nothing
+        );
+        // A press and release are a normal click again.
+        assert_eq!(clicks.press(&slot, Button::Left, false, false, false), None);
+        assert_eq!(
+            clicks.release(&slot, Button::Left, false, false, false, false),
+            Release::Click(Input::Pickup)
+        );
+    }
+
+    /// A screen that takes the pointer over starts as a fresh
+    /// `AbstractContainerScreen` does: `cancel_drag` drops the old drag and
+    /// leaves `skipNextRelease` true, so the opening click's release (a
+    /// carried stack is what would click) does nothing.
+    #[test]
+    fn a_screen_that_takes_the_pointer_over_swallows_its_first_release() {
+        let slot = Target::<usize>::Slot(3);
+        let mut clicks = Clicks::default();
+        // The old screen's press with a stack carried left a drag behind.
+        clicks.press(&slot, Button::Left, false, false, false);
+        clicks.cancel_drag();
+        assert_eq!(
+            clicks.release(&slot, Button::Left, false, false, false, false),
+            Release::Nothing
+        );
+    }
+
     /// `AbstractContainerScreen.mouseClicked`: `this.lastClickSlot = slot`
     /// runs for every click that reaches the container logic, and
     /// `doubleclick` is the same slot and button within `MouseHandler`'s
@@ -421,5 +503,30 @@ mod tests {
         assert!(double_click(&mut last, Some(4), true, at(200)));
         // Over 250 ms is two clicks, not a double click.
         assert!(!double_click(&mut last, Some(4), true, at(500)));
+    }
+
+    /// `AbstractContainerScreen.checkHotbarKeyPressed`:
+    /// `this.menu.getCarried().isEmpty() && this.hoveredSlot != null` gates
+    /// the off hand and the nine hotbar slots alike. A stack on the cursor
+    /// refuses the key (the menu's SWAP does not look at the carried stack
+    /// and would move the hotbar slot into the hovered one); so does no
+    /// hovered slot.
+    #[test]
+    fn a_carried_stack_refuses_the_container_hotbar_keys() {
+        for carried_empty in [false, true] {
+            for slot in 0..9 {
+                let key = HotbarKey::Slot(slot);
+                assert_eq!(
+                    hotbar_swap(Some(key), carried_empty),
+                    carried_empty.then_some(slot as i32)
+                );
+            }
+            assert_eq!(
+                hotbar_swap(Some(HotbarKey::Offhand), carried_empty),
+                carried_empty.then_some(40)
+            );
+        }
+        assert_eq!(hotbar_swap(None, true), None);
+        assert_eq!(hotbar_swap(None, false), None);
     }
 }

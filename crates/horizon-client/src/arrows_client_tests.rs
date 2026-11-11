@@ -254,6 +254,19 @@ fn an_arrow_owned_by_an_armor_stand_needs_mob_griefing_to_prime_tnt() {
 }
 
 #[test]
+fn client_arrow_tick_waits_for_a_non_self_move_to_leave_its_block() {
+    let steps = run_with(&[], 1, false, |p| {
+        let arrow = p.arrow.as_mut().unwrap();
+        arrow.in_ground = true;
+        arrow.last_state = Some(BlockStateId(1));
+    });
+    let p = &steps[0];
+    let arrow = p.arrow.as_ref().unwrap();
+    assert!(arrow.in_ground);
+    assert_eq!(p.velocity, Vec3::new(1.0, 0.2, 0.0));
+}
+
+#[test]
 #[ignore = "run by client-arrow differential harness"]
 fn client_arrow_parity_fixture() {
     use std::io::Write;

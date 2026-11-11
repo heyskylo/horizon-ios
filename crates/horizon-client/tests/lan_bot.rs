@@ -176,6 +176,7 @@ struct Server {
 impl Server {
     fn tick(&mut self, entities: &[EntityState]) {
         let mut ctx = TickCtx {
+            sea_level: 63,
             world: &mut self.world,
             entities,
             next_entity: &mut self.next_entity,
@@ -1522,7 +1523,6 @@ fn the_prediction_records_each_client_tick_and_the_server_ticks_it_had_seen() {
     inbox.push_back((S::ClientTickEnd(Empty), 0));
     s.tick(&[]);
     let record = s.hub.guests[0]
-        .anticheat
         .record
         .as_deref()
         .expect("the prediction records");
@@ -1546,7 +1546,7 @@ fn the_prediction_records_each_client_tick_and_the_server_ticks_it_had_seen() {
         0,
     ));
     s.tick(&[]);
-    let record = s.hub.guests[0].anticheat.record.as_deref().unwrap();
+    let record = s.hub.guests[0].record.as_deref().unwrap();
     assert_eq!(record.seen(), Some(pinged));
 }
 
@@ -1687,6 +1687,7 @@ fn a_respawned_guest_is_immune_until_its_client_loads_the_world() {
     let border = horizon_client::worldborder::WorldBorder::default();
     let at = [8.5, f64::from(MIN_Y + 5), 8.5];
     let ctx = TickCtx {
+        sea_level: 63,
         world: &mut s.world,
         entities: &[],
         next_entity: &mut s.next_entity,

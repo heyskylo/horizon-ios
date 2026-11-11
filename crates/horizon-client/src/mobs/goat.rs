@@ -273,17 +273,25 @@ impl Goal for Ram {
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
-    fn can_use(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
-        // The ram activity needs the cooldown to be over (it also waits for
-        // no tempting player and no breed target, which goats lack here).
-        ram_cooldown(m) <= 0
+    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        // `GoatAi.initRamActivity`: the ram activity wants the cooldown over,
+        // no tempting player and no breed target, and `updateActivity` picks
+        // RAM before IDLE: a goat being fed or bred only follows.
+        ram_cooldown(m) <= 0 && !tempted(m, cx.w) && !breeding(m, cx.w)
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let g = &m.extra.goat;
         match g.phase {
             Phase::Done => false,
             Phase::Prepare => {
-                g.time <= PREPARE_TIME_OUT
+                // `GoatAi.updateActivity` runs every tick: a player who starts
+                // feeding the goat, or a breed target that appears, switches the
+                // activity away and `PrepareRamNearestTarget.stop` starts the
+                // cooldown. (A charge under way keeps `RAM_TARGET`; only its own
+                // `canStillUse` ends that one.)
+                !tempted(m, cx.w)
+                    && !breeding(m, cx.w)
+                    && g.time <= PREPARE_TIME_OUT
                     && g.candidate
                         .is_some_and(|c| cx.w.target_info(c.target).is_some_and(|t| t.alive))
             }
@@ -427,15 +435,20 @@ fn ram_tick(m: &mut Mob, cx: &mut Cx) {
         };
         let boost = 0.25 * (level("minecraft:speed") - level("minecraft:slowness")) as f32;
         let factor = (m.ai.speed * 1.65).clamp(0.2, 3.0) + boost;
+        // `blockingFactor * speedFactor` stays a float, then the force (a
+        // double) scales it.
         let force = if m.is_baby() { 1.0 } else { 2.5 };
+        let power = f64::from(factor) * force;
         let d = m.extra.goat.ram_direction;
-        // The knockback's source is `mobAttack`, not the hurt's `noAggroMobAttack`.
+        // The knockback's source is `mobAttack`, not the hurt's `noAggroMobAttack`,
+        // and `applyItemBlocking` runs again for it before the push.
         cx.events.push(MobEvent::Knockback {
             target,
-            power: f64::from(factor * force),
+            power,
             x: d.x,
             z: d.z,
             source: Damage::mob(m.id, from),
+            apply_blocking: Some(amount),
         });
         finish_ram(m, cx.events);
         play(m, cx.events, impact, 1.0);
@@ -683,5 +696,114 @@ mod sound_tests {
         assert_eq!(*at, [0.123456789, 64.0, -3.25]);
         assert_eq!((*volume, *pitch), (1.0, 1.0));
         assert_eq!(goat.random.next_long(), expected.next_long());
+    }
+}
+
+#[cfg(test)]
+mod ram_tests {
+    use super::*;
+    use crate::mobs::world::{test_player, with_test_world};
+
+    fn fake_goat() -> std::sync::Arc<super::super::MobType> {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.species = super::super::Species::Goat;
+        k.food = std::sync::Arc::from(["minecraft:wheat".to_string()]);
+        kind
+    }
+
+    /// `GoatAi.initRamActivity` wants `TEMPTING_PLAYER` and `BREED_TARGET`
+    /// absent, and `GoatAi.updateActivity` picks RAM before IDLE: a goat being
+    /// fed or bred only follows.
+    #[test]
+    fn a_fed_or_bred_goat_starts_no_ram() {
+        let kind = fake_goat();
+        let mut partner = Mob::new(9, kind.clone(), Vec3::new(2.5, 64.0, 0.5), 0.0);
+        partner.extra.in_love = 600;
+        let others = [partner.seen(None)];
+        let ran = with_test_world(&others, |w, _| {
+            let mut lr = horizon_core::random::LegacyRandom::new(0);
+            let mut events = Vec::new();
+            let mut goat = Mob::new(7, kind.clone(), Vec3::new(0.5, 64.0, 0.5), 0.0);
+            let mut due = |goat: &mut Mob, w: &MobWorld| {
+                Ram.can_use(
+                    goat,
+                    &mut Cx {
+                        w,
+                        lr: &mut lr,
+                        events: &mut events,
+                    },
+                )
+            };
+            assert!(due(&mut goat, w), "a ram is due");
+            // `BREED_TARGET`: in love, with an adult goat in love nearby.
+            goat.extra.in_love = 600;
+            assert!(!due(&mut goat, w), "a goat being bred only follows");
+            goat.extra.in_love = 0;
+            // `TEMPTING_PLAYER`: a player within 10 blocks holding goat food.
+            let mut fed = w.clone();
+            let mut p = test_player(Vec3::new(0.5, 64.0, 3.5));
+            p.main_hand = Some("minecraft:wheat".into());
+            fed.player = Some(p);
+            assert!(!due(&mut goat, &fed), "a goat being fed only follows");
+            // Any other item is no temptation.
+            let mut stone = w.clone();
+            let mut p = test_player(Vec3::new(0.5, 64.0, 3.5));
+            p.main_hand = Some("minecraft:stone".into());
+            stone.player = Some(p);
+            assert!(due(&mut goat, &stone));
+        });
+        let _ = ran;
+    }
+
+    /// `RamTarget.tick` posts the hit (`noAggroMobAttack`) and then its push,
+    /// which names the damage the victim's `applyItemBlocking` runs again on.
+    #[test]
+    fn a_ram_posts_the_hits_damage_with_its_push() {
+        let kind = fake_goat();
+        let ran = with_test_world(&[], |w, _| {
+            let mut w = w.clone();
+            w.player = Some(test_player(Vec3::new(0.5, 64.0, 0.5)));
+            let mut goat = Mob::new(7, kind.clone(), Vec3::new(0.5, 64.0, 0.5), 0.0);
+            goat.attrs.attack_damage = 2.0;
+            goat.ai.speed = 3.0;
+            goat.extra.goat.ram_direction = Vec3::new(0.0, 0.0, 1.0);
+            let mut lr = horizon_core::random::LegacyRandom::new(0);
+            let mut events = Vec::new();
+            ram_tick(
+                &mut goat,
+                &mut Cx {
+                    w: &w,
+                    lr: &mut lr,
+                    events: &mut events,
+                },
+            );
+            assert!(matches!(
+                events[0],
+                MobEvent::DamagePlayer {
+                    amount: 2.0,
+                    kind: "minecraft:mob_attack_no_aggro",
+                    ..
+                }
+            ));
+            let push = events
+                .iter()
+                .find_map(|e| match e {
+                    MobEvent::Knockback {
+                        target: Who::Player,
+                        power,
+                        x,
+                        z,
+                        apply_blocking,
+                        ..
+                    } => Some((*power, *x, *z, *apply_blocking)),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("the ram posts no push: {events:?}"));
+            // clamp(3.0 * 1.65, 0.2, 3.0) * 2.5, and the hit's damage for the
+            // victim's second `applyItemBlocking`.
+            assert_eq!(push, (7.5, 0.0, 1.0, Some(2.0)));
+        });
+        let _ = ran;
     }
 }

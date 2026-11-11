@@ -275,10 +275,19 @@ pub fn teleport_chance(m: &mut Mob, source: &Damage) {
         m.extra.counter2 = 1;
     }
 }
-/// Enderman.aiStep: never jumps; the teleports a hurt left run.
+/// Enderman.aiStep: never jumps; the teleports a hurt left run; then
+/// `updatePersistentAnger(level, true)`: holding a target names it and keeps
+/// 20 to 39 seconds of anger running, which outlast a lost target (a daylight
+/// teleport, a reload).
 pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     m.ai.jumping = false;
     run_pending_teleports(m, w, events);
+    super::tame::update_persistent_anger(m, w);
+}
+/// `EndermanLookForPlayerGoal.isAngerInducing`: a player staring at it, or one
+/// it is angry at (`NeutralMob.isAngryAt`).
+fn anger_inducing(m: &Mob, w: &MobWorld) -> bool {
+    stared_at(m, w) || super::tame::angry_at_player(m, w)
 }
 /// The teleports `hurtServer` asked for (`teleport()`, or
 /// `repeatedlyTryToTeleport`: up to 64 tries).
@@ -361,8 +370,11 @@ impl Goal for LookForPlayer {
         let Some(p) = &cx.w.player else { return false };
         self.pending = p.alive
             && !p.creative
+            && !p.spectator
             && m.distance_sqr(p.position) <= m.attrs.follow_range.powi(2)
-            && stared_at(m, cx.w);
+            && anger_inducing(m, cx.w)
+            // startAggroTargetConditions is forCombat(): in sight (a stare is).
+            && m.sees(cx.w, Who::Player);
         self.pending
     }
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
@@ -380,16 +392,15 @@ impl Goal for LookForPlayer {
             return false;
         };
         if self.pending {
-            if !stared_at(m, cx.w) {
+            if !anger_inducing(m, cx.w) {
                 return false;
             }
             m.turn_to(p.eye, 10.0, 10.0);
             return true;
         }
-        p.alive
-            && !p.creative
-            && m.ai.target == Some(Who::Player)
-            && m.distance_sqr(p.position) <= m.attrs.follow_range.powi(2)
+        // continueAggroTargetConditions: forCombat().ignoreLineOfSight(),
+        // which has no range: the target is kept however far it goes.
+        p.alive && !p.creative && !p.spectator && m.ai.target == Some(Who::Player)
     }
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(p) = cx.w.player.clone() else { return };
@@ -561,6 +572,9 @@ pub fn carried_block_drops(
         .collect()
 }
 
+#[cfg(test)]
+#[path = "enderman_anger_tests.rs"]
+mod anger_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -767,6 +781,56 @@ mod tests {
             !out.iter()
                 .any(|d| matches!(d, drops::Drop::CarriedBlock(_))),
             "{out:?}"
+        );
+    }
+
+    /// `EndermanLookForPlayerGoal` finds its player with
+    /// `TargetingConditions.forCombat()`, which never picks a spectator: a
+    /// spectator staring at an enderman does not start the anger goal.
+    #[test]
+    fn a_spectator_staring_does_not_anger_an_enderman() {
+        use crate::mobs::world::{test_player, with_test_world};
+        let mut outcomes = Vec::new();
+        if !with_test_world(&[], |w, _| {
+            for spectator in [false, true] {
+                let mut world = w.clone();
+                let mut m = enderman();
+                m.position = Vec3::new(0.5, 64.0, 0.5);
+                let mut p = test_player(Vec3::new(2.5, 64.0, 0.5));
+                p.spectator = spectator;
+                let dx = m.position.x - p.position.x;
+                let dy = m.eye_y() - p.eye[1];
+                let dz = m.position.z - p.position.z;
+                let len = (dx * dx + dy * dy + dz * dz).sqrt();
+                p.look = [dx / len, dy / len, dz / len];
+                world.player = Some(p);
+                m.ai.goals.add(
+                    1,
+                    LookForPlayer {
+                        pending: false,
+                        aggro: 0,
+                        teleport: 0,
+                    },
+                );
+                let mut lr = horizon_core::random::LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &world,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut m.ai.goals);
+                goals.tick(&mut m, &mut cx);
+                outcomes.push(goals.is_running("LookForPlayer"));
+                m.ai.goals = goals;
+            }
+        }) {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            vec![true, false],
+            "a survival player's stare angers it; a spectator's does not"
         );
     }
 }

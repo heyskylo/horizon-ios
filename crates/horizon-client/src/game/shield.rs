@@ -4,12 +4,18 @@
 //! the block sound, attacker knockback (`blockedByItem`) and axes disabling
 //! the shield (`Player.blockUsingItem`, `BlocksAttacks.disable`).
 use super::Game;
+use super::creatures::source_damage_type;
 use horizon_client::{
     health::{BlockOutcome, Blocking, HurtSource},
     items::ItemStack,
+    mobs::{Damage, Who},
 };
 use horizon_core::random::RandomSource;
 use horizon_world::blocking_rules::{BlockingRules, DamageReduction, ItemDamageFunction};
+
+#[cfg(test)]
+#[path = "shield_ram_tests.rs"]
+mod ram_tests;
 
 /// `Inventory.SLOT_OFFHAND`: the `using` slot of an off-hand item.
 pub(super) const OFFHAND_SLOT: usize = 40;
@@ -113,6 +119,52 @@ impl Game<'_> {
             angle,
         })
     }
+    /// `LivingEntity.knockback` of the player by a mob event. A ram
+    /// (`RamTarget.tick`) names its hit's damage: `applyItemBlocking` runs a
+    /// second time for it, and `blockingFactor` halves the power when it
+    /// blocked part of it. What follows that block is the hurt's too
+    /// (`hurtBlockingItem`, `blockedByItem`), but not its sound: `onBlocked`
+    /// belongs to `hurtServer`.
+    pub(super) fn mob_pushes_player(
+        &mut self,
+        mut power: f64,
+        x: f64,
+        z: f64,
+        source: Damage,
+        ram_damage: Option<f32>,
+    ) {
+        let damage_type = source_damage_type(source);
+        let attacker = match source.attacker {
+            Some(Who::Mob(id)) => Some(id),
+            _ => None,
+        };
+        if let Some(damage) = ram_damage
+            && let Some(blocking) = self.player_blocking(source.from, damage_type, false)
+            && let blocked = blocking.blocked(damage)
+            && blocked > 0.0
+        {
+            let outcome = BlockOutcome {
+                blocked,
+                fully_blocked: blocked >= damage,
+                ..Default::default()
+            };
+            let hurt = HurtSource {
+                damage_type,
+                causing: attacker.map_or(0, |id| id as i32),
+                direct: 0,
+            };
+            self.after_block(outcome, (attacker, false), hurt);
+            power *= 0.5;
+        }
+        // A player's source names no melee attacker, as its damage's doesn't.
+        let _attacker = self.knockback_scope(attacker.map_or(0, |id| id as i32));
+        let source = HurtSource {
+            damage_type,
+            causing: 0,
+            direct: 0,
+        };
+        self.knock_back_player(power, x, z, source);
+    }
     /// After a hurt with the shield raised: `hurtBlockingItem`, `onBlocked`
     /// and, for melee from a mob, `blockUsingItem`. `source` is the hit's.
     pub(super) fn after_block(
@@ -151,21 +203,27 @@ impl Game<'_> {
         } else {
             (base + factor * outcome.blocked).floor() as i32
         };
-        if item_damage > 0 && !self.creative {
+        if item_damage > 0
+            && !self.creative
+            && let Some(max) = blocking_item_max_damage(
+                &stack,
+                self.items()
+                    .get(&stack.item)
+                    .map_or(0, |item| item.max_damage),
+            )
+        {
             let loss = self.wear(&stack, item_damage as u32);
-            let max = self
-                .res
-                .items()
-                .get(&stack.item)
-                .map_or(0, |i| i.max_damage);
             let cell = self.stack_in_mut(slot);
-            if let Some(s) = cell.as_mut()
-                && max > 0
+            if loss > 0
+                && let Some(s) = cell.as_mut()
             {
-                s.damage += loss;
+                s.damage = s.damage.saturating_add(loss).min(max);
                 if s.damage >= max {
                     let broken = s.clone();
-                    *cell = None;
+                    s.count -= 1;
+                    if s.count == 0 {
+                        *cell = None;
+                    }
                     self.using = None;
                     // ItemStack.hurtAndBreak: onEquippedItemBroken for the hand it was used from.
                     let hand = if slot == OFFHAND_SLOT {
@@ -297,4 +355,29 @@ impl Game<'_> {
             }
         }
     }
+}
+
+/// `ItemStack.isDamageableItem` and `getMaxDamage` for the blocking stack.
+fn blocking_item_max_damage(stack: &ItemStack, prototype_max: u32) -> Option<u32> {
+    let data = stack.data();
+    let component = |id| data.and_then(|data| data.other(id));
+    if stack.count == 0
+        || component("minecraft:unbreakable").is_some()
+        || component("!minecraft:max_damage").is_some()
+        || component("!minecraft:damage").is_some()
+    {
+        return None;
+    }
+    // A non-damageable prototype supplies neither MAX_DAMAGE nor DAMAGE.
+    if prototype_max == 0
+        && stack.damage == 0
+        && !data.is_some_and(|data| data.explicit_zero_damage)
+    {
+        return None;
+    }
+    let max = match component("minecraft:max_damage") {
+        Some(value) => horizon_world::datafix::dynamic::as_int(Some(value), 0).max(0) as u32,
+        None => prototype_max,
+    };
+    (max > 0).then_some(max)
 }
