@@ -1079,8 +1079,7 @@ pub const WOLF_ARMOR_DURABILITY: i32 = 64;
 /// Species-specific persistent state (variants, colours, taming, ageing...).
 #[derive(Clone, Debug, Default)]
 pub struct Extra {
-    /// `Level.isClientSide`: a client's copy (a driven mount), which `Entity.hurt` leaves alone.
-    pub client_side: bool,
+    pub client_side: bool, // `Level.isClientSide`: a client copy, which `Entity.hurt` leaves alone.
     /// Saved fish/axolotl bucket flag; tadpoles save a constant true value.
     pub from_bucket: bool,
     /// Command-created armor instances, shared by commands and runtime damage.
@@ -1436,7 +1435,6 @@ impl Extra {
         self.main_hand.take()
     }
 }
-
 /// How far the boxes of a set of mobs reach from their positions: the widest reach sideways, below
 /// and above among them, worked out from each mob's real box ([`Mob::bounds`]: a shulker's grows
 /// toward its open lid, sideways or below its position). A box query over many mobs (a vehicle's,
