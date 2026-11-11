@@ -9,6 +9,7 @@ mod advancements;
 pub mod anticheat;
 pub mod arrivals;
 pub mod attributes;
+mod biome_resend;
 pub mod border;
 pub mod chunk_sync;
 pub mod chunks;
