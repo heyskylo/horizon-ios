@@ -110,7 +110,7 @@ jobs:
           fi
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       # Dependencies and the workspace's own build, saved from main's runs (pull requests read main's cache).
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: steps.rust.outputs.required != 'false' && runner.environment == 'github-hosted'
         with:
           shared-key: verify
@@ -166,7 +166,7 @@ jobs:
               libx11-xcb-dev libfontconfig-dev libvulkan-dev libasound2-dev libudev-dev
           fi
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: steps.launcher.outputs.required != 'false' && runner.environment == 'github-hosted'
         with:
           workspaces: launcher
@@ -199,13 +199,14 @@ jobs:
         run: |
           $cores = (Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
           "CARGO_BUILD_JOBS=$cores" >> $env:GITHUB_ENV
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 2026-11
         with:
+          toolchain: stable
           targets: aarch64-pc-windows-msvc
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: windows-arm64-game
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: launcher
           shared-key: windows-arm64-launcher
