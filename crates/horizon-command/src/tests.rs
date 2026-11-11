@@ -1287,7 +1287,7 @@ fn profiler_commands_parse_and_complete_for_a_player_without_operator_permission
     ] {
         assert_eq!(
             tree.parse(line, &reg).executable().unwrap().1,
-            MOD_COMMAND,
+            PROFILER_COMMAND,
             "{line}"
         );
     }
@@ -1308,4 +1308,26 @@ fn profiler_commands_parse_and_complete_for_a_player_without_operator_permission
         assert!(tree.parse(line, &reg).executable().is_err(), "{line}");
     }
     assert!(vanilla::game_dispatcher().find("profiler").is_none());
+    assert!(tree.has_horizon_profiler());
+}
+
+#[test]
+fn a_servers_own_profiler_keeps_its_node_and_is_not_horizons() {
+    let mut server = vanilla::game_dispatcher().clone();
+    let node = server.literal(0, "profiler");
+    server.executes(node, "server:profiler");
+    let open = server.literal(node, "open");
+    server.executes(open, "server:profiler");
+    let tree = server.with_profiler();
+    assert!(!tree.has_horizon_profiler());
+    let input = "profiler ";
+    let parse = tree.parse(input, &reg());
+    let offered: Vec<_> = tree
+        .client_suggestions(&parse, input.len(), &reg())
+        .1
+        .into_iter()
+        .map(|s| s.text)
+        .collect();
+    assert_eq!(offered, ["open"]);
+    assert!(!vanilla::game_dispatcher().has_horizon_profiler());
 }

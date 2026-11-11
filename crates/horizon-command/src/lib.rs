@@ -27,6 +27,8 @@ use horizon_client_core::text::Text;
 
 /// The command id of a mod's command (`Dispatcher::with_mod_commands`).
 pub const MOD_COMMAND: &str = "mod";
+/// The command id of the client's own `/profiler` (`Dispatcher::with_profiler`).
+pub const PROFILER_COMMAND: &str = "horizon:profiler";
 
 /// A command error (CommandSyntaxException): the message and, for parse
 /// errors, the input and cursor it occurred at.
@@ -871,36 +873,42 @@ impl Dispatcher {
         let command = d.literal(0, "profiler");
         for action in ["start", "stop"] {
             let action_node = d.literal(command, action);
-            d.executes(action_node, MOD_COMMAND);
+            d.executes(action_node, PROFILER_COMMAND);
             for side in ["client", "server"] {
                 let side = d.literal(action_node, side);
-                d.executes(side, MOD_COMMAND);
+                d.executes(side, PROFILER_COMMAND);
                 if action == "start" {
                     for gpu in PROFILER_GPU {
                         let gpu = d.literal(side, gpu);
-                        d.executes(gpu, MOD_COMMAND);
+                        d.executes(gpu, PROFILER_COMMAND);
                     }
                 }
             }
             if action == "start" {
                 for gpu in PROFILER_GPU {
                     let gpu = d.literal(action_node, gpu);
-                    d.executes(gpu, MOD_COMMAND);
+                    d.executes(gpu, PROFILER_COMMAND);
                 }
             }
         }
         let status = d.literal(command, "status");
-        d.executes(status, MOD_COMMAND);
+        d.executes(status, PROFILER_COMMAND);
         for action in ["open", "share"] {
             let action = d.literal(command, action);
-            d.executes(action, MOD_COMMAND);
+            d.executes(action, PROFILER_COMMAND);
             let id = d.argument(action, "id", ArgType::Word);
-            d.executes(id, MOD_COMMAND);
+            d.executes(id, PROFILER_COMMAND);
         }
         let mark = d.literal(command, "mark");
         let name = d.argument(mark, "name", ArgType::Greedy);
-        d.executes(name, MOD_COMMAND);
+        d.executes(name, PROFILER_COMMAND);
         d
+    }
+    /// Whether this tree's `/profiler` is the one [`Self::with_profiler`] adds, not a server's or a mod's of the same name.
+    pub fn has_horizon_profiler(&self) -> bool {
+        self.parse("profiler status", &Registries::default())
+            .executable()
+            .is_ok_and(|(_, command)| command == PROFILER_COMMAND)
     }
     /// A root literal by name.
     pub fn find(&self, name: &str) -> Option<usize> {
