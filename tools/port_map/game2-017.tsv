@@ -36,6 +36,7 @@ ChiseledBookShelfBlockEntity.canTakeItem	port	crates/horizon-client/src/game/mac
 ChiseledBookShelfBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::place	Items as container component
 ChiseledBookShelfBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::collect	Items as container component
 CommandBlockEntity.onModeSwitch	port	crates/horizon-client/src/game/command_blocks.rs::Game::apply_command_block	mode switch; the AUTO schedule follows the setAutomatic step
+CommandBlockEntity.onUpdated	port	crates/horizon-client/src/game/command_blocks.rs::Game::apply_command_block	sends the edited block entity to clients and marks the chunk dirty
 CommandBlockEntity.isConditional	port	crates/horizon-client/src/game/command_blocks.rs::conditional	
 CommandBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::place	custom name component
 CommandBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::collect	custom name component
