@@ -294,8 +294,7 @@ fn drowned_throw(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
     if let Some(a) = p.arrow.as_mut() {
         a.set_item(&trident);
     }
-    p.shoot(
-        &mut crate::random_source::entity(),
+    p.shoot_own(
         [xd, yd + dist * f64::from(0.2_f32), zd],
         1.6,
         ranged_attack_uncertainty(cx.w.difficulty.id),
@@ -641,7 +640,7 @@ pub fn custom_server_ai_step(m: &mut Mob, cx: &mut Cx) {
         } else if m.fluids.eye_in_water {
             m.extra.counter += 1;
             if m.extra.counter >= 600 {
-                m.extra.counter2 = 300;
+                m.extra.counter2 = 301;
             }
         } else {
             m.extra.counter = -1;
@@ -895,8 +894,6 @@ pub fn perform_ranged_attack(m: &mut Mob, who: Who, cx: &mut Cx, power: f32) {
     let dist = (xd * xd + zd * zd).sqrt();
     // AbstractArrow.setBaseDamageFromMob: power * 2 + triangle(difficulty * 0.11, 0.57425).
     let id = i32::from(cx.w.difficulty.id);
-    let mut arrow_random = crate::random_source::entity();
-    let base = f64::from(power) * 2.0 + arrow_random.triangle(f64::from(id) * 0.11, 0.574_25);
     let effect = match m.species() {
         Species::Stray => Some(("minecraft:slowness", 600)),
         Species::Bogged => Some(("minecraft:poison", 100)),
@@ -905,17 +902,20 @@ pub fn perform_ranged_attack(m: &mut Mob, who: Who, cx: &mut Cx, power: f32) {
     };
     let mut p = Projectile::new(
         ProjectileKind::Arrow {
-            base_damage: base,
+            base_damage: 0.0,
             critical: false,
             effect,
         },
         start,
         Some(Who::Mob(m.id)),
     );
+    // From the arrow's own random, after its UUID.
+    if let (ProjectileKind::Arrow { base_damage, .. }, Some(a)) = (&mut p.kind, p.arrow.as_mut()) {
+        *base_damage = f64::from(power) * 2.0 + a.random.triangle(f64::from(id) * 0.11, 0.574_25);
+    }
     p.set_bonus(super::gear::arrow_bonus(m));
     ignite_for_wither_skeleton(m, &mut p);
-    p.shoot(
-        &mut arrow_random,
+    p.shoot_own(
         [xd, yd + dist * f64::from(0.2_f32), zd],
         1.6,
         (14 - id * 4) as f32,
@@ -1676,5 +1676,49 @@ mod trident_continue_tests {
             Some((true, false)),
             "a trident attack starts for a drowned holding one and stops when it is gone"
         );
+    }
+
+    #[test]
+    fn drowned_and_husk_conversion_starts_at_301_ticks_and_converts_on_tick_301() {
+        let ran = with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:zombie"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            m.fluids.eye_in_water = true;
+            m.extra.counter = 599;
+
+            let mut lr = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w,
+                lr: &mut lr,
+                events: &mut events,
+            };
+
+            // Tick 600 of being in water starts conversion with counter2 = 301.
+            custom_server_ai_step(&mut m, &mut cx);
+            assert_eq!(m.extra.counter, 600);
+            assert_eq!(m.extra.counter2, 301);
+
+            // Conversion ticks down across 300 ticks without firing.
+            for i in (2..=301).rev() {
+                assert_eq!(m.extra.counter2, i);
+                cx.events.clear();
+                custom_server_ai_step(&mut m, &mut cx);
+                assert!(cx.events.is_empty(), "tick {i} should not convert yet");
+            }
+            assert_eq!(m.extra.counter2, 1);
+
+            // On the 301st tick of conversion, counter2 reaches 0 and converts.
+            cx.events.clear();
+            custom_server_ai_step(&mut m, &mut cx);
+            assert_eq!(m.extra.counter2, 0);
+            assert!(
+                cx.events
+                    .iter()
+                    .any(|e| matches!(e, MobEvent::Convert { .. })),
+                "conversion should trigger on tick 301"
+            );
+        });
+        let _ = ran;
     }
 }
