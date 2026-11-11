@@ -53,8 +53,10 @@ and compares their outputs.
 - **One version: 26.3.** Parity work targets 26.3 until its parity is good, redstone first. Don't open pull requests
   that move Horizon to a newer Minecraft version for now; to join servers on a newer version, put a Via proxy
   (ViaVersion, ViaProxy) in front of them.
-- **Gameplay changes come with a harness**, new or extended, so the next change can't silently break them.
-  [The parity workflow](docs/parity-workflow.md) shows how harnesses run; copy a nearby one.
+- **Ports of vanilla behaviour come with a harness**, new or extended, so the next change can't silently break
+  them. [The parity workflow](docs/parity-workflow.md) shows how harnesses run; copy a nearby one. Where vanilla
+  has nothing to compare (Horizon's own features, performance work, refactors), no harness is needed: one Rust
+  test of the changed behaviour, or the numbers before and after.
 - **Horizon's own features** (the launcher, the new menus) follow [the design system](docs/design-system.md) and are
   off by default wherever they would change the vanilla look.
 - **Three layers: engine, platform, Horizon.**
