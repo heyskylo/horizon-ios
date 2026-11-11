@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -198,6 +199,17 @@ class PrReadyTests(unittest.TestCase):
         by_name = {step.name: step for step in steps}
         for name in ("launcher rustfmt", "launcher clippy", "launcher tests"):
             self.assertIsNone(by_name[name].skip)
+
+    @unittest.skipUnless(os.name == "nt", "the Windows runner's own jobs")
+    def test_a_windows_check_ends_what_it_left_running(self):
+        """A check that exits leaving a child that holds its output: the run goes on, and the child is ended."""
+        leaving = ("import subprocess, sys; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']);"
+                   " print('left one')")
+        step = pr_ready.Step("leaving", f"python3 -c \"{leaving}\"")
+        started = time.monotonic()
+        pr_ready.run_windows([step], verbose=False)
+        self.assertLess(time.monotonic() - started, 60)
+        self.assertEqual((step.status, step.output.strip()), ("pass", "left one"))
 
     @unittest.skipUnless(shutil.which("cargo"), "needs cargo")
     def test_windows_launcher_checks_include_binary_tests(self):

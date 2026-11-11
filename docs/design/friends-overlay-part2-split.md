@@ -21,6 +21,39 @@ starting code. This checklist does not authorize changing #14224 or another cont
 - New implementation branches start from a recorded main/dependency SHA after spec approval.
   Earlier merged work must not reappear in the next PR's review diff.
 
+## Existing-backend structure prerequisites
+
+Before adding Part 2 behaviour, separate the existing `horizon-client-render::social`
+responsibilities below. These are small **pure-move** review units, not implementation of B1
+or permission to open a public overlay. Keep `social.rs` as the compatible public facade;
+private submodules serve existing production callers without adding unused APIs.
+
+| Step | Private module | Existing responsibility / vanilla reference |
+| --- | --- | --- |
+| R0 | `social/model.rs` | Shared DTOs and response parsing: FriendDto, FriendData and presence records. |
+| R1 | `social/list_updates.rs` | List state and worker: RemoteFriendListUpdateHandler. |
+| R2 | `social/service.rs` | HTTP, cache and request gates: MinecraftServicesFriendsService. Split transport into another pure move if the measured diff needs it. |
+| R3 | `social/presence.rs` | PresenceHandler state, privacy policy and client-driven lifecycle. |
+| R4 | `social/manager.rs` | PlayerSocialManager flags, enablement, settings and action facade. This is a required separate module, not an optional empty shell. |
+
+Measure additions plus deletions, tests and glue for each PR; moving 800 lines is not a small
+change because its net line count is zero. Keep each review around 500 changed lines and base
+it on the preceding landed step. A local stack is not permission to publish cumulative main
+PRs. Preserve public paths, existing tests, singleton ownership, lock boundaries, thread count,
+request order and completion timing. Necessary visibility changes stay within the private
+module tree. Do not conceal cache, parsing or action fixes inside a relocation.
+
+After R0-R4, audit each actual implementation against its vanilla counterpart, including
+callers, state ownership, producer/consumer paths, tail assignments, errors, concurrency and
+start/stop/exit. Record matches, concrete differences and unverified cases before continuing
+Part 2. The preserved monolithic lock/state may still cross module responsibilities: physical
+separation alone is not a claim of complete architectural or behavioural parity. Fix audit
+findings in separate scoped PRs; do not expand the pure moves or silently drop existing tests.
+
+B1's generation, events and action results need real U2/T2 consumers and an agreed delivery
+contract. A public getter or queue used only by a temporary fixture is not production wiring.
+All entry-placement and maintainer design gates in the companion spec remain in force.
+
 ## Dependency map
 
 ```text

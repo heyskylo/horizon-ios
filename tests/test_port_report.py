@@ -1,8 +1,12 @@
 import json
 from pathlib import Path
+import subprocess
 import tempfile
+import sys
 import unittest
 from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
 
 from tools import port_report as report
 from tools import version_port as port
@@ -181,6 +185,16 @@ class VersionPortReportTests(unittest.TestCase):
     def test_class_names_drop_moved_old_names(self):
         self.assertEqual(port.class_names({"a/X": 0, "a/Y": 0}, {"b/X": 0, "a/Y": 0}, {"a/X": "b/X"}),
                          ["a/Y", "b/X"])
+
+
+class UsedThroughVersionPortTests(unittest.TestCase):
+    """The module is used through `tools/version_port.py`; run on its own it says so."""
+
+    def test_it_says_how_it_is_used(self):
+        result = subprocess.run([sys.executable, str(ROOT / "tools/port_report.py"), "--help"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("version_port.py", result.stdout + result.stderr)
 
 
 if __name__ == "__main__":
