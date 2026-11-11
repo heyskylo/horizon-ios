@@ -56,7 +56,7 @@ fn exporters_write_to_their_log_file_without_a_console() {
     let root = probe().parent().unwrap();
     let path = root.join("exporter.log");
     let log = fs::File::create(&path).unwrap();
-    let jdk = horizon_prepare::java::Jdk {
+    let jdk = horizon_platform::prepare::java::Jdk {
         java: probe().into(),
         javac: probe().into(),
     };

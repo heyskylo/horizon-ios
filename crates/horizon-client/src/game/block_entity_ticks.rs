@@ -42,12 +42,25 @@ impl Game<'_> {
         self.trial_spawner_tick_positions.clear();
         self.item_columns = Some(Default::default());
         self.pass_mobs = Some(Default::default());
-        for slot in self.world.block_entity_tickers().iter().copied() {
+        let tickers = self.world.block_entity_tickers();
+        let mut last_chunk = (i32::MIN, i32::MIN);
+        let mut last_chunk_ticking = false;
+        for slot in tickers.iter().copied() {
             let pos = slot.0;
+            let chunk = (pos.0 >> 4, pos.2 >> 4);
+            let chunk_ticking = if chunk == last_chunk {
+                last_chunk_ticking
+            } else {
+                last_chunk = chunk;
+                last_chunk_ticking = ticking(pos.0, pos.2);
+                last_chunk_ticking
+            };
+            if !chunk_ticking {
+                continue;
+            }
             // Ticks before this one can remove it (`TickingBlockEntity.isRemoved`).
             if self.world.block_entities.is_asleep(&pos)
                 || !self.world.block_entities.is_live(slot)
-                || !ticking(pos.0, pos.2)
                 || !self.border.contains(f64::from(pos.0), f64::from(pos.2))
             {
                 continue;
@@ -140,7 +153,18 @@ impl Game<'_> {
                 .shulkers
                 .get_mut(&pos)
                 .map(|shulker| shulker.tick(pos, facing));
-            if let Some(push) = tick.and_then(|tick| tick.push) {
+            let Some(tick) = tick else { continue };
+            // `ShulkerBoxBlockEntity.doNeighborUpdates` at the start and the
+            // end of an opening or closing lid: the box's collision shape
+            // moved, so the neighbours' shapes and their redstone updates run.
+            for _ in 0..tick.neighbor_updates {
+                let state = self.world.block(pos[0], pos[1], pos[2]);
+                let at = BlockPos::new(pos[0], pos[1], pos[2]);
+                self.with_level(|b, level, ticks| {
+                    b.shulker_neighbor_updates(level, ticks, at, state)
+                });
+            }
+            if let Some(push) = tick.push {
                 pushes.push((pos, facing, push));
             }
         }
@@ -210,8 +234,14 @@ impl Game<'_> {
     /// (`ServerLevel.areEntitiesLoaded`).
     pub(super) fn block_ticking_area(&self) -> impl Fn(i32, i32) -> bool + use<> {
         let levels = self.tickets.levels();
-        let pending = self.world.entities_pending.clone();
-        move |x, z| levels.block_ticking_at(x, z) && !pending.contains(&(x >> 4, z >> 4))
+        let has_pending = !self.world.entities_pending.is_empty();
+        let pending = has_pending.then(|| self.world.entities_pending.clone());
+        move |x, z| {
+            levels.block_ticking_at(x, z)
+                && pending
+                    .as_ref()
+                    .is_none_or(|p| !p.contains(&(x >> 4, z >> 4)))
+        }
     }
     /// `DaylightDetectorBlock.tickEntity` of the detector at `pos`.
     fn tick_daylight_detector(&mut self, pos: Pos) {
