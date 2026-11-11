@@ -45,7 +45,7 @@ if __name__ == '__main__':
         differences = [{'label': op['label'], 'expected': a, 'actual': b}
                        for op, a, b in zip(recorded, expected, native) if a != b]
         report = {'records': len(native), 'passed': len(native) - len(differences),
-                  'comparison': 'complete raw records, no masks/tolerances',
+                  'comparison': 'complete records; only root entity attribute-list order canonicalized',
                   'reference_sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
                   'fresh_java_sha256': hashlib.sha256((build / 'vanilla.jsonl').read_bytes()).hexdigest(),
                   'differences': differences}

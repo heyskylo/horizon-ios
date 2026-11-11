@@ -732,30 +732,66 @@ ATTRIBUTES_LIST = re.compile(r'attributes: \[')
 
 
 def unordered_attributes(record):
-    """The record with every SNBT `attributes: [...]` list in its messages sorted by entry.
+    """Sort only the root attributes list in full `/data get entity` feedback.
 
     `AttributeMap.pack` lists the instances in the iteration order of an `Object2ObjectOpenHashMap` keyed by
     `Holder.Reference`, which keeps `Object.hashCode`: an identity hash, so the order changes with the JVM's
     startup (the same script gives another order under another main class). Each entry keeps its text and
     styles; only the entries' order is normalised. parity_fuzz compares these lists unordered too."""
     out = json.loads(json.dumps(record))
+    if not re.fullmatch(r'/data get entity \S+', out.get('cmd', '')):
+        return out
     for line in out.get('messages') or []:
-        if not isinstance(line, list) or not all(isinstance(span, list) and len(span) == 2 for span in line):
+        if not isinstance(line, list) or not all(isinstance(span, list) and len(span) == 2
+                                               and isinstance(span[0], str) for span in line):
             continue
         chars = [(ch, span[1]) for span in line for ch in span[0]]
         text = ''.join(ch for ch, _ in chars)
-        for match in reversed(list(ATTRIBUTES_LIST.finditer(text))):
+        prefix = ' has the following entity data: '
+        body = text.find(prefix)
+        if body < 0 or text[body + len(prefix):body + len(prefix) + 1] != '{':
+            continue
+        # Find actual root keys, not quoted text, suffixes of other keys or nested custom data.
+        root = body + len(prefix)
+        stack, quote, matches = [], None, []
+        i = root
+        while i < len(text):
+            ch = text[i]
+            if quote:
+                if ch == '\\':
+                    i += 1
+                elif ch == quote:
+                    quote = None
+            elif ch in ('"', "'"):
+                quote = ch
+            elif ch in '[{':
+                stack.append(']' if ch == '[' else '}')
+            elif ch in ']}':
+                if not stack or stack.pop() != ch:
+                    break
+                if not stack:
+                    i += 1
+                    break
+            elif stack == ['}'] and (i == root + 1 or text[i - 2:i] == ', '):
+                match = ATTRIBUTES_LIST.match(text, i)
+                if match:
+                    matches.append(match)
+            i += 1
+        # Malformed or truncated SNBT stays exact, rather than being repaired by sorting.
+        if i != len(text) or stack or quote or not matches:
+            continue
+        for match in reversed(matches):
             start = i = match.end()
-            depth, quoted, cuts = 0, False, [start]
+            depth, quoted, cuts = 0, None, [start]
             while i < len(text):
                 ch = text[i]
                 if quoted:
                     if ch == '\\':
                         i += 1
-                    elif ch == '"':
-                        quoted = False
-                elif ch == '"':
-                    quoted = True
+                    elif ch == quoted:
+                        quoted = None
+                elif ch in ('"', "'"):
+                    quoted = ch
                 elif ch in '[{':
                     depth += 1
                 elif ch in ']}':
@@ -770,10 +806,12 @@ def unordered_attributes(record):
                 continue
             cuts.append(i)
             entries = [chars[a:b] for a, b in zip(cuts[0::2], cuts[1::2])]
-            separator = chars[cuts[1]:cuts[2]]
+            if not all(entry and entry[0][0] == '{' and entry[-1][0] == '}' for entry in entries):
+                continue
+            separators = [chars[a:b] for a, b in zip(cuts[1::2], cuts[2::2])]
             ordered = sorted(entries, key=lambda e: json.dumps(e))
             joined = ordered[0]
-            for entry in ordered[1:]:
+            for separator, entry in zip(separators, ordered[1:]):
                 joined = joined + separator + entry
             chars[start:i] = joined
             text = ''.join(ch for ch, _ in chars)
