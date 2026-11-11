@@ -147,6 +147,11 @@ pub(in crate::game) struct CommandExtras {
     /// The `CommandResultCallback` results of the outermost source, when a
     /// harness records them.
     pub results: Option<Vec<(bool, i32)>>,
+    /// How many of `adv.announced` a command's own `broadcastChanges` had
+    /// made: the harness records those with the command, and leaves what
+    /// `run_command`'s check after it earns for the next tick, as vanilla
+    /// does for a command that calls no `broadcastChanges` (`/loot give`).
+    pub broadcast_announced: usize,
     /// The running `/pregen` task.
     pub pregen: Option<super::pregen::PregenTask>,
 }
