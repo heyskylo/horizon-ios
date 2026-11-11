@@ -418,6 +418,12 @@ def cases(facts, count, seed, only):
                 for flag, odds in (('baby', 0.2), ('tame', 0.6), ('sheared', 0.25), ('chest', 0.15), ('loot', 0.5), ('brown', 0.3)):
                     if rng.random() < odds:
                         target[flag] = True
+                if target['type'] == 'minecraft:armor_stand':
+                    # ArmorStand.canUseSlot: the lock bits (the filter flags of the slots) and the arms hands need.
+                    if rng.random() < 0.5:
+                        target['arms'] = True
+                    if rng.random() < 0.5:
+                        target['disabled'] = rng.choice([8, 16, 32, 4, 2, 1, 0x7f, 0x3e, rng.randrange(0, 128)])
                 if target['type'] == 'minecraft:sulfur_cube' and rng.random() < 0.5:
                     target['equip'] = {'body': plain(rng.choice(SWALLOWED))}
                 if target['type'] == 'minecraft:copper_golem' and rng.random() < 0.7:
