@@ -1,15 +1,15 @@
 VillagerRenderer.getShadowRadius	port	crates/horizon-client/src/shadows.rs::mob_shadow_radius	a baby villager's radius is halved, as the strider's is
-VillagerRenderer.extractRenderState	port	crates/horizon-client/src/mobs/villager.rs::anim	unhappy head shake read here; gap: player: no held item is read (Horizon villagers carry none)
+VillagerRenderer.extractRenderState	port	crates/horizon-client/src/mobs/villager.rs::anim	unhappy head shake read here; the main-hand item (set while showing trades) is drawn over the crossed arms (render::held_item_transform)
 WanderingTraderRenderer.extractRenderState	port	crates/horizon-client/src/mobs/render.rs::render_with	the trader's unhappy counter is never ticked in vanilla (only Villager ticks it), so nothing is read
 WardenRenderer.<init>	port	crates/horizon-client/src/mobs/warden.rs::emissive_layers	the four emissive layers: bioluminescent, pulsating spots, tendrils, heart
 WardenRenderer.extractRenderState	port	crates/horizon-client/src/mobs/warden.rs::anim	tendril and heart clocks and the animation states (roar, sniff, emerge, dig, attack, sonic boom)
-WindChargeRenderer.submit	port	crates/horizon-client/src/game/wind.rs::Game::wind_charge_geometry	gap: player: the wind texture does not scroll (no xOffset), the charge is drawn with a fixed texture
-WitchRenderer.extractRenderState	port	crates/horizon-client/src/mobs/witch.rs::anim	nose wobble; gap: player: the held potion is not drawn (see WitchItemLayer.applyTranslation)
+WindChargeRenderer.submit	port	crates/horizon-client/src/game/wind.rs::Game::wind_charge_geometry	the wind texture scrolls (render::draw_scrolled, WIND_CHARGE_SCROLL)
+WitchRenderer.extractRenderState	port	crates/horizon-client/src/mobs/witch.rs::anim	nose wobble; the held potion is drawn at the nose (render::held_item_transform, WitchItemLayer.applyTranslation)
 WitherBossRenderer.getTextureLocation	port	crates/horizon-client/src/mobs/wither.rs::texture	invulnerable blink texture
 WitherBossRenderer.extractRenderState	port	crates/horizon-client/src/mobs/wither.rs::anim	invulnerable clock feeds the texture and scale; the powered glow is render.rs::energy_swirl
 WitherSkullRenderer.createSkullLayer	skip:data		the skull model is baked into entity-models.json
-WitherSkullRenderer.submit	port	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	gap: player: the skull is drawn as a flat sprite (Projectile::item_sprite), not the 3D skull model
-WitherSkullRenderer.extractRenderState	port	crates/horizon-client/src/projectiles.rs::Projectile::item_sprite	the dangerous (blue) skull texture is chosen here; gap: player: skull turns are not drawn (sprite only)
+WitherSkullRenderer.submit	port	crates/horizon-client/src/game/creatures/mob_geometry.rs::Game::mob_geometry	gap: player: the skull is drawn as a flat sprite (Projectile::item_sprite), not the 3D skull model
+WitherSkullRenderer.extractRenderState	port	crates/horizon-client/src/game/creatures/mob_geometry.rs::Game::mob_geometry	the wither_skull model turned to its flight, with the dangerous (blue) texture
 WolfRenderer.getModelTint	port	crates/horizon-client/src/mobs/tame.rs::tint	wet shade as a vertex colour
 WolfRenderer.extractRenderState	port	crates/horizon-client/src/mobs/tame.rs::anim	tail angle, head roll and shake body roll; texture, collar and armour are read at draw
 ZombieNautilusRenderer.bakeModels	skip:data		models are baked into entity-models.json
@@ -20,7 +20,7 @@ ZombieVillagerRenderer.extractRenderState	port	crates/horizon-client/src/mobs/re
 ZombieVillagerRenderer.isShaking	port	crates/horizon-client/src/mobs/render.rs::shaking	converting zombie villagers shake
 BlockDecorationLayer.submit	port	crates/horizon-client/src/game/mob_blocks.rs::Game::antenna_block_geometry	the antenna slot's block item with its block_state component applied, under applyBlockOnAntennaTransform
 BreezeEyesLayer.submit	port	crates/horizon-client/src/mobs/render.rs::layers	breeze eyes layer, full bright
-BreezeWindLayer.submit	port	crates/horizon-client/src/mobs/render.rs::layers	gap: player: the wind layer does not scroll (no texture offset, as noted in layers)
+BreezeWindLayer.submit	port	crates/horizon-client/src/mobs/render.rs::layers	the wind layer scrolls (BREEZE_WIND_SCROLL)
 CapeLayer.hasLayer	inline	crates/horizon-client/src/game/perspective.rs::Game::player_cape_geometry	only a skin with a cape sprite draws one, and never an invisible player
 CapeLayer.submit	port	crates/horizon-client/src/mobs/render.rs::cape	the body posed as the player's, the cape turned by the flap and leans
 CarriedBlockLayer.submit	port	crates/horizon-client/src/game/mob_blocks.rs::Game::mob_block_geometry	the enderman's carried block
@@ -54,13 +54,13 @@ MushroomCowMushroomLayer.submitMushroomBlock	port	crates/horizon-client/src/game
 PandaHoldsItemLayer.submit	port	crates/horizon-client/src/mobs/panda.rs::item_offset	item in the mouth of a sitting panda, with the eating bob
 ParrotOnShoulderLayer.submit	port	crates/horizon-client/src/mobs/render.rs::shoulder_parrot	
 ParrotOnShoulderLayer.submitOnShoulder	port	crates/horizon-client/src/mobs/render.rs::shoulder_parrot	the shoulder's parrot in the ON_SHOULDER pose with the avatar's walk animation, age and head turn
-PlayerItemInHandLayer.submitArmWithItem	port	crates/horizon-client/src/game/mob_blocks.rs::Game::held_item_geometry	gap: player: the spyglass raised to the eye is not drawn (see renderItemHeldToEye)
+PlayerItemInHandLayer.submitArmWithItem	port	crates/horizon-client/src/game/mob_blocks.rs::Game::held_item_geometry	the spyglass in use is drawn raised to the eye (render::held_to_eye_matrix, renderItemHeldToEye)
 PlayerItemInHandLayer.renderItemHeldToEye	port	crates/horizon-client/src/mobs/render.rs::held_to_eye_matrix	a spyglass in use, with no swing in progress, held at the eye
 RenderLayer.coloredCutoutModelCopyLayerRender	port	crates/horizon-client/src/mobs/render.rs::render_visible	coloured cutout layers drawn in render_visible
 RenderLayer.renderColoredCutoutModel	port	crates/horizon-client/src/mobs/render.rs::render_visible	coloured cutout layers drawn in render_visible
 RopesLayer.submit	inline	crates/horizon-client/src/mobs/render.rs::layers	the ropes layer over a harnessed happy ghast that holds a leash
 SheepWoolLayer.submit	port	crates/horizon-client/src/mobs/render.rs::layers	gap: minor: the outline-only pass for an invisible glowing sheep is not drawn
-SheepWoolUndercoatLayer.submit	port	crates/horizon-client/src/mobs/render.rs::layers	gap: player: a sheep named jeb_ gets no undercoat while its wool is white (vanilla always draws it for jeb_)
+SheepWoolUndercoatLayer.submit	port	crates/horizon-client/src/mobs/render.rs::layers	drawn for a dyed sheep or one named jeb_, sheared or not
 SimpleEquipmentLayer.submit	port	crates/horizon-client/src/mobs/render.rs::layers	pig, strider and nautilus saddles and the happy ghast harness
 SkeletonClothingLayer.submit	port	crates/horizon-client/src/mobs/render.rs::layers	stray and bogged overlay
 SlimeOuterLayer.submit	port	crates/horizon-client/src/mobs/render.rs::layers	translucent outer slime cube
@@ -68,7 +68,7 @@ SnowGolemHeadLayer.submit	port	crates/horizon-client/src/game/mob_blocks.rs::Gam
 SpinAttackEffectLayer.submit	port	crates/horizon-client/src/game/perspective.rs::Game::spin_attack_geometry	riptide spin model
 StuckInBodyLayer.submitStuckItem	port	crates/horizon-client/src/mobs/render.rs::stuck_in_body	each arrow or stinger in a random cube of the posed body, ON_SURFACE snapping to a face
 StuckInBodyLayer.submit	inline	crates/horizon-client/src/game/perspective.rs::Game::stuck_in_body_geometry	the arrow and stinger counts, for another player and for the local player
-SulfurCubeInnerLayer.submit	port	crates/horizon-client/src/mobs/render.rs::layers	gap: player: a block swallowed by a sulfur cube is not drawn inside the shell (sulfur_cube::inner returns nothing when the cube has a body)
+SulfurCubeInnerLayer.submit	port	crates/horizon-client/src/game/sulfur_cubes.rs::Game::sulfur_cube_body_geometry	gap: player: a swallowed skull or head is not drawn (skull items return early), and a swallowed block ignores its item's block_state
 TropicalFishPatternLayer.submit	port	crates/horizon-client/src/mobs/render.rs::layers	pattern on the small or large model, tinted
 VillagerProfessionLayer.submit	port	crates/horizon-client/src/mobs/render.rs::layers	type, profession and level layers; hat masks applied in render_visible
 VillagerProfessionLayer.getIdentifier	port	crates/horizon-client/src/mobs/render.rs::layers	texture paths built per type, profession and level
@@ -79,12 +79,12 @@ WitchItemLayer.applyTranslation	port	crates/horizon-client/src/mobs/render.rs::h
 WolfArmorLayer.submit	port	crates/horizon-client/src/mobs/render.rs::layers	gap: minor: the armour texture is fixed to the armadillo scute; the equipment asset is not read
 WolfArmorLayer.maybeRenderCracks	port	crates/horizon-client/src/mobs/render.rs::layers	cracks at three damage levels
 WolfCollarLayer.submit	port	crates/horizon-client/src/mobs/render.rs::layers	dyed collar
-AvatarRenderer.<init>	port	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	gap: player: no cape, ears, worn head, parrot or stuck-arrow layer; armour, held items, wings and spin are drawn
+AvatarRenderer.<init>	port	crates/horizon-client/src/game/creatures/mob_geometry.rs::Game::mob_geometry	gap: player: no cape, ears, worn head, parrot or stuck-arrow layer; armour, held items, wings and spin are drawn
 AvatarRenderer.getRenderOffset	port	crates/horizon-client/src/game/perspective.rs::Game::tick_player_model	gap: minor: other players are not lowered 0.125 when sneaking; only the local model is
 AvatarRenderer.submitNameDisplay	port	crates/horizon-client/src/game/names.rs::Game::name_tag_geometry	gap: minor: the 10 unit lift for ears is not applied (no ears)
-AvatarRenderer.extractRenderState	port	crates/horizon-client/src/mobs.rs::Mob::tick_avatar_pose	glide count, wings and swim read here; gap: player: arrow and stinger counts, parrots, cape, ears and the spyglass use are not read
+AvatarRenderer.extractRenderState	port	crates/horizon-client/src/mobs.rs::Mob::tick_avatar_pose	glide count, wings and swim read here; stuck arrows and stingers, shoulder parrots, ears, the cape and the spyglass are drawn by game/perspective.rs and render::cape
 AvatarRenderer.shouldShowName	port	crates/horizon-client/src/game/names.rs::Game::name_tags	name tags for players and named mobs
-AvatarRenderer.extractFlightData	port	crates/horizon-client/src/mobs/render.rs::base_transform_at	glide time drives the tilt; gap: player: the body does not turn toward the flight direction (no flying yaw)
+AvatarRenderer.extractFlightData	port	crates/horizon-client/src/mobs/render.rs::base_transform_at	glide time drives the tilt; the body turns toward the flight direction (lerped velocity)
 AvatarRenderer.extractCapeState	port	crates/horizon-client-render/src/camera.rs::AvatarBob::cape	the cape flap, lean and lean2 from the cloak lagging behind the body
 AvatarRenderer.renderRightHand	port	crates/horizon-client/src/game/frame_geometry.rs::Game::hand_geometry	first-person arm; gap: minor: no 0.1 radian arm tilt or sleeve toggle in hand_geometry
 AvatarRenderer.renderLeftHand	port	crates/horizon-client/src/game/frame_geometry.rs::Game::hand_geometry	first-person arm; gap: minor: no 0.1 radian arm tilt or sleeve toggle in hand_geometry
@@ -97,7 +97,7 @@ EnderDragonRenderState.getHeadPartYOffset	port	crates/horizon-client/src/game/dr
 EntityRenderState.fillCrashReportCategory	skip:debug		crash report detail only
 HumanoidRenderState.ticksUsingItem	port	crates/horizon-client/src/game/mob_blocks.rs::Game::held_item_geometry	use time for the hand that is using an item
 ItemClusterRenderState.extractItemGroupRenderState	port	crates/horizon-client/src/item_render.rs::rendered_amount	rendered count of the stack; the seed is taken in cluster_poses
-SheepRenderState.getWoolColor	port	crates/horizon-client/src/mobs/render.rs::sheep_wool_rgb	gap: player: a jeb_ sheep does not cycle through the rainbow (ColorLerper)
+SheepRenderState.getWoolColor	inline	crates/horizon-client/src/mobs/render.rs::layers	the wool colour the layers draw: a jeb_ custom name lerps the 16 dye colours over 25 ticks (jeb_wool_rgb), any other sheep uses pack_dyes::sheep_wool(color)
 BabyModelTransform.apply	skip:data		baby meshes are baked into entity-models.json
 HumanoidModel.createMesh	skip:data		humanoid mesh is baked into entity-models.json
 HumanoidModel.createArmorMeshSet	skip:data		armour meshes are baked into entity-models.json
@@ -109,7 +109,7 @@ QuadrupedModel.createBodyMesh	skip:data		quadruped mesh is baked into entity-mod
 QuadrupedModel.createLegs	skip:data		leg meshes are baked into entity-models.json
 BatModel.createBodyLayer	skip:data		bat model is baked into entity-models.json
 AllayModel.createBodyLayer	skip:data		allay model is baked into entity-models.json
-AllayModel.translateToHand	port	crates/horizon-client/src/mobs/render.rs::held_item_transform	gap: player: the allay's own hand transform (0.7 scale, forearm offset) is not applied; the humanoid hand offset is used
+AllayModel.translateToHand	port	crates/horizon-client/src/mobs/render.rs::allay_hand	
 AdultArmadilloModel.createBodyLayer	skip:data		armadillo model is baked into entity-models.json
 BabyArmadilloModel.createBodyLayer	skip:data		baby armadillo model is baked into entity-models.json
 AdultAxolotlModel.setupAnim	port	crates/horizon-client/src/mobs/body_anim.rs::axolotl	the axolotl pose dispatch
