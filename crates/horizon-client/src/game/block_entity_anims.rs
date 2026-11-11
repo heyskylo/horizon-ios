@@ -801,8 +801,17 @@ impl Game<'_> {
         let server = self.be_anims.gateway_servers.entry(key).or_insert(initial);
         let triggered = server.portal_tick();
         let age = server.age;
-        if let Some(BlockEntity::EndGateway(g)) = self.world.block_entities.get_mut(&pos) {
+        let mut aged = false;
+        if let Some(BlockEntity::EndGateway(g)) = self.world.block_entities.get_mut(&pos)
+            && g.age != age
+        {
             g.age = age;
+            aged = true;
+        }
+        if aged {
+            // `TheEndGatewayBlockEntity.portalTick` ends with `setChanged`: the
+            // age the beam and the chunk save read moved.
+            self.world.modified.insert((pos.0 >> 4, pos.2 >> 4));
         }
         if triggered {
             self.gateway_cooldown_event(key);
