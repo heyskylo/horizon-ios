@@ -340,6 +340,7 @@ impl Game<'_> {
                 Cursor::PointingHand => winit::window::CursorIcon::Pointer,
                 Cursor::NotAllowed => winit::window::CursorIcon::NotAllowed,
                 Cursor::ResizeNs => winit::window::CursorIcon::NsResize,
+                Cursor::ResizeEw => winit::window::CursorIcon::EwResize,
             });
         }
         self.cursor_icon = effective;

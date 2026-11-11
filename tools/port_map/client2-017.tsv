@@ -65,7 +65,8 @@ InWorldGameRulesScreen.onGamemasterPermissionChanged	port	crates/horizon-client/
 LanguageSelectScreen.addTitle	inline	crates/horizon-client-render/src/options_ui.rs::OptionsUi::layout	language search box at the top of the Language page
 LanguageSelectScreen.setInitialFocus	skip:ui		focus only: typed text goes to the language search whatever has focus (type_text)
 LanguageSelectScreen.addContents	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::layout	language rows of the Language page
-LanguageSelectScreen.addFooter	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::layout	gap: minor: unsure whether the translation warning line is drawn; Font... and Done buttons
+LanguageSelectScreen.addFooter	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::layout	the options.languageAccuracyWarning line above the Font... and Done buttons
+LanguageSelectScreen.LanguageSelectionList.Entry.getNarration	skip:other		narration text for screen readers
 LanguageSelectScreen.repositionElements	skip:ui		layout only: rows are laid out from the window size each frame
 LanguageSelectScreen.onDone	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::back	Done applies the chosen language (language_choice)
 LanguageSelectScreen.LanguageSelectionList.filterEntries	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::layout	filter by the search text against name and region (Page::Language)

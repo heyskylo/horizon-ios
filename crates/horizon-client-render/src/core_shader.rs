@@ -8,7 +8,7 @@
 //! - vanilla's uniform blocks get the bindings of [`BLOCKS`], and each of [`SAMPLERS`] is split
 //!   into a texture and a sampler object, combined again where the sampler is named;
 //! - the vertex inputs become globals the caller's [`Glue`] fills before the pack's `main`
-//!   (renamed `hz_main`) runs, and `gl_VertexID` reads the glue's expression;
+//!   (renamed `hz_main`) runs, and `gl_VertexID` and `gl_VertexIndex` read the glue's expression;
 //! - varyings get locations by name across the stages, the fragment output location 0.
 
 use std::collections::HashSet;
@@ -43,7 +43,7 @@ pub struct Glue<'a> {
     pub setup: &'a str,
     /// Statements after it, on `gl_Position`.
     pub finish: &'a str,
-    /// The expression `gl_VertexID` reads.
+    /// The expression the pack's `gl_VertexID` and `gl_VertexIndex` read.
     pub vertex_id: &'a str,
 }
 
@@ -337,6 +337,8 @@ fn rewrite(
             writeln!(out, "{ty} {name};").unwrap();
         }
     }
+    // Where the pack's own code starts: the glue above it is left as it is.
+    let pack_start = out.len();
     let mut outputs: Vec<&str> = Vec::new();
     for source_line in text.lines() {
         for line in declaration_lines(source_line) {
@@ -462,11 +464,18 @@ fn rewrite(
     if !vertex {
         return Ok(out);
     }
-    let mut code = replace_ident(
-        &rename_main(&out),
-        "gl_VertexID",
-        &format!("({})", glue.vertex_id),
+    // The pack's `gl_VertexID` and 26.3's `gl_VertexIndex` both mean vanilla's vertex number
+    // (four per quad, an `int`): both read the glue's expression, which for a pipeline that
+    // draws six vertices per quad turns its own `gl_VertexIndex` back into that number. Only the
+    // pack's code is rewritten, so the glue's expression keeps reading the real index.
+    let vertex_id = format!("({})", glue.vertex_id);
+    let pack = replace_ident(
+        &rename_main(&out[pack_start..]),
+        "gl_VertexIndex",
+        &vertex_id,
     );
+    let pack = replace_ident(&pack, "gl_VertexID", &vertex_id);
+    let mut code = format!("{}{pack}", &out[..pack_start]);
     write!(
         code,
         "void main() {{\n{}\nhz_main();\n{}\n}}\n",
@@ -631,6 +640,43 @@ mod tests {
             translate_core(VANILLA_VSH, VANILLA_FSH, &["IS_GUI"], &include, &GLUE).unwrap();
         assert_eq!(program.vertex.entry_points.len(), 1);
         assert_eq!(program.fragment.entry_points.len(), 1);
+    }
+
+    /// A 26.3 pack's `gl_VertexIndex` means vanilla's vertex number, four per quad. The text
+    /// pipeline draws six per glyph, so the pack's code must read the glue's `hz_vertex_id()`
+    /// (as `gl_VertexID` does), never the raw index.
+    #[test]
+    fn a_packs_gl_vertex_index_reads_the_glues_vertex_number() {
+        let vsh = "#version 330\n#include <minecraft:dynamictransforms.glsl>\n#include <minecraft:projection.glsl>\n\
+            in vec3 Position;\nin vec4 Color;\nin vec2 UV0;\nout vec4 vertexColor;\nout vec2 texCoord0;\n\
+            void main() {\n    int corner = gl_VertexIndex % 4;\n\
+                gl_Position = ProjMat * ModelViewMat * vec4(Position + vec3(float(corner), 0.0, 0.0), 1.0);\n\
+                vertexColor = Color;\n    texCoord0 = UV0;\n}\n";
+        let program = translate_core(vsh, VANILLA_FSH, &["IS_GUI"], &include, &GLUE).unwrap();
+        let module = &program.vertex;
+        let named = |name: &str| {
+            module
+                .functions
+                .iter()
+                .find(|(_, f)| f.name.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("no {name}"))
+        };
+        let (vertex_id, _) = named("hz_vertex_id");
+        let (_, pack_main) = named("hz_main");
+        fn calls(block: &naga::Block, target: naga::Handle<naga::Function>) -> bool {
+            block.iter().any(|statement| match statement {
+                naga::Statement::Call { function, .. } => *function == target,
+                naga::Statement::Block(inner) => calls(inner, target),
+                naga::Statement::If { accept, reject, .. } => {
+                    calls(accept, target) || calls(reject, target)
+                }
+                naga::Statement::Loop {
+                    body, continuing, ..
+                } => calls(body, target) || calls(continuing, target),
+                _ => false,
+            })
+        }
+        assert!(calls(&pack_main.body, vertex_id));
     }
 
     /// A 26.2-style pack shader as a HUD pack writes it: `#moj_import`, no locations, a flat
