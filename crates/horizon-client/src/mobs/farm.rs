@@ -150,6 +150,19 @@ pub fn sheep_color(climate: Climate, random: &mut impl RandomSource) -> u8 {
     }
 }
 
+/// `Sheep.readAdditionalSaveData`'s `Color`: `DyeColor.LEGACY_ID_CODEC` reads
+/// `Codec.BYTE` (any number tag, `Number.byteValue`), then `ByIdMap.continuous`
+/// with `OutOfBoundsStrategy.ZERO` gives white for a byte outside 0..=15; the
+/// old `& 15` wrapped the id instead.
+pub fn saved_color(value: Option<&horizon_world::nbt::Tag>) -> u8 {
+    value
+        .and_then(horizon_world::datafix::dynamic::as_number)
+        .map(|n| n.byte_value())
+        .and_then(|id| u8::try_from(id).ok())
+        .filter(|id| *id < 16)
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,5 +232,40 @@ mod tests {
         chicken_flap(&mut m);
         assert!((m.anim.flap_speed - 0.7).abs() < 1.0e-6);
         assert!((m.anim.flapping - 0.81).abs() < 1.0e-6);
+    }
+}
+
+#[cfg(test)]
+mod sheep_colour_save_tests {
+    use super::*;
+    use horizon_world::nbt::Tag;
+
+    /// `Sheep.readAdditionalSaveData` reads `Color` with
+    /// `DyeColor.LEGACY_ID_CODEC`, whose out-of-bounds strategy is white;
+    /// the `& 15` wrapped 99 to light blue (3).
+    #[test]
+    fn an_unknown_sheep_colour_reads_white() {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.id = "minecraft:sheep".into();
+        k.species = Species::Sheep;
+        let types = [("minecraft:sheep".into(), kind)].into();
+        let tag = Tag::compound([
+            ("id", Tag::String("minecraft:sheep".into())),
+            (
+                "Pos",
+                Tag::List(vec![
+                    Tag::Double(0.0f64.to_bits()),
+                    Tag::Double(64.0f64.to_bits()),
+                    Tag::Double(0.0f64.to_bits()),
+                ]),
+            ),
+            ("Color", Tag::Byte(99)),
+        ]);
+        let m = crate::entity_nbt::mob_from_nbt(&tag, &types, 1, None).unwrap();
+        assert_eq!(m.extra.color, 0, "an unknown dye id is white");
+        // Codec.BYTE takes an int tag's low byte: 259 is 3, light blue.
+        assert_eq!(saved_color(Some(&Tag::Int(259))), 3);
+        assert_eq!(saved_color(Some(&Tag::Byte(-1))), 0);
     }
 }
