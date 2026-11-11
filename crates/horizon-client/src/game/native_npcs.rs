@@ -21,6 +21,26 @@ impl Game<'_> {
     /// packet is handled (the hub is taken out then): call it from a tick or
     /// console hook. API @API:npc_entity_by_uuid@.
     pub(super) fn native_entity_by_uuid(&mut self, uuid: u128) -> Option<(String, u32, String)> {
+        if let Some(found) = self.native_find_entity_by_uuid(uuid) {
+            return Some(found);
+        }
+        // The levels not in place: each one is put in place to look (`npc_in_level`).
+        let words = horizon_client::lan::playerdata::uuid_ints(uuid);
+        let dims: Vec<&'static str> = self.levels.parked_dims().iter().map(|d| d.id()).collect();
+        for dimension in dims {
+            if let Some(Some((id, kind))) =
+                self.npc_in_level(dimension, |g| g.uuid_holder_here(words))
+            {
+                return Some((dimension.to_owned(), id, kind));
+            }
+        }
+        None
+    }
+    /// `native_entity_by_uuid` from `&self`, for many read-only lookups: the server's players and the
+    /// entities of the level in place. A level not in place keeps its entities in its own state, and
+    /// reading one means putting it in place (a `&mut` swap), so those levels are left to
+    /// `native_entity_by_uuid`. Same answer as it for these; None on a client. API @API:npc_entity_lookup@.
+    pub(super) fn native_find_entity_by_uuid(&self, uuid: u128) -> Option<(String, u32, String)> {
         if self.remote.is_some() || self.options.execution_role.is_client() {
             return None;
         }
@@ -32,37 +52,29 @@ impl Game<'_> {
             return Some((dimension, id, "minecraft:player".into()));
         }
         let words = horizon_client::lan::playerdata::uuid_ints(uuid);
-        let dims: Vec<&'static str> = std::iter::once(self.dim)
-            .chain(self.levels.parked_dims())
-            .map(|d| d.id())
-            .collect();
-        for dimension in dims {
-            let found = self.npc_in_level(dimension, |g| {
-                // The UUIDs the level remembers, checked against its entities: a
-                // remembered id may belong to an entity that is gone.
-                let id = g
-                    .persist
-                    .uuids
-                    .iter()
-                    .find(|(_, w)| **w == words)
-                    .map(|(id, _)| *id)?;
-                let t = g.level_entity(i32::try_from(id).ok()?)?;
-                if let Target::Mob(m) = t
-                    && !g.mobs.iter().any(|x| x.id == m && !x.removed)
-                {
-                    return None;
-                }
-                // The mod API has no natural fence knots (#13036).
-                if let Target::Knot(_) = t {
-                    return None;
-                }
-                Some((id, g.target_type(t)))
-            });
-            if let Some(Some((id, kind))) = found {
-                return Some((dimension.to_owned(), id, kind));
-            }
+        let (id, kind) = self.uuid_holder_here(words)?;
+        Some((self.dim.id().to_owned(), id, kind))
+    }
+    /// The entity of the level in place that `words` names, with its type: the UUIDs the level
+    /// remembers, checked against its entities (a remembered id may belong to an entity that is gone).
+    fn uuid_holder_here(&self, words: [i32; 4]) -> Option<(u32, String)> {
+        let id = self
+            .persist
+            .uuids
+            .iter()
+            .find(|(_, w)| **w == words)
+            .map(|(id, _)| *id)?;
+        let t = self.level_entity(i32::try_from(id).ok()?)?;
+        if let Target::Mob(m) = t
+            && !self.mobs.iter().any(|x| x.id == m && !x.removed)
+        {
+            return None;
         }
-        None
+        // The mod API has no natural fence knots (#13036).
+        if let Target::Knot(_) = t {
+            return None;
+        }
+        Some((id, self.target_type(t)))
     }
     /// The `minecraft:marker` entities of the loaded level `dimension`: each one's id, its position
     /// and its `data` compound (empty for a marker saved without data), as `/data get entity <marker>
@@ -116,6 +128,17 @@ impl Game<'_> {
                 .is_some_and(|e| g.native_entity_merge_nbt(e, nbt))
         })
         .unwrap_or(false)
+    }
+    /// The data of entity `id` in the loaded level `dimension`, as `native_entity_nbt` gives it for the
+    /// level in place (`/execute in <dimension> run data get entity`, without the `id`). Read after
+    /// `native_find_entity_by_uuid` or `native_entity_by_uuid` found the entity. None on a client, for a
+    /// level not loaded, and for no such entity. API @API:npc_entity_lookup@.
+    pub(super) fn native_entity_nbt_in(&mut self, dimension: &str, id: u32) -> Option<Compound> {
+        self.npc_in_level(dimension, |g| {
+            let entity = g.native_entity(id)?;
+            g.native_entity_nbt(entity)
+        })
+        .flatten()
     }
     /// Turns entity `id` of the loaded level `dimension` to `yaw` and `pitch`
     /// in degrees, as `/rotate` does (`Entity.forceSetRotation`: `setYRot`,

@@ -71,6 +71,12 @@ pub mod pages {
     pub use horizon_hooks::pages::{Act, Label, Page, Place, Row, register};
 }
 
+/// The lang files with a crate's text, loaded with the game's own (docs/layers.md, "Platform
+/// registries").
+pub mod lang {
+    pub use horizon_hooks::lang::{Files, register};
+}
+
 /// Drawing on the HUD (docs/layers.md, "Platform registries").
 pub mod hud {
     pub use horizon_hooks::hud::{Canvas, Corner, Layer, register};

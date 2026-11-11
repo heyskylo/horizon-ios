@@ -62,6 +62,11 @@ impl Game<'_> {
                     self.capture(true);
                 }
                 Screen::Paused | Screen::Inventory => {
+                    // RecipeBookComponent.keyPressed: a narrow window's open
+                    // book takes Escape to close itself, not the screen.
+                    if self.screen == Screen::Inventory && self.recipe_book_escape() {
+                        return Ok(());
+                    }
                     self.close_container();
                     self.pause_focus = None;
                     self.screen = Screen::Playing;

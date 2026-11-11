@@ -48,7 +48,7 @@ CommandSuggestions.extractSuggestions	port	crates/horizon-client-render/src/chat
 CommandSuggestions.extractUsage	port	crates/horizon-client-render/src/chat.rs::ChatScreen::draw	usage lines drawn upward from the bottom, as vanilla's bottom anchor
 CommandSuggestions.getNarrationMessage	inline	crates/horizon-client-render/src/chat.rs::SuggestionList::narration_message	the selected suggestion, said when the selection moves (ChatScreen::select); gap: minor: the chat screen's own narration does not add it (screen_info::chat reads the usage and the typed message)
 CommandSuggestions.hasAllowedInput	port	crates/horizon-client-render/src/chat.rs::ChatAbilities::allows	gap: minor: a /say style command is judged as a command, not a message (see hasMessageArguments)
-CommandSuggestions.SuggestionsList.extractRenderState	port	crates/horizon-client-render/src/chat.rs::ChatScreen::draw_list	rows, scroll marks, highlight and tooltip; gap: minor: no pointing-hand cursor over the rows
+CommandSuggestions.SuggestionsList.extractRenderState	port	crates/horizon-client-render/src/chat.rs::ChatScreen::draw_list	rows, scroll marks, highlight and tooltip, and the pointing hand over the list's rectangle
 CommandSuggestions.SuggestionsList.mouseClicked	port	crates/horizon-client-render/src/chat.rs::ChatScreen::click	row click selects and uses the suggestion
 CommandSuggestions.SuggestionsList.keyPressed	port	crates/horizon-client-render/src/chat.rs::ChatScreen::key	up, down and tab cycle and use the suggestion
 CommandSuggestions.SuggestionsList.cycle	port	crates/horizon-client-render/src/chat.rs::ChatScreen::cycle	moves the selection and the scroll offset

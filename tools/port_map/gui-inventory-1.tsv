@@ -95,7 +95,7 @@ BookViewScreen.pageBack	port	crates/horizon-client/src/game/books.rs::Game::turn
 BookViewScreen.pageForward	port	crates/horizon-client/src/game/books.rs::Game::turn_page	
 BookViewScreen.updateButtonVisibility	inline	crates/horizon-client/src/game/books.rs::Game::draw_book	back and forward shown by the page index
 BookViewScreen.keyPressed	port	crates/horizon-client/src/game/books.rs::Game::book_input	PageUp and PageDown turn pages
-BookViewScreen.extractRenderState	port	crates/horizon-client/src/game/books.rs::Game::draw_book	
+BookViewScreen.extractRenderState	port	crates/horizon-client/src/game/books.rs::Game::draw_book	pages, page buttons and the hovered word's tooltip and pointing hand (HoveredTextEffects.TOOLTIP_AND_CURSOR)
 BookViewScreen.visitText	inline	crates/horizon-client/src/game/books.rs::Game::draw_book	page lines and page indicator; links are found by book_link_at
 BookViewScreen.extractBackground	inline	crates/horizon-client/src/game/books.rs::Game::draw_book	
 BookViewScreen.BookAccess.getPage	inline	crates/horizon-client/src/game/books.rs::Game::draw_book	pages.get(page) with an empty page past the end
@@ -139,7 +139,7 @@ CreativeModeInventoryScreen.extractRenderState	port	crates/horizon-client/src/ga
 CreativeModeInventoryScreen.getTooltipFromContainerItem	port	crates/horizon-client/src/game/creative_screen.rs::Game::creative_tooltip_tabs	the containing tabs' names in blue, then a # search's tags in dark purple; none for a category tab's own grid slot
 CreativeModeInventoryScreen.getTabY	port	crates/horizon-client/src/creative.rs::Creative::tab_position	click area uses the drawn tab position, 4 px off vanilla's -32 / image height
 CreativeModeInventoryScreen.checkTabClicked	inline	crates/horizon-client/src/game/creative_screen.rs::Game::click_creative	loop over the tab rectangles
-CreativeModeInventoryScreen.checkTabHovering	inline	crates/horizon-client/src/game/creative_screen.rs::Game::draw_creative	tab title tooltip
+CreativeModeInventoryScreen.checkTabHovering	port	crates/horizon-client/src/creative.rs::hovered_tab	the 3 pixel inset (21x27) of a tab's 26x32 slot; Game::draw_creative draws the display name
 CreativeModeInventoryScreen.extractTabButton	inline	crates/horizon-client/src/game/creative_screen.rs::Game::draw_creative	tab sprite and icon item
 CreativeModeInventoryScreen.CustomCreativeSlot.mayPickup	inline	crates/horizon-client/src/creative.rs::click_display	a display slot holding a creative_slot_lock stack takes no click; gap: minor: isItemEnabled's feature check is not repeated
 CreativeModeInventoryScreen.ItemPickerMenu.getRowIndexForScroll	port	crates/horizon-client/src/creative.rs::Creative::first_row	

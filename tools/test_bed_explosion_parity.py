@@ -244,6 +244,7 @@ def main():
     horizon_server = [binary, '--resources', lab.LOCAL / 'horizon-client/26.3', '--dedicated', '--nogui']
     client = ['java', '-Xmx1g', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.KnockbackClient']
     kb.CASES, kb.SETUP, kb.PLAYERS = CASES, SETUP, ('Alice',)
+    kb.PROPERTIES['allow-flight'] = 'true'
     world = generate_world(vanilla_server, build)
     vanilla = compared(kb.run_side('vanilla', vanilla_server, client, build, world))
     horizon = compared(kb.run_side('horizon', horizon_server, client, build, world))
