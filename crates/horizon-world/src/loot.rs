@@ -2177,6 +2177,24 @@ fn enchant(stack: &mut LootStack, name: &str, level: i32) {
 mod namespace_tests {
     use super::*;
 
+    #[test]
+    fn set_enchantments_replaces_the_levels() {
+        let mut stack = LootStack::new("minecraft:book");
+        stack.enchantments.push(("minecraft:sharpness".into(), 1));
+        let map = serde_json::json!({"minecraft:sharpness": 2, "minecraft:unbreaking": 3});
+        set_enchantments(&mut stack, map.as_object().unwrap(), |value| {
+            value.as_i64().unwrap_or(0) as i32
+        });
+        assert_eq!(&*stack.item, "minecraft:enchanted_book");
+        assert_eq!(
+            stack.enchantments,
+            [
+                ("minecraft:sharpness".to_owned(), 2),
+                ("minecraft:unbreaking".to_owned(), 3),
+            ]
+        );
+    }
+
     /// The same root and packs share one map while it is held; other packs
     /// get their own.
     #[test]
