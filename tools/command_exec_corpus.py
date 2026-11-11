@@ -7601,7 +7601,7 @@ def explosion_player_experience():
                 cmd(f'/setblock {x0 + 7} {y0} {z0 + 8} sculk', expect_result=1),
                 cmd(f'/summon tnt {x0 + 8}.5 {y0 + 1} {z0 + 8}.5 {{fuse:1,Tags:["xp_tnt"]}}', expect_result=1)]
         if owner == 'zombie':
-            ops.append(cmd(f'/summon zombie {x0 + 1}.5 {y0} {z0 + 1}.5 {{NoAI:1b,Silent:1b,Tags:["xp_owner"]}}',
+            ops.append(cmd(f'/summon zombie {x0 + 1}.5 {y0} {z0 + 1}.5 {{NoAI:1b,Silent:1b,PersistenceRequired:1b,Tags:["xp_owner"]}}',
                            expect_result=1))
             owner = f'@e[type=zombie,tag=xp_owner,{near},limit=1]'
         if owner:
@@ -7609,7 +7609,7 @@ def explosion_player_experience():
         ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 2}, cmd('/tick freeze', False),
                 cmd(f'/execute if block {x0 + 8} {y0} {z0 + 8} air', expect_result=1),
                 cmd(f'/execute if entity @e[type=experience_orb,{near}]', comparison='positive_result'),
-                cmd(f'/kill @e[type=!player,{near}]', False)]
+                cmd(f'/kill @e[type=!player,{near}]', False), cmd(f'/kill @e[type=item,{near}]', False)]
     return ops + setup('/tick unfreeze', f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 6} {z0 + 15} air',
                        f'/forceload remove {x0} {z0}')
 
