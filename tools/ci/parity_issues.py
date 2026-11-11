@@ -6,8 +6,10 @@
 Reads tools/parity.py's state (.local/parity-runner/state.json) for the harnesses that finished since --since,
 shards merged into their harness, and compares them with the previous audit (.local/parity-runner/audit.json):
 
-- a harness that fails now and passed in the previous audit gets one open issue labelled parity-regression,
-  titled "Parity regression: <harness>" (an open one is commented on instead of opening another);
+- a harness that fails now and passed in the previous audit, or was in none before (one merged while its pull
+  request's parity job failed or was skipped: nine by 2026-11-10, #15158, which no audit reported), gets one open
+  issue labelled parity-regression, titled "Parity regression: <harness>" (an open one is commented on instead of
+  opening another);
 - a harness with an open issue that still fails gets a comment on it;
 - a harness with an open issue that passes again gets its issue closed.
 
@@ -51,7 +53,7 @@ def plan(now, previous, open_issues):
     for harness, status in sorted(now.items()):
         if status == "fail" and harness in open_issues:
             actions.append(("comment", harness))
-        elif status == "fail" and previous.get(harness) == "pass":
+        elif status == "fail" and previous.get(harness, "pass") == "pass":
             actions.append(("open", harness))
         elif status == "pass" and harness in open_issues:
             actions.append(("close", harness))
@@ -109,7 +111,7 @@ def main():
           + (f" ({', '.join(failing)})" if failing else ""))
     if previous is None:
         print("First audit: results recorded, no issues opened.")
-        actions = plan(now, {}, open_issues)
+        actions = plan(now, now, open_issues)
     else:
         actions = plan(now, previous, open_issues)
     mass = mass_failure(actions)
@@ -117,7 +119,7 @@ def main():
         actions = [action for action in actions if action[0] != "open"]
         print(f"open: one issue for {len(mass)} harnesses that newly fail at once")
         gh("issue", "create", "--label", LABEL, "--title", f"Nightly audit: {len(mass)} harnesses newly fail",
-           "--body", f"{len(mass)} harnesses passed in the previous nightly audit and fail in the audit of "
+           "--body", f"{len(mass)} harnesses passed in the previous nightly audit, or are new, and fail in the audit of "
            f"`{commit[:12]}` ({run}): usually a commit that does not build or a broken runner, so they get this "
            f"one issue instead of one each.\n\n{', '.join(f'`{harness}`' for harness in mass)}\n\n"
            f"<details><summary>First compiler error in the logs</summary>\n\n```\n{first_errors()}\n```\n"
@@ -129,7 +131,9 @@ def main():
         print(f"{kind}: {harness}")
         if kind == "open":
             gh("issue", "create", "--label", LABEL, "--title", TITLE + harness, "--body",
-               f"`{harness}` passed in the previous nightly audit and fails now.\n\n" + details, dry_run=args.dry_run)
+               (f"`{harness}` passed in the previous nightly audit and fails now.\n\n" if harness in (previous or {})
+                else f"`{harness}` fails in its first nightly audit: it has not passed on main.\n\n") + details,
+               dry_run=args.dry_run)
         elif kind == "comment":
             gh("issue", "comment", str(open_issues[harness]), "--body", "Still failing.\n\n" + details, dry_run=args.dry_run)
         else:
