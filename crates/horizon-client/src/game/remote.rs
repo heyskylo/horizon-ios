@@ -582,7 +582,7 @@ pub(super) struct Remote {
     /// `BlockStatePredictionHandler.lastTeleportSequence`: the sequence of the last
     /// teleport, so a prediction made before it keeps its block but not its snap.
     last_teleport_sequence: i32,
-    position_sender: horizon_client::player_sync::PositionSender,
+    pub(super) position_sender: horizon_client::player_sync::PositionSender,
     last_input: u8,
     was_sprinting: bool,
     /// The slot the server last heard (`MultiPlayerGameMode.carriedIndex`): a cell, so `send` can
@@ -1658,6 +1658,14 @@ impl Game<'_> {
             }
             r.session.send(packet);
         }
+    }
+    fn send_action(&self, action: i32) {
+        self.send(S::PlayerAction(play::PlayerAction {
+            action,
+            pos: [0; 3],
+            direction: 0,
+            sequence: 0,
+        }));
     }
     /// `LocalPlayer.isShiftKeyDown` (and so `isSecondaryUseActive`): the input as of the player's
     /// last tick (`input.keyPresses`, what the last ServerboundPlayerInputPacket said), not the key
@@ -9213,12 +9221,7 @@ impl Game<'_> {
                 self.brush_dust(hit, slot == super::shield::OFFHAND_SLOT);
             }
             if hit.is_none() && in_hand {
-                self.send(S::PlayerAction(play::PlayerAction {
-                    action: 6,
-                    pos: [0; 3],
-                    direction: 0,
-                    sequence: 0,
-                }));
+                self.send_action(6);
             }
             self.using = hit.and(Some((slot, elapsed))).filter(|_| elapsed < 200);
             return;
@@ -9459,21 +9462,9 @@ impl Game<'_> {
             }
             return false;
         }
-        // A spear jabs (`MultiPlayerGameMode.piercingAttack`): the server
-        // stabs, this client swings, plays the sound and starts its charge
-        // again.
+        // A spear jabs (`MultiPlayerGameMode.piercingAttack`): syncs look, reports reach, stabs.
         if let Some(kinetic) = spear {
-            // ServerboundPlayerActionPacket.Action.STAB.
-            self.send(S::PlayerAction(play::PlayerAction {
-                action: 8,
-                pos: [0; 3],
-                direction: 0,
-                sequence: 0,
-            }));
-            self.hand_strength.reset_attack();
-            self.swing_hand(Hand::Main, kinetic.attack_animation());
-            self.play_at_feet(kinetic.attack_sound);
-            return true;
+            return self.remote_spear_attack(kinetic);
         }
         let mut instant = false;
         // A ghast's fireball or a wind charge nearer than any mob: the
@@ -9529,6 +9520,24 @@ impl Game<'_> {
         self.swing_arm();
         self.send(S::Punch(Empty));
         instant
+    }
+
+    /// A spear jab on a remote server (`MultiPlayerGameMode.piercingAttack`): synchronizes
+    /// look rotation before sending action 8, reports PvP reach and combo tracking if a mob
+    /// is within range, and executes the jab.
+    fn remote_spear_attack(&mut self, kinetic: horizon_client::spear::Kinetic) -> bool {
+        self.remote_sync_look();
+        if let Some((i, distance, _)) = self.mob_hit()
+            && self.before_block(distance)
+            && self.held_range_allows(distance)
+        {
+            self.pvp_attacked(self.mobs[i].id as i32, distance);
+        }
+        self.send_action(8);
+        self.hand_strength.reset_attack();
+        self.swing_hand(Hand::Main, kinetic.attack_animation());
+        self.play_at_feet(kinetic.attack_sound);
+        true
     }
 
     /// `MultiPlayerGameMode.attack` runs `Player.attack` on this client too.
@@ -9764,12 +9773,7 @@ impl Game<'_> {
     /// player itself). Vanilla reaches it both when the use key is let go and,
     /// in the same tick, when a keybind opens a screen.
     fn release_remote_use(&mut self) {
-        self.send(S::PlayerAction(play::PlayerAction {
-            action: 6,
-            pos: [0; 3],
-            direction: 0,
-            sequence: 0,
-        }));
+        self.send_action(6);
         // a mod's Stop may skip the item's release, and a mod's own release follows.
         let hand = self.used_hand();
         if let Some((slot, ticks)) = self.using.take()
@@ -9811,12 +9815,7 @@ impl Game<'_> {
         self.remote_send_carried();
         let dropped =
             horizon_client::items::take_held_drop(&mut self.inventory[self.selected], all, false);
-        self.send(S::PlayerAction(play::PlayerAction {
-            action: if all { 4 } else { 5 },
-            pos: [0; 3],
-            direction: 0,
-            sequence: 0,
-        }));
+        self.send_action(if all { 4 } else { 5 });
         if dropped.is_some() {
             self.swing_hand(Hand::Main, SwingAnimation::DEFAULT);
         }
@@ -9825,12 +9824,7 @@ impl Game<'_> {
     /// (ServerboundPlayerActionPacket SWAP_ITEM_WITH_OFFHAND at BlockPos.ZERO, facing down) and
     /// sends both slots back; nothing is predicted.
     pub(super) fn remote_swap_hands(&mut self) {
-        self.send(S::PlayerAction(play::PlayerAction {
-            action: 7,
-            pos: [0; 3],
-            direction: 0,
-            sequence: 0,
-        }));
+        self.send_action(7);
         // Equal stacks swap with no slot update to wait for.
         let (main, off) = (self.stack_in(self.selected), self.offhand.as_ref());
         let moves = !super::hand::matches_for_swap(main, off);
