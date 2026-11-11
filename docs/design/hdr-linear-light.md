@@ -240,11 +240,10 @@ From preview on, stability.md's deprecation windows apply.
 
 ## `shaders/`-format packs
 
-They keep their own buffers and tone map to SDR in their last program, and their alpha is theirs. Today their
-`final` program writes all four channels onto the frame (`gfx/pack_post.rs` `target`), and `keep_world` copies that
-alpha into the kept world. With HDR and its HDR Lighting setting on, the HDR pass reads it as marks: below 0.75 it
-lifts as a light-source tier, from 0.75 up nothing (the lighting gain is off under a pack). From this note on their
-picture is shown at paper white with nothing lifted, as #3125 suggests. HDR values they could read (`hdr`, headroom,
+They keep their own buffers and tone map to SDR in their last program, and their alpha is theirs. Their `final`
+program writes all four channels onto the frame (`gfx/pack_post.rs` `target`), and `keep_world` copies that alpha
+into the kept world, but the HDR pass doesn't read it as marks: their picture is shown at paper white with nothing
+lifted, as #3125 suggests. HDR values they could read (`hdr`, headroom,
 paper white) are a later, optional addition for pack authors.
 
 ## Upscaling, anti-aliasing, frame generation
