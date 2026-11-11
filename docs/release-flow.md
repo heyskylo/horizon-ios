@@ -125,7 +125,7 @@ requires `verify` for everyone, and Ludovic's review for the files `.github/CODE
 and ships releases). Branches don't have to be up to date with main: main's own `checks` run catches the rare
 semantic conflict.
 
-**Who merges.** The Horizon Team (GitHub team `horizon-team`: kacpherek, levzzz5154, rdbtCVS, Online5277, dezer-x, itarqos5) and
+**Who merges.** The Horizon Team (GitHub team `horizon-team`: kacpherek, levzzz5154, rdbtCVS, Online5277, dezer-x) and
 Ludovic. The orchestrator's agents prove only the risky pull requests (below), so a contributor's ordinary pull
 request doesn't wait for them.
 
@@ -462,7 +462,7 @@ commit's source to build them ([native-mods.md](native-mods.md)).
 ### Trusted reviewers
 
 One list, `.github/trusted-reviewers.txt`, governs two things for the people on it (kacpherek, rdbtCVS and
-Online5277 since 2026-10-27, levzzz5154 since 2026-10-28, itarqos5 since 2026-11-08) and for Ludovic, with no repository role: `/nightly` (below) and triage by comment.
+Online5277 since 2026-10-27, levzzz5154 since 2026-10-28) and for Ludovic, with no repository role: `/nightly` (below) and triage by comment.
 
 ```text
 /close                    closes an issue as completed; a pull request is closed without merging
@@ -496,7 +496,7 @@ Online5277 since 2026-10-27, levzzz5154 since 2026-10-28, itarqos5 since 2026-11
 ### Trusted reviewers pick the Nightly's pull requests
 
 The Nightly is where contributors test pull requests before the gate. The trusted reviewers listed in
-`.github/trusted-reviewers.txt` (kacpherek, rdbtCVS and Online5277 since 2026-10-27, levzzz5154 since 2026-10-28, itarqos5 since 2026-11-08) and Ludovic pick them with a
+`.github/trusted-reviewers.txt` (kacpherek, rdbtCVS and Online5277 since 2026-10-27, levzzz5154 since 2026-10-28) and Ludovic pick them with a
 comment on any issue or pull request (`.github/workflows/nightly-command.yml`, `tools/ci/nightly_set.py`):
 
 ```text

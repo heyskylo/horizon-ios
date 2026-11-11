@@ -8,7 +8,7 @@ ItemFrame.removeFramedMap	port	crates/horizon-client/src/game/maps.rs::Game::rem
 ItemFrame.getSlot	inline	crates/horizon-client/src/game/commands/items.rs::Game::slot_get	slots_named maps container.0 and contents on a frame to Slot::Frame; slot_get reads the frame's item and slot_set writes it
 ItemFrame.onSyncedDataUpdated	skip:other		network data-sync hook; the item is read from the frame field on demand
 ItemFrame.setRotation	inline	crates/horizon-client/src/game/frames.rs::Game::interact_frame	the rotate-by-one step; the neighbour update is in frame_output_changed
-ItemFrame.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::item_frame_from_nbt	live command adoption preserves immutable frame type and detaches changed old stacks before replacement; absent Facing defaults to Direction.DOWN
+ItemFrame.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt/hanging.rs::item_frame_from_nbt	live command adoption preserves immutable frame type and detaches changed old stacks before replacement; absent Facing defaults to Direction.DOWN
 ItemFrame.getFrameItemStackWithData	port	crates/horizon-client/src/entities.rs::ItemFrame::item_stack_with_data	drop_frame_items spawns that stack, so a broken item frame or glow item frame keeps its custom name
 ItemFrame.getVisualRotationYInDegrees	inline	crates/horizon-client/src/game/frames.rs::Game::frame_geometry	the 45 degree step per rotation step is drawn in frame_geometry
 LeashFenceKnotEntity.recalculateBoundingBox	port	crates/horizon-client/src/mobs/leash.rs::knot_state	position and box from the block position
@@ -19,7 +19,7 @@ LeashFenceKnotEntity.interact	port	crates/horizon-client/src/game/leads.rs::Game
 Painting.defineSynchedData	skip:other		entity data default variant; Horizon picks the variant in place_painting
 Painting.get	port	crates/horizon-client/src/game/paintings.rs::PaintingVariants::get	lookup of the variant by id; there is no component getter
 Painting.applyImplicitComponent	inline	crates/horizon-client/src/game/paintings.rs::Game::place_painting	the stack's painting/variant replaces the random pick (PaintingVariants::of_stack), and that variant has to survive where it goes
-Painting.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::painting_from_nbt	
+Painting.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt/hanging.rs::painting_from_nbt	
 Painting.dropItem	port	crates/horizon-client/src/game/paintings.rs::Game::break_painting	gap: minor: the dropped painting item keeps no custom name
 PaintingVariants.register	skip:data		registry bootstrap; variants load from the data files in PaintingVariants::load
 FallingBlockEntity.tick	inline	crates/horizon-client/src/game/falling_damage.rs::Game::finish_falling_block	successful landing creates the block entity and loads carried TileEntityData over its saved defaults; movement and placement are in Game::fall_step and Behaviours::falling_block_landed
@@ -116,7 +116,7 @@ Ravager.strongKnockback	inline	crates/horizon-client/src/mobs/ravager.rs::roar	t
 Ravager.addRoarParticleEffects	inline	crates/horizon-client/src/mobs/ravager.rs::roar	the poof particles are emitted in roar
 Shulker.registerGoals	port	crates/horizon-client/src/mobs/shulker.rs::register	gap: minor: no defense target goal (priority 3)
 Shulker.defineSynchedData	skip:other		attach face, peek and colour are Mob extra fields
-Shulker.readAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	AttachFace, Peek and Color are read there
+Shulker.readAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	AttachFace wraps through Direction.from3DDataValue, Peek and Color are raw getByteOr bytes
 Shulker.addAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	AttachFace, Peek and Color are written there
 Shulker.findNewAttachment	inline	crates/horizon-client/src/mobs/shulker.rs::tick	keeps its face or teleports in tick, through attachable and teleport
 Shulker.makeBoundingBox	port	crates/horizon-client/src/mobs/shulker.rs::progress_aabb	

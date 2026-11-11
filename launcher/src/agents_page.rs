@@ -1,4 +1,4 @@
-//! Settings' AI rows: the No AI switch (`horizon_core::no_ai`, shared with the game) and "Connect
+//! Settings' AI rows: the No AI switch (`horizon_platform::no_ai`, shared with the game) and "Connect
 //! an AI agent", the ready-made MCP config of each common client with Copy buttons, a one-click
 //! add where the client has a CLI (run only on that click, its command shown first), and a test
 //! that starts the MCP server and lists its tools. With No AI on, only the switch shows.

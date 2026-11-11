@@ -40,12 +40,13 @@ sys-locale = "0.3"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 horizon-theme = { path = "../crates/horizon-theme" }
-horizon-core = { path = "../crates/horizon-core" }
+# The engine, through the platform's public API (docs/layers.md): the pinned version, No AI, the preparer,
+# level.dat and servers.dat (the worlds and server lists of instances), and the official server's SRV record.
+horizon-platform = { path = "../crates/horizon-platform", features = ["prepare", "protocol", "world"] }
 horizon-cosmetics = { path = "../crates/horizon-cosmetics" }
 glam = "0.30"
 # `horizon-launcher mcp`: the Model Context Protocol, shared with horizon-ctl and horizon-server.
 horizon-mcp = { path = "../crates/horizon-mcp" }
-horizon-prepare = { path = "../crates/horizon-prepare" }
 # Join a friend: invite codes (the game does the joining).
 horizon-friends = { path = "../crates/horizon-friends" }
 horizon-bench = { path = "../crates/horizon-bench" }
@@ -59,10 +60,6 @@ horizon-shader-api = { path = "../crates/horizon-shader-api" }
 horizon-release-sign = { path = "../crates/horizon-release-sign" }
 # Opt-in data collection: the consent, the outbox and its upload (docs/telemetry.md).
 horizon-telemetry = { path = "../crates/horizon-telemetry" }
-# The official server's count follows its SRV record, as the game does (server_redirect).
-horizon-protocol = { path = "../crates/horizon-protocol" }
-# level.dat and servers.dat (the worlds and server lists of instances)
-horizon-world = { path = "../crates/horizon-world" }
 # Deleting a world moves it to the system's trash
 trash = "5"
 # Backup names carry the local time, as vanilla's do

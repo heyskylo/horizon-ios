@@ -2,7 +2,7 @@
 //! reports.
 use super::tests::{CHANGED, CLICK, DRAGGED, FB, NONE, SIZE, Ui, offering, press, row, ui};
 use super::*;
-use crate::settings_shell::{Capture, Columns, Hosted};
+use crate::settings_shell::{Columns, Hosted};
 use winit::keyboard::KeyCode as K;
 
 #[test]
@@ -29,6 +29,49 @@ fn smooth_gradients_wait_for_a_device_that_draws_the_16_bit_frame() {
     assert_eq!(item.switch(&s, &out), Some(true));
     s.horizon.hdr = HdrMode::Off;
     assert_eq!(item.blocked(&s, &out), Some("Turn HDR on to use it."));
+}
+
+#[test]
+fn hdr_lighting_is_greyed_only_where_the_running_pack_lights_the_world() {
+    use horizon_shader_api::Api;
+    let mut s = Settings::default();
+    s.horizon.hdr = HdrMode::On;
+    let item = Item::Horizon(H::HdrLighting);
+    let lights = Some("The shader pack lights the world itself.");
+    let out = offering(true, None);
+    // No pack running, as with one picked but refused, missing or its mod off: live.
+    assert_eq!(item.blocked(&s, &out.with_pack(false, None)), None);
+    // A 0.1 pack on the 16-bit frame: the light sources and the sun still shine.
+    assert_eq!(
+        item.blocked(&s, &out.with_pack(false, Some(Api::V0_1))),
+        None
+    );
+    assert_eq!(
+        item.blocked(&s, &out.with_pack(false, Some(Api::V0_2))),
+        lights
+    );
+    assert_eq!(item.blocked(&s, &out.with_pack(true, None)), lights);
+    let float = EffectiveOutput {
+        frame: crate::gfx::FrameConfiguration {
+            format: wgpu::TextureFormat::Rgba16Float,
+            ..out.frame
+        },
+        ..out
+    };
+    assert_eq!(
+        item.blocked(&s, &float.with_pack(false, Some(Api::V0_1))),
+        lights
+    );
+    // HDR's own reasons come first.
+    assert_eq!(
+        item.blocked(&s, &NONE.with_pack(true, None)),
+        Some("Your display or system doesn't offer HDR output.")
+    );
+    s.horizon.hdr = HdrMode::Off;
+    assert_eq!(
+        item.blocked(&s, &out.with_pack(true, None)),
+        Some("Turn HDR on to use it.")
+    );
 }
 
 #[test]
@@ -64,16 +107,11 @@ fn hdr_auto_can_be_selected_before_querying_and_brightness_waits_for_output() {
     let peak = row(&mut ui, &s, Item::Horizon(H::HdrPeak));
     assert_eq!(press(&mut ui, &mut s, (tx + 2.0, peak[1] + 4.0)), [DRAGGED]);
     ui.release();
-    // Calibrate starts the calibration; the shortcut row waits for a key.
+    // Calibrate starts the calibration.
     let calibrate = row(&mut ui, &s, Item::Horizon(H::HdrCalibrate));
     assert_eq!(
         press(&mut ui, &mut s, at(calibrate)),
         [CLICK, Output::Push(OptionsPage::HdrCalibration)]
-    );
-    let key = row(&mut ui, &s, Item::Horizon(H::HdrKey));
-    assert_eq!(
-        press(&mut ui, &mut s, at(key)),
-        [CLICK, Output::Bind(Capture::Key(crate::graphics::HDR_KEY))]
     );
     assert!(ui.changed());
 }
@@ -125,14 +163,125 @@ fn auto_levels_and_setup_read_their_own_renderers_report() {
     assert_eq!(label(H::HdrCalibrate, &silent), "Calibrate...");
 }
 
+/// The setup rows' label and description for each kind of report: none, a compositor's
+/// (Wayland), and Windows', whose peak may be the display's or a calibration profile's.
 #[test]
-fn hdr_setup_follows_what_the_system_reported() {
-    let mut g = crate::graphics::Graphics::default();
-    assert_eq!(setup_of(&g, false), Setup::Unknown);
-    assert_eq!(setup_of(&g, true), Setup::Automatic);
-    g.hdr_paper_white = 80;
-    assert_eq!(setup_of(&g, true), Setup::Changed);
-    assert_eq!(setup_of(&g, false), Setup::Unknown);
+fn the_setup_rows_ask_to_calibrate_unless_the_system_set_the_display_up() {
+    let trusted = offering(true, Some(true));
+    let mut guessed = trusted;
+    guessed.reported = guessed.reported.map(|r| crate::graphics::Reported {
+        peak_guessed: true,
+        ..r
+    });
+    let rows = |s: &Settings, out: &EffectiveOutput| {
+        [H::HdrCalibrate, H::HdrPeak, H::HdrPaperWhite].map(|h| {
+            let item = Item::Horizon(h);
+            (item.label(s, out).plain(), description(item, s, out, "-"))
+        })
+    };
+    let calibrate = "Calibrate...";
+    let set_up = "Set up for your display. Leave on Auto unless it looks wrong.";
+    let mut s = Settings::default();
+    s.horizon.hdr = HdrMode::On;
+    let none = (
+        calibrate.into(),
+        "Your display didn't say how bright it gets: calibrate to set it up.",
+    );
+    assert_eq!(
+        rows(&s, &NONE),
+        [
+            none.clone(),
+            ("Peak Brightness: Auto (1000)".into(), "-"),
+            ("Paper White: Auto (203)".into(), "-"),
+        ]
+    );
+    assert_eq!(
+        rows(&s, &guessed),
+        [
+            (
+                calibrate.into(),
+                "Auto uses the peak Windows reports. Calibrate if highlights look clipped."
+            ),
+            ("Peak Brightness: Auto (1000)".into(), "-"),
+            ("Paper White: Auto (400)".into(), "-"),
+        ]
+    );
+    assert_eq!(
+        rows(&s, &trusted),
+        [
+            (
+                "Calibrate Anyway...".into(),
+                "Already set up for your display. Only calibrate if HDR looks wrong."
+            ),
+            ("Peak Brightness: Auto (1000)".into(), set_up),
+            ("Paper White: Auto (400)".into(), set_up),
+        ]
+    );
+    // Calibrated or set by hand, either report offers its automatic setup back.
+    s.horizon.hdr_peak = 800;
+    // Peak's Auto has no known source on Windows: only Paper White is said to be set up there.
+    let changed = |peak| {
+        [
+            (
+                "Use Automatic Setup".into(),
+                "Puts Peak Brightness and Paper White back to your display's setup.",
+            ),
+            ("Peak Brightness: 800".into(), peak),
+            ("Paper White: Auto (400)".into(), set_up),
+        ]
+    };
+    assert_eq!(rows(&s, &guessed), changed("-"));
+    assert_eq!(rows(&s, &trusted), changed(set_up));
+    assert_eq!(rows(&s, &NONE)[0], none);
+    let mut ui = ui();
+    ui.screen.output = guessed;
+    let at = |[x, y, ..]: [f32; 4]| (x + 8.0, y + 4.0);
+    let calibrate = row(&mut ui, &s, Item::Horizon(H::HdrCalibrate));
+    assert_eq!(press(&mut ui, &mut s, at(calibrate)), [CLICK, CHANGED]);
+    assert_eq!((s.horizon.hdr_peak, s.horizon.hdr_paper_white), (0, 0));
+    assert_eq!(
+        press(&mut ui, &mut s, at(calibrate)),
+        [CLICK, Output::Push(OptionsPage::HdrCalibration)]
+    );
+}
+
+/// UI Brightness reads as Paper White does, in nits apart from it: Auto shows the paper white
+/// in use, and a value set by hand its own nits, whatever Paper White is. Its slider has Paper
+/// White's steps: Auto, then 10 to 480 nits by 10.
+#[test]
+fn ui_brightness_reads_in_nits_on_paper_whites_steps() {
+    let mut s = Settings::default();
+    s.horizon.hdr = HdrMode::On;
+    let reporting = offering(true, Some(true));
+    let label = |s: &Settings, out| Item::Horizon(H::HdrUiBrightness).label(s, out).plain();
+    assert_eq!(label(&s, &reporting), "UI Brightness: Auto (400)");
+    assert_eq!(label(&s, &NONE), "UI Brightness: Auto (203)");
+    s.horizon.hdr_paper_white = 250;
+    assert_eq!(label(&s, &reporting), "UI Brightness: Auto (250)");
+    s.horizon.hdr_ui_nits = 160;
+    for paper_white in [0, 80, 250] {
+        s.horizon.hdr_paper_white = paper_white;
+        assert_eq!(label(&s, &reporting), "UI Brightness: 160");
+    }
+    let item = Item::Horizon(H::HdrUiBrightness);
+    assert_eq!(
+        H::HdrUiBrightness.slider_steps(),
+        H::HdrPaperWhite.slider_steps()
+    );
+    H::HdrUiBrightness.set_slider(&mut s, 0.0);
+    let mut reached = vec![s.horizon.hdr_ui_nits];
+    for _ in 0..H::HdrUiBrightness.slider_steps().unwrap() {
+        item.step_slider(&mut s, true, 200.0, &reporting);
+        reached.push(s.horizon.hdr_ui_nits);
+    }
+    let paper: Vec<u32> = std::iter::once(0).chain((10..=480).step_by(10)).collect();
+    assert_eq!(reached, paper);
+    // Each value sits where Paper White's same value does.
+    for nits in paper {
+        s.horizon.hdr_ui_nits = nits;
+        s.horizon.hdr_paper_white = nits;
+        assert_eq!(item.slider(&s), Item::Horizon(H::HdrPaperWhite).slider(&s));
+    }
 }
 
 /// While HDR output is held back on this window's driver, the HDR row says so and keeps
@@ -198,4 +347,31 @@ fn undo_never_restores_a_held_hdr_start() {
     s.horizon.fxaa = !s.horizon.fxaa;
     screen.undo(&mut s, &opened);
     assert_eq!(s.horizon, opened.horizon);
+}
+
+/// The Calibrate row's descriptions fit the strip's two lines at vanilla's 427-wide GUI (a
+/// 1080p window at scale 4 is wider): a longer one would end in "…".
+#[test]
+fn the_calibrate_descriptions_fit_the_strip() {
+    let atlas = crate::hud::HudAtlas::build(std::path::Path::new("/nonexistent")).unwrap();
+    let mut guessed = offering(true, Some(true));
+    guessed.reported = guessed.reported.map(|r| crate::graphics::Reported {
+        peak_guessed: true,
+        ..r
+    });
+    let mut changed = Settings::default();
+    changed.horizon.hdr_peak = 800;
+    let item = Item::Horizon(H::HdrCalibrate);
+    let width = Columns::of(427.0, 240.0).dock[2] - 24.0;
+    for (s, out) in [
+        (Settings::default(), NONE),
+        (Settings::default(), guessed),
+        (Settings::default(), offering(true, Some(true))),
+        (changed, guessed),
+    ] {
+        let text = description(item, &s, &out, "-");
+        assert_ne!(text, "-");
+        let lines = atlas.font.split(&Text::literal(text.to_owned()), width);
+        assert!(lines.len() <= 2, "{text}");
+    }
 }

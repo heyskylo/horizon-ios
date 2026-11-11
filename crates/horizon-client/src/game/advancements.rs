@@ -230,15 +230,10 @@ impl adv::World for View<'_, '_> {
             _ => None,
         }
     }
+    /// `Level.canSeeSky`: sky light 15 at the position, whatever stands
+    /// above it, as `MobWorld` reads it for the spawn rules.
     fn can_see_sky(&self, p: [i32; 3]) -> bool {
-        (p[1] + 1..p[1] + 200).all(|y| {
-            !self
-                .0
-                .res
-                .facts()
-                .get(self.0.world.block(p[0], y, p[2]))
-                .full_collision
-        })
+        self.0.mob_world_base(&[]).can_see_sky(p[0], p[1], p[2])
     }
     fn light(&self, p: [i32; 3]) -> i32 {
         let l = self.0.world.light(p[0], p[1], p[2]);
@@ -1255,7 +1250,7 @@ impl Game<'_> {
         }
         self.check_inventory_trigger();
         // ServerPlayer.tick: PlayerTrigger.TICK every tick.
-        let me = self.player_entity_for("minecraft:tick");
+        let me = self.player_entity_if_listened("minecraft:tick");
         self.trigger("minecraft:tick", |c, w| {
             let ctx = adv::Entities {
                 this: Some(&me),
@@ -1289,7 +1284,7 @@ impl Game<'_> {
         }
         self.tick_marks();
         if self.ticks.is_multiple_of(20) {
-            let me = self.player_entity_for("minecraft:location");
+            let me = self.player_entity_if_listened("minecraft:location");
             self.trigger("minecraft:location", |c, w| {
                 let ctx = adv::Entities {
                     this: Some(&me),
