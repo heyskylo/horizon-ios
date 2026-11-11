@@ -203,6 +203,12 @@ def neighbour_cases(rng):
             yield case
     for seed in SEEDS:
         yield dict(kind='tick', state=tip % ('tip', 'true'), seed=seed, offset='xz')
+    # A waterlogged bottom slab has a sturdy down face and no fluid under it: the
+    # fluid drip the slab asks for lands on the slab below, 0.05 under its top.
+    for seed in SEEDS:
+        yield dict(kind='tick',
+                   state='minecraft:stone_brick_slab[type=bottom,waterlogged=true]',
+                   floor='minecraft:stone_brick_slab[type=bottom,waterlogged=false]', seed=seed)
     for _ in range(12):
         yield dict(kind='tick', state=rng.choice([hive % 5, ore % '']),
                    seed=rng.randrange(-2 ** 63, 2 ** 63),
@@ -243,8 +249,9 @@ def main():
         'waterlogged and not, over soul sand, soul soil, stone and air; a hive full of honey and one '
         'short of it, and a bee nest, embedded in themselves and hanging over air; a lit redstone ore '
         'and a deepslate one embedded and over air, and an unlit one; and stalactite tips and a middle '
-        'segment embedded, over stone and over water, a waterlogged tip, and a column of water over '
-        'hanging tips; each at two seeds and twelve more at random seeds and floors; '
+        'segment embedded, over stone and over water, a waterlogged tip, and a waterlogged slab whose '
+        'fluid drip lands on the dry slab below it; each at two seeds and twelve more at random '
+        'seeds and floors; '
         'and the campfire block entity: the real '
         'CampfireBlockEntity.particleTick for both campfire blocks, lit and unlit, signal '
         'fire on and off, all four facings and every one of the four cooking slots held or empty, ticked six times '
@@ -268,7 +275,7 @@ def main():
         'tag the stalactite branch needs) are bound from the pinned client jar the way a datapack load '
         'binds them, where a bare bootstrap leaves every tag empty.',
         sources=[lab.ROOT / 'tools/test_marker_particles_parity.py',
-                 lab.ROOT / 'crates/horizon-client/src/animate_tick.rs'], expected_lines=462718)
+                 lab.ROOT / 'crates/horizon-client/src/animate_tick.rs'], expected_lines=462960)
 
 
 if __name__ == '__main__':

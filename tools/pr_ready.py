@@ -4,7 +4,8 @@
     python3 tools/pr_ready.py                       # on this machine, against origin/main
     python3 tools/pr_ready.py --base upstream/main  # a fork: against the main repository's main
     python3 tools/pr_ready.py --host macmini        # builds and harnesses on a fleet machine (~/fleet/rbuild)
-    python3 tools/pr_ready.py --quick               # without running the vanilla harnesses
+    python3 tools/pr_ready.py --harnesses           # also run the affected vanilla harnesses here
+    python3 tools/pr_ready.py --quick               # never run the vanilla harnesses
 
 From the files the branch changes since its merge base with --base (committed or not) it decides what to run:
 rustfmt, and clippy with warnings denied exactly as CI's verify job runs it (the whole workspace with the game's code
@@ -12,8 +13,10 @@ mods, plus the server build when horizon-client is affected); the tests of the t
 CI's workspace-wide run gives them; the launcher (its own workspace) the same way when CI's launcher job would run
 (tools/ci/rust_changes.py --launcher); crates/horizon-theme/tokens.css against horizon-theme; Cargo.lock changing
 only with a Cargo.toml; the Python tests (always, as in CI) and the public-tree check; and the vanilla harnesses the
-changes can affect, picked as CI's parity job picks them (tools/parity.py --changed). Harnesses run where the
-vanilla data is (a prepared .local/ here, or the Mac mini); elsewhere they are listed for CI.
+changes can affect, picked as CI's parity job picks them (tools/parity.py --changed). As in CI (parity-scope in
+.github/workflows/ci.yml), the harnesses run only when the branch changes a harness, an oracle, a probe or the
+runner; otherwise they are listed and left to parity-main, which runs them on main. --harnesses runs them anyway.
+Harnesses run where the vanilla data is (a prepared .local/ here, or the Mac mini); elsewhere they are listed for CI.
 Tests select library, binary and integration targets explicitly, followed by doc tests, so unrelated example
 executables are not built and linked again.
 
@@ -159,6 +162,19 @@ def suggested_label(paths, exporter_paths=frozenset()):
     if any(release_train.player_facing(path, kind, exporter_paths) for path in paths for kind in ("game", "launcher")):
         return "player-facing: `feature` if players get something new, no label for a fix (`release-now` if urgent)"
     return "`skip-release`"
+
+
+# CI's parity-scope (.github/workflows/ci.yml): a pull request runs its harnesses itself only when it changes a
+# harness, an oracle, a probe or the runner. parity-main runs the others on main, a batch of merges at a time.
+PARITY_SCOPE = re.compile(
+    r"^(tools/test_[a-z0-9_]+_parity\.py|tools/(parity[a-z_]*|lab)\.py|tools/parity_hosts\.json|mods/horizon/src/test/"
+    r"|crates/[^/]+/examples/|crates/horizon-client/src/game/[a-z_]*(fixture|harness)\.rs"
+    r"|\.github/workflows/parity[a-z-]*\.yml)")
+
+
+def runs_parity(changed):
+    """Whether CI's parity job would run for a pull request that changes these files."""
+    return any(PARITY_SCOPE.match(path) for path in changed)
 
 
 def harness_names(names):
@@ -399,7 +415,18 @@ def plan(args, base, changed, crates_of, libraries, dependencies):
     harness = Step("Parity", summary=parity_summary)
     affected = affected_here(changed)
     local_data = (ROOT / ".local" / "minecraft").exists() and (ROOT / ".local" / "horizon-client").exists()
-    if args.quick or (args.host == "local" and not local_data) or (args.host != "local" and args.host not in HARNESS_SETUP):
+    in_scope = args.harnesses or runs_parity(changed)
+    if not args.quick and not in_scope:
+        # What CI does with this pull request: nothing here, parity-main on main.
+        harness.status = "list"
+        why = "no harness, oracle, probe or runner change; --harnesses runs them here"
+        if affected is None:
+            harness.detail = f"not run ({why}): parity-main checks this on main"
+        elif not affected:
+            harness.detail = "no harness affected"
+        else:
+            harness.detail = f"{len(affected)} affected, left to parity-main on main ({why}): {short_list(affected)}"
+    elif args.quick or (args.host == "local" and not local_data) or (args.host != "local" and args.host not in HARNESS_SETUP):
         harness.status = "list"
         why = "--quick" if args.quick else "no vanilla data here"
         if affected is None:
@@ -577,7 +604,7 @@ MARK = {"pass": "✅", "fail": "❌", "skip": "➖", "list": "➖", "warn": "⚠
 
 def block(args, base, merge_base, changed, counts, steps, label, elapsed):
     where = socket.gethostname().split(".")[0] if args.host == "local" else args.host
-    flags = "".join(f" --{flag}" for flag in ("quick",) if getattr(args, flag)) + \
+    flags = "".join(f" --{flag}" for flag in ("quick", "harnesses") if getattr(args, flag)) + \
         ("" if args.host == "local" else f" --host {args.host}") + ("" if base == "origin/main" else f" --base {base}")
     added, removed = (sum(count[i] for count in counts.values()) for i in (0, 1))
     warnings = scope_warnings(changed, sum(sum(count) for path, count in counts.items() if reviewed(path)))
@@ -599,6 +626,8 @@ def main():
     parser.add_argument("--host", default="local", choices=sorted(HOST_SETUP),
                         help="where builds, tests and harnesses run: local, or a fleet machine through ~/fleet/rbuild")
     parser.add_argument("--quick", action="store_true", help="list the affected harnesses instead of running them")
+    parser.add_argument("--harnesses", action="store_true",
+                        help="run the affected harnesses even when the branch changes no harness, oracle, probe or runner")
     parser.add_argument("--verbose", action="store_true", help="show every check's output")
     args = parser.parse_args()
     if args.host != "local" and not RBUILD.exists():

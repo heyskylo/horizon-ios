@@ -5242,6 +5242,58 @@ def sulfur_cube_loaded_health():
     return lines
 
 
+def sulfur_cube_size_attributes():
+    """#13801: `SulfurCube.setSize` (`setCubeMobHealth`) sets the max_health (4 per size) and
+    movement_speed (0.2F + 0.1F * size) bases, so the save holds both from the load on, after the
+    first tick and across a chunk reload, and so does a cube released from a bucket
+    (`finalizeSpawn`'s size 2). A saved base wins over the size: `LivingEntity`'s load applies it
+    after `AbstractCubeMob.readAdditionalSaveData` sizes the cube, and so does its Health under Health
+    Boost (`setHealth` clamps to the sized maximum). Entries are read by id: the list's order is the
+    attribute map's."""
+    x, z = 4096, 4096
+    chunk = [[x >> 4, z >> 4]]
+    cases = ['', ',Size:2', ',attributes:[{id:"minecraft:movement_speed",base:0.25d}]',
+             ',Size:1,attributes:[{id:"minecraft:max_health",base:10.0d}]',
+             ',Size:2,Health:12f,active_effects:[{id:"minecraft:health_boost",duration:200}]']
+
+    def reads(uuid):
+        return [cmd(f'/data get entity {uuid} attributes[{{id:"minecraft:{a}"}}].base')
+                for a in ('max_health', 'movement_speed')] + [cmd(f'/data get entity {uuid} Health')]
+
+    uuids = [f'00000000-0000-0000-0000-0315{n + 1:08x}' for n in range(len(cases))]
+    ops = setup(f'/forceload add {x} {z}')
+    ops.append({'op': 'wait_chunks', 'chunks': chunk})
+    ops += setup(f'/fill {x} 299 {z} {x + 15} 299 {z + 15} stone')
+    for n, extra in enumerate(cases):
+        ops += setup(f'/summon sulfur_cube {x + 2 + 3 * n}.5 300 {z + 3}.5 '
+                     f'{{UUID:[I;0,0,789,{n + 1}],NoAI:1b,PersistenceRequired:1b{extra}}}')
+    for step in ('loaded', 'tick', 'reload'):
+        if step == 'tick':
+            ops.append({'op': 'tick', 'n': 1})
+        if step == 'reload':
+            ops += setup(f'/forceload remove {x} {z}')
+            ops.append({'op': 'tick', 'n': 60})
+            ops.append(cmd(f'/execute unless loaded {x} 300 {z}', expect_result=1))
+            ops += setup(f'/forceload add {x} {z}')
+            ops.append({'op': 'wait_chunks', 'chunks': chunk})
+        for uuid in uuids:
+            ops += reads(uuid)
+    ops += [cmd(f'/attribute {uuid} minecraft:movement_speed get 1000') for uuid in uuids]
+    ops += setup(SHRINK_SULFUR_CUBES.format('@e[type=sulfur_cube]'), '/kill @e[type=sulfur_cube]',
+                 f'/forceload remove {x} {z}')
+    # A real bucket release, looking down at the floor (the bucket's own use, not useOn).
+    ops += setup('/forceload add 0 0 15 15', '/fill 0 199 0 12 210 12 air', '/fill 0 199 0 12 199 12 stone',
+                 '/gamemode survival', '/tp @s 4.5 200 4.5 0 90',
+                 '/item replace entity @s weapon.mainhand with minecraft:sulfur_cube_bucket')
+    ops.append({'op': 'settle'})
+    ops.append({'op': 'use_item', 'sequence': 1, 'yaw': 0.0, 'pitch': 90.0})
+    ops += reads('@e[type=sulfur_cube,limit=1]')
+    ops += setup(SHRINK_SULFUR_CUBES.format('@e[type=sulfur_cube]'), '/kill @e[type=sulfur_cube]',
+                 '/fill 0 199 0 12 199 12 air', '/gamemode creative', '/clear @s',
+                 '/tp @s 8.5 230 8.5', '/forceload remove 0 0 15 15')
+    return ops
+
+
 def sulfur_cube_size_ticks():
     # SulfurCube.ageBoundaryReached grows a cube to size 2 only where setAge crosses
     # the baby boundary (#14916). Cubes with their AI on: an adult loaded at size 1
@@ -5271,7 +5323,6 @@ def sulfur_cube_size_ticks():
     lines.extend(setup(SHRINK_SULFUR_CUBES.format('@e[type=sulfur_cube]'), '/kill @e[type=sulfur_cube]',
                        '/forceload remove 0 0 31 31'))
     return lines
-
 
 
 def numeric_array_edits(include_storage_side_effects=False):
@@ -7135,6 +7186,32 @@ def projectile_fall_distance():
                        f'/forceload remove {x0} {z0}')
 
 
+def ominous_spawner_loaded_entity_fields():
+    """`Entity.load` reads Rotation (the pitch through `setXRot`: `% 360`, then within -90..90),
+    OnGround and fall_distance, and `OminousItemSpawner` never moves or turns, so it saves them as
+    loaded, before its first tick, after it and across a chunk reload."""
+    x0, y0, z0 = 5440, 300, 5120
+    cases = ['Rotation:[30.0f,20.0f],OnGround:1b,fall_distance:3.5d', 'Rotation:[-560.0f,100.0f]',
+             'Rotation:[10.0f,-450.0f],fall_distance:-1.0d', '']
+    ops = [*setup(f'/forceload add {x0} {z0}'), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]}]
+    for n, fields in enumerate(cases, 1):
+        sep = ',' if fields else ''
+        ops.append(cmd(f'/summon ominous_item_spawner {x0 + 3 * n}.5 {y0} {z0 + 8}.5 {{UUID:[I;14700,0,{n},1],'
+                       f'spawn_item_after_ticks:2000L,item:{{id:"minecraft:stone",count:1}}{sep}{fields}}}',
+                       expect_result=1))
+
+    def reads():
+        return [cmd(f'/data get entity 0000396c-0000-0000-0000-{n:04x}00000001 {key}')
+                for n in range(1, len(cases) + 1) for key in ('Rotation', 'OnGround', 'fall_distance')]
+
+    ops += reads() + [{'op': 'tick', 'n': 1}] + reads()
+    ops += [*setup(f'/forceload remove {x0} {z0}'), {'op': 'tick', 'n': 60},
+            cmd(f'/execute unless loaded {x0} {y0} {z0}', expect_result=1),
+            *setup(f'/forceload add {x0} {z0}'), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]}]
+    return ops + reads() + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16]',
+                                 f'/forceload remove {x0} {z0}')
+
+
 def thrown_projectile_rotation():
     """`ThrowableProjectile.tick` and `LlamaSpit.tick` end their move with `Projectile.updateRotation`:
     the pitch and yaw go a fifth of the way (`lerpRotation`) from the last tick's towards the
@@ -7619,6 +7696,59 @@ def mob_fall_clip():
                        f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 30} {z0 + 15} air',
                        f'/forceload remove {x0} {z0}')
 
+def rocket_fall_distance():
+    """#14318: a firework rocket's fall (`Entity.fallDistance`). `Entity.move` casts a move of a block or
+    more over fall-resetting blocks and water, then `checkFallDamage` adds the drop outside water and on
+    the ground calls `fallOn` and resets it; `Entity.updateFluidInteraction` resets it in water and
+    `Entity.baseTick` halves it in lava; a cobweb (`makeStuckInBlock`) resets it. `saveWithoutId` and
+    `load` keep it. Angled rockets fly down; a rising one keeps the fall it was loaded with. Frozen, then
+    read tick by tick.
+    """
+    x0, y0, z0 = 4416, 250, 4416
+    # Entities tick once every chunk within 2 columns is loaded (ChunkMap.prepareEntityTickingChunk).
+    chunk = [[(x0 >> 4) + dx, (z0 >> 4) + dz] for dx in range(-2, 3) for dz in range(-2, 3)]
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
+           cmd('/tick freeze', False),
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', expect_result=256)]
+    # (name, x, z, start y, NBT); each in its own column.
+    cases = [('drop', 1, 8, y0 + 4, 'ShotAtAngle:1b,Motion:[0d,-0.5d,0d],fall_distance:1d'),
+             ('water', 3, 4, y0 + 5, 'ShotAtAngle:1b,Motion:[0d,-0.25d,0d],fall_distance:3d'),
+             ('lava', 7, 4, y0 + 5, 'ShotAtAngle:1b,Motion:[0d,-0.25d,0d],fall_distance:6d'),
+             ('vine', 8, 8, y0 + 14, 'ShotAtAngle:1b,Motion:[0d,-1.5d,0d],fall_distance:5d'),
+             ('novine', 11, 8, y0 + 14, 'ShotAtAngle:1b,Motion:[0d,-1.5d,0d],fall_distance:5d'),
+             ('cobweb', 13, 8, y0 + 4, 'ShotAtAngle:1b,Motion:[0d,-0.5d,0d],fall_distance:2d'),
+             ('rise', 15, 8, y0 + 4, 'fall_distance:4d'),
+             # Summoned inside lava: Entity.isInLava is false on its first tick, so no halving yet.
+             ('inlava', 7, 4, y0 + 1, 'ShotAtAngle:1b,Motion:[0d,0d,0d],fall_distance:4d')]
+    # Water and lava stand in a stone well, so they have no flow to push with.
+    for x, fluid in ((3, 'water'), (7, 'lava')):
+        ops.append(cmd(f'/fill {x0 + x - 1} {y0} {z0 + 3} {x0 + x + 1} {y0 + 2} {z0 + 5} stone', expect_result=27))
+        ops.append(cmd(f'/fill {x0 + x} {y0} {z0 + 4} {x0 + x} {y0 + 2} {z0 + 4} {fluid}', expect_result=3))
+    for x in (8, 11):
+        ops.append(cmd(f'/fill {x0 + x - 1} {y0} {z0 + 8} {x0 + x - 1} {y0 + 14} {z0 + 8} stone', expect_result=15))
+    ops.append(cmd(f'/setblock {x0 + 8} {y0 + 7} {z0 + 8} vine[west=true]', expect_result=1))
+    ops.append(cmd(f'/setblock {x0 + 13} {y0 + 1} {z0 + 8} cobweb', expect_result=1))
+    for n, (name, x, z, y, nbt) in enumerate(cases, 1):
+        ops.append(cmd(f'/summon firework_rocket {x0 + x}.5 {y} {z0 + z}.5 {{UUID:[I;17000,0,{n},1],LifeTime:200,'
+                       f'{nbt}}}', expect_result=1))
+
+    def reads():
+        for n, _ in enumerate(cases, 1):
+            for key in ('fall_distance', 'OnGround', 'Pos[1]'):
+                ops.append(cmd(f'/data get entity 00004268-0000-0000-0000-{n:04x}00000001 {key}'))
+
+    reads()
+    for _ in range(12):
+        ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 1}, cmd('/tick freeze', False)]
+        reads()
+    # A loaded fall_distance replaces the one it built up.
+    ops.append(cmd('/data merge entity 00004268-0000-0000-0000-000700000001 {fall_distance:9d}', expect_result=1))
+    ops.append(cmd('/data get entity 00004268-0000-0000-0000-000700000001 fall_distance'))
+    return ops + setup('/tick unfreeze', f'/kill @e[type=firework_rocket,x={x0},y={y0 - 8},z={z0},dx=16,dy=48,dz=16]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 20} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
 
 def boat_float_height():
     """#13022: `AbstractBoat.checkInWater` and `isUnderwater` sum a block's y and its water height
@@ -7933,6 +8063,7 @@ def groups():
         ('glide fall accumulation', glide_fall_accumulation()),
         ('living short timers', living_short_timers()),
         ('projectile fall distance', projectile_fall_distance()),
+        ('ominous spawner loaded fields', ominous_spawner_loaded_entity_fields()),
         ('thrown projectile rotation', thrown_projectile_rotation()),
         ('item fall distance', item_fall_distance()),
         ('beacon levels load', beacon_levels_load()),
@@ -8005,6 +8136,7 @@ def groups():
         ('mob NBT damage cooldown', mob_nbt_damage_cooldown()),
         ('mob full resistance hits', mob_full_resistance_hits()),
         ('sulfur cube loaded health', sulfur_cube_loaded_health()),
+        ('sulfur cube size attributes', sulfur_cube_size_attributes()),
         ('sulfur cube size ticks', sulfur_cube_size_ticks()),
         ('function return feedback', function_return_feedback()),
         ('fork function feedback', fork_function_feedback_cases()),
@@ -8039,6 +8171,7 @@ def groups():
         ('teleport lands', teleport_lands()),
         ('rocket data merge', rocket_data_merge()),
         ('mob fall clip', mob_fall_clip()),
+        ('rocket fall distance', rocket_fall_distance()),
         ('vehicle ground and fall', vehicle_ground_and_fall()),
         ('vehicle saved ground and fall', vehicle_saved_ground_and_fall()),
         ('ravager saved movement speed', ravager_saved_movement_speed()),

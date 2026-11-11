@@ -36,8 +36,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 2026-11
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
       - name: The aarch64 Linux linker
         if: matrix.target == 'aarch64-unknown-linux-gnu'
