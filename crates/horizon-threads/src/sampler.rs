@@ -284,7 +284,10 @@ struct ThreadState {
     /// The ring samples go to: the last of `rings`, null before the first session.
     ring: AtomicPtr<Ring>,
     /// Every ring this thread has had; a replaced one stays allocated, as a late signal's handler may still hold it.
-    #[expect(clippy::vec_box, reason = "`ring` points at a Ring, which must not move")]
+    #[expect(
+        clippy::vec_box,
+        reason = "`ring` points at a Ring, which must not move"
+    )]
     rings: Mutex<Vec<Box<Ring>>>,
     armed: AtomicBool,
     /// Bytes of stack each sample copies; 0 means the handler walks frame pointers instead.
