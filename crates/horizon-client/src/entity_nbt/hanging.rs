@@ -1,6 +1,18 @@
 //! Block-attached hanging entities: paintings and item frames.
 use super::*;
 
+/// The pitch `Entity.load` leaves on a hanging entity: `setXRot` ignores a
+/// non-finite value and otherwise clamps `xRot % 360` to +-90. `Painting` and
+/// `HangingEntity.setDirection` only write the yaw, so the loaded pitch is
+/// kept and `Entity.saveWithoutId` writes it back.
+fn loaded_pitch(raw: Option<&Tag>) -> f32 {
+    let pitch = raw.map_or(0.0, |tag| rotation(tag)[1]);
+    if pitch.is_finite() {
+        (pitch % 360.0).clamp(-90.0, 90.0)
+    } else {
+        0.0
+    }
+}
 /// Painting.addAdditionalSaveData: `facing`, `variant` and `block_pos`.
 pub fn painting_to_nbt(p: &Painting, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
     let (lo, hi) = p.bounds();
@@ -13,7 +25,7 @@ pub fn painting_to_nbt(p: &Painting, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
             (lo[2] + hi[2]) / 2.0,
         ),
         motion: Vec3::ZERO,
-        rotation: [f32::from(p.facing) * 90.0, 0.0],
+        rotation: [f32::from(p.facing) * 90.0, loaded_pitch(raw)],
         on_ground: false,
         fall_distance: 0.0,
     };
@@ -76,7 +88,7 @@ pub fn item_frame_to_nbt(f: &ItemFrame, uuid: [i32; 4], raw: Option<&Tag>) -> Ta
     }
     put(&mut tag, "Facing", Tag::Byte(f.facing as i8));
     put(&mut tag, "block_pos", Tag::IntArray(f.pos.to_vec()));
-    put(&mut tag, "ItemRotation", Tag::Byte(f.rotation as i8));
+    put(&mut tag, "ItemRotation", Tag::Byte(f.rotation));
     put(
         &mut tag,
         "ItemDropChance",
@@ -104,7 +116,8 @@ pub fn item_frame_from_nbt(tag: &Tag, id: u32) -> Option<ItemFrame> {
             .get("Item")
             .and_then(item_from_nbt)
             .map(|s| crate::items::ItemStack { count: 1, ..s }),
-        rotation: (number(tag.get("ItemRotation")).unwrap_or(0) & 7) as u8,
+        // `TagValueInput.getByteOr` narrows before `ItemFrame.setRotation`'s remainder.
+        rotation: (tag.get("ItemRotation").and_then(int_value).unwrap_or(0) as i8) % 8,
         drop_chance: float(tag.get("ItemDropChance")).map_or(1.0, |v| v as f32),
         fixed: flag(tag, "Fixed"),
         invisible: flag(tag, "Invisible"),
