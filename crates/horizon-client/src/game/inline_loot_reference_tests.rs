@@ -82,7 +82,8 @@ fn game() -> Game<'static> {
     .unwrap();
     game.world_root = dir;
     game.world_tables = game.build_world_tables(false, &[]).unwrap().0;
-    let _ = horizon_client::structure_blocks::world_loot_data(
+    // The packs' tables for this test's thread only (#14266).
+    let _ = horizon_client::structure_blocks::load_thread_loot_data(
         &game.options.resources,
         &game.pack_files(),
     );
