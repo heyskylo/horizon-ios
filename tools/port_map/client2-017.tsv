@@ -110,7 +110,7 @@ KeyBindsScreen.addContents	port	crates/horizon-client-render/src/options_ui.rs::
 KeyBindsScreen.addFooter	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::layout	Reset All and Done buttons
 KeyBindsScreen.repositionElements	skip:ui		layout only
 KeyBindsScreen.mouseClicked	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::bind_mouse	a mouse button is bound to the key being changed
-KeyBindsScreen.extractRenderState	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::layout	gap: minor: Reset All drawn in layout; its enabled-when-changed check was not confirmed
+KeyBindsScreen.extractRenderState	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::layout	Reset All is active only while a binding differs from its default (KeyBinds::changed_from_defaults)
 PackSelectionModel.getUnselected	port	crates/horizon-client-render/src/packs.rs::SelectionModel::list	unselected list (list(false)), returned as a slice rather than a stream
 PackSelectionModel.getSelected	port	crates/horizon-client-render/src/packs.rs::SelectionModel::list	selected list (list(true)), returned as a slice rather than a stream
 PackSelectionModel.updateRepoSelectedList	port	crates/horizon-client-render/src/packs.rs::SelectionModel::commit	selection written bottom first, as options.txt stores it; downloaded server/… packs are omitted from the saved list

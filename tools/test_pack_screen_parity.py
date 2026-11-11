@@ -134,6 +134,14 @@ def cases(count):
                     'lang': clock.choice(LANGS) if clock.random() < 0.2 else 'en_us',
                     # Util.getMillis: 0, a scroll period or two, or days of uptime.
                     'now': clock.choice([0, clock.randrange(0, 30_000), clock.randrange(0, 2**31)])})
+    for width, height in [(320, 240), (854, 480)]:
+        for cancel in [False, True]:
+            actions = [{'type': 'drop', 'paths': ['Faithful.zip', 'My Pack']}]
+            if cancel:
+                actions.append({'type': 'click', 'x': width // 2 + 10, 'y': height // 2 + 20})
+            out.append({'width': width, 'height': height, 'inWorld': False,
+                        'packs': [], 'selected': [], 'actions': actions, 'mouse': [-1, -1],
+                        'blink': 0, 'title': 'resourcePack.title', 'lang': 'en_us', 'now': 0})
     return out
 
 

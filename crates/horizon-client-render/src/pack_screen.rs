@@ -304,10 +304,16 @@ enum Focus {
     Button(usize),
 }
 
-/// The open `ConfirmScreen` for an incompatible pack.
+#[derive(Clone, Debug)]
+enum ConfirmAction {
+    Select(String),
+    Import(Vec<std::path::PathBuf>),
+}
+
+/// The open `ConfirmScreen` for an incompatible pack or dropped files.
 #[derive(Clone, Debug)]
 struct Confirm {
-    id: String,
+    action: ConfirmAction,
     title: Text,
     message: Text,
 }
@@ -316,6 +322,8 @@ struct Confirm {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     None,
+    /// The player accepted `pack.dropConfirm`.
+    Import(Vec<std::path::PathBuf>),
     /// The Open Pack Folder button.
     OpenFolder,
     /// The Done button (`onClose`: commit).
@@ -795,9 +803,43 @@ impl PackScreen {
             l.focused = false;
         }
         self.confirm = Some(Confirm {
-            id: id.to_owned(),
+            action: ConfirmAction::Select(id.to_owned()),
             title: tr("pack.incompatible.confirm.title"),
             message: tr(&format!("pack.incompatible.confirm.{}", compat.key())),
+        });
+    }
+    /// Winit delivers one event per path; collect a multi-file drop in one confirmation.
+    pub fn drop_file(&mut self, path: std::path::PathBuf) {
+        if matches!(
+            self.confirm.as_ref().map(|c| &c.action),
+            Some(ConfirmAction::Select(_))
+        ) {
+            return;
+        }
+        let mut paths = match self.confirm.take() {
+            Some(Confirm {
+                action: ConfirmAction::Import(paths),
+                ..
+            }) => paths,
+            _ => Vec::new(),
+        };
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+        let names = paths
+            .iter()
+            .filter_map(|p| p.file_name())
+            .map(|n| n.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.set_focus(Focus::None);
+        for list in &mut self.lists {
+            list.focused = false;
+        }
+        self.confirm = Some(Confirm {
+            action: ConfirmAction::Import(paths),
+            title: tr("pack.dropConfirm"),
+            message: Text::literal(names),
         });
     }
     /// The ConfirmScreen's layout: title, message lines and the two buttons.
@@ -834,12 +876,17 @@ impl PackScreen {
                 // The callback: back to the pack screen (repositioned), then select.
                 self.confirm = None;
                 self.reposition(m);
-                if i == 0
-                    && let Some(index) = self.model_index(0, &c.id)
-                {
-                    self.model.activate(false, index, true);
-                    self.changed = true;
-                    self.populate(Some(&c.id));
+                if i == 0 {
+                    match c.action {
+                        ConfirmAction::Import(paths) => return Action::Import(paths),
+                        ConfirmAction::Select(id) => {
+                            if let Some(index) = self.model_index(0, &id) {
+                                self.model.activate(false, index, true);
+                                self.changed = true;
+                                self.populate(Some(&id));
+                            }
+                        }
+                    }
                 }
                 return Action::None;
             }
@@ -1750,6 +1797,58 @@ impl PackScreen {
 mod icon_tests {
     use super::*;
 
+    #[test]
+    fn dropped_files_require_yes_and_keep_the_pending_selection() {
+        let atlas =
+            crate::hud::HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets"))
+                .unwrap();
+        let m = Measure(&atlas.font);
+        let mut screen = PackScreen::new(
+            &m,
+            tr("resourcePack.title"),
+            480,
+            270,
+            false,
+            vec![pack("file/Keep", None)],
+            &[],
+        );
+        screen.model.activate(false, 0, true);
+        screen.changed = true;
+        let before = screen.commit();
+        assert_eq!(before, ["file/Keep"]);
+        screen.drop_file("One.zip".into());
+        screen.drop_file("Two".into());
+        screen.drop_file("One.zip".into());
+        let no = screen
+            .confirm_layout(&m, screen.confirm.as_ref().unwrap())
+            .2[1];
+        assert_eq!(
+            screen.click(&m, f64::from(no.0 + 1), f64::from(no.1 + 1)),
+            Action::None
+        );
+        assert!(!screen.confirming());
+        assert_eq!(screen.commit(), before);
+        screen.drop_file("One.zip".into());
+        screen.drop_file("Two".into());
+        screen.drop_file("One.zip".into());
+        let yes = screen
+            .confirm_layout(&m, screen.confirm.as_ref().unwrap())
+            .2[0];
+        assert_eq!(
+            screen.click(&m, f64::from(yes.0 + 1), f64::from(yes.1 + 1)),
+            Action::Import(vec!["One.zip".into(), "Two".into()])
+        );
+        assert_eq!(screen.commit(), before);
+        screen.drop_file("Cancelled.zip".into());
+        assert!(screen.cancel_confirm(&m));
+        assert!(!screen.confirming());
+        let mut options = crate::options_ui::OptionsUi::default();
+        options.pack_screen = Some(screen);
+        options.update_pack_infos(vec![pack("file/Keep", None), pack("file/Imported", None)]);
+        assert_eq!(options.pack_selection, ["file/Keep"]);
+        assert!(options.pack_screen.is_none());
+    }
+
     fn png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
         let mut encoder = png::Encoder::new(&mut out, w, h);
@@ -2001,7 +2100,7 @@ mod click_sound_tests {
             );
         }
         screen.confirm = Some(Confirm {
-            id: "incompatible".into(),
+            action: ConfirmAction::Select("incompatible".into()),
             title: Text::literal("Confirm"),
             message: Text::literal("Use this pack?"),
         });

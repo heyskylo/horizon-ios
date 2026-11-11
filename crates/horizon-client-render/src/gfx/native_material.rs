@@ -22,7 +22,9 @@ const ENTRIES: &str = "
 override horizon_material_fog: bool = true;
 fn horizon_material_fogged(color: vec4<f32>, spherical: f32, cylindrical: f32) -> vec4<f32> {
     if horizon_material_fog {
-        return horizon_terrain_apply_fog(color, spherical, cylindrical);
+        // In vanilla's gamma, as vanilla mixes it: on a frame of linear light, encoded for it.
+        let gamma = horizon_terrain_frame_gamma(color);
+        return horizon_terrain_frame_stored(horizon_terrain_apply_fog(gamma, spherical, cylindrical));
     }
     return color;
 }
@@ -61,11 +63,14 @@ fn horizon_material_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color
 }
 // terrain.wgsl's fade-in (terrain.vsh's chunkVisibility): whole within 16 blocks, the section's
 // own visibility from 32 out, toward the fog colour, alpha kept. The distance blend runs here on
-// the interpolated distance, as vanilla's interpolated `visibility`, not once per triangle.
+// the interpolated distance, as vanilla's interpolated `visibility`, not once per triangle. In
+// vanilla's gamma, as the fog: on a frame of linear light, encoded for it.
 fn horizon_material_faded(in: HorizonMaterialOut, color: vec4<f32>) -> vec4<f32> {
     let instance = 1.0 - f32(in.hdr_code >> 16u) / 65535.0;
     let visibility = mix(1.0, instance, clamp((in.spherical - 16.0) / 16.0, 0.0, 1.0));
-    return vec4(mix(horizon_terrain_globals.fog_color.rgb, color.rgb, visibility), color.a);
+    let gamma = horizon_terrain_frame_gamma(color);
+    let faded = mix(horizon_terrain_globals.fog_color.rgb, gamma.rgb, visibility);
+    return horizon_terrain_frame_stored(vec4(faded, color.a));
 }
 // `light`: sky, block, 16 per level.
 fn horizon_material_out(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,
@@ -277,8 +282,9 @@ pub struct TerrainShape<'a> {
     pub flat: Option<&'a wgpu::BindGroupLayout>,
     /// terrain.wgsl's `SPRITE_ARRAYS` and `SPRITE_SPLIT`.
     pub sprites: [f64; 2],
-    /// The world target's colour format.
+    /// The world target's colour format, and whether it holds linear light (`linear_blend`).
     pub format: wgpu::TextureFormat,
+    pub linear: bool,
     /// The pack's tags of each tagged sprite layer, as `(layer, bits)`
     /// (`Manifest::sprite_tags`).
     pub sprite_tags: &'a [(u32, u32)],
@@ -369,12 +375,12 @@ fn shader_source(
     tags: &[(u32, u32)],
     materials: &[(u32, u32)],
     (vertex, displaced): (bool, bool),
-    api: horizon_shader_api::Api,
+    (api, linear): (horizon_shader_api::Api, bool),
 ) -> String {
     format!(
         "{source}\n// Horizon's terrain (terrain.wgsl)\n{}{}{}{}{}{ENTRIES}{}{}",
         vanilla_terrain(),
-        super::native_post::line_helpers(api),
+        super::native_post::line_helpers(api, linear),
         if vertex {
             DISPLACE_PACK
         } else {
@@ -398,9 +404,9 @@ fn module(
     materials: &[(u32, u32)],
     vertex: bool,
     displaced: bool,
-    api: horizon_shader_api::Api,
+    line: (horizon_shader_api::Api, bool),
 ) -> Result<naga::Module, String> {
-    let text = shader_source(&stage.source, tags, materials, (vertex, displaced), api);
+    let text = shader_source(&stage.source, tags, materials, (vertex, displaced), line);
     naga::front::wgsl::parse_str(&text)
         .map_err(|e| format!("{}: {}", stage.file, e.emit_to_string(&text)))
 }
@@ -424,7 +430,7 @@ impl NativeMaterial {
             shape.sprite_materials,
             vertex,
             displaced.is_some(),
-            frame.api,
+            (frame.api, frame.linear),
         )?;
         let mut constants = present_constants(&module, constants);
         let sprite_names = [
@@ -433,10 +439,10 @@ impl NativeMaterial {
         ];
         constants.extend(sprite_names.into_iter().zip(shape.sprites));
         constants.push(("horizon_material_fog", f64::from(u8::from(fog))));
-        constants.push((
-            "horizon_terrain_HDR_WRITE_LIGHT",
-            f64::from(u8::from(shape.format == super::LINEAR_FRAME)),
-        ));
+        let [(_, write_light), (_, linear)] =
+            super::linear_blend::frame_constants(shape.format, frame.linear);
+        constants.push(("horizon_terrain_HDR_WRITE_LIGHT", write_light));
+        constants.push(("horizon_terrain_FRAME_LINEAR", linear));
         constants.push((
             "horizon_displace_distance",
             displaced.map_or(0.0, |d| f64::from(d.distance)),
@@ -586,7 +592,9 @@ impl NativeMaterial {
 }
 
 #[cfg(test)]
-pub(super) fn coverage_test_shader(api: horizon_shader_api::Api) -> String {
+/// A material pack's terrain shader on shader API line `api`, its frame holding linear light
+/// where `linear`, with a full-screen `test_vertex`.
+pub(super) fn coverage_test_shader((api, linear): (horizon_shader_api::Api, bool)) -> String {
     use horizon_shader_api::{MANIFEST, Pack, StageKind, check};
     let manifest = format!(
         "schema = 1\nid = \"coverage\"\nname = \"Coverage\"\nversion = \"1\"\napi = \"{api}\"\n[material]\nfile = \"material.wgsl\"\n[displacement]\n"
@@ -601,7 +609,7 @@ pub(super) fn coverage_test_shader(api: horizon_shader_api::Api) -> String {
         .iter()
         .find(|s| s.kind == StageKind::Material)
         .unwrap();
-    shader_source(&stage.source, &[], &[], (false, true), api)
+    shader_source(&stage.source, &[], &[], (false, true), (api, linear))
         + r#"
 override TEST_TIER: u32 = 0u;
 override TEST_OVERLAY: u32 = 0u;
@@ -687,7 +695,7 @@ mod tests {
         let tags = [(7, 1), (3, 1), (9, 2)];
         let materials = [(5, 1000)];
         assert!(layer_table("t", &tags).contains("case 3u, 7u: { return 1u; }"));
-        let module = module(&stage, &tags, &materials, false, false, Api::V0_1).unwrap();
+        let module = module(&stage, &tags, &materials, false, false, (Api::V0_1, false)).unwrap();
         let info = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
@@ -701,7 +709,7 @@ mod tests {
                     &tags,
                     &materials,
                     (false, false),
-                    Api::V0_1
+                    (Api::V0_1, false)
                 ))
             )
         });
@@ -743,7 +751,7 @@ mod tests {
         .into();
         let report = check(&Pack::from_files(files).unwrap()).unwrap();
         let stage = report.stages.iter().find(|s| s.kind == StageKind::Material);
-        let module = module(stage.unwrap(), &[], &[], true, false, Api::V0_2).unwrap();
+        let module = module(stage.unwrap(), &[], &[], true, false, (Api::V0_2, false)).unwrap();
         naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
@@ -766,14 +774,20 @@ mod tests {
         let mut report = check(&Pack::from_files(files).unwrap()).unwrap();
         let stage = report.stages.remove(0);
         let materials = [(5, 1000)];
-        let module = module(&stage, &[], &materials, false, true, Api::V0_1).unwrap();
+        let module = module(&stage, &[], &materials, false, true, (Api::V0_1, false)).unwrap();
         naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
         )
         .validate(&module)
         .unwrap_or_else(|e| {
-            let text = shader_source(&stage.source, &[], &materials, (false, true), Api::V0_1);
+            let text = shader_source(
+                &stage.source,
+                &[],
+                &materials,
+                (false, true),
+                (Api::V0_1, false),
+            );
             panic!("{}", e.emit_to_string(&text))
         });
         for entry in [
@@ -830,7 +844,7 @@ mod tests {
             let report = check(&Pack::from_files(files).unwrap()).unwrap();
             let source = report.stages[0].source.clone()
                 + horizon_shader_api::stages::PBR_STUB
-                + super::super::native_post::line_helpers(api)
+                + super::super::native_post::line_helpers(api, false)
                 + entry;
             let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: None,
