@@ -6005,7 +6005,20 @@ mod camel_pose_saved_tests {
         game.block_ticks
             .add_empty_chunk(ChunkPos::new(0, 0))
             .unwrap();
-        assert!(game.run_command("forceload add 0 0"));
+        // A mob only ticks with its whole 5x5 chunk neighbourhood loaded.
+        for x in -2..=2 {
+            for z in -2..=2 {
+                if (x, z) != (0, 0) {
+                    game.world
+                        .chunks
+                        .insert((x, z), Arc::new(Chunk::empty(x, z)));
+                    game.block_ticks
+                        .add_empty_chunk(ChunkPos::new(x, z))
+                        .unwrap();
+                }
+            }
+        }
+        assert!(game.run_command("forceload add -32 -32 32 32"));
         assert!(game.run_command("tick freeze"));
         let initial = game.world.game_time;
         assert!(game.run_command("tick step 128"));
@@ -6074,6 +6087,31 @@ mod camel_pose_saved_tests {
                 assert!(game.run_command("tick step 1"));
                 game.tick_server(false).unwrap();
             }
+        }
+        // Unload and reload the chunk, then let time pass: the saved game time
+        // stays what it was (`Camel.addAdditionalSaveData` writes it unchanged).
+        let written: Vec<Tag> = game
+            .entity_chunks(&HashSet::from([(0, 0)]), true)
+            .into_iter()
+            .flat_map(|(_, tags)| tags)
+            .collect();
+        game.world.loaded_entities.push(((0, 0), written));
+        game.spawn_loaded_entities();
+        for step in 0..8 {
+            for number in 1..=cases.len() as i32 {
+                let index = game
+                    .mobs
+                    .iter()
+                    .position(|m| game.persist.uuids.get(&m.id) == Some(&[94, 0, 0, number]))
+                    .unwrap();
+                let value = actors[number as usize - 1].1;
+                assert_eq!(
+                    game.mob_tree_nbt(index).get("LastPoseTick"),
+                    Some(&Tag::Long(value)),
+                    "reloaded timestamp {value} after {step} steps"
+                );
+            }
+            game.tick_server(false).unwrap();
         }
     }
 }
