@@ -12,7 +12,7 @@ The world is frozen; ticks are stepped. Allays with fixed UUIDs fly in a loaded 
   appears beside it; it fetches it and throws it to the player, which starts the cooldown.
 
 Label classes, declared before any native run: `target-` rows read the cooldown memory (`supplied`,
-`frozen`, `plain`) and the full Brain; `rand-` rows are recorded and compared, but their tick depends
+`frozen`, `plain`) and the full Brain; `rand-` rows are recorded and reported, not compared: their tick depends
 on the natural delivery's flight (the `natural` allay's memory and pocket per tick); `diag-` rows are
 recorded diagnostics (clock, positions); every other row is a setup admission or a control.
 """
