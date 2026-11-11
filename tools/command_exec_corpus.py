@@ -5242,6 +5242,58 @@ def sulfur_cube_loaded_health():
     return lines
 
 
+def sulfur_cube_size_attributes():
+    """#13801: `SulfurCube.setSize` (`setCubeMobHealth`) sets the max_health (4 per size) and
+    movement_speed (0.2F + 0.1F * size) bases, so the save holds both from the load on, after the
+    first tick and across a chunk reload, and so does a cube released from a bucket
+    (`finalizeSpawn`'s size 2). A saved base wins over the size: `LivingEntity`'s load applies it
+    after `AbstractCubeMob.readAdditionalSaveData` sizes the cube, and so does its Health under Health
+    Boost (`setHealth` clamps to the sized maximum). Entries are read by id: the list's order is the
+    attribute map's."""
+    x, z = 4096, 4096
+    chunk = [[x >> 4, z >> 4]]
+    cases = ['', ',Size:2', ',attributes:[{id:"minecraft:movement_speed",base:0.25d}]',
+             ',Size:1,attributes:[{id:"minecraft:max_health",base:10.0d}]',
+             ',Size:2,Health:12f,active_effects:[{id:"minecraft:health_boost",duration:200}]']
+
+    def reads(uuid):
+        return [cmd(f'/data get entity {uuid} attributes[{{id:"minecraft:{a}"}}].base')
+                for a in ('max_health', 'movement_speed')] + [cmd(f'/data get entity {uuid} Health')]
+
+    uuids = [f'00000000-0000-0000-0000-0315{n + 1:08x}' for n in range(len(cases))]
+    ops = setup(f'/forceload add {x} {z}')
+    ops.append({'op': 'wait_chunks', 'chunks': chunk})
+    ops += setup(f'/fill {x} 299 {z} {x + 15} 299 {z + 15} stone')
+    for n, extra in enumerate(cases):
+        ops += setup(f'/summon sulfur_cube {x + 2 + 3 * n}.5 300 {z + 3}.5 '
+                     f'{{UUID:[I;0,0,789,{n + 1}],NoAI:1b,PersistenceRequired:1b{extra}}}')
+    for step in ('loaded', 'tick', 'reload'):
+        if step == 'tick':
+            ops.append({'op': 'tick', 'n': 1})
+        if step == 'reload':
+            ops += setup(f'/forceload remove {x} {z}')
+            ops.append({'op': 'tick', 'n': 60})
+            ops.append(cmd(f'/execute unless loaded {x} 300 {z}', expect_result=1))
+            ops += setup(f'/forceload add {x} {z}')
+            ops.append({'op': 'wait_chunks', 'chunks': chunk})
+        for uuid in uuids:
+            ops += reads(uuid)
+    ops += [cmd(f'/attribute {uuid} minecraft:movement_speed get 1000') for uuid in uuids]
+    ops += setup(SHRINK_SULFUR_CUBES.format('@e[type=sulfur_cube]'), '/kill @e[type=sulfur_cube]',
+                 f'/forceload remove {x} {z}')
+    # A real bucket release, looking down at the floor (the bucket's own use, not useOn).
+    ops += setup('/forceload add 0 0 15 15', '/fill 0 199 0 12 210 12 air', '/fill 0 199 0 12 199 12 stone',
+                 '/gamemode survival', '/tp @s 4.5 200 4.5 0 90',
+                 '/item replace entity @s weapon.mainhand with minecraft:sulfur_cube_bucket')
+    ops.append({'op': 'settle'})
+    ops.append({'op': 'use_item', 'sequence': 1, 'yaw': 0.0, 'pitch': 90.0})
+    ops += reads('@e[type=sulfur_cube,limit=1]')
+    ops += setup(SHRINK_SULFUR_CUBES.format('@e[type=sulfur_cube]'), '/kill @e[type=sulfur_cube]',
+                 '/fill 0 199 0 12 199 12 air', '/gamemode creative', '/clear @s',
+                 '/tp @s 8.5 230 8.5', '/forceload remove 0 0 15 15')
+    return ops
+
+
 def sulfur_cube_size_ticks():
     # SulfurCube.ageBoundaryReached grows a cube to size 2 only where setAge crosses
     # the baby boundary (#14916). Cubes with their AI on: an adult loaded at size 1
@@ -5271,7 +5323,6 @@ def sulfur_cube_size_ticks():
     lines.extend(setup(SHRINK_SULFUR_CUBES.format('@e[type=sulfur_cube]'), '/kill @e[type=sulfur_cube]',
                        '/forceload remove 0 0 31 31'))
     return lines
-
 
 
 def numeric_array_edits(include_storage_side_effects=False):
@@ -7135,6 +7186,32 @@ def projectile_fall_distance():
                        f'/forceload remove {x0} {z0}')
 
 
+def ominous_spawner_loaded_entity_fields():
+    """`Entity.load` reads Rotation (the pitch through `setXRot`: `% 360`, then within -90..90),
+    OnGround and fall_distance, and `OminousItemSpawner` never moves or turns, so it saves them as
+    loaded, before its first tick, after it and across a chunk reload."""
+    x0, y0, z0 = 5440, 300, 5120
+    cases = ['Rotation:[30.0f,20.0f],OnGround:1b,fall_distance:3.5d', 'Rotation:[-560.0f,100.0f]',
+             'Rotation:[10.0f,-450.0f],fall_distance:-1.0d', '']
+    ops = [*setup(f'/forceload add {x0} {z0}'), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]}]
+    for n, fields in enumerate(cases, 1):
+        sep = ',' if fields else ''
+        ops.append(cmd(f'/summon ominous_item_spawner {x0 + 3 * n}.5 {y0} {z0 + 8}.5 {{UUID:[I;14700,0,{n},1],'
+                       f'spawn_item_after_ticks:2000L,item:{{id:"minecraft:stone",count:1}}{sep}{fields}}}',
+                       expect_result=1))
+
+    def reads():
+        return [cmd(f'/data get entity 0000396c-0000-0000-0000-{n:04x}00000001 {key}')
+                for n in range(1, len(cases) + 1) for key in ('Rotation', 'OnGround', 'fall_distance')]
+
+    ops += reads() + [{'op': 'tick', 'n': 1}] + reads()
+    ops += [*setup(f'/forceload remove {x0} {z0}'), {'op': 'tick', 'n': 60},
+            cmd(f'/execute unless loaded {x0} {y0} {z0}', expect_result=1),
+            *setup(f'/forceload add {x0} {z0}'), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]}]
+    return ops + reads() + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16]',
+                                 f'/forceload remove {x0} {z0}')
+
+
 def thrown_projectile_rotation():
     """`ThrowableProjectile.tick` and `LlamaSpit.tick` end their move with `Projectile.updateRotation`:
     the pitch and yaw go a fifth of the way (`lerpRotation`) from the last tick's towards the
@@ -7677,6 +7754,23 @@ def dispensed_item_escape():
                        f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0} {z0 + 15} air', f'/forceload remove {x0} {z0}')
 
 
+def comparator_setblock_output():
+    """#13870: `BlockInput.place` loads a comparator's tag (`ComparatorBlockEntity.loadAdditional`:
+    `getIntOr("OutputSignal", 0)`), as `/data merge block` does."""
+    x0, y0, z0 = 4096 - 320, 260, 3584
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd('/tick freeze', False),
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', False)]
+    for n, data in enumerate(('{OutputSignal:20}', '{OutputSignal:-1}', '{}', '{OutputSignal:7}'), 1):
+        x = x0 + 2 * n
+        ops += [cmd(f'/setblock {x} {y0} {z0 + 8} comparator{data}', expect_result=1),
+                cmd(f'/data get block {x} {y0} {z0 + 8} OutputSignal')]
+    # A second /setblock over the same comparator loads the tag again.
+    ops += [cmd(f'/setblock {x0 + 8} {y0} {z0 + 8} comparator{{OutputSignal:3}}'),
+            cmd(f'/data get block {x0 + 8} {y0} {z0 + 8} OutputSignal')]
+    return ops + setup('/tick unfreeze', f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
 def groups():
     try:
         from .spectral_duration_corpus import cases as spectral_saved_duration
@@ -7874,9 +7968,11 @@ def groups():
         ('primed tnt fall', primed_tnt_fall()),
         ('dispensed item escape', dispensed_item_escape()),
         ('command block last output', command_block_last_output()),
+        ('comparator setblock output', comparator_setblock_output()),
         ('glide fall accumulation', glide_fall_accumulation()),
         ('living short timers', living_short_timers()),
         ('projectile fall distance', projectile_fall_distance()),
+        ('ominous spawner loaded fields', ominous_spawner_loaded_entity_fields()),
         ('thrown projectile rotation', thrown_projectile_rotation()),
         ('item fall distance', item_fall_distance()),
         ('beacon levels load', beacon_levels_load()),
@@ -7949,6 +8045,7 @@ def groups():
         ('mob NBT damage cooldown', mob_nbt_damage_cooldown()),
         ('mob full resistance hits', mob_full_resistance_hits()),
         ('sulfur cube loaded health', sulfur_cube_loaded_health()),
+        ('sulfur cube size attributes', sulfur_cube_size_attributes()),
         ('sulfur cube size ticks', sulfur_cube_size_ticks()),
         ('function return feedback', function_return_feedback()),
         ('fork function feedback', fork_function_feedback_cases()),

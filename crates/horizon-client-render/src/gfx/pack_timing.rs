@@ -151,7 +151,9 @@ impl PassTiming {
         Some(stamps(&self.queries, i))
     }
 
-    /// Timestamp writes for the compute pass `name`, in a timed frame.
+    /// Timestamp writes for the compute pass `name`, in a timed frame. Shader packs' compute
+    /// passes come as `<program> (compute)`, apart from the fragment program of the same name
+    /// (`deferred2.csh` beside `deferred2.fsh`), whose time theirs would otherwise add to.
     pub fn compute_writes(&mut self, name: &str) -> Option<wgpu::ComputePassTimestampWrites<'_>> {
         let i = self.push(name)?;
         Some(compute_stamps(&self.queries, i))
@@ -236,23 +238,7 @@ impl PassTiming {
         drop(data);
         self.read.unmap();
         let times = pass_times(&stamps, self.period_ns);
-        for (name, ms) in self.names.iter().zip(times) {
-            let Some(ms) = ms.filter(|_| !name.is_empty()) else {
-                continue;
-            };
-            let i = match self.samples.iter().position(|s| s.0 == *name) {
-                Some(i) => i,
-                None => {
-                    self.samples.push((name.clone(), VecDeque::new()));
-                    self.samples.len() - 1
-                }
-            };
-            let window = &mut self.samples[i].1;
-            if window.len() == WINDOW {
-                window.pop_front();
-            }
-            window.push_back(ms);
-        }
+        record(&mut self.samples, self.names.iter().zip(times));
         self.reports += 1;
         if self.log && self.reports.is_multiple_of(REPORT) {
             let medians = self.medians();
@@ -280,6 +266,40 @@ impl PassTiming {
                 (name.clone(), v[v.len() / 2])
             })
             .collect()
+    }
+}
+
+/// Adds one timed frame's pass times to `samples`, each pass's window of its last `WINDOW`
+/// frames. Passes of one name in a frame (a program drawn over several render passes) count as
+/// one sample, their sum: as separate samples they shared one window, and its median was the
+/// time of neither. Unnamed and unstamped passes are left out.
+fn record<'a>(
+    samples: &mut Vec<(String, VecDeque<f32>)>,
+    frame: impl Iterator<Item = (&'a String, Option<f32>)>,
+) {
+    let mut sums: Vec<(&str, f32)> = Vec::new();
+    for (name, ms) in frame {
+        let Some(ms) = ms.filter(|_| !name.is_empty()) else {
+            continue;
+        };
+        match sums.iter_mut().find(|s| s.0 == name) {
+            Some(s) => s.1 += ms,
+            None => sums.push((name, ms)),
+        }
+    }
+    for (name, ms) in sums {
+        let i = match samples.iter().position(|s| s.0 == name) {
+            Some(i) => i,
+            None => {
+                samples.push((name.to_owned(), VecDeque::new()));
+                samples.len() - 1
+            }
+        };
+        let window = &mut samples[i].1;
+        if window.len() == WINDOW {
+            window.pop_front();
+        }
+        window.push_back(ms);
     }
 }
 
@@ -323,7 +343,21 @@ fn pass_times(stamps: &[u64], period_ns: f32) -> Vec<Option<f32>> {
 
 #[cfg(test)]
 mod tests {
-    use super::pass_times;
+    use super::{pass_times, record};
+    use std::collections::VecDeque;
+
+    #[test]
+    fn passes_of_one_name_count_as_their_sum() {
+        let names = ["terrain", "sky", "terrain", "", "water"].map(String::from);
+        let times = [Some(1.0), Some(2.0), Some(3.0), Some(9.0), None];
+        let mut samples: Vec<(String, VecDeque<f32>)> = Vec::new();
+        record(&mut samples, names.iter().zip(times));
+        let got: Vec<(&str, Vec<f32>)> = samples
+            .iter()
+            .map(|(n, w)| (n.as_str(), w.iter().copied().collect()))
+            .collect();
+        assert_eq!(got, [("terrain", vec![4.0]), ("sky", vec![2.0])]);
+    }
 
     #[test]
     fn overlapping_passes_cost_from_the_previous_end() {

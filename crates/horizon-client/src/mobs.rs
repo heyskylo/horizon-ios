@@ -1159,8 +1159,9 @@ pub struct Extra {
     pub attributes: Option<Box<finalize::Attributes>>,
     /// Brain memories `finalizeSpawn` sets: (memory, value, ticks to expiry).
     pub memories: Vec<(&'static str, i64, i64)>,
-    /// A camel's `LAST_POSE_CHANGE_TICK`.
+    /// A camel's `LAST_POSE_CHANGE_TICK`, and its game time minus age at the last tick.
     pub pose_change_tick: i64,
+    pub pose_epoch: Option<i64>,
     /// Whether a camel sits (`egg_time` is then the age it sat down at).
     pub camel_sitting: bool,
     /// `Entity.DATA_POSE` as a mob of a server has it (`sync::pose_id`).
@@ -3953,8 +3954,7 @@ impl Mob {
     ) -> bool {
         self.track_section();
         // LivingEntity.tick: CombatTracker.recheckStatus.
-        let alive = self.alive();
-        self.combat.recheck(alive, self.age);
+        self.combat.recheck(self.alive(), self.age);
         neutral_anger::around_tick(self, w.game_time, |m| ai::tick(m, w, level_random, events))
     }
     /// The section the mob is in, noted when it changes (`EntitySection` lists).
