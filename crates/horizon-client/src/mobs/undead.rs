@@ -1274,7 +1274,9 @@ impl Goal for AttackTurtleEgg {
                     count: 1,
                 });
             }
-            // The break sound's pitch draws from the level random.
+            // `playBreakSound`: volume 0.7, pitch 0.9 + the level random's
+            // float * 0.2.
+            let pitch = 0.9 + cx.lr.next_float() * 0.2;
             cx.events.push(MobEvent::Sound(
                 "entity.turtle.egg_break",
                 [
@@ -1283,7 +1285,7 @@ impl Goal for AttackTurtleEgg {
                     f64::from(eat[2]) + 0.5,
                 ],
                 0.7,
-                1.0,
+                pitch,
             ));
         }
         self.since_reached += 1;
@@ -1500,6 +1502,75 @@ mod go_to_water_tests {
             });
             let _ = ran;
         }
+    }
+}
+
+#[cfg(test)]
+mod turtle_egg_tests {
+    use super::*;
+    use crate::mobs::world::with_built_test_world;
+    use std::sync::Arc;
+
+    /// The pitch of the `entity.turtle.egg_break` sound the goal plays on the
+    /// tick it breaks the egg, and the level random's next draw afterwards,
+    /// with the level random seeded `level_seed`. `None` without the extracted
+    /// data.
+    fn break_tick(level_seed: i64) -> Option<(f32, f32)> {
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            world
+                .chunks
+                .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+            let egg = registry.default_state("minecraft:turtle_egg").unwrap();
+            world.set(0, 63, 0, egg).unwrap();
+        };
+        let mut out = None;
+        let ran = with_built_test_world(&[], build, |w, types| {
+            let kind = Arc::new(types.types["minecraft:zombie"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            let mut goal = AttackTurtleEgg::default();
+            goal.base.block = [0, 63, 0];
+            goal.base.reached = true;
+            // Past `RemoveBlockGoal`'s sixty ticks: the egg goes this tick.
+            goal.since_reached = 61;
+            let mut lr = horizon_core::random::LegacyRandom::new(level_seed);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w,
+                lr: &mut lr,
+                events: &mut events,
+            };
+            goal.tick(&mut m, &mut cx);
+            out = events
+                .iter()
+                .find_map(|e| match e {
+                    MobEvent::Sound("entity.turtle.egg_break", _, volume, pitch) => {
+                        assert_eq!(*volume, 0.7);
+                        Some(*pitch)
+                    }
+                    _ => None,
+                })
+                .map(|pitch| (pitch, lr.next_float()));
+        });
+        ran.then_some(out).flatten()
+    }
+
+    /// `Zombie.ZombieAttackTurtleEggGoal.playBreakSound`:
+    /// `0.9F + level.getRandom().nextFloat() * 0.2F`. One draw of the level's
+    /// random, not the mob's, so the pitch varies with the level seed over
+    /// 0.9-1.1 rather than a fixed 1.0.
+    #[test]
+    fn the_egg_break_pitch_draws_from_the_level_random() {
+        // java.util.Random(seed)'s first nextFloat, from an independent
+        // implementation: 0.7306990027427673 for 7, 0.0978928804397583 for
+        // 4096, so the pitches are 0.9 + f * 0.2 in f32.
+        let Some((pitch, next)) = break_tick(7) else {
+            return;
+        };
+        assert_eq!(pitch, 1.046_139_7);
+        // Exactly one draw: the seed's second float is what comes next.
+        assert_eq!(next, 0.638_537_65);
+        assert_eq!(break_tick(4096), Some((0.919_578_55, 0.875_477_85)));
     }
 }
 

@@ -262,10 +262,7 @@ fn stab_attack(
         // `EnchantmentHelper.doPostAttackEffects`: Fire Aspect.
         let burn = gear::fire_aspect(m);
         if burn > 0 {
-            events.push(MobEvent::Ignite {
-                target,
-                seconds: burn,
-            });
+            events.push(MobEvent::Ignite(target, burn));
         }
     }
     if deals_knockback {

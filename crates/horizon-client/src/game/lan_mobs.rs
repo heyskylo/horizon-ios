@@ -131,10 +131,8 @@ pub(super) fn acts_on_player(e: &MobEvent) -> bool {
             | MobEvent::StabDismount {
                 target: Who::Player,
             }
-            | MobEvent::Ignite {
-                target: Who::Player,
-                ..
-            }
+            | MobEvent::Ignite(Who::Player, _)
+            | MobEvent::ZombieIgnite(Who::Player, _)
             | MobEvent::IronGolemHit {
                 target: Who::Player,
                 ..
