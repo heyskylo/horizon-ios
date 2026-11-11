@@ -3191,7 +3191,7 @@ pub fn fireball_to_nbt(
         Tag::Double(p.acceleration.to_bits()),
     );
     put_projectile(&mut tag, p, owner);
-    if p.is_fireball() {
+    if projectile_fields::keeps_entity_fields(p) {
         put_projectile_entity_fields(&mut tag, p);
     }
     if let Some(power) = power {
@@ -3494,7 +3494,7 @@ pub fn fireball_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Projecti
     p.has_been_shot = flag(tag, "HasBeenShot");
     p.owner_uuid = owner;
     p.no_gravity = flag(tag, "NoGravity");
-    if p.is_fireball() {
+    if projectile_fields::keeps_entity_fields(&p) {
         load_projectile_entity_fields(&mut p, tag);
     }
     p.on_ground = flag(tag, "OnGround");
