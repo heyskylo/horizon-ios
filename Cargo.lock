@@ -1523,7 +1523,6 @@ dependencies = [
  "horizon-anticheat",
  "horizon-assets",
  "horizon-bench",
- "horizon-chat-filter",
  "horizon-client-core",
  "horizon-client-input",
  "horizon-client-render",

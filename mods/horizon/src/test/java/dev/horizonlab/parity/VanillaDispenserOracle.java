@@ -16,6 +16,7 @@ import net.minecraft.world.entity.*;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.item.PrimedTnt;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
@@ -451,6 +452,8 @@ public final class VanillaDispenserOracle {
             used = respawnAt(w, origin, f.getAsJsonObject("respawn_at"));
         } else if (f.has("wake")) {
             used = wake(w, origin, f.getAsJsonObject("wake"));
+        } else if (f.has("special_attack")) {
+            used = specialAttack(w, f.getAsJsonObject("special_attack"));
         } else if (f.has("attack")) {
             used = attack(w, f.getAsJsonObject("attack"), targets);
         } else if (f.has("hopper")) {
@@ -859,7 +862,77 @@ public final class VanillaDispenserOracle {
      * health and velocity, the player's velocity, fall, impulse and the
      * statistics follow.
      */
-    static List<String> attack(VanillaBlockUpdateOracle.World w, JsonObject op, List<Entity> targets) throws Exception {
+    /** Actual Player.attack, including skipAttackInteraction and its accepted-hurt tail.
+     * Only attacker exhaustion, horizontal movement, sprint state and cooldown are compared.
+     */
+    static List<String> specialAttack(VanillaBlockUpdateOracle.World w, JsonObject op) throws Exception {
+        // Bind the inherited level field to the already allocated, inert harness
+        // server. No server constructor, world loader or main loop is invoked.
+        VanillaBlockUpdateOracle.set(ServerLevel.class, w, "server", w.server);
+        Attacker player = attacker(w, op);
+        VanillaBlockUpdateOracle.set(Entity.class, player, "level", w);
+        VanillaBlockUpdateOracle.set(Entity.class, player, "levelCallback", net.minecraft.world.level.entity.EntityInLevelCallback.NULL);
+        VanillaBlockUpdateOracle.set(Entity.class, player, "passengers", com.google.common.collect.ImmutableList.of());
+        VanillaBlockUpdateOracle.set(LivingEntity.class, player, "activeEffects", new HashMap<>());
+        VanillaBlockUpdateOracle.set(Entity.class, player, "random", net.minecraft.util.RandomSource.create(0));
+        VanillaBlockUpdateOracle.set(net.minecraft.world.entity.player.Player.class, player, "foodData", new net.minecraft.world.food.FoodData());
+        VanillaBlockUpdateOracle.set(LivingEntity.class, player, "attackStrengthTicker", op.get("ticks").getAsInt());
+        player.setOnGround(true);
+        player.setSprinting(op.get("sprint").getAsBoolean());
+        player.setYRot(0);
+        if (op.has("attack_damage")) {
+            player.getAttribute(net.minecraft.world.entity.ai.attributes.Attributes.ATTACK_DAMAGE).setBaseValue(op.get("attack_damage").getAsDouble());
+        }
+        if (op.has("weakness") && op.get("weakness").getAsBoolean()) {
+            player.forceAddEffect(new net.minecraft.world.effect.MobEffectInstance(net.minecraft.world.effect.MobEffects.WEAKNESS, 200, 0), null);
+        }
+        String kind = op.get("target").getAsString();
+        Entity target = switch (kind) {
+            case "boat" -> EntityTypes.OAK_BOAT.create(w, EntitySpawnReason.COMMAND);
+            case "cart" -> EntityTypes.MINECART.create(w, EntitySpawnReason.COMMAND);
+            case "stand" -> EntityTypes.ARMOR_STAND.create(w, EntitySpawnReason.COMMAND);
+            case "dragon" -> EntityTypes.ENDER_DRAGON.create(w, EntitySpawnReason.COMMAND);
+            case "painting" -> EntityTypes.PAINTING.create(w, EntitySpawnReason.COMMAND);
+            default -> EntityTypes.ITEM_FRAME.create(w, EntitySpawnReason.COMMAND);
+        };
+        target.snapTo(0.5, kind.equals("stand") ? 0 : 1, 0.5, 0, 0);
+        if (target instanceof net.minecraft.world.entity.decoration.ArmorStand stand) {
+            stand.lastHit = op.get("break").getAsBoolean() ? 100 : 0;
+        }
+        if (target instanceof net.minecraft.world.entity.decoration.BlockAttachedEntity hanging) {
+            VanillaBlockUpdateOracle.set(net.minecraft.world.entity.decoration.BlockAttachedEntity.class, hanging, "pos", new BlockPos(0, 1, 0));
+        }
+        if (target instanceof net.minecraft.world.entity.decoration.ItemFrame frame) {
+            if (kind.equals("filled_frame")) frame.setItem(new ItemStack(Items.STONE));
+            if (kind.equals("fixed_frame")) VanillaBlockUpdateOracle.set(frame.getClass(), frame, "fixed", true);
+        }
+        Entity original = target;
+        if (target instanceof net.minecraft.world.entity.boss.enderdragon.EnderDragon dragon) {
+            target = dragon.head;
+            target.snapTo(0.5, 1, 0.5, 0, 0);
+        }
+        w.entities.add(target);
+        player.attack(target);
+        String outcome = "control";
+        if (original instanceof net.minecraft.world.entity.vehicle.VehicleEntity vehicle) {
+            outcome = original.isRemoved() || vehicle.getHurtTime() > 0 ? "accepted" : "unchanged";
+        } else if (original instanceof net.minecraft.world.entity.decoration.ArmorStand stand) {
+            outcome = stand.isRemoved() || (!op.get("break").getAsBoolean() && stand.lastHit == 100) ? "accepted" : "unchanged";
+        } else if (original instanceof net.minecraft.world.entity.boss.enderdragon.EnderDragon dragon) {
+            outcome = dragon.getHealth() < 200.0F ? "accepted" : "unchanged";
+        }
+        Field ticker = LivingEntity.class.getDeclaredField("attackStrengthTicker");
+        ticker.setAccessible(true);
+        Field exhaustion = net.minecraft.world.food.FoodData.class.getDeclaredField("exhaustionLevel");
+        exhaustion.setAccessible(true);
+        var motion = player.getDeltaMovement();
+        return List.of(String.format(java.util.Locale.ROOT, "special %s %08x %016x %016x %s %d", outcome,
+            Float.floatToRawIntBits(exhaustion.getFloat(player.getFoodData())),
+            Double.doubleToRawLongBits(motion.x), Double.doubleToRawLongBits(motion.z),
+            player.isSprinting(), ticker.getInt(player)));
+    }
+
+    static Attacker attacker(VanillaBlockUpdateOracle.World w, JsonObject op) throws Exception {
         if (VanillaBlockUpdateOracle.Server.players == null) {
             VanillaBlockUpdateOracle.Server.players = (Ops) VanillaBlockUpdateOracle.allocate.invoke(VanillaBlockUpdateOracle.unsafe, Ops.class);
         }
@@ -913,6 +986,11 @@ public final class VanillaDispenserOracle {
         }
         // The player stands in the level, for the bursts that push it.
         w.entities.add(player);
+        return player;
+    }
+
+    static List<String> attack(VanillaBlockUpdateOracle.World w, JsonObject op, List<Entity> targets) throws Exception {
+        Attacker player = attacker(w, op);
         LivingEntity target = (LivingEntity) targets.get(0);
         ItemStack weapon = player.hand;
         var source = weapon.getDamageSource(player);

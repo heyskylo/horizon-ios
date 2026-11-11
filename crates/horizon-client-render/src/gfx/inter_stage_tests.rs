@@ -165,9 +165,14 @@ fn composed() -> Vec<(&'static str, Vec<&'static str>, String)> {
             super::world_warp::entity_shader(super::world_warp::IDENTITY).unwrap(),
         ),
         (
+            "world primitives",
+            vec!["world_primitives.wgsl"],
+            super::world_primitives::shader(),
+        ),
+        (
             "improved transparency world border",
             vec!["border.wgsl", "oit.wgsl", "oit_border.wgsl"],
-            include_str!("../border.wgsl").to_owned()
+            super::border_shader()
                 + include_str!("../oit.wgsl")
                 + include_str!("../oit_border.wgsl"),
         ),
