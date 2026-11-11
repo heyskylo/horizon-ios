@@ -109,20 +109,36 @@ fn profile_settings(
     profile: &Path,
     inherited: &horizon_client::settings::Settings,
     controller_join: bool,
+    guest_seat: usize,
 ) -> Result<horizon_client::settings::Settings> {
     let options = profile.join("options.txt");
-    let mut settings = if options.exists() {
-        horizon_client::settings::Settings::load(&options)
+    let made = if options.exists() {
+        None
     } else {
-        std::fs::create_dir_all(profile)?;
-        inherited.save(&options);
-        inherited.clone()
+        std::fs::create_dir_all(&profile)?;
+        let mut new = inherited.clone();
+        // The Controller setting is P1's, as on the profile page (`join`).
+        new.controller.enabled |= controller_join;
+        // On P1's seat, so the crates' settings stores write P1's values too.
+        let turn = horizon_hooks::seat();
+        horizon_hooks::engine::set_seat(0);
+        new.save(&options);
+        horizon_hooks::engine::set_seat(turn);
+        Some(new)
     };
-    // A selected profile may have inherited P1's Controller: Off setting.
-    // The pad that joined this seat must keep working after the picker closes.
-    if controller_join {
-        settings.controller.enabled = true;
-    }
+    // The crates' stores load into the guest's seat, before its turn starts below.
+    let turn = horizon_hooks::seat();
+    horizon_hooks::engine::set_seat(guest_seat);
+    let mut settings = match made {
+        Some(new) => {
+            horizon_client::settings::Settings::load_stores(&options);
+            new
+        }
+        None => horizon_client::settings::Settings::load(&options),
+    };
+    horizon_hooks::engine::set_seat(turn);
+    // A profile an earlier join saved with P1's off, or the player's pad would be dead.
+    settings.controller.enabled |= controller_join;
     Ok(settings)
 }
 
@@ -148,6 +164,7 @@ impl Split<'_> {
         // Until it has a profile, a scratch options file: never P1's.
         let options = Self::folder()?.join(".joining/options.txt");
         OPTIONS.set(Some(options.clone()));
+        horizon_hooks::engine::set_seat(seat - 1);
         let mut settings = self.host.settings.clone();
         if pad.is_some() {
             // The Controller setting is P1's own: a player who pressed a pad to join plays
@@ -157,6 +174,7 @@ impl Split<'_> {
         }
         let game = self.start_guest(seat, &options, settings);
         OPTIONS.set(None);
+        horizon_hooks::engine::set_seat(0);
         let mut game = game?;
         if let Some(pad) = pad {
             // The press that joined it doesn't act in its game.
@@ -321,9 +339,12 @@ impl Split<'_> {
         }
         let profile = profiles.join(&name);
         let options = profile.join("options.txt");
-        let mut settings =
-            profile_settings(&profile, &self.host.settings, self.guests[i].pad.is_some())?;
-        settings.controller.enabled |= self.guests[i].pad.is_some();
+        let mut settings = profile_settings(
+            &profile,
+            &self.host.settings,
+            self.guests[i].pad.is_some(),
+            self.guests[i].seat - 1,
+        )?;
         // P1's own world through memory (`Ok`), else P1's server over the network (`Err`).
         let via = match &self.host.integrated {
             Some(server) => Ok(server
@@ -512,9 +533,13 @@ impl Split<'_> {
             None,
             host.settings.horizon.api,
             host.settings.horizon.translucent_batching,
-            host.settings.horizon.wide_frame(),
+            &host.settings.horizon,
             // The pack its own game loads, from its profile.
             crate::game::shader_packs::picked_pack_shape(&guest.settings),
+            host.renderer
+                .as_ref()
+                .map(|r| r.display_reading())
+                .unwrap_or_default(),
             (
                 guest.settings.file.int("textureFiltering"),
                 guest.settings.file.int("maxAnisotropyBit"),
@@ -647,7 +672,7 @@ mod tests {
         let mut p1 = horizon_client::settings::Settings::default();
         p1.controller.enabled = false;
         p1.save(&folder.0.join("options.txt"));
-        let guest = super::profile_settings(&folder.0, &p1, true).unwrap();
+        let guest = super::profile_settings(&folder.0, &p1, true, 1).unwrap();
         assert!(
             guest.controller.enabled,
             "selecting a profile must not disable its joining pad"
@@ -664,7 +689,7 @@ mod tests {
         let profile = folder.0.join("NewProfile");
         let mut p1 = horizon_client::settings::Settings::default();
         p1.controller.enabled = false;
-        let guest = super::profile_settings(&profile, &p1, true).unwrap();
+        let guest = super::profile_settings(&profile, &p1, true, 1).unwrap();
         assert!(profile.join("options.txt").is_file());
         assert!(guest.controller.enabled);
         assert!(!p1.controller.enabled);
@@ -676,7 +701,7 @@ mod tests {
         let mut disabled = horizon_client::settings::Settings::default();
         disabled.controller.enabled = false;
         disabled.save(&folder.0.join("options.txt"));
-        let guest = super::profile_settings(&folder.0, &disabled, false).unwrap();
+        let guest = super::profile_settings(&folder.0, &disabled, false, 1).unwrap();
         assert!(!guest.controller.enabled);
     }
 

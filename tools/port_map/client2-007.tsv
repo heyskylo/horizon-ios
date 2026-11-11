@@ -25,7 +25,7 @@ ParticleDescription.fromJson	port	crates/horizon-client-render/src/particles.rs:
 ParticleEngine.makeParticle	port	crates/horizon-client-render/src/particles.rs::ParticleEngine::make	every provider arm; a VibrationSignal option has to carry its destination, and ParticleEngine::vibration is the client's own spawner
 ParticleEngine.createParticleGroup	skip:other		no render-type groups: ParticleEngine::render draws every particle in one pass, and the ITEM_PICKUP group is tick_pickups
 ParticleEngine.countParticles	skip:debug		
-ParticleEngine.hasSpaceInParticleLimit	port	crates/horizon-client-render/src/particles.rs::ParticleEngine::create	the only capped type is `ParticleLimit.SPORE_BLOSSOM`: a spore blossom air particle past `SPORE_BLOSSOM_LIMIT` (1000) is dropped in `create`, counted by scanning the live and queued particles instead of vanilla's counted map
+ParticleEngine.hasSpaceInParticleLimit	port	crates/horizon-client-render/src/particles/spawn.rs::ParticleEngine::create	the only capped type is `ParticleLimit.SPORE_BLOSSOM`: a spore blossom air particle past `SPORE_BLOSSOM_LIMIT` (1000) is dropped in `create`, counted by scanning the live and queued particles instead of vanilla's counted map
 ParticleEngine.clearParticles	port	crates/horizon-client-render/src/particles.rs::ParticleEngine::clear	clears emitters, live and pending particles; no limit counts to clear
 ParticleGroup.tickParticles	port	crates/horizon-client-render/src/particles.rs::ParticleEngine::tick	ticks live particles and drops the removed ones
 ParticleGroup.tickParticle	skip:debug		crash-report wrapper around particle.tick

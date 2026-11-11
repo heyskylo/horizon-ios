@@ -179,7 +179,7 @@ fn storage_volume_compute_is_sampled_and_retains_history_on_metal() {
             let Pipeline::Render(pipeline) = &final_pass.pipeline else {
                 panic!("final must be a render pass");
             };
-            render.set_pipeline(pipeline);
+            render.set_pipeline(pipeline.get().expect("compiled pipeline"));
             render.set_bind_group(0, &group, &[]);
             render.draw(0..6, 0..1);
         }

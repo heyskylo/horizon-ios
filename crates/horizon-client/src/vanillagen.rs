@@ -252,6 +252,10 @@ impl VanillaTerrain {
         terrain.flat = true;
         Ok(terrain)
     }
+    /// `ChunkGenerator.getSeaLevel`: the active generator's loaded setting.
+    pub fn sea_level(&self) -> i32 {
+        self.generator.sea_level()
+    }
     /// Whether this is a superflat generator, whose `spawnOriginalMobs` places nothing.
     pub fn is_flat(&self) -> bool {
         self.flat
@@ -872,6 +876,11 @@ impl ChunkGenerator for VanillaTerrain {
                 entities: Vec::new(),
             },
         );
+        // ChunkStatusTasks.full / SerializableChunkData.read: a full chunk stands in
+        // the region as ImposterProtoChunk(chunk, false).
+        if let Some(VanillaProto::Ready(chunk)) = proto.downcast_mut::<VanillaProto>() {
+            chunk.set_full();
+        }
         Some(proto)
     }
     fn final_writes(&self, snapshot: &Chunk, proto: &Proto) -> Vec<([i32; 3], u32)> {

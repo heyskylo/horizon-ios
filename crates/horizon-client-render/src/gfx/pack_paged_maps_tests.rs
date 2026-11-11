@@ -138,7 +138,7 @@ void main() {
     pass.paged = true;
     post.set_paged_maps([Some(map), None]);
     post.copied |= 1;
-    post.resize(&device, [8, 1]);
+    post.resize(&device, &queue, [8, 1]);
     let read = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
         size: 256,

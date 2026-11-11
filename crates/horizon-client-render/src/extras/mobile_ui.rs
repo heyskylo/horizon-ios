@@ -52,8 +52,6 @@ pub enum Item {
     /// Not on the Extras page: Horizon Settings shows No AI, its AI Agent page Agent Control.
     NoAi,
     AgentControl,
-    /// On the Horizon Settings page.
-    DiscordPresence,
 }
 /// The Extras page: headers and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
@@ -150,7 +148,6 @@ impl Item {
             Self::SortKey => super::desktop_ui::Item::SortKey,
             Self::NoAi => super::desktop_ui::Item::NoAi,
             Self::AgentControl => super::desktop_ui::Item::AgentControl,
-            Self::DiscordPresence => super::desktop_ui::Item::DiscordPresence,
             Self::HideBlockParticles => super::desktop_ui::Item::HideBlockParticles,
             Self::UiSoundReserve => super::desktop_ui::Item::UiSoundReserve,
             Self::ChatAnimation => super::desktop_ui::Item::ChatAnimation,
@@ -206,7 +203,6 @@ impl Item {
             Item::NoAi => "horizon.extras.no_ai.tooltip",
             Item::AgentControl => "horizon.extras.agent_control.tooltip",
             Item::ReproKeys => "horizon.extras.repro_keys.tooltip",
-            Item::DiscordPresence => "horizon.extras.discord_presence.tooltip",
             Item::Splitscreen => "horizon.extras.splitscreen.tooltip",
             Item::ChatAnimation => "horizon.extras.chat_animation.tooltip",
             Item::ChatIndicator => "horizon.extras.chat_indicator.tooltip",
@@ -267,7 +263,6 @@ impl Item {
             Item::KeystrokesCps => "Clicks per second",
             Item::NoAi => "No AI",
             Item::AgentControl => "Agent Control",
-            Item::DiscordPresence => "Discord Rich Presence",
         }
     }
     /// The switch this setting belongs to: it does nothing while that is off.
@@ -288,7 +283,7 @@ impl Item {
             MouseTweaksWheel => MouseTweaks,
             SortKey => Sort,
             Fullbright | DynamicLights | OwnNameTag | Zoom | Minimap | Fps | Keystrokes
-            | MouseTweaks | Sort | AutoReconnect | NoAi | AgentControl | DiscordPresence => {
+            | MouseTweaks | Sort | AutoReconnect | NoAi | AgentControl => {
                 return None;
             }
         })
@@ -353,9 +348,6 @@ impl Item {
             Item::NoAi => {
                 "Hides and turns off every AI feature: agent control, horizon-ctl and the MCP servers. The launcher's switch too."
             }
-            Item::DiscordPresence => {
-                "Shows Playing Horizon on your Discord profile while Discord runs: menus, single player or multiplayer, the dimension and the time played. Never a world's name or a server's address."
-            }
             Item::AgentControl => {
                 "Your own AI agent can play this game through horizon-ctl or an MCP client, on this computer only."
             }
@@ -412,7 +404,6 @@ impl Item {
             Item::Sort => e.sort,
             Item::NoAi => e.no_ai,
             Item::AgentControl => e.agent_control,
-            Item::DiscordPresence => e.discord_presence,
             _ => return None,
         })
     }
@@ -494,7 +485,6 @@ impl Item {
             Item::MinimapZoom => e.minimap_zoom = next(&MINIMAP_ZOOMS, e.minimap_zoom, back),
             Item::NoAi => e.no_ai = !e.no_ai,
             Item::AgentControl => e.agent_control = !e.agent_control,
-            Item::DiscordPresence => e.discord_presence = !e.discord_presence,
             Item::ZoomKey | Item::SortKey => {}
         }
     }

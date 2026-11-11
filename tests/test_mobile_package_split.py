@@ -37,3 +37,17 @@ class MobilePackageSplitTests(unittest.TestCase):
         self.assertIn('horizon-client-lib/controllers', game['features']['controllers'])
         binaries = {target['name'] for target in library['bin']}
         self.assertIn('horizon-ctl', binaries)
+
+    def test_ios_packages_registered_game_without_desktop_controller_backend(self):
+        for path in ['.github/workflows/ios.yml', 'packaging/ios/project.yml']:
+            source = (ROOT / path).read_text()
+            self.assertIn('-p horizon-official --no-default-features --features audio,horizon-extras', source)
+        project = (ROOT / 'packaging/ios/project.yml').read_text()
+        self.assertIn('release/horizon-official', project)
+        for package, dependency in [('horizon-official', 'horizon-game'), ('horizon-game', 'horizon-client')]:
+            data = manifest(package)
+            self.assertFalse(data['dependencies'][dependency]['default-features'])
+            for feature in ['audio', 'controllers', 'horizon-extras']:
+                self.assertIn(dependency + '/' + feature, data['features'][feature])
+        main = (ROOT / 'crates/horizon-official/src/main.rs').read_text()
+        self.assertLess(main.index('horizon_official::register()'), main.index('horizon_game::main()'))

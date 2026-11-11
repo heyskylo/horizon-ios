@@ -179,7 +179,7 @@ CGFloat MathUtils_dist(CGFloat a,CGFloat b,CGFloat c,CGFloat d){return hypot(c-a
 @interface ControllerInput:NSObject +(void)tick; @end
 @implementation ControllerInput
 '''
-main=r''' 
+main=r'''
 int main(){@autoreleasepool{
  NSData *input=[[NSFileHandle fileHandleWithStandardInput]readDataToEndOfFile];NSDictionary *c=[NSJSONSerialization JSONObjectWithData:input options:0 error:nil];
  events=[NSMutableArray new];NSMutableArray *steps=[NSMutableArray new];

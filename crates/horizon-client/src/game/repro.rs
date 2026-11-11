@@ -583,20 +583,25 @@ impl Game<'_> {
         if include_world {
             let root = world_root.as_ref().expect("a local world's save folder");
             if let Some(server) = self.integrated.as_ref() {
-                server.set_paused(true);
-                let saved = server.call(|game| game.save_game().map_err(|e| e.to_string()));
-                let copied = copy_tree(root, &dir.join("world"));
-                server.set_paused(self.pause);
-                match saved {
-                    Some(Ok(())) => {}
-                    Some(Err(e)) => {
+                // The server thread saves, then waits there for the copy: pausing it instead
+                // runs its pause save (which renames files into place) during the copy.
+                let (saved_tx, saved) = mpsc::channel();
+                let (copied, copied_rx) = mpsc::channel::<()>();
+                // A server that has stopped drops the task, and `saved_tx` with it.
+                server.poster().post(move |game| {
+                    let _ = saved_tx.send(game.save_game().map_err(|e| e.to_string()));
+                    let _ = copied_rx.recv();
+                });
+                match saved.recv() {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
                         return Err(format!("saving the world for the recording: {e}").into());
                     }
-                    None => {
-                        log::warn!("Horizon: the integrated server did not save for the recording")
-                    }
+                    Err(_) => return Err("the integrated server has stopped".into()),
                 }
-                copied.map_err(|e| format!("copying the world: {e}"))?;
+                let result = copy_tree(root, &dir.join("world"));
+                drop(copied);
+                result.map_err(|e| format!("copying the world: {e}"))?;
             } else {
                 self.save_game_with(true)?;
                 copy_tree(root, &dir.join("world"))

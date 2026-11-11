@@ -12,6 +12,14 @@ else (videos, Discord and other community material) lives elsewhere.
 
 The shared engine’s [upstream roadmap](ROADMAP.md) is background for engine work. Its numbered upstream issue links identify that work; they are not the place to file a new mobile-port report.
 
+**Mod-related pull requests go to [arismoko/horizon](https://github.com/arismoko/horizon)**, the fork that carries the
+mod API and reviews and merges that work. That covers the mod API, native hooks and events for mods, native mods,
+content mods (`.hmod`), mixins, wasm mods, `cargo horizon-mod`, `horizon-mods`, mod builds and the registry, and
+their docs ([mods](docs/mods.md), [native mods](docs/native-mods.md)). Open the pull request there from your usual
+branch. Mod-related pull requests opened here are closed with a pointer to it. Engine extension points that Horizon's
+own crates register (the [layer split](docs/layers.md)), resource and shader pack formats, and gameplay fixes stay
+here.
+
 ## Build it
 
 - **Prerequisites:** Rust (stable), Python 3.10+, JDK 25, and on Linux the ALSA and udev headers
@@ -44,9 +52,13 @@ and compares their outputs.
   [The parity workflow](docs/parity-workflow.md) shows how harnesses run; copy a nearby one.
 - **Horizon's own features** (the launcher, the new menus) follow [the design system](docs/design-system.md) and are
   off by default wherever they would change the vanilla look.
-- **Three layers: engine, platform, Horizon.** Vanilla code never depends on the platform (mods, shader packs,
-  Horizon-only settings) or on Horizon (cosmetics, the shop, official servers, telemetry), and the platform never
-  depends on Horizon. [docs/layers.md](docs/layers.md) says where a new feature goes; CI checks the dependencies.
+- **Three layers: engine, platform, Horizon.**
+  - Vanilla code never depends on the platform (mods, shader packs, HDR, the settings system) or on Horizon
+    (its extras, cosmetics, the shop, official servers, telemetry).
+  - The platform never depends on Horizon.
+  - Horizon uses only the platform, never the engine: it will live in its own repository.
+
+  [docs/layers.md](docs/layers.md) says where a new feature goes; CI checks the dependencies.
 - **Everything players run is Rust.** Python and Java are fine for dev tools and harness drivers in `tools/`, never
   for player-facing code.
 - **No game files in the repo.** Never commit game files, decompiled source or prepared resources (`.local/`):
@@ -92,7 +104,8 @@ names its sources: the sections of that specification, the documentation pages a
   that downloads NVIDIA's files itself, on the player's machine. No NVIDIA binaries, headers or SDK files in the
   repository.
 - **The JVM bridge** (running Java mods) is only ever a separate, optional download, never installed or on by
-  default. The game may offer to turn it on when it finds a Java mod; the player decides.
+  default. The game may offer to turn it on when it finds a Java mod; the player decides. It is promoted out of beta
+  only after MSPT and RAM benchmarks against the Java client with the same mods ([#13914](https://github.com/horizon-rust/horizon/issues/13914)).
 
 ## Before asking for review
 
@@ -111,6 +124,12 @@ For the game workspace, Clippy checks all targets of the touched crates and thei
 including examples. The dependency scope includes optional, platform, build and development dependencies. Tests run
 library, binary, integration and doc tests without building unrelated example executables. Shared Cargo
 configuration and toolchain changes select the whole workspace; CI also keeps its workspace-wide checks.
+
+### Translations
+
+Most of Horizon's translations were written by machine and stay marked unreviewed until someone who speaks the
+language checks them. To report a wrong string or review your language, see [docs/translations.md](docs/translations.md)
+and #translations on Horizon's Discord. Never mark machine-written text as reviewed.
 
 ## Claim before you start
 

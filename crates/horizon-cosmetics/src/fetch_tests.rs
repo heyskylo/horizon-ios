@@ -87,7 +87,7 @@ fn clock() -> (Clock, Arc<AtomicU64>) {
 }
 
 fn run(c: &mut Cosmetics) {
-    (c.worker.as_mut().unwrap())();
+    (c.worker.get_mut().unwrap().as_mut().unwrap())();
 }
 
 fn ids(worn: Option<Worn>) -> Vec<String> {

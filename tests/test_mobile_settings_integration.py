@@ -14,7 +14,7 @@ RENDER = ROOT / 'crates/horizon-client-render/src'
 def program():
     extras = (RENDER / 'extras.rs').read_text()
     mobile = (RENDER / 'extras/mobile_ui.rs').read_text()
-    options = (RENDER / 'options_ui.rs').read_text()
+    options = (RENDER / 'options_ui.rs').read_text() + '\n' + (RENDER / 'options_ui/shell_pages.rs').read_text()
     desktop_start = extras.index('mod desktop_ui {')
     desktop_enum = extras[extras.index('#[derive(Clone, Copy, Debug', desktop_start):extras.index('/// The Extras page:', desktop_start)]
     mobile_enum = mobile[mobile.index('#[derive(Clone, Copy, Debug'):mobile.index('/// The Extras page:')]
@@ -36,7 +36,7 @@ def program():
         code += 'mod ' + module + '{pub use crate::shell::{Ui,Target};#[derive(Clone,Copy)]pub enum Page{General,Advanced,Hdr,Bindings}}\n'
     code += 'mod shader_ui{pub enum Tab{Packs,Screen(usize)}}\n'
     code += OPTIONS_TYPES
-    code += 'impl OptionsUi {\n' + '\n'.join(method(options, n) for n in ['page', 'settings_search_active', 'typing', 'focused_rect', 'graphics_page', 'controller_page', 'controller_open', 'video_open', 'shell', 'shader_page']) + '}\n'
+    code += 'impl OptionsUi {fn radial_name_typing(&self)->bool{false}\n' + '\n'.join(method(options, n) for n in ['page', 'settings_search_active', 'typing', 'focused_rect', 'graphics_page', 'controller_page', 'controller_open', 'video_open', 'shell', 'shader_page']) + '}\n'
     # Exercise the native-only match arm on the host; iOS compilation checks its cfg.
     code += 'const SORT_KEY:&str="horizon.sort";const ZOOM_KEY:&str="horizon.zoom";\n#[derive(Default)]struct ExtraKeys{sort_key:String,zoom_key:String,pvp:pvp::Keys}\nimpl ExtraKeys{'
     code += method(extras, 'set_key').replace('#[cfg(target_os = "ios")]', '') + '}\n'
@@ -68,11 +68,11 @@ impl Packs{fn search_focused(&self)->bool{self.focused}fn search_rect(&self)->Op
 
 OPTIONS_TYPES = r'''
 #[derive(Clone,Copy,PartialEq,Default)]enum Page{
- #[default]Main,Language,Packs,Video,Controls,KeyBinds,ModBrowser,Graphics,GraphicsAdvanced,GraphicsHdr,Controller,PadBinds,Extras,ShaderPacks,ShaderOptions,
+ #[default]Main,Language,Packs,Video,Controls,KeyBinds,ModBrowser,Graphics,GraphicsAdvanced,GraphicsHdr,Controller,PadBinds,Extras,ShaderPacks,ShaderOptions,ControllerRadialName,ControllerRadial,ControllerRadialPick,
 }
 #[derive(Default)]struct OptionsUi{
  stack:Vec<Page>,resource_error:Option<String>,settings_search:EditBox,language_search:EditBox,
- pack_screen:Option<Packs>,graphics:graphics_ui::Ui,controller:controller_ui::Ui,extras:shell::Ui,shader:shell::Ui,
+ pack_screen:Option<Packs>,graphics:graphics_ui::Ui,controller:controller_ui::Ui,extras:shell::Ui,shader:shell::Ui,radial:shell::Ui,radial_pick:shell::Ui,
 }
 '''
 

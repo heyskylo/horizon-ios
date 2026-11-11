@@ -107,6 +107,8 @@ python3 tools/pr_ready.py --quick
 
 This runs the quick local checks. Also run the tests and device/simulator checks relevant to your change; the quick check alone is not proof of mobile compatibility. Do not commit prepared game files, Minecraft assets, certificates or account data.
 
+How Horizon is run (the council, theme groups and their leads, the Horizon Team, moderation): [GOVERNANCE.md](GOVERNANCE.md).
+
 ## Credits and license
 
 This fork builds on [Horizon](https://github.com/horizon-rust/horizon), created by **Ludovic Marie** and the Horizon contributors. The iOS/iPadOS port is developed in [heyskylo/horizon-ios](https://github.com/heyskylo/horizon-ios) by its maintainers and contributors.

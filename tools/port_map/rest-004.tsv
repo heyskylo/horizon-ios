@@ -43,7 +43,7 @@ RotatingSectionStorage.containsSection	skip:java		ring of section nodes; Horizon
 RotatingSectionStorage.getSectionIndex	skip:java		ring of section nodes; Horizon keys dirty sections by coordinates (DirtySections)
 RotatingSectionStorage.forEach	skip:java		ring of section nodes; Horizon keys dirty sections by coordinates (DirtySections)
 Screenshot.grab	port	crates/horizon-client/src/game/chat.rs::Game::take_screenshot	gap: minor: no downscale factor and no callback; the result line comes from finish_screenshot
-Screenshot.takeScreenshot	port	crates/horizon-client-render/src/gfx.rs::Renderer::write_screenshot	gap: minor: full size only, no downscale factor
+Screenshot.takeScreenshot	port	crates/horizon-client-render/src/gfx/screenshot_save.rs::save_now	gap: minor: full size only, no downscale factor
 Screenshot.getFile	port	crates/horizon-client/src/game/chat.rs::screenshot_name	minor: UTC instead of local time in the name
 ScrollWheelHandler.getNextScrollWheelSelection	port	crates/horizon-client-input/src/mouse.rs::ScrollWheelHandler::next_selection	
 SectionUpdateTracker.setDirty	port	crates/horizon-client-render/src/world.rs::DirtySections::insert	gap: minor: the from-player flag that orders remeshing is not kept
@@ -108,7 +108,7 @@ FirstPersonHandsAndItems.extractRenderState	inline	crates/horizon-client/src/gam
 FirstPersonHandsAndItems.shouldInstantlyReplaceVisibleItem	port	crates/horizon-client/src/game/hand.rs::shows_held_stack	the same stack object, or an equal one, which plays no swap animation; the slot a replaced hand changed is the exception
 FirstPersonHandsAndItems.extractMapRenderState	inline	crates/horizon-client/src/game/maps.rs::Game::held_map	the MAP_ID component picks the map data drawn in the hand, its decorations included, and decides the checkerboard background
 FirstPersonHandsAndItems.isChargedCrossbow	inline	crates/horizon-client/src/first_person.rs::hands_to_render	
-ItemActivation.tick	port	crates/horizon-client/src/item_activation.rs::ItemActivation::tick	the count down to 0, where the item goes; game.rs::tick_item_activation runs it
+ItemActivation.tick	port	crates/horizon-client/src/item_activation.rs::ItemActivation::tick	the count down to 0, where the item goes; game/totem.rs::tick_item_activation runs it, called from the game tick and the remote tick
 ItemActivation.activate	port	crates/horizon-client/src/item_activation.rs::ItemActivation::activate	a copy of the stack, the 40 ticks and two offsets in [-1, 1); game/totem.rs sets it from findTotem
 KeyboardInput.calculateImpulse	inline	crates/horizon-client-input/src/input.rs::keyboard_direction	
 LocalPlayer.<init>	inline	crates/horizon-client/src/ambience.rs::Ambience::new	gap: minor: the three ambient handlers are the Ambience loops; no connection set-up
@@ -139,7 +139,7 @@ LocalPlayer.rideTick	port	crates/horizon-client/src/game/remote_vehicles.rs::Gam
 LocalPlayer.isHorizontalCollisionMinor	port	crates/horizon-client/src/motion.rs::EntityMoveWorld::minor_horizontal_collision	the sprint keeps when a move hits a wall at under 8 degrees
 LocalPlayer.isMoving	inline	crates/horizon-client/src/auto_jump.rs::can_auto_jump	
 LocalPlayer.isSprintingPossible	port	crates/horizon-client/src/sprint.rs::Conditions::possible	
-LocalPlayer.canStartSprinting	port	crates/horizon-client/src/sprint.rs::Conditions::can_start	gap: player: slow_item is never set, so eating does not block starting a sprint
+LocalPlayer.canStartSprinting	port	crates/horizon-client/src/sprint.rs::Conditions::can_start	forward, not sprinting, food or may-fly, no slow item in use and not moving slowly unless underwater; `slow_item` is set from the item use (game.rs item_use_slows_sprint), so eating or drinking blocks the start
 LocalPlayer.onGameModeChanged	missing		minor: switching to spectator keeps vertical momentum
 LocalPlayer.getRopeHoldPosition	port	crates/horizon-client/src/game/leads.rs::Game::player_rope_hold	the first-person rope point from the look angles and the main arm
 LocalPlayer.raycastHitResult	port	crates/horizon-client/src/game/hand.rs::GameHands::hit	gap: minor: block fallback is Game::pick; no separate item attack-range pass

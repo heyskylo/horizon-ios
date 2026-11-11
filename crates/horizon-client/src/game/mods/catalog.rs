@@ -30,6 +30,7 @@ impl Eq for Entry {}
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Catalog {
+    pub native_ids: BTreeSet<String>,
     pub rows: Vec<Installed>,
     pub entries: BTreeMap<String, Arc<Entry>>,
     pub order: Vec<String>,
@@ -295,19 +296,42 @@ pub(crate) fn read(
     dev: &[PathBuf],
     cancel: &Cancellation,
 ) -> Result<Arc<Catalog>, String> {
-    read_with(home, dev, cancel, |_| {})
+    let version = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_owned));
+    read_at(home, dev, cancel, version.as_deref(), |_| {})
 }
 
-fn read_with(
+pub(crate) fn read_at(
     home: &Path,
     dev: &[PathBuf],
     cancel: &Cancellation,
+    version: Option<&Path>,
     mut before_pin: impl FnMut(&Path),
 ) -> Result<Arc<Catalog>, String> {
-    let mut paths = horizon_mods::find(&home.join(horizon_client::mod_list::DIR));
+    let native = version
+        .map(|p| horizon_mods::find(&p.join("native-content")))
+        .unwrap_or_default();
+    let native_ids: BTreeSet<_> = native
+        .iter()
+        .filter_map(|p| Package::read(p).ok().map(|p| p.manifest.id))
+        .collect();
+    let mut paths = native.clone();
+    paths.extend(
+        horizon_mods::find(&home.join(horizon_client::mod_list::DIR))
+            .into_iter()
+            .filter(|p| {
+                !Package::read(p)
+                    .ok()
+                    .is_some_and(|pkg| native_ids.contains(&pkg.manifest.id))
+            }),
+    );
     paths.retain(|path| !dev.contains(path));
     paths.extend(dev.iter().cloned());
-    let mut catalog = Catalog::default();
+    let mut catalog = Catalog {
+        native_ids,
+        ..Default::default()
+    };
     for path in paths {
         cancelled(cancel)?;
         let mut row = Installed {
@@ -537,5 +561,34 @@ mod tests {
         cancel.cancel();
         assert!(read(&dir.0, &[], &cancel).is_err());
         assert!(!dir.0.join(".horizon-cache/mod-sources").exists());
+    }
+}
+
+#[cfg(test)]
+fn read_with(
+    home: &Path,
+    dev: &[PathBuf],
+    cancel: &Cancellation,
+    before_pin: impl FnMut(&Path),
+) -> Result<Arc<Catalog>, String> {
+    read_at(home, dev, cancel, None, before_pin)
+}
+impl Catalog {
+    pub fn wanted_ids(
+        &self,
+        enabled: &BTreeSet<String>,
+        disabled: &BTreeSet<String>,
+    ) -> BTreeSet<String> {
+        enabled
+            .iter()
+            .filter(|id| !self.native_ids.contains(*id))
+            .cloned()
+            .chain(
+                self.native_ids
+                    .iter()
+                    .filter(|id| !disabled.contains(*id))
+                    .cloned(),
+            )
+            .collect()
     }
 }

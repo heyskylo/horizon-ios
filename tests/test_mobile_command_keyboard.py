@@ -32,6 +32,8 @@ def program(pad_source=None, command_source=None):
     methods = '\n'.join(method(pad_source, n) for n in names)
     methods += '\n' + method((ROOT / 'crates/horizon-client/src/game/play_input.rs').read_text(), 'reload_blocks_input')
     methods += '\n' + method(pad_source, 'suspend_system_keyboard')
+    capture = (ROOT / 'crates/horizon-client/src/game/pad/capture.rs').read_text()
+    methods += '\n' + method(capture, 'pad_keyboard_captures') + '\n' + method(capture, 'pad_capture')
     methods += '\n' + method((ROOT / 'crates/horizon-client/src/game/presentation.rs').read_text(), 'menu_input_blocked')
     methods += '\n' + method((ROOT / 'crates/horizon-client/src/game/presentation.rs').read_text(), 'presentation_stale')
     chat = (ROOT / 'crates/horizon-client/src/game/chat.rs').read_text()
@@ -82,7 +84,9 @@ struct KeyEvent { physical_key: PhysicalKey, state: ElementState, text: Option<S
 #[derive(Default)] struct Window { requests: RefCell<Vec<bool>> }
 impl Window { fn set_ime_allowed(&self, value: bool) { self.requests.borrow_mut().push(value); } }
 #[derive(Default)] struct Menu { osk: Option<()>, system_keyboard: bool, system_keyboard_hidden: bool, osk_dismissed: bool }
-#[derive(Default)] struct Pad { menu: Menu, reload_pending: bool }
+#[derive(Clone,Copy,PartialEq,Eq)] enum PadCapture { Keyboard, Prompt, Radial }
+#[derive(Default)] struct Radial; impl Radial {fn is_open(&self)->bool{false}}
+#[derive(Default)] struct Pad { menu: Menu, reload_pending: bool, radial: Radial }
 struct Title { focused: bool }
 impl Title { fn list_focused(&self)->bool{false} fn has_caret_field(&self) -> bool { self.focused } fn focused_field(&mut self) -> Option<()> { self.focused.then_some(()) } fn confirm_edit(&mut self) {} }
 #[derive(Default)] struct Creative { search: bool }

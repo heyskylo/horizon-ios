@@ -195,7 +195,9 @@ fn downloaded_wings_survive_cache_and_atlas_eviction_and_render_source_pixels() 
         wgpu::TextureFormat::Rgba8Unorm,
         &view,
         &view,
+        &view,
         &sampler,
+        false,
     )
     .unwrap();
     hud.atlas_texture = Some(gpu_atlas);

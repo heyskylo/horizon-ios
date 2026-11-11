@@ -106,7 +106,9 @@ impl Pads {
             return PadState::default();
         };
         self.style = style(&pad.state.category);
-        state_of(&pad.state)
+        let state = state_of(&pad.state);
+        self.peaks = [state.left, state.right];
+        state
     }
 }
 
@@ -259,6 +261,11 @@ impl PadRouter {
         // Product categories are not hardware identities. Do not guess that
         // reconnecting a second identical pad should take a missing seat.
         [0; 16]
+    }
+    /// Snapshot input supplies one observation per native poll.
+    pub(in crate::game) fn peaks(&self, id: PadId) -> [[f32; 2]; 2] {
+        let state = self.state(id);
+        [state.left, state.right]
     }
     pub(in crate::game) fn state(&self, id: PadId) -> PadState {
         self.pads

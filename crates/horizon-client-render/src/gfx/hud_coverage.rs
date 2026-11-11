@@ -63,7 +63,7 @@ impl Pipeline {
             None
         };
         Some(Self {
-            plain: super::render_pipeline(device, desc),
+            plain: crate::gfx::render_pipeline(device, desc),
             coverage,
         })
     }
@@ -107,7 +107,7 @@ pub(super) fn pipeline(
         )
     ) && blend.operation == wgpu::BlendOperation::Add;
     wrap(&mut module, fragment.entry_point?, blend)?;
-    let shader = super::shader_module(
+    let shader = crate::gfx::shader_module(
         device,
         wgpu::ShaderModuleDescriptor {
             label: desc.label,
@@ -136,7 +136,7 @@ pub(super) fn pipeline(
     ];
     fragment.module = &shader;
     fragment.targets = &targets;
-    Some(super::render_pipeline(device, &desc))
+    Some(crate::gfx::render_pipeline(device, &desc))
 }
 
 fn wrap(module: &mut naga::Module, name: &str, blend: wgpu::BlendComponent) -> Option<()> {
@@ -394,8 +394,8 @@ mod tests {
         else {
             return;
         };
-        let shader = super::shader_module(
-            device,
+        let shader = crate::gfx::shader_module(
+            &device,
             wgpu::ShaderModuleDescriptor {
                 label: None,
                 source: wgpu::ShaderSource::Wgsl(

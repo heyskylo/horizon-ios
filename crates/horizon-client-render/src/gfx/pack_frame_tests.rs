@@ -145,6 +145,8 @@ impl WorldTargets {
 /// An empty frame: no geometry, every list empty. `Frame` has no `Default`.
 pub(super) fn empty_frame(hud: &crate::hud::HudBatch) -> Frame<'_> {
     Frame {
+        boss_world_fog: false,
+        entity_motion_posed: &[],
         static_block_entities: &[],
         static_block_entity_stats: Default::default(),
         visible_static_block_entity_sections: &[],

@@ -597,86 +597,66 @@ pub(super) fn build(vanilla: &Path, packs: &[Pack], out: &Path) -> io::Result<()
 }
 
 #[cfg(test)]
-mod legacy_maintenance {
-    use super::*;
-}
-
-#[cfg(test)]
 mod tests {
-    use super::legacy_maintenance::{KEEP, hold, prune, use_path};
     use super::*;
     use crate::{packs, text::Text};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
-    fn prune_keeps_the_most_recently_used_overlays_and_those_in_use() {
+    fn prune_keeps_recent_generations_and_leased_old_ones() {
+        use horizon_assets::root_lease::RootLease;
+        use std::time::{Duration, SystemTime};
         let f = Fixture::new();
         let cache = f.0.join("cache");
-        let now = std::time::SystemTime::now();
-        // KEEP + 4 overlays, overlay 0 used last; one more not an overlay.
-        let overlays: Vec<PathBuf> = (0..KEEP + 4)
+        let roots: Vec<_> = (0..4)
             .map(|i| {
-                let out = cache.join(format!("{i:016x}"));
-                f.write(&format!("cache/{i:016x}/assets/a.png"), b"x");
-                f.write(&format!("cache/{i:016x}.overlay-cache.json"), b"{}");
-                let used = fs::File::create(use_path(&out)).unwrap();
-                used.set_modified(now - std::time::Duration::from_secs(60 * i as u64))
-                    .unwrap();
-                out
+                let root = cache.join(GENERATIONS).join(format!("{i:064x}"));
+                fs::create_dir_all(&root).unwrap();
+                fs::write(root.join("asset"), b"x").unwrap();
+                let marker = fs::File::create(marker_path(&root)).unwrap();
+                if i > 0 {
+                    marker
+                        .set_modified(SystemTime::now() - Duration::from_secs(3600))
+                        .unwrap();
+                }
+                root
             })
             .collect();
-        f.write("cache/notes/keep.txt", b"x");
-        // Another process uses the oldest, and builds the second oldest.
-        let using = fs::File::open(use_path(&overlays[KEEP + 3])).unwrap();
-        using.lock_shared().unwrap();
-        let building = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(lock_path(&overlays[KEEP + 2]))
-            .unwrap();
-        building.lock().unwrap();
-        prune(&cache);
-        let kept: Vec<bool> = overlays.iter().map(|o| o.is_dir()).collect();
-        let mut expected = vec![true; KEEP];
-        expected.extend([false, false, true, true]);
-        assert_eq!(kept, expected);
-        assert!(
-            !marker_path(&overlays[KEEP]).exists(),
-            "never reused half deleted"
-        );
-        assert!(cache.join("notes/keep.txt").exists());
-        // Released, they go at the next prune.
-        drop((using, building));
-        prune(&cache);
+        let lease = RootLease::acquire(&roots[2]).unwrap();
+        let building = RootLease::try_exclusive(&roots[3]).unwrap().unwrap();
+        fs::create_dir_all(cache.join("notes")).unwrap();
+        prune_generations(&cache, Duration::from_secs(60));
         assert_eq!(
-            overlays.iter().filter(|o| o.is_dir()).count(),
-            KEEP,
-            "only the most recent stay"
+            roots.iter().map(|p| p.is_dir()).collect::<Vec<_>>(),
+            [true, false, true, true]
         );
-        assert!(overlays[..KEEP].iter().all(|o| o.is_dir()));
+        assert!(!marker_path(&roots[1]).exists());
+        assert!(cache.join("notes").is_dir());
+        drop((lease, building));
+        prune_generations(&cache, Duration::from_secs(60));
+        assert_eq!(
+            roots.iter().map(|p| p.is_dir()).collect::<Vec<_>>(),
+            [true, false, false, false]
+        );
     }
 
     #[test]
-    fn an_overlay_held_by_this_process_is_never_pruned() {
+    fn a_generation_held_by_this_process_is_never_pruned() {
+        use std::time::{Duration, SystemTime};
         let f = Fixture::new();
         let cache = f.0.join("cache");
-        let held = cache.join("00000000000000ff");
-        f.write("cache/00000000000000ff/assets/a.png", b"x");
-        hold(&held).unwrap();
-        // Older than KEEP others, and still in use.
-        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
-        fs::File::options()
-            .write(true)
-            .open(use_path(&held))
-            .unwrap()
-            .set_modified(old)
+        let root = cache.join(GENERATIONS).join("f".repeat(64));
+        fs::create_dir_all(&root).unwrap();
+        let marker = fs::File::create(marker_path(&root)).unwrap();
+        marker
+            .set_modified(SystemTime::now() - Duration::from_secs(3600))
             .unwrap();
-        for i in 0..KEEP {
-            f.write(&format!("cache/{i:016x}/assets/a.png"), b"x");
-        }
-        prune(&cache);
-        assert!(held.is_dir());
+        let lease = horizon_assets::root_lease::RootLease::acquire(&root).unwrap();
+        prune_generations(&cache, Duration::from_secs(60));
+        assert!(root.is_dir());
+        drop(lease);
+        prune_generations(&cache, Duration::from_secs(60));
+        assert!(!root.exists());
     }
 
     struct Fixture(PathBuf);

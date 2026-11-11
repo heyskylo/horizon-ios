@@ -24,7 +24,7 @@ type Result<T>=std::result::Result<T,()>;
 #[derive(Clone,Copy,PartialEq,Eq,Hash,Debug)]enum MouseButton{Left,Right,Middle}
 #[derive(Clone,Copy,PartialEq)]enum Source{Keyboard,Pad,Touch,Agent}
 #[derive(Default)]struct Touch{fingers:actual_touch::Touches,holding:Option<MouseButton>,late:Vec<(MouseButton,u64)>}
-#[derive(Default)]struct Pad{held:bool}impl Pad{fn holds_action(&self,_:&(),_:&str)->bool{self.held}}
+#[derive(Default)]struct Pad{held:bool}impl Pad{fn holds_action(&self,_:&str)->bool{self.held}}
 #[derive(Default)]struct Keys;impl Keys{fn translate_mouse_all(&self,b:MouseButton)->Vec<std::result::Result<i32,MouseButton>>{vec![Err(b)]}fn translate_all(&self,_:i32)->Vec<std::result::Result<i32,MouseButton>>{vec![Err(MouseButton::Right)]}}
 #[derive(Default)]struct Settings{controller:(),keys:Keys}
 #[derive(Default)]struct Game{touch:Touch,pad:Pad,settings:Settings,physical_buttons:HashSet<MouseButton>,physical_keys:HashSet<i32>,events:Vec<(MouseButton,bool)>}

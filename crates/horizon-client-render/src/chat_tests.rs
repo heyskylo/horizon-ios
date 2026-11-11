@@ -114,7 +114,7 @@ fn normalized_chat_respects_the_protocol_utf16_limit_for_supplementary_text() {
         dispatcher: crate::command::vanilla::game_dispatcher(),
         registries: &registries,
     };
-    let mut screen = ChatScreen::new(&m, &commands, "", 0, 640, 360, full());
+    let mut screen = ChatScreen::new(&m, &commands, "", false, 0, 640, 360, full());
     // Direct assignment also exercises callers restoring a saved draft.
     screen.input.value = "🦀".repeat(256);
     assert_eq!(screen.normalized(), "🦀".repeat(128));
@@ -132,7 +132,7 @@ fn chat_field_budgets_utf16_before_normalization_and_replaces_selected_units() {
         dispatcher: crate::command::vanilla::game_dispatcher(),
         registries: &registries,
     };
-    let mut screen = ChatScreen::new(&m, &commands, &"🦀".repeat(256), 0, 640, 360, full());
+    let mut screen = ChatScreen::new(&m, &commands, &"🦀".repeat(256), false, 0, 640, 360, full());
     assert_eq!(screen.input.value, "🦀".repeat(128));
     screen
         .input
@@ -1089,4 +1089,73 @@ fn a_compact_repeat_keeps_the_scrolled_view_still() {
     // A new message still pushes the view up by its line.
     says(&mut chat, "new");
     assert_eq!(chat.scroll, 6);
+}
+
+/// `FilterMask.applyWithFormatting`: a pass-through mask keeps the message, a
+/// fully filtered one hides it, and a partial one turns each masked UTF-16 unit
+/// into a dark grey `#` whose hover reads `chat.filtered`.
+#[test]
+fn a_server_filter_mask_hides_or_masks_the_message() {
+    let text = |v: &serde_json::Value| crate::component::to_text(v, &mut |s| Text::literal(s));
+    let shown = |content: &str, mask: (i32, Vec<i64>)| {
+        filtered_message(content, &mask).map(|v| text(&v).plain())
+    };
+    assert_eq!(shown("hello", (0, vec![])), Some("hello".to_owned()));
+    assert_eq!(shown("hello", (1, vec![])), None);
+    assert_eq!(shown("hello", (2, vec![0b0110])), Some("h##lo".to_owned()));
+    assert_eq!(
+        shown("hello", (2, vec![0b1_0001])),
+        Some("#ell#".to_owned())
+    );
+    // An emoji is two UTF-16 units, so two bits and two `#`.
+    assert_eq!(
+        shown("a\u{1F600}b", (2, vec![0b0110])),
+        Some("a##b".to_owned())
+    );
+    // Bit 65 is in the second word.
+    let long = "x".repeat(70);
+    let mut expected = long.clone();
+    expected.replace_range(65..66, "#");
+    assert_eq!(shown(&long, (2, vec![0, 0b10])), Some(expected));
+    let masked = text(&filtered_message("hello", &(2, vec![0b0110])).unwrap());
+    let hash = masked.spans.iter().find(|s| s.text == "##").unwrap();
+    assert_eq!(hash.style.color, Some(text::DARK_GRAY));
+    let hover = hash.style.hover.as_ref().unwrap();
+    assert_eq!(hover.spans[0].text, "chat.filtered");
+    assert!(
+        masked
+            .spans
+            .iter()
+            .filter(|s| s.text != "##")
+            .all(|s| s.style.color.is_none())
+    );
+}
+
+/// `SuggestionsList.extractRenderState`: the list's rectangle asks for the
+/// pointing hand; outside it the cursor stays the arrow.
+#[test]
+fn the_suggestion_list_asks_for_the_pointing_hand() {
+    let font = font();
+    let m = Measure(&font);
+    let registries = Registries::default();
+    let c = Commands {
+        dispatcher: crate::command::vanilla::game_dispatcher(),
+        registries: &registries,
+    };
+    let mut screen = ChatScreen::new(&m, &c, "", false, 0, 640, 360, full());
+    screen.type_text(&m, &c, "/");
+    let rect = screen
+        .suggestions
+        .as_ref()
+        .expect("the root commands are a suggestion list")
+        .rect;
+    let _ = crate::widgets::take_cursor();
+    screen.draw(&m, (rect[0] + 2, rect[1] + 2), 0, 0);
+    assert_eq!(
+        crate::widgets::take_cursor(),
+        crate::widgets::Cursor::PointingHand
+    );
+    let _ = crate::widgets::take_cursor();
+    screen.draw(&m, (rect[0] - 1, rect[1] + 2), 0, 0);
+    assert_eq!(crate::widgets::take_cursor(), crate::widgets::Cursor::Arrow);
 }

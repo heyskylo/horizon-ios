@@ -304,7 +304,13 @@ fn describe(m: &Mob, all: &[Mob], regs: &SpawnRegistries) -> String {
                 let _ = write!(text, "[{}]", list.join(","));
             }
         }
-        if slot == 5 && horizon_client::mobs::raider::is_captain(m) {
+        // The ominous banner's components, read from the stack the mob wears.
+        if slot == 5
+            && m.extra.armor[0]
+                .as_ref()
+                .and_then(|s| s.data())
+                .is_some_and(|d| d.ominous_banner)
+        {
             text.push_str("*4");
         }
         eq.push(format!("{name}:{text}"));

@@ -8,21 +8,25 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import re
 from test_mobile_command_keyboard import method
 ROOT=Path(__file__).resolve().parents[1]
 
 
 def program(game_source=None):
-    source=(ROOT/'crates/horizon-client/src/game/emote_wheel.rs').read_text()
+    source=(ROOT/'crates/horizon-client/src/game/cosmetics/emote_wheel.rs').read_text().replace('self.cosmetics.wheel', 'self.emote_wheel').replace('self.cosmetics.emotes', 'self.emotes').replace('pub(in crate::game)', 'pub(super)')
+    source = re.sub(r"self\s*\.cosmetics\s*\.emotes", "self.emotes", source)
+    source = re.sub(r"self\s*\.cosmetics\s*\.wheel", "self.emote_wheel", source)
     # The separate actual-Game catalogue fixture is tested with the real game;
     # retain the complete production wheel and its original geometry unit tests.
     fixture_start=source.index('// Isolated actual-Game fixture:')
     fixture_end=source.index('#[cfg(test)]',fixture_start)
     source=source[:fixture_start]+source[fixture_end:]
     assert source.count("impl Game<'_>") == 1
-    source=source.replace('use super::{Game, Screen};', 'use crate::winit;\nuse super::{Game, Screen};')
+    source=source.replace('use crate::game::{Game, Screen};', 'use crate::winit;\nuse super::{Game, Screen};')
     game_source=game_source or (ROOT/'crates/horizon-client/src/game/pointer_capture.rs').read_text()
     pause=method(game_source,'pauses_game')
+    pause += '\n}\n' + method(game_source, 'top_screen_pauses') + "\nimpl Game<'_> {\n"
     return STUBS+'\nmod emote {\n'+source+"\nimpl Game<'_> {\n"+pause+'\n}\n'+CASES+'\n}\n'
 
 
@@ -40,12 +44,14 @@ pub fn begin_screen(f:impl FnOnce()->ScreenInfo){f();TARGETS.with_borrow_mut(Vec
 mod hud{use crate::text::Text;thread_local!{pub static TEXT:std::cell::RefCell<Vec<String>>=const{std::cell::RefCell::new(Vec::new())};}pub struct HudAtlas;pub struct HudBatch{pub width:f32,pub height:f32}impl HudBatch{pub fn fill_quad(&mut self,_:&HudAtlas,_:[[f32;2];4],_:u32){}pub fn text_width(_:&HudAtlas,s:&str)->f32{s.len() as f32*6.}pub fn text(&mut self,_:&HudAtlas,_:&str,_:f32,_:f32,_:u32,_:bool){}pub fn text_styled(&mut self,_:&HudAtlas,text:&Text,_:f32,_:f32,_:u32,_:bool){TEXT.with_borrow_mut(|v|v.push(text.plain()));}}}
 mod ui{use crate::{hud::*,widgets,text::Text};pub fn hovered(p:(f32,f32),x:f32,y:f32,w:f32,h:f32)->bool{p.0>=x&&p.0<x+w&&p.1>=y&&p.1<y+h}pub fn action_button(_:&mut HudBatch,_:&HudAtlas,_:widgets::Action,x:f32,y:f32,w:f32,h:f32,t:&Text,on:bool,_:bool){widgets::record(&t.plain(),[x,y,w,h],on);}}
 #[derive(Clone,Copy,Debug,PartialEq)]enum Screen{Playing,Paused,EmoteWheel,HudEditor,Options,Stats,Advancements,WorldOptions,Friends,Social,ServerLinks,ConfirmLink,DialogWarning,CommandBlock,DebugOptions}
+struct Overlay;impl Overlay{fn pauses_world(&self)->bool{true}}
+impl Screen{fn is_pause_screen(self)->bool{matches!(self,Self::Paused|Self::Options|Self::Stats|Self::Advancements|Self::WorldOptions|Self::HudEditor)}}
 #[derive(Default)]struct Catalogue{reported:Option<&'static str>}impl Catalogue{fn status(&self)->Option<&'static str>{self.reported}}
 #[derive(Default)]struct Emotes{catalogue:Catalogue}
 struct Item{id:String}struct Gui{atlas:hud::HudAtlas}struct Pad{owner_epoch:u64}struct Controller{trigger_threshold:f32}struct Keys;impl Keys{fn translate(&self,k:winit::keyboard::KeyCode)->Option<Result<winit::keyboard::KeyCode,()>>{Some(Ok(k))}}struct Settings{keys:Keys,controller:Controller}
-struct Game<'a>{emotes:Emotes,refresh_calls:usize,title:Option<()>,book:Option<()>,singleplayer:bool,published:bool,split:bool,_marker:std::marker::PhantomData<&'a ()>,screen:Screen,emote_wheel:emote::Wheel,keys:std::collections::HashSet<winit::keyboard::KeyCode>,left:bool,right:bool,mining:Option<()>,captured:bool,using:bool,owned:Vec<Item>,played:Vec<String>,gui:Gui,cursor:(f32,f32),size:(f32,f32),pad:Pad,settings:Settings,focused:bool}
-impl Game<'_>{fn new(screen:Screen,n:usize)->Self{Self{emotes:Emotes::default(),refresh_calls:0,title:None,book:None,singleplayer:true,published:false,split:false,_marker:std::marker::PhantomData,screen,emote_wheel:Default::default(),keys:std::collections::HashSet::new(),left:true,right:true,mining:Some(()),captured:true,using:true,owned:(0..n).map(|i|Item{id:format!("emote{i}")}).collect(),played:vec![],gui:Gui{atlas:hud::HudAtlas},cursor:(0.,0.),size:(320.,240.),pad:Pad{owner_epoch:7},settings:Settings{keys:Keys,controller:Controller{trigger_threshold:0.4}},focused:true}}
-fn has_singleplayer_server(&self)->bool{self.singleplayer}fn is_published(&self)->bool{self.published}fn has_split_players(&self)->bool{self.split}fn win_screen_pauses(&self)->bool{false}
+struct Game<'a>{emotes:Emotes,refresh_calls:usize,title:Option<()>,book:Option<Overlay>,dialogs:Overlay,singleplayer:bool,published:bool,split:bool,_marker:std::marker::PhantomData<&'a ()>,screen:Screen,emote_wheel:emote::Wheel,keys:std::collections::HashSet<winit::keyboard::KeyCode>,left:bool,right:bool,mining:Option<()>,captured:bool,using:bool,owned:Vec<Item>,played:Vec<String>,gui:Gui,cursor:(f32,f32),size:(f32,f32),pad:Pad,settings:Settings,focused:bool}
+impl Game<'_>{fn new(screen:Screen,n:usize)->Self{Self{emotes:Emotes::default(),refresh_calls:0,title:None,book:None,dialogs:Overlay,singleplayer:true,published:false,split:false,_marker:std::marker::PhantomData,screen,emote_wheel:Default::default(),keys:std::collections::HashSet::new(),left:true,right:true,mining:Some(()),captured:true,using:true,owned:(0..n).map(|i|Item{id:format!("emote{i}")}).collect(),played:vec![],gui:Gui{atlas:hud::HudAtlas},cursor:(0.,0.),size:(320.,240.),pad:Pad{owner_epoch:7},settings:Settings{keys:Keys,controller:Controller{trigger_threshold:0.4}},focused:true}}
+fn dialog_open(&self)->bool{false}fn has_singleplayer_server(&self)->bool{self.singleplayer}fn is_published(&self)->bool{self.published}fn has_split_players(&self)->bool{self.split}fn win_screen_pauses(&self)->bool{false}
 fn refresh_owned_emotes(&mut self){self.refresh_calls+=1;}fn release_use_for_keybind_screen(&mut self){self.using=false;}fn capture(&mut self,on:bool){self.captured=on;}fn owned_emotes(&mut self)->&[Item]{&self.owned}fn play_emote(&mut self,id:&str)->bool{self.played.push(id.into());true}fn emote_name(&self,id:&str)->String{id.into()}fn gui_size(&self)->(f32,f32){self.size}fn pad_focused(&self)->bool{self.focused}}
 '''
 CASES=r'''

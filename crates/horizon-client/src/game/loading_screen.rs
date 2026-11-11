@@ -34,9 +34,7 @@ pub(super) fn run_event_loop(mut game: Game<'_>) -> Result<()> {
     narrator::stop();
     leave_fullscreen_after(&result, &mut game.settings);
     result?;
-    #[cfg(feature = "discord")]
-    #[cfg(feature = "discord")]
-    horizon_client::discord_presence::stop();
+    horizon_hooks::engine::shutdown();
     write_report(&game)?;
     if let Some(e) = game.error.take() {
         return Err(e);
@@ -103,9 +101,8 @@ impl Loading {
             .map_or([1280, 720], |o| o.window_size)
             .map(f64::from);
         self.fullscreen = horizon_client::window::FullscreenState::new(fullscreen);
-        let attributes = horizon_client::window::with_horizon_icon(
-            Window::default_attributes().with_title("Horizon"),
-        );
+        let attributes =
+            horizon_client::window::with_icon(Window::default_attributes().with_title("Horizon"));
         // Wayland names the window by its app id, which the horizon.desktop entry matches.
         #[cfg(target_os = "linux")]
         let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
@@ -156,22 +153,25 @@ impl Loading {
         // redraw the same design when they start. GDI is unsafe:
         // horizon-threads holds it (this crate forbids unsafe code).
         #[cfg(target_os = "windows")]
-        let boot_paint_stop = hwnd(&window).map(|hwnd| {
-            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let repaint_stop = stop.clone();
-            std::thread::spawn(move || {
-                while !repaint_stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    horizon_threads::boot_paint::paint(
-                        hwnd,
-                        horizon_theme::fonts::GEIST_SEMIBOLD,
-                        horizon_theme::fonts::GEIST_MONO,
-                        &horizon_client::logging::recent_lines(),
-                    );
-                    std::thread::sleep(std::time::Duration::from_millis(300));
-                }
+        // In the fonts given to `menu_style`; with none, the window stays as it is.
+        let boot_paint_stop = hwnd(&window)
+            .zip(horizon_client::menu_style::get().fonts)
+            .map(|(hwnd, fonts)| {
+                let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let repaint_stop = stop.clone();
+                std::thread::spawn(move || {
+                    while !repaint_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        horizon_threads::boot_paint::paint(
+                            hwnd,
+                            fonts.semibold,
+                            fonts.mono,
+                            &horizon_client::logging::recent_lines(),
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(300));
+                    }
+                });
+                stop
             });
-            stop
-        });
         let offscreen = self.options.as_ref().is_some_and(|o| o.offscreen);
         let boot_step = startup::step("renderer.boot");
         match loading_renderer(
@@ -308,8 +308,10 @@ impl Loading {
             self.menu.reload_packs = false;
             self.delivered = false;
             self.started = Instant::now();
-            horizon_client::heartbeat::start();
-            horizon_client::discord_presence::start(self.settings.extras.discord_presence, false);
+            horizon_hooks::engine::started(&horizon_hooks::Started::new(
+                &horizon_client::telemetry::version(),
+                &std::env::current_dir().unwrap_or_default(),
+            ));
             let result = startup_menu::spawn_loader(
                 self.options.as_ref().unwrap(),
                 &self.settings,
@@ -433,8 +435,12 @@ impl Loading {
                 loaded.renderer_cpu,
                 self.settings.horizon.api,
                 self.settings.horizon.translucent_batching,
-                self.settings.horizon.wide_frame(),
+                &self.settings.horizon,
                 shader_packs::picked_pack_shape(&self.settings),
+                self.renderer
+                    .as_ref()
+                    .map(|r| r.display_reading())
+                    .unwrap_or_default(),
                 (
                     self.settings.file.int("textureFiltering"),
                     self.settings.file.int("maxAnisotropyBit"),
@@ -714,10 +720,7 @@ impl App {
                     // Stop player-visible activity immediately, even while an old
                     // producer is still being cancelled/joined below.
                     split.host.audio.stop_all();
-                    horizon_client::heartbeat::stop();
-                    horizon_client::discord_presence::set(
-                        horizon_client::discord_presence::Status::Off,
-                    );
+                    horizon_hooks::engine::shutdown();
                     horizon_airplay::screen(false, false);
                     // Retire every title scope, including ones dropped on normal
                     // navigation, before returning to the native launcher.
@@ -872,10 +875,7 @@ impl App {
                     let window = loading.window.clone();
                     let settings = loading.settings.clone();
                     let root = loading.vanilla_root.clone();
-                    horizon_client::heartbeat::stop();
-                    horizon_client::discord_presence::set(
-                        horizon_client::discord_presence::Status::Off,
-                    );
+                    horizon_hooks::engine::shutdown();
                     horizon_airplay::screen(false, false);
                     if !horizon_ios_launcher::complete_cancel(&owner) {
                         return;
@@ -1046,8 +1046,7 @@ pub(super) fn run_loading(
         App::Loading(loading) => leave_fullscreen_after(&result, &mut loading.settings),
     }
     result?;
-    #[cfg(feature = "discord")]
-    horizon_client::discord_presence::stop();
+    horizon_hooks::engine::shutdown();
     match app {
         App::Ready(mut split) => {
             write_report(&split.host)?;

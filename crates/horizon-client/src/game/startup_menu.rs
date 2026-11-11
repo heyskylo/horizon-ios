@@ -365,6 +365,8 @@ fn panic_text(payload: &(dyn std::any::Any + Send)) -> &str {
         .unwrap_or("Box<dyn Any>")
 }
 
+/// Resolve vanilla and native content before applying the selected resource packs.
+
 /// Each generation has its own channel and progress. Pack changes wait for the
 /// old tail before starting another generation, including cache/global writes.
 pub(super) fn spawn_loader(
@@ -395,8 +397,12 @@ pub(super) fn spawn_loader(
                     None
                 };
                 let mut pack_error = None;
-                let content =
-                    mods::prepare_content(&vanilla_root, &settings.mods.enabled, &dev_mods)?;
+                let content = mods::prepare_content(
+                    &vanilla_root,
+                    &settings.mods.enabled,
+                    &settings.mods.disabled,
+                    &dev_mods,
+                )?;
                 let content = packs::overlay_content(
                     &vanilla_root,
                     &settings.resource_packs,
@@ -1298,9 +1304,13 @@ impl Loading {
                 self.menu.win = None;
             }
         } else if self.menu.options_open {
+            let output = self
+                .renderer
+                .as_ref()
+                .map_or(Default::default(), |r| r.output());
             self.menu
                 .options
-                .draw(&self.settings, batch, &gui.atlas, self.menu.cursor);
+                .draw(&self.settings, output, batch, &gui.atlas, self.menu.cursor);
         } else if let Some(title) = &mut self.menu.title {
             title.poll_backup();
             if std::mem::take(&mut title.onboarding_finished) {

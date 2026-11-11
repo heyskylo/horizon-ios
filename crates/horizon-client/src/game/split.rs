@@ -318,6 +318,8 @@ impl<'a> Split<'a> {
                 .get(i.wrapping_sub(1))
                 .map(|g| g.options.clone()),
         );
+        let seat = self.guests.get(i.wrapping_sub(1)).map_or(1, |g| g.seat);
+        horizon_hooks::engine::set_seat(seat - 1);
         self.turn = i;
     }
 
@@ -438,8 +440,9 @@ impl<'a> Split<'a> {
             None,
             api,
             batching,
-            self.host.settings.horizon.wide_frame(),
+            &self.host.settings.horizon,
             shader_pack,
+            old.display_reading(),
             (
                 self.host.settings.file.int("textureFiltering"),
                 self.host.settings.file.int("maxAnisotropyBit"),
@@ -521,8 +524,9 @@ impl<'a> Split<'a> {
             None,
             api,
             batching,
-            self.host.settings.horizon.wide_frame(),
+            &self.host.settings.horizon,
             shader_pack,
+            old.display_reading(),
             (
                 self.host.settings.file.int("textureFiltering"),
                 self.host.settings.file.int("maxAnisotropyBit"),
@@ -980,10 +984,8 @@ impl Game<'_> {
         self.drag_button = None;
         self.modifiers = Default::default();
         // A press this player's pad holds goes on, as for its keys.
-        self.left = self
-            .pad
-            .holds_action(&self.settings.controller, "key.attack");
-        self.right = self.pad.holds_action(&self.settings.controller, "key.use");
+        self.left = self.pad.holds_action("key.attack");
+        self.right = self.pad.holds_action("key.use");
         self.inventory_mouse_release(false);
         self.inventory_mouse_release(true);
         self.inventory_pick_release();

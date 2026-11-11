@@ -1,6 +1,13 @@
 //! The player's `CombatTracker`: the damage taken lately, who dealt it and
 //! where the player fell from, turned into the vanilla death message.
 use super::{Game, commands::Target};
+
+// The test names `super::commands`, as it did when game.rs held it.
+#[cfg(test)]
+use super::commands;
+#[cfg(test)]
+#[path = "revenge_home_tests.rs"]
+mod revenge_home_tests;
 use horizon_client::{
     health::HealthEvent,
     mobs::{Mob, Species},

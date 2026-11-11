@@ -138,6 +138,7 @@ fn tick(
     let mut next = 200;
     let border = horizon_client::worldborder::WorldBorder::default();
     let mut ctx = TickCtx {
+        sea_level: 63,
         world,
         entities: &states,
         next_entity: &mut next,

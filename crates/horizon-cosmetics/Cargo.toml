@@ -7,6 +7,7 @@ license = "MIT"
 description = "Cosmetic items drawn on players by Horizon clients: the item format, attachment to the player model's bones, simple animations, and what other players wear (fetched and cached)"
 
 [dependencies]
+horizon-addresses = { path = "../horizon-addresses" }
 base64 = "0.22"
 glam = "0.30"
 png = "0.18"

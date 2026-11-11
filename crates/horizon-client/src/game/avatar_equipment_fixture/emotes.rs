@@ -50,17 +50,20 @@ pub(super) fn capture(game: &mut Game<'_>, camera: glam::DVec3) -> Result<serde_
             let inactive: Vec<_> = [("future",100.0,None),("expired",-40.0,None),("faded",0.0,Some(0.0))]
                 .into_iter().map(|(state,start,stop)| {
                     let mut posed = mob.clone();
-                    posed.emote = Some(horizon_cosmetics::Playing{item:item.clone(),start,stop});
+                    crate::game::cosmetics::emotes::set_playing(&mut posed, Some(horizon_cosmetics::Playing{item:item.clone(),start,stop}));
                     let vertices = draw(game,&posed);
                     json!({"state":state,"vertices":vertices.len(),"matchesVanilla":
                         bytemuck::cast_slice::<_,u8>(&vertices)==bytemuck::cast_slice::<_,u8>(&vanilla)})
                 }).collect();
             let mut active = mob.clone();
-            active.emote = Some(horizon_cosmetics::Playing {
-                item: item.clone(),
-                start: 0.0,
-                stop: None,
-            });
+            crate::game::cosmetics::emotes::set_playing(
+                &mut active,
+                Some(horizon_cosmetics::Playing {
+                    item: item.clone(),
+                    start: 0.0,
+                    stop: None,
+                }),
+            );
             let moved = draw(game, &active);
             let shifted_once = moved.len() == vanilla.len()
                 && moved.iter().zip(&vanilla).all(|(a, b)| {
@@ -91,11 +94,14 @@ pub(super) fn capture(game: &mut Game<'_>, camera: glam::DVec3) -> Result<serde_
                 .into_iter()
                 .map(|(start, stop)| {
                     let mut posed = mob.clone();
-                    posed.emote = Some(horizon_cosmetics::Playing {
-                        item: item.clone(),
-                        start,
-                        stop,
-                    });
+                    crate::game::cosmetics::emotes::set_playing(
+                        &mut posed,
+                        Some(horizon_cosmetics::Playing {
+                            item: item.clone(),
+                            start,
+                            stop,
+                        }),
+                    );
                     draw(game, &posed).len()
                 })
                 .collect();
@@ -168,11 +174,14 @@ fn affine_wing_controls(
         mob.emote = None;
         game.view_frustum = None;
         let baseline = draw_wings(game, &mob);
-        mob.emote = Some(horizon_cosmetics::Playing {
-            item: item.clone(),
-            start: 0.0,
-            stop: None,
-        });
+        crate::game::cosmetics::emotes::set_playing(
+            &mut mob,
+            Some(horizon_cosmetics::Playing {
+                item: item.clone(),
+                start: 0.0,
+                stop: None,
+            }),
+        );
         let posed = draw_wings(game, &mob);
         // LivingEntityRenderer's entity scale and AvatarRenderer's 0.9375 scale.
         // Its model origin is 1.501 scaled blocks above the feet. At this yaw,

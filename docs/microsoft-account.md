@@ -86,7 +86,7 @@ possible; the launcher just doesn't offer it on its own.
   says "Sign in with a Microsoft account that owns Minecraft: Java Edition to play", with Sign in.
 - **The window says it once.** A player without an owner (one who played offline until now) sees
   the gate's screen once when the launcher opens: why Horizon needs the account ("like other
-  launchers"), that worlds, offline names and settings stay where they are, and Sign in, which shows
+  launchers"), and Sign in, which shows
   the device code on the same screen. It comes back whenever Play is refused; Not now closes it,
   and Home keeps a Sign in row (`launcher/src/owner_page.rs`).
 - **The answer lives with the tokens.** Each account's keychain item keeps the last answer
@@ -95,8 +95,13 @@ possible; the launcher just doesn't offer it on its own.
   `secret-tool` or Keychain Access. With no network (or a sign-in that can't be renewed) the
   last answer stands: being offline never blocks a player who passed before, and the game starts
   without a session, offline. An answer of "doesn't own" (or no profile) blocks at once.
-- **Offline names play behind an owner.** They can be added and played only while an owning
-  account is signed in. Signing the last one out keeps them, and they play again once one is back.
+- **The account that plays owns the game.** The game plays as the selected account (else the
+  first), which must own the game itself: another account's ownership doesn't let it play
+  (`account::launch_for_game`). The project decided on 2026-11-09 that Horizon plays only with a
+  Microsoft account that owns Minecraft: Java Edition: the offline names, their skins and capes,
+  and 0.2.58's hidden developer option are gone. Files from older launchers still load; the next
+  save drops them (`offline`, `offline_selected`, `looks` and `skins/` in accounts.json's folder,
+  `dev_offline` in settings.json).
 - **Who isn't affected:** the game binary itself (`horizon-client`, `horizon-ctl launch`, the
   harnesses, CI), the dedicated server and `horizon-server`, the website. There is no bypass flag:
   the launcher's tests use accounts in a memory store (`MemoryStore`, and `HORIZON_NO_KEYCHAIN`
@@ -229,7 +234,7 @@ Progress is public metadata and does not expose credentials through the UI or MC
 name the expected player. Signing in to a different account is rejected before storing its
 credentials or adding/selecting that identity. Retry keeps the same target; Cancel leaves the
 saved account alone. Successful re-sign-in restores that account without changing the player
-or offline name currently selected for Play. Adding a new account remains a separate action.
+currently selected for Play. Adding a new account remains a separate action.
 
 ## Handing the session to the game
 
@@ -286,7 +291,8 @@ Code: `horizon-protocol` (`rsa.rs`, `crypto::server_hash`), `horizon-client` (`a
 
 Horizon's dedicated server verifies players when `online-mode=true`. A LAN or Play with Friends world
 verifies its guests when the host is signed in, as vanilla's `IntegratedServer` does
-(`OnlineMode::lan`); under an offline name it stays offline-mode. The host's own player joins through
+(`OnlineMode::lan`); started without a session (the services couldn't be reached at Play) it
+stays offline-mode. The host's own player joins through
 memory and is never asked to authenticate.
 
 `HORIZON_API_DISCOVERY` overrides the discovery URL, the counterpart of authlib's

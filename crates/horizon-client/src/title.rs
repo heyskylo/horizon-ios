@@ -2007,7 +2007,7 @@ impl Title {
                         y + 72.0,
                         20.0,
                         &lang::get_or(key, plain),
-                        true,
+                        id != 5 || crate::net::joins_friends(),
                         id,
                     );
                     button.icon = Some((icon, 15.0));
@@ -3850,7 +3850,8 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     self.realms_workers = crate::realms::Workers::new();
                 }
                 self.mode = Mode::Realms(crate::realms::Screen::with_saves_and_workers(
-                    Some(self.saves.clone()), self.realms_workers.clone(),
+                    Some(self.saves.clone()),
+                    self.realms_workers.clone(),
                 ));
                 Action::None
             }
@@ -5488,6 +5489,8 @@ mod classic_tests {
 
     #[test]
     fn classic_main_menu_icons_route_language_and_accessibility() {
+        // Join a Friend needs a resolver (title/tests.rs tests the icon without one).
+        crate::net::JOINS_FRIENDS_IN_TEST.set(true);
         let mut title = Title::new(
             PathBuf::new(),
             Path::new("/nonexistent/horizon-test-resources"),

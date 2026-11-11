@@ -304,6 +304,13 @@ public final class VanillaDispenserOracle {
             marker.setAccessible(true);
             marker.invoke(stand, true);
         }
+        // ArmorStand.showArms and the DisabledSlots lock bits.
+        if (e.has("arms") && ent instanceof net.minecraft.world.entity.decoration.ArmorStand stand) {
+            stand.setShowArms(true);
+        }
+        if (e.has("disabled") && ent instanceof net.minecraft.world.entity.decoration.ArmorStand stand) {
+            VanillaBlockUpdateOracle.set(net.minecraft.world.entity.decoration.ArmorStand.class, stand, "disabledSlots", e.get("disabled").getAsInt());
+        }
         // ArmorStand.lastHit: the game tick of the stand's previous punch.
         if (e.has("last_hit") && ent instanceof net.minecraft.world.entity.decoration.ArmorStand stand) {
             stand.lastHit = e.get("last_hit").getAsLong();
@@ -331,11 +338,44 @@ public final class VanillaDispenserOracle {
         return ent;
     }
 
+    /** Native BlocksAttacks.hurtBlockingItem, with a server player and live item components. */
+    static void blockingWear(VanillaBlockUpdateOracle.World world, JsonObject op, List<String> result) throws Exception {
+        var player = (BlockingWearer) VanillaBlockUpdateOracle.allocate.invoke(VanillaBlockUpdateOracle.unsafe, BlockingWearer.class);
+        player.world = world;
+        player.creative = op.has("creative") && op.get("creative").getAsBoolean();
+        var advancements = (net.minecraft.server.PlayerAdvancements) VanillaBlockUpdateOracle.allocate.invoke(
+            VanillaBlockUpdateOracle.unsafe, net.minecraft.server.PlayerAdvancements.class);
+        VanillaBlockUpdateOracle.set(net.minecraft.server.PlayerAdvancements.class, advancements, "activeTriggers", new HashMap<>());
+        VanillaBlockUpdateOracle.set(net.minecraft.server.level.ServerPlayer.class, player, "advancements", advancements);
+        ItemStack item = stack(op.get("item").getAsString());
+        var blocking = item.get(net.minecraft.core.component.DataComponents.BLOCKS_ATTACKS);
+        for (int i = 0; i < 2; i++) {
+            if (!item.isEmpty()) {
+                blocking.hurtBlockingItem(world, item, player, net.minecraft.world.InteractionHand.MAIN_HAND, 4);
+            }
+            result.add("blocking wear " + item.getCount() + " " + item.getDamageValue());
+        }
+    }
+
+    static final class BlockingWearer extends net.minecraft.server.level.ServerPlayer {
+        ServerLevel world;
+        boolean creative;
+        BlockingWearer() { super(null, null, null, null); }
+        @Override public ServerLevel level() { return world; }
+        @Override public boolean hasInfiniteMaterials() { return creative; }
+        @Override public void awardStat(net.minecraft.stats.Stat<?> stat, int count) {}
+        @Override public void onEquippedItemBroken(ItemStack stack, EquipmentSlot slot) {}
+    }
+
     static void run(JsonObject f, List<String> result) throws Exception {
         VanillaBlockUpdateOracle.World w = VanillaBlockUpdateOracle.build(f);
         w.entities = new ArrayList<>();
         w.registries = ParityData.access;
         w.server.loot.delegate = ParityData.loot;
+        if (f.has("blocking_wear")) {
+            blockingWear(w, f.getAsJsonObject("blocking_wear"), result);
+            return;
+        }
         VanillaBlockUpdateOracle.set(Level.class, w, "damageSources", new net.minecraft.world.damagesource.DamageSources(ParityData.access));
         if (f.has("dim") && f.get("dim").getAsString().equals("nether")) {
             // The Nether's dimension type and attributes (respawn anchors work, beds explode).
@@ -471,7 +511,14 @@ public final class VanillaDispenserOracle {
             line.append(' ').append(num(e.getX())).append(' ').append(num(e.getY())).append(' ').append(num(e.getZ()));
             var v = e.getDeltaMovement();
             line.append(' ').append(num(v.x)).append(' ').append(num(v.y)).append(' ').append(num(v.z));
-            if (e instanceof ItemEntity item) line.append(' ').append(ParityData.canon(item.getItem()));
+            if (e instanceof ItemEntity item) {
+                line.append(' ').append(ParityData.canon(item.getItem()));
+                if (f.has("pickup_delay") && f.get("pickup_delay").getAsBoolean()) {
+                    Field delay = ItemEntity.class.getDeclaredField("pickupDelay");
+                    delay.setAccessible(true);
+                    result.add("pickup " + ParityData.canon(item.getItem()) + " " + delay.getInt(item));
+                }
+            }
             if (e instanceof PrimedTnt tnt) line.append(" fuse=").append(tnt.getFuse());
             if (e instanceof ExperienceOrb orb) line.append(" value=").append(orb.getValue());
             // An orb that took others in (ExperienceOrb.tryMergeToExisting) prints once per

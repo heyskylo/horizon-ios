@@ -24,9 +24,13 @@ def program(game_source=None):
     world = (ROOT / 'crates/horizon-client/src/game/world_loading.rs').read_text()
     launcher = (ROOT / 'crates/horizon-client/src/game/launcher.rs').read_text()
     drain = method(game, 'drain_cancelled_start')
-    a = game.index('struct WorldRestLoader {')
-    b = game.index('\nimpl Game', a)
-    rest = game[a:b]
+    resources = (ROOT / 'crates/horizon-client/src/game/resource_loader.rs').read_text()
+    a = resources.index('pub(super) struct WorldRestLoader {')
+    b = resources.index('pub(super) fn write_report', a)
+    rest = resources[a:b].rsplit('///', 1)[0]
+    a = resources.index('pub(super) fn retired_rest_loaders')
+    rest += resources[a:]
+    rest = rest.replace('pub(super) ', '')
     point = game.index('loading.drain_cancelled_start()')
     a = game.rfind('            App::Loading(loading) => {', 0, point)
     b = game.index('                if loading.error.is_some()', point)
@@ -48,6 +52,8 @@ STUBS = r'''
 #![allow(dead_code,unused_imports)]
 extern crate self as horizon_client;
 extern crate self as horizon_airplay;
+extern crate self as horizon_hooks;
+mod engine {pub fn shutdown(){}}
 extern crate self as log;
 #[macro_export]macro_rules! warn{($($t:tt)*)=>{{}}}
 use std::{cell::{Cell,RefCell},fs,path::PathBuf,sync::{Arc,Mutex,atomic::{AtomicBool,AtomicUsize,Ordering},mpsc::{self,Receiver}},thread::{self,JoinHandle},time::{Duration,Instant}};

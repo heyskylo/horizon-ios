@@ -1,7 +1,10 @@
 //! Run on the main thread with isolated homes and prepared HORIZON_TEST_RESOURCES.
 fn main() {
     let mut args = std::env::args_os().skip(1);
-    assert_eq!(args.next().as_deref(), Some(std::ffi::OsStr::new("--game-dir")));
+    assert_eq!(
+        args.next().as_deref(),
+        Some(std::ffi::OsStr::new("--game-dir"))
+    );
     let game_dir = args.next().expect("isolated --game-dir required");
     assert!(args.next().is_none(), "unexpected probe arguments");
     std::fs::create_dir_all(&game_dir).expect("create isolated game directory");

@@ -28,6 +28,10 @@ use horizon_core::{
 };
 use horizon_world::registry::BlockStateId;
 use std::{collections::HashMap, sync::Arc};
+mod index;
+mod nbt;
+pub(super) use index::CartIndex;
+use index::cart_at;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum CartKind {
@@ -184,155 +188,9 @@ pub(super) const HEIGHT: f64 = 0.7_f32 as f64;
 /// `EntityEvent.TNT_PRIME`. `MinecartTNT.primeFuse` broadcasts it;
 /// `MinecartTNT.handleEntityEvent` answers by calling `primeFuse`.
 pub(super) const TNT_PRIME_EVENT: i8 = 70;
-/// `AbstractMinecart.getDefaultDisplayOffset` (6), in sixteenths of a block, as
-/// `MinecartChest` (8) and `MinecartHopper` (1) override it.
-pub(super) fn default_display_offset(kind: CartKind) -> f64 {
-    match kind {
-        CartKind::Chest => 8.0,
-        CartKind::Hopper => 1.0,
-        CartKind::Rideable
-        | CartKind::Furnace
-        | CartKind::Tnt
-        | CartKind::CommandBlock
-        | CartKind::Spawner => 6.0,
-    }
-}
-/// `AbstractMinecart.getDisplayOffset`: the saved `DisplayOffset`, else the default.
-fn display_offset(c: &Minecart) -> f64 {
-    c.custom_offset
-        .map_or_else(|| default_display_offset(c.kind), f64::from)
-}
-
-/// World-space envelope of the cart model and its optional displayed block,
-/// based on the same root position and display offset used by the renderer.
-fn cart_render_bounds(position: Vec3, offset: f64, has_display: bool) -> Aabb {
-    let (bottom, top) = if has_display {
-        let display_shift = 0.75 * (offset - 8.0) / 16.0;
-        (
-            (position.y - 0.5).min(position.y + 0.375 - 0.4 + display_shift),
-            (position.y + 0.9).max(position.y + 0.375 + 0.4 + display_shift + 0.9),
-        )
-    } else {
-        (position.y - 0.5, position.y + 0.9)
-    };
-    Aabb::new(
-        Vec3::new(position.x - 1.0, bottom, position.z - 1.0),
-        Vec3::new(position.x + 1.0, top, position.z + 1.0),
-    )
-}
-/// A display state that is air shows nothing.
-fn shown_unless_air(
-    state: Option<BlockStateId>,
-    is_air: impl Fn(BlockStateId) -> bool,
-) -> Option<BlockStateId> {
-    state.filter(|&s| !is_air(s))
-}
-/// `readAdditionalSaveData`'s `input.read("DisplayState", CODEC)` is empty
-/// when the state does not decode: the cart forgets it (and no longer saves it).
-pub(super) fn forget_unreadable_display(
-    c: &mut Minecart,
-    resolves: impl Fn(&horizon_world::nbt::Tag) -> bool,
-) {
-    if c.custom_display.as_ref().is_some_and(|t| !resolves(t)) {
-        c.custom_display = None;
-    }
-}
-/// The carts' and mobs' boxes for one tick's cart pushes (`push_from_cart`,
-/// `pickup_from_cart`), so a cart reads its neighbours instead of every cart and
-/// every mob of the level. Both answer in slot order, as the scans did.
-///
-/// The cart grid follows each ticked cart ([`CartIndex::moved`]); it is
-/// rebuilt once the list's length changed (a cart gone or added), and dropped
-/// after a command, which can move or replace any cart
-/// ([`CartIndex::forget_carts`]). The mob grid holds until the mob
-/// list's next write ([`ListStamp`]). A native mod's hook can move either kind
-/// unseen, so with mods loaded both scans stay.
-#[derive(Default)]
-pub(super) struct CartIndex {
-    carts: Option<(SeenGrid, Vec<u32>)>,
-    /// The grid, and the carts a mob rides.
-    mobs: Option<(ListStamp, SeenGrid, FxHashSet<u32>)>,
-    near: Vec<u32>,
-}
-impl CartIndex {
-    fn usable() -> bool {
-        horizon_client::mod_api::mods().is_empty()
-    }
-    /// The cart in slot `i` has these bounds now.
-    fn moved(&mut self, i: usize, bounds: Aabb) {
-        if let Some((grid, ids)) = &mut self.carts
-            && i < ids.len()
-        {
-            grid.update(i, bounds);
-        }
-    }
-    fn forget_carts(&mut self) {
-        self.carts = None;
-    }
-    /// The slots of the carts whose box may meet `area`, for the cart in slot
-    /// `i` (just moved); false: scan them all.
-    fn carts_near(&mut self, carts: &[Minecart], i: usize, area: Aabb, out: &mut Vec<u32>) -> bool {
-        if !Self::usable() {
-            return false;
-        }
-        let fresh = |ids: &[u32]| ids.len() == carts.len() && ids[i] == carts[i].id;
-        if !self.carts.as_ref().is_some_and(|(_, ids)| fresh(ids)) {
-            self.carts = Some((
-                SeenGrid::new(carts.iter().map(Minecart::bounds)),
-                carts.iter().map(|c| c.id).collect(),
-            ));
-        }
-        let Some((grid, ids)) = &mut self.carts else {
-            return false;
-        };
-        grid.update(i, carts[i].bounds());
-        if !grid.candidates(area, out) {
-            return false;
-        }
-        if out.iter().any(|&j| ids[j as usize] != carts[j as usize].id) {
-            // A cart was replaced in place: start over next time.
-            self.carts = None;
-            return false;
-        }
-        true
-    }
-    /// The slots of the mobs whose box may meet `area` into `out`, and
-    /// whether a mob rides cart `cart`; None: scan them all.
-    fn mobs_near(
-        &mut self,
-        mobs: &JoinList<Mob>,
-        cart: u32,
-        area: Aabb,
-        out: &mut Vec<u32>,
-    ) -> Option<bool> {
-        if !Self::usable() {
-            return None;
-        }
-        if !self
-            .mobs
-            .as_ref()
-            .is_some_and(|(stamp, ..)| *stamp == mobs.stamp())
-        {
-            self.mobs = Some((
-                mobs.stamp(),
-                SeenGrid::new(mobs.iter().map(Mob::bounds)),
-                mobs.iter().filter_map(|m| m.extra.mount).collect(),
-            ));
-        }
-        let (_, grid, mounted) = self.mobs.as_ref()?;
-        grid.candidates(area, out).then(|| mounted.contains(&cart))
-    }
-}
-/// Where the cart `id` is in `carts`: at `hint` (where it was a moment ago,
-/// the usual case while carts tick in order) or found by a scan. A world
-/// with hundreds of mineshaft chest carts asked this of every cart several
-/// times a tick.
-fn cart_at(carts: &[Minecart], id: u32, hint: usize) -> Option<usize> {
-    if carts.get(hint).is_some_and(|c| c.id == id) {
-        return Some(hint);
-    }
-    carts.iter().position(|c| c.id == id)
-}
+mod display;
+use display::{cart_render_bounds, display_offset, shown_unless_air};
+pub(super) use display::{default_display_offset, forget_unreadable_display};
 /// `AbstractMinecart.push(entity)` for a non-cart `entity` at `feet`:
 /// the push the cart loses (the entity gets a quarter of it back).
 pub(super) fn cart_push_from(feet: Vec3, cart: Vec3) -> Option<(f64, f64)> {
@@ -611,11 +469,12 @@ impl Game<'_> {
             [x, y, z]
         }
     }
+    /// `AbstractMinecart.isRedstoneConductor`: the block state's own flag
+    /// (soul sand conducts without a full collision shape).
     fn conductor(&self, x: i32, y: i32, z: i32) -> bool {
-        self.res
-            .facts()
-            .get(self.world.block(x, y, z))
-            .full_collision
+        self.res.behaviours().facts(self.world.block(x, y, z)).flags
+            & horizon_world::level::data::state_flags::CONDUCTOR
+            != 0
     }
     /// `OldMinecartBehavior.getPos`: the point on the rail under (x, y, z).
     fn rail_pos(&self, x: f64, y: f64, z: f64) -> Option<[f64; 3]> {
@@ -671,11 +530,9 @@ impl Game<'_> {
     /// collision, which sets a TNT minecart off.
     fn cart_entity_collisions(&self, c: &Minecart) -> Vec<Aabb> {
         let near = c.bounds().inflate(Vec3::new(2.0, 2.0, 2.0));
-        // Every cart asks about every entity of the level each tick, and the box
-        // turns nearly all of them away: it is tested first, before a mob's
-        // pushable state, and only the boxes kept are collected.
+        // Every moving cart asks each tick, and the box turns nearly every entity of
+        // the level away: it is tested first, and only the mobs near it are read.
         let close = |b: &Aabb| b.intersects(near);
-        let reach = self.vehicle_mob_reach();
         let mut boxes: Vec<Aabb> = self
             .carts
             .iter()
@@ -688,22 +545,13 @@ impl Game<'_> {
                     .map(super::boats::Boat::bounds)
                     .filter(close),
             )
-            .chain(
-                self.mobs
-                    .iter()
-                    .filter(|m| reach.is_none_or(|r| r.may_meet(m, near)))
-                    .map(|m| (m, m.bounds()))
-                    .filter(|(m, b)| {
-                        close(b)
-                            && !m.removed
-                            && m.extra.mount != Some(c.id)
-                            && (m.pushable()
-                                || m.species() == horizon_client::mobs::Species::Shulker
-                                    && m.alive())
-                    })
-                    .map(|(_, b)| b),
-            )
             .collect();
+        self.mobs_meeting(near, |_, m, b| {
+            let counts = m.pushable() || m.species() == Species::Shulker && m.alive();
+            if !m.removed && m.extra.mount != Some(c.id) && counts {
+                boxes.push(b);
+            }
+        });
         if self.riding != Some(c.id)
             && let Some(p) = self.player.as_ref()
             && !self.spectator()
@@ -757,6 +605,7 @@ impl Game<'_> {
             border: Some((self.border.geometry(), [c.position.x, c.position.z])),
         };
         if let Ok(moved) = scene.resolve(c.bounds(), delta, 0.0, c.on_ground) {
+            c.fall_distance = self.vehicle_fall_reset(c.fall_distance, c.position, moved);
             // Entity.move may skip setPos for tiny collision-limited motion,
             // while still updating collisions and retaining unblocked velocity.
             let moved_squared = moved.length_squared();
@@ -846,12 +695,7 @@ impl Game<'_> {
     /// sits in it. `getSlowdownFactor` (0.997) and the 0.75 speed scale key on
     /// this, not on who rides.
     fn cart_is_vehicle(&self, id: u32) -> bool {
-        self.riding == Some(id)
-            || self.ridden_by_guest(id)
-            || self
-                .mobs
-                .iter()
-                .any(|m| !m.removed && m.extra.mount == Some(id))
+        self.riding == Some(id) || self.ridden_by_guest(id) || self.mob_rides(id)
     }
     /// `OldMinecartBehavior.moveAlongTrack`.
     fn move_along_track(
@@ -860,7 +704,8 @@ impl Game<'_> {
         pos: [i32; 3],
         rail: &Rail,
         intent: [f64; 2],
-    ) -> (Vec3, Vec3) {
+        slot: usize,
+    ) {
         c.fall_distance = 0.0;
         let ridden = self.cart_is_vehicle(c.id);
         let (x, z) = (c.position.x, c.position.z);
@@ -931,11 +776,11 @@ impl Game<'_> {
             0.0,
             (scale * c.velocity.z).clamp(-max, max),
         );
-        // Entity.move records this step at the rail's top height; the tick's
-        // applyEffectsFromBlocks sweeps it, whatever the cart does after.
-        let step_from = c.position;
         self.move_cart(c, delta);
-        let step = (step_from, c.position);
+        // 🤖 Agent: `AbstractMinecart.move` runs applyEffectsFromBlocks at
+        // once, the cart still at the rail's top height (below it is lowered).
+        let here = c.position;
+        self.cart_inside_blocks(c, slot, here, here);
         let at = |e: [i32; 3], c: &Minecart| {
             c.position.x.floor() as i32 - pos[0] == e[0]
                 && c.position.z.floor() as i32 - pos[2] == e[2]
@@ -985,7 +830,6 @@ impl Game<'_> {
                 }
             }
         }
-        step
     }
     /// `Entity.checkInsideBlocks` for a recorded move of the cart from `from`
     /// to `to`: the entity-sensing blocks (plates, buttons, tripwires, detector
@@ -1513,11 +1357,10 @@ impl Game<'_> {
         // applyGravity
         c.velocity.y -= c.get_gravity();
         let pos = self.rail_block(c.position);
-        let mut step = None;
         if self.minecart_improvements() {
             self.move_along_track_new(c, intent);
         } else if let Some(rail) = self.rail(pos[0], pos[1], pos[2]) {
-            step = Some(self.move_along_track(c, pos, &rail, intent));
+            self.move_along_track(c, pos, &rail, intent, slot);
             if &*rail.name == "minecraft:activator_rail" {
                 self.activate_cart(c, rail.powered);
             }
@@ -1528,9 +1371,11 @@ impl Game<'_> {
         // The old behavior derives yaw once per tick; the experiment has
         // already recorded each step's yaw and pitch.
         if !self.minecart_improvements() {
+            // OldMinecartBehavior.tick: setXRot(0.0F) before the yaw update.
+            c.pitch = 0.0;
             let (xd, zd) = (c.previous.x - c.position.x, c.previous.z - c.position.z);
             if xd * xd + zd * zd > 0.001 {
-                c.yaw = zd.atan2(xd).to_degrees() as f32;
+                c.yaw = horizon_core::geometry::trig::atan2_degrees_double(zd, xd);
                 if c.flipped {
                     c.yaw += 180.0;
                 }
@@ -1541,13 +1386,13 @@ impl Game<'_> {
                 c.flipped = !c.flipped;
             }
             c.yaw %= 360.0;
+            c.pitch %= 360.0;
         }
         if !self.minecart_improvements() {
             self.cart_block_effects(c);
-            // applyEffectsFromBlocks over the step moveAlongTrack recorded.
-            if let Some((from, to)) = step {
-                self.cart_inside_blocks(c, slot, from, to);
-            }
+            // OldMinecartBehavior.tick: applyEffectsFromBlocks() once settled.
+            let here = c.position;
+            self.cart_inside_blocks(c, slot, here, here);
         }
         // OldMinecartBehavior.tick ends with pushAndPickupEntities, before
         // AbstractMinecart.tick's updateFluidInteraction. The experiment still
@@ -1777,27 +1622,30 @@ impl Game<'_> {
         }
         self.push_carts_from_mobs(&cells);
     }
-    /// `AbstractMinecart.push(mob)` from each mob walking into a cart
-    /// (`LivingEntity.pushEntities` -> `doPush`): the cart gets the push and
-    /// the mob a quarter of it back (`Entity.push`, which needs the mob to be
-    /// pushable and to carry no one). Bats push nothing (`Bat.pushEntities`).
-    fn push_carts_from_mobs(&mut self, cells: &horizon_client::mobs::seen_grid::SeenGrid) {
-        let teams = self.mob_teams();
+    /// `AbstractMinecart.push(mob)` from each mob walking into a cart (`LivingEntity.pushEntities`
+    /// -> `doPush`): the cart gets the push and the mob a quarter of it back (`Entity.push`, which
+    /// needs the mob to be pushable and to carry no one). Bats push nothing (`Bat.pushEntities`),
+    /// nor does a mob whose box reaches no cart: its box is worked out only if it may.
+    fn push_carts_from_mobs(&mut self, cells: &SeenGrid) {
+        let (teams, mut near) = (self.mob_teams(), Vec::new());
+        // The mobs a cart is near, or every mob, each then asked which carts it is near.
+        let slots = self.mobs_near_carts();
+        let reach = slots.is_none().then(|| self.vehicle_mob_reach()).flatten();
+        let slots = slots.unwrap_or_else(|| (0..self.mobs.len() as u32).collect());
         // (mob index, feet, box)
-        let pushers: Vec<(usize, Vec3, Aabb)> = self
-            .mobs
-            .iter()
-            .enumerate()
+        let pushers: Vec<(usize, Vec3, Aabb)> = slots
+            .into_iter()
+            .map(|j| (j as usize, &self.mobs[j as usize]))
             .filter(|(_, m)| {
                 !m.removed
                     && m.alive()
                     && m.species() != Species::Bat
+                    && reach.is_none_or(|r| self.mob_may_meet_cart(r, m, cells, &mut near))
                     && pushable_by(teams.of(Who::Mob(m.id)), None, true)
             })
             .map(|(j, m)| (j, m.position, m.bounds()))
             .collect();
         drop(teams);
-        let mut near = Vec::new();
         for (j, feet, bb) in pushers {
             if !cells.candidates(bb, &mut near) {
                 near.extend(0..self.carts.len() as u32);
@@ -2277,6 +2125,51 @@ impl Game<'_> {
             p.velocity = Vec3::ZERO;
         }
     }
+    /// `EntityType.createDefaultStackConfig` on a vehicle an item made: the
+    /// item's custom name and custom data (`applyComponentsFromItemStack`:
+    /// `Entity.applyImplicitComponent`'s two, saved as `CustomName` and
+    /// `data`), then its
+    /// `minecraft:entity_data` loaded over the vehicle (`updateCustomEntityTag`)
+    /// when it names this type. An op-only type (command block and spawner
+    /// minecarts) takes it from an op player only, never from a dispenser
+    /// (`by_player` false).
+    pub(super) fn apply_vehicle_stack_config(
+        &mut self,
+        target: super::commands::Target,
+        kind: &str,
+        stack: &ItemStack,
+        by_player: bool,
+    ) {
+        use horizon_world::nbt::Tag;
+        let name = stack.data().and_then(|d| d.custom_name.clone());
+        let custom = stack
+            .data()
+            .and_then(|d| d.other("minecraft:custom_data"))
+            .cloned();
+        let op = by_player && self.acting_player_is_op();
+        let data =
+            horizon_client::block_entity_item::spawn_egg_entity_data(stack, kind, op).cloned();
+        if name.is_none() && custom.is_none() && data.is_none() {
+            return;
+        }
+        let Some(mut own) = self.entity_nbt(target) else {
+            return;
+        };
+        if let Tag::Compound(map) = &mut own {
+            if let Some(name) = name {
+                map.insert("CustomName".into(), name);
+            }
+            if let Some(custom) = custom {
+                map.insert("data".into(), custom);
+            }
+        }
+        let tag = match &data {
+            Some(data) => horizon_client::data_cmd::merged(&own, data),
+            None => own,
+        };
+        // The vehicle's own compound, its name and data merged in: it loads back.
+        let _ = self.apply_entity_nbt(target, tag);
+    }
     /// `MinecartItem.useOn`: a cart on the clicked rail.
     pub(super) fn place_minecart(&mut self, hit: &Hit, stack: &ItemStack) -> bool {
         let Some(kind) = CartKind::from_id(&stack.item) else {
@@ -2297,6 +2190,8 @@ impl Game<'_> {
             .modified
             .insert((hit.pos[0] >> 4, hit.pos[2] >> 4));
         self.carts.push(cart);
+        let id = self.next_entity;
+        self.apply_vehicle_stack_config(super::commands::Target::Cart(id), kind.id(), stack, true);
         if self.serving.is_some() || self.options.dedicated.is_some() {
             let cart = self.carts.last().unwrap();
             self.native_vehicle_create(
@@ -3070,177 +2965,6 @@ impl Game<'_> {
             .render_state(&scene, state.0, m, light, out);
     }
 }
-/// Saving and loading.
-impl Minecart {
-    pub fn to_nbt(
-        &self,
-        uuid: [i32; 4],
-        raw: Option<&horizon_world::nbt::Tag>,
-    ) -> horizon_world::nbt::Tag {
-        use horizon_world::nbt::{JavaString, Tag};
-        let mut tag = horizon_client::entity_nbt::vehicle_to_nbt(
-            self.kind.id(),
-            self.position,
-            self.velocity,
-            [self.yaw, self.pitch],
-            (self.on_ground, self.fall_distance),
-            uuid,
-            raw,
-        );
-        horizon_client::entity_nbt::write_saved_flags(&mut tag, self.on_ground, self.no_gravity);
-        if let Tag::Compound(map) = &mut tag {
-            // ContainerEntity.addChestVehicleSaveData belongs only to the
-            // container subclasses, never to a plain or specialized cart.
-            if self.kind.slots() == 0 {
-                map.remove(&JavaString::from("Items"));
-            }
-            if self.kind == CartKind::CommandBlock {
-                for key in ["LastOutput", "LastExecution"] {
-                    map.remove(&JavaString::from(key));
-                }
-            }
-            map.remove(&JavaString::from("DisplayOffset"));
-            map.remove(&JavaString::from("DisplayState"));
-            let mut put = |k: &str, v: Tag| {
-                map.insert(JavaString::from(k), v);
-            };
-            put("FlippedRotation", Tag::Byte(i8::from(self.flipped)));
-            // AbstractMinecart saves firstTick as HasTicked. A cart never burns:
-            // Entity.move sets -getFireImmuneTicks(), 0 for all but players.
-            put("HasTicked", Tag::Byte(i8::from(self.first_tick)));
-            put("Fire", Tag::Short(0));
-            // addAdditionalSaveData: the offset only off its default, the state only when set.
-            if let Some(offset) = self.custom_offset
-                && f64::from(offset) != default_display_offset(self.kind)
-            {
-                put("DisplayOffset", Tag::Int(offset));
-            }
-            if let Some(state) = &self.custom_display {
-                put("DisplayState", state.clone());
-            }
-            match self.kind {
-                CartKind::Chest | CartKind::Hopper => {
-                    put("Items", horizon_client::save::encode_items(&self.items));
-                    if self.kind == CartKind::Hopper {
-                        put("Enabled", Tag::Byte(i8::from(self.enabled)));
-                    }
-                }
-                CartKind::Furnace => {
-                    put("PushX", Tag::Double(self.push.x.to_bits()));
-                    put("PushZ", Tag::Double(self.push.z.to_bits()));
-                    put("Fuel", Tag::Short(self.fuel as i16));
-                }
-                CartKind::Tnt => put("fuse", Tag::Int(self.fuse)),
-                // BaseCommandBlock.save (its CustomName shares the entity's key).
-                CartKind::CommandBlock => {
-                    for (key, value) in self.command.save() {
-                        if !matches!(key, "CustomName" | "powered" | "conditionMet" | "auto") {
-                            put(key, value);
-                        }
-                    }
-                }
-                // BaseSpawner.save: the delays, ranges, SpawnData and SpawnPotentials.
-                CartKind::Spawner => {
-                    if let Some(spawner) = &self.spawner {
-                        for (key, value) in
-                            horizon_client::mobs::spawner::SpawnerExt::save(&**spawner)
-                        {
-                            put(key, value);
-                        }
-                    }
-                }
-                CartKind::Rideable => {}
-            }
-            // A loaded loot table goes back while the items are still its roll;
-            // otherwise the items replace it, as vanilla's unpackLootTable does.
-            if self.loot.as_ref().is_some_and(|l| l.restore(map)) {
-                if let Some(table) = horizon_client::save::text(map.get(&"LootTable".into()))
-                    .and_then(|id| horizon_client_core::identifier::normalize_id(&id))
-                {
-                    map.insert("LootTable".into(), Tag::String(table.as_str().into()));
-                }
-            } else {
-                map.remove(&JavaString::from("LootTable"));
-                map.remove(&JavaString::from("LootTableSeed"));
-            }
-        }
-        tag
-    }
-    pub fn from_nbt(tag: &horizon_world::nbt::Tag, id: u32, kind: CartKind) -> Option<Self> {
-        let (position, _, _) = horizon_client::entity_nbt::boat_from_nbt(tag)?;
-        let mut c = Self::new(id, kind, position);
-        c.load(tag)?;
-        Some(c)
-    }
-    /// `Entity.load` on this cart: the saved fields are read over the live
-    /// ones, the rest (riders, lerp, hurt state) stays; its kind never changes.
-    /// `None`, with nothing changed, when the compound has no position.
-    pub fn load(&mut self, tag: &horizon_world::nbt::Tag) -> Option<()> {
-        use horizon_world::nbt::Tag;
-        let (position, velocity, yaw) = horizon_client::entity_nbt::boat_from_nbt(tag)?;
-        let kind = self.kind;
-        let c = self;
-        c.position = position;
-        c.previous = position;
-        c.velocity = velocity;
-        c.yaw = yaw;
-        c.previous_yaw = yaw;
-        c.no_gravity = horizon_client::entity_nbt::flag(tag, "NoGravity");
-        c.on_ground = horizon_client::entity_nbt::flag(tag, "OnGround");
-        c.pitch = horizon_client::entity_nbt::rotation(tag)[1];
-        c.previous_pitch = c.pitch;
-        // ValueInput's numeric getters take any NumericTag: getIntOr is its
-        // intValue, getShortOr the low 16 bits of it, getBooleanOr
-        // `byteValue() != 0` (the low 8), getDoubleOr its doubleValue.
-        let int = |k: &str| {
-            tag.get(k)
-                .and_then(horizon_client_core::nbt_path::int_value)
-        };
-        let flag = |k: &str, default: bool| int(k).map_or(default, |v| v as i8 != 0);
-        let double = |k: &str| match tag.get(k) {
-            Some(Tag::Byte(v)) => f64::from(*v),
-            Some(Tag::Short(v)) => f64::from(*v),
-            Some(Tag::Int(v)) => f64::from(*v),
-            Some(Tag::Long(v)) => *v as f64,
-            Some(Tag::Float(v)) => f64::from(f32::from_bits(*v)),
-            Some(Tag::Double(v)) => f64::from_bits(*v),
-            _ => 0.0,
-        };
-        // Entity.load: OnGround and fall_distance, as saved.
-        (c.on_ground, c.fall_distance) = horizon_client::entity_nbt::ground_from_nbt(tag);
-        c.flipped = flag("FlippedRotation", false);
-        c.first_tick = flag("HasTicked", false);
-        if kind.slots() > 0 {
-            c.items = horizon_client::save::decode_items(tag.get("Items"), kind.slots());
-        }
-        c.enabled = flag("Enabled", true);
-        c.fuel = int("Fuel").map_or(0, |v| i32::from(v as i16));
-        // readAdditionalSaveData: the saved push has no y.
-        c.push = Vec3::new(double("PushX"), 0.0, double("PushZ"));
-        c.fuse = int("fuse").unwrap_or(-1);
-        // readAdditionalSaveData: DisplayState, DisplayOffset (default offset when absent).
-        c.custom_display = tag.get("DisplayState").cloned();
-        c.custom_offset = int("DisplayOffset");
-        if kind == CartKind::CommandBlock {
-            c.command = horizon_client::command_block::CommandBlock::load(tag);
-            // MinecartCommandBlock.readAdditionalSaveData sets the synched command.
-            // A changed value invokes onSyncedDataUpdated -> setCommand, resetting successes.
-            if c.synced_command != c.command.command {
-                c.synced_command.clone_from(&c.command.command);
-                c.command.set_command(&c.synced_command);
-            }
-            c.synced_output = c.command.last_output_string();
-        }
-        // MinecartSpawner.readAdditionalSaveData: BaseSpawner.load.
-        if kind == CartKind::Spawner {
-            c.spawner = Some(Box::new(horizon_client::mobs::spawner::SpawnerExt::load(
-                tag,
-            )));
-        }
-        Some(())
-    }
-}
-
 /// `VehicleEntity.hurtServer`'s destroy test: a creative player, damage past
 /// 40, or (`MinecartTNT.shouldSourceDestroy`) fire or an explosion hitting a
 /// TNT cart.
@@ -3893,6 +3617,29 @@ mod tnt_impact_tests {
 
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_powered_rail_pushes_a_resting_cart_away_from_soul_sand() {
+        let mut game = server_game();
+        let registry = game.pack.assets.registry;
+        let rail = registry.default_state("minecraft:powered_rail").unwrap();
+        let mut state = registry.state(rail).unwrap().clone();
+        state.properties.insert("shape".into(), "east_west".into());
+        state.properties.insert("powered".into(), "true".into());
+        let rail = registry.id(&state).unwrap();
+        game.world.set(5, 64, 8, rail).unwrap();
+        for (block, pushed) in [
+            ("minecraft:soul_sand", true),
+            ("minecraft:stone", true),
+            ("minecraft:oak_slab", false),
+        ] {
+            let id = registry.default_state(block).unwrap();
+            game.world.set(4, 64, 8, id).unwrap();
+            let push = game.redstone_direction([5, 64, 8], super::Shape::EastWest);
+            assert_eq!(push.x == 1.0, pushed, "{block}");
+        }
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn a_tnt_cart_stopped_head_on_by_a_wall_does_not_blow_up() {
         // OldMinecartBehavior.moveAlongTrack: the move zeroes the blocked x
         // and the track's re-pointing scales what is left, so MinecartTNT
@@ -3958,6 +3705,89 @@ mod tnt_impact_tests {
             "{:?}",
             registry.state(game.world.block(6, 65, 8))
         );
+    }
+
+    /// A cart blocked by a fence on a slope sits below the plate on the fence,
+    /// but `AbstractMinecart.move` sweeps its blocks while it is still at the
+    /// rail's top height, so the plate clocks on and off.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_cart_resting_against_a_fence_keeps_toggling_the_plate_above_it() {
+        let mut game = server_game();
+        let registry = game.pack.assets.registry;
+        let stone = registry.default_state("minecraft:stone").unwrap();
+        let fence = registry.default_state("minecraft:oak_fence").unwrap();
+        let plate = registry
+            .default_state("minecraft:oak_pressure_plate")
+            .unwrap();
+        let rail = registry.default_state("minecraft:rail").unwrap();
+        let mut slope = registry.state(rail).unwrap().clone();
+        slope
+            .properties
+            .insert("shape".into(), "ascending_east".into());
+        let slope = registry.id(&slope).unwrap();
+        for x in 0..16 {
+            for z in 0..16 {
+                game.world.set(x, 62, z, stone).unwrap();
+            }
+        }
+        game.world.set(0, 64, 8, fence).unwrap();
+        game.world.set(0, 65, 8, plate).unwrap();
+        game.world.set(1, 63, 8, stone).unwrap();
+        game.world.set(1, 64, 8, slope).unwrap();
+        game.world.set(2, 64, 8, stone).unwrap();
+        game.world.set(2, 65, 8, rail).unwrap();
+        game.carts.push(Minecart::new(
+            1,
+            CartKind::Rideable,
+            Vec3::new(1.9, 64.9, 8.5),
+        ));
+        // Scheduled ticks and carts only run in lit, surrounded chunks near a
+        // player.
+        game.settings.simulation_distance = 4;
+        game.settings.render_distance = 12;
+        game.player = Some(
+            horizon_client::motion::PlayerMotion::new(&game.motion, Vec3::new(8.5, 70.0, 12.5))
+                .unwrap(),
+        );
+        for cx in -2..=2 {
+            for cz in -2..=2 {
+                if (cx, cz) != (0, 0) {
+                    let mut chunk = horizon_client::chunk::Chunk::empty(cx, cz);
+                    chunk.lit = true;
+                    game.world
+                        .chunks
+                        .insert((cx, cz), std::sync::Arc::new(chunk));
+                    game.block_ticks
+                        .add_empty_chunk(horizon_core::position::ChunkPos::new(cx, cz))
+                        .unwrap();
+                }
+            }
+        }
+        let mut center = (**game.world.chunks.get(&(0, 0)).unwrap()).clone();
+        center.lit = true;
+        game.world
+            .chunks
+            .insert((0, 0), std::sync::Arc::new(center));
+        game.update_chunk_tickets();
+        let mut edges = 0;
+        let mut last = false;
+        for _ in 0..200 {
+            game.world.game_time += 1;
+            game.tick_carts_now();
+            game.tick_blocks().unwrap();
+            let on = registry
+                .state(game.world.block(0, 65, 8))
+                .unwrap()
+                .properties
+                .get("powered")
+                .is_some_and(|v| v == "true");
+            if on != last {
+                edges += 1;
+                last = on;
+            }
+        }
+        assert!(edges >= 4, "the plate changed {edges} times in 200 ticks");
     }
 }
 

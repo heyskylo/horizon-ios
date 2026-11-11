@@ -34,19 +34,6 @@ pub struct BlockRegistry {
     /// column; this outlives one column, unlike the cache it replaces.
     saved_states: RwLock<FxHashMap<Tag, Option<BlockStateId>>>,
 }
-// Registry identity is immutable; reading a saved palette only warms a cache.
-// Do not compare or lock that memoization state when deciding whether two
-// sessions may share the same registry or checking a native registry export.
-impl PartialEq for BlockRegistry {
-    fn eq(&self, other: &Self) -> bool {
-        self.states == other.states
-            && self.ids == other.ids
-            && self.collided == other.collided
-            && self.defaults == other.defaults
-    }
-}
-impl Eq for BlockRegistry {}
-
 // Bound retained cache entries across all registries, even registries leaked by
 // asset loading. Slots are not reclaimed when a registry is dropped.
 static SAVED_STATE_SLOTS: AtomicUsize = AtomicUsize::new(0);
@@ -87,6 +74,15 @@ fn cacheable_saved_state(tag: &Tag) -> bool {
         _ => false,
     }
 }
+/// Equal when they hold the same states in the same order and the same block
+/// defaults. The indexes are built from the states, and the saved-entry cache
+/// only ever resolves to the same ids, so neither counts.
+impl PartialEq for BlockRegistry {
+    fn eq(&self, other: &Self) -> bool {
+        self.states == other.states && self.defaults == other.defaults
+    }
+}
+impl Eq for BlockRegistry {}
 /// The hash [`BlockRegistry`] indexes states by (fixed keys: the same in
 /// every process).
 fn state_key(state: &BlockState) -> u64 {

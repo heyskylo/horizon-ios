@@ -23,7 +23,7 @@ class ScreenMouseDraggedHookTests(unittest.TestCase):
         cursor = source[start:cursor_end]
         # The extracted fixture only models the mouse-drag hook. Keep the
         # replay timeline's independent drag handler out of this focused slice.
-        studio_drag = cursor.index("                        if self.screen == Screen::Playing")
+        studio_drag = cursor.index("                        if self.studio_mouse_dragged(")
         hook_dispatch = cursor.index("                        if self.screen_mouse_dragged(previous)", studio_drag)
         cursor = cursor[:studio_drag] + cursor[hook_dispatch:]
         start = source.index("        if let WindowEvent::Focused(false)")

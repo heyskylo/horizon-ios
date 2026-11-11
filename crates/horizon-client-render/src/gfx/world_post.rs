@@ -50,6 +50,98 @@ struct TaaResources {
     uniform: wgpu::Buffer,
 }
 
+/// One frame handed to an upscaler backend: the jittered world at `render_size` and what
+/// it needs to rebuild it at `output_size`. The motion is the camera's alone (`reproject`);
+/// objects that move on their own carry no motion vectors yet.
+// Only TAA reads it so far; a vendor backend reads the rest (#12918).
+#[allow(dead_code)]
+pub(super) struct UpscaleFrame<'a> {
+    /// The world's colour, rendered with this frame's jitter.
+    pub color: &'a wgpu::TextureView,
+    /// The world's depth, at `render_size`.
+    pub depth: &'a wgpu::TextureView,
+    pub render_size: [u32; 2],
+    pub output_size: [u32; 2],
+    /// The jitter in clip space, as added to the projection.
+    pub jitter_clip: [f32; 2],
+    /// The same jitter in rendered pixels, y down.
+    pub jitter_pixels: [f32; 2],
+    /// This frame's unjittered clip space to the previous frame's.
+    pub reproject: [[f32; 4]; 4],
+    /// The history is unusable: a cut, a resize, a frame without the upscaler.
+    pub reset: bool,
+    /// Frames jittered so far.
+    pub index: u32,
+}
+
+/// Something that turns the jittered low-resolution world into the output picture.
+/// TAA (`TaaResources`) is the only backend; `Target` is the per-size state a backend
+/// keeps beside the world target (TAA's history textures).
+pub(super) trait UpscalerBackend {
+    type Target;
+    /// The name its GPU timing is shown under.
+    fn name(&self) -> &'static str;
+    /// Write this frame's output and return the bind group that shows it (`draw_onto`).
+    fn resolve<'t>(
+        &self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &UpscaleFrame<'_>,
+        target: &'t Self::Target,
+        timing: Option<&mut super::pack_timing::PassTiming>,
+    ) -> &'t wgpu::BindGroup;
+}
+
+impl UpscalerBackend for TaaResources {
+    type Target = History;
+
+    fn name(&self) -> &'static str {
+        "TAA"
+    }
+
+    fn resolve<'t>(
+        &self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &UpscaleFrame<'_>,
+        taa: &'t History,
+        timing: Option<&mut super::pack_timing::PassTiming>,
+    ) -> &'t wgpu::BindGroup {
+        // The resolve bind group already samples `frame.color` and `frame.depth`.
+        let i = (frame.index % 2) as usize;
+        let uniform = TaaUniform {
+            reproject: frame.reproject,
+            jitter: [
+                frame.jitter_clip[0],
+                frame.jitter_clip[1],
+                if frame.reset { 1.0 } else { 0.0 },
+                0.0,
+            ],
+        };
+        queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));
+        let attachments = [Some(wgpu::RenderPassColorAttachment {
+            view: &taa.history[i],
+            resolve_target: None,
+            depth_slice: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                store: wgpu::StoreOp::Store,
+            },
+        })];
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Horizon TAA"),
+            timestamp_writes: timing.and_then(|t| t.writes(self.name())),
+            color_attachments: &attachments,
+            ..Default::default()
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &taa.resolve[i], &[]);
+        pass.draw(0..3, 0..1);
+        drop(pass);
+        &taa.show[i]
+    }
+}
+
 pub struct Post {
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
@@ -566,33 +658,25 @@ impl Post {
             self.finish_with(encoder, screen, &target.group, timing.as_deref_mut());
             return;
         };
-        let i = (self.taa_frame % 2) as usize;
-        queue.write_buffer(&res.uniform, 0, bytemuck::bytes_of(&self.taa_this_frame));
-        let attachments = [Some(wgpu::RenderPassColorAttachment {
-            view: &taa.history[i],
-            resolve_target: None,
-            depth_slice: None,
-            ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                store: wgpu::StoreOp::Store,
-            },
-        })];
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Horizon TAA"),
-            timestamp_writes: timing.as_deref_mut().and_then(|t| t.writes("TAA")),
-            color_attachments: &attachments,
-            ..Default::default()
-        });
-        pass.set_pipeline(&res.pipeline);
-        pass.set_bind_group(0, &taa.resolve[i], &[]);
-        pass.draw(0..3, 0..1);
-        drop(pass);
+        let size = self.size().unwrap_or([1, 1]);
+        let frame = UpscaleFrame {
+            color: &target.color,
+            depth: &target.depth,
+            render_size: size,
+            output_size: taa.size,
+            jitter_clip: [self.taa_this_frame.jitter[0], self.taa_this_frame.jitter[1]],
+            jitter_pixels: self.jitter_pixels(),
+            reproject: self.taa_this_frame.reproject,
+            reset: self.taa_this_frame.jitter[2] > 0.5,
+            index: self.taa_frame,
+        };
+        let shown = res.resolve(queue, encoder, &frame, taa, timing.as_deref_mut());
         let pipeline = if self.upscale > 1.0 {
             &self.sharpen
         } else {
             &self.copy
         };
-        self.draw_onto(encoder, screen, &taa.show[i], pipeline, timing);
+        self.draw_onto(encoder, screen, shown, pipeline, timing);
     }
 
     /// Draw what `group` binds (`bind`) onto `screen`.

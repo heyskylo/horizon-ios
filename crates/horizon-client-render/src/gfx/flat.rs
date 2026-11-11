@@ -19,7 +19,10 @@
 //! start, and the run is drawn indirectly with the count the copy reached.
 use super::SolidPipeline;
 use super::arena::GRAIN;
-use smallvec::SmallVec;
+
+#[path = "binding_cache.rs"]
+mod binding_cache;
+use binding_cache::BindingKey;
 
 /// One section draw for `flatten.wgsl`: index count, first sorted index (or
 /// `QUADS` for a solid draw; phase 2: its entry in phase 2's draws), base
@@ -85,6 +88,11 @@ pub struct Call {
     pub count: u32,
 }
 
+struct CachedGroup<const N: usize> {
+    key: BindingKey<wgpu::Buffer, N>,
+    group: wgpu::BindGroup,
+}
+
 pub struct Flat {
     /// The solid draws in one pass (`fs_solid`), where the GPU doesn't hide pixels
     /// by tiles (`split_solid` in `Renderer::draw_frame`: elsewhere than Metal).
@@ -109,8 +117,9 @@ pub struct Flat {
     phase2_call_data: Vec<[u32; 5]>,
     /// GPU culling's phase 2 uses indirect draws; flat draws without culling do not.
     indirect_execution: bool,
-    /// The copy of phase 2's draws, and its ranges.
-    phase2_group: Option<(wgpu::BindGroup, u32)>,
+    /// Bindings reused while the range and all GPU buffers are unchanged.
+    phase2_group: Option<CachedGroup<4>>,
+    groups: Vec<CachedGroup<3>>,
     /// The layout of a page's bind group 1 (shader packs' terrain pipelines share it).
     pub(super) draw_layout: wgpu::BindGroupLayout,
     blocks_per_page: u64,
@@ -524,6 +533,7 @@ impl Flat {
             phase2_call_data: Vec::new(),
             indirect_execution,
             phase2_group: None,
+            groups: Vec::new(),
             draw_layout,
             blocks_per_page: page_vertices.div_ceil(GRAIN),
             translucent_blocks_per_page: page_vertices.div_ceil(GRAIN),
@@ -635,6 +645,8 @@ impl Flat {
     }
     pub fn clear(&mut self) {
         self.pages.clear();
+        self.groups.clear();
+        self.phase2_group = None;
         self.free_ids.clear();
         self.next_id = 0;
     }
@@ -674,7 +686,6 @@ impl Flat {
         sorted_page: impl Fn(u32) -> wgpu::Buffer,
         timing: Option<&mut super::pack_timing::PassTiming>,
     ) -> bool {
-        self.phase2_group = None;
         let phase2 = phase2.filter(|_| self.indirect_execution);
         let phase1_draws = if phase2.is_some() {
             phase1_draws
@@ -738,6 +749,9 @@ impl Flat {
         self.shadow_calls = shadow_calls;
         self.pass_calls = pass_calls;
         if total == 0 || total * 4 > device.limits().max_storage_buffer_binding_size {
+            // Do not retain bindings for a frame that cannot use flat draws.
+            self.phase2_group = None;
+            self.groups.clear();
             self.calls.clear();
             self.phase1_calls = 0;
             self.solid_calls = 0;
@@ -811,39 +825,63 @@ impl Flat {
             phase2,
             self.segments.iter().find(|(s, ..)| *s == Source::Seen),
         ) {
-            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Flatten phase 2 section draws"),
-                layout: &self.seen_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: ranges_at(first, count),
+            let buffers = [&self.ranges, &self.indices, phase2, &self.phase2_calls];
+            if !self
+                .phase2_group
+                .as_ref()
+                .is_some_and(|cached| cached.key.matches(first, count, buffers))
+            {
+                let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Flatten phase 2 section draws"),
+                    layout: &self.seen_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: ranges_at(first, count),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: self.indices.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: phase2.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 4,
+                            resource: self.phase2_calls.as_entire_binding(),
+                        },
+                    ],
+                });
+                self.phase2_group = Some(CachedGroup {
+                    key: BindingKey {
+                        first,
+                        count,
+                        buffers: buffers.map(|b| b.clone()),
                     },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: self.indices.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: phase2.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: self.phase2_calls.as_entire_binding(),
-                    },
-                ],
-            });
-            self.phase2_group = Some((group, count as u32));
+                    group,
+                });
+            }
+        } else {
+            self.phase2_group = None;
         }
-        let groups: SmallVec<[(wgpu::BindGroup, u32); 8]> = self
-            .segments
-            .iter()
-            .filter_map(|&(source, first, count)| {
-                let sorted = match source {
-                    Source::Quads => None,
-                    Source::Seen => return None,
-                    Source::Sorted(page) => Some(sorted_page(page)),
-                };
+        let mut groups = 0;
+        for &(source, first, count) in &self.segments {
+            let sorted = match source {
+                Source::Quads => None,
+                Source::Seen => continue,
+                Source::Sorted(page) => Some(sorted_page(page)),
+            };
+            let buffers = [
+                &self.ranges,
+                sorted.as_ref().unwrap_or(&self.empty),
+                &self.indices,
+            ];
+            if self
+                .groups
+                .get(groups)
+                .is_none_or(|cached| !cached.key.matches(first, count, buffers))
+            {
                 let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("Flatten section draws"),
                     layout: &self.compute_layout,
@@ -854,7 +892,7 @@ impl Flat {
                         },
                         wgpu::BindGroupEntry {
                             binding: 1,
-                            resource: sorted.as_ref().unwrap_or(&self.empty).as_entire_binding(),
+                            resource: buffers[1].as_entire_binding(),
                         },
                         wgpu::BindGroupEntry {
                             binding: 2,
@@ -862,17 +900,32 @@ impl Flat {
                         },
                     ],
                 });
-                Some((group, count as u32))
-            })
-            .collect();
+                let cached = CachedGroup {
+                    key: BindingKey {
+                        first,
+                        count,
+                        buffers: buffers.map(|b| b.clone()),
+                    },
+                    group,
+                };
+                if groups < self.groups.len() {
+                    self.groups[groups] = cached;
+                } else {
+                    self.groups.push(cached);
+                }
+            }
+            groups += 1;
+        }
+        self.groups.truncate(groups);
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Flatten section draws"),
             timestamp_writes: timing.and_then(|t| t.compute_writes("Flatten")),
         });
         pass.set_pipeline(&self.flatten);
-        for (group, count) in &groups {
-            pass.set_bind_group(0, group, &[]);
-            pass.dispatch_workgroups((*count).min(GROUP_LIMIT), count.div_ceil(GROUP_LIMIT), 1);
+        for cached in &self.groups {
+            let count = cached.key.count as u32;
+            pass.set_bind_group(0, &cached.group, &[]);
+            pass.dispatch_workgroups(count.min(GROUP_LIMIT), count.div_ceil(GROUP_LIMIT), 1);
         }
         drop(pass);
         true
@@ -928,16 +981,17 @@ impl Flat {
         encoder: &mut wgpu::CommandEncoder,
         timing: Option<&mut super::pack_timing::PassTiming>,
     ) {
-        let Some((group, count)) = &self.phase2_group else {
+        let Some(cached) = &self.phase2_group else {
             return;
         };
+        let count = cached.key.count as u32;
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Flatten phase 2 section draws"),
             timestamp_writes: timing.and_then(|t| t.compute_writes("Flatten phase 2")),
         });
         pass.set_pipeline(&self.flatten_seen);
-        pass.set_bind_group(0, group, &[]);
-        pass.dispatch_workgroups((*count).min(GROUP_LIMIT), count.div_ceil(GROUP_LIMIT), 1);
+        pass.set_bind_group(0, &cached.group, &[]);
+        pass.dispatch_workgroups(count.min(GROUP_LIMIT), count.div_ceil(GROUP_LIMIT), 1);
     }
 
     /// The camera's translucent calls.

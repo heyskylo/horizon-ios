@@ -1,0 +1,33 @@
+[package]
+name = "horizon-official"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The official game executable: the platform's game with Horizon's own in-game parts plugged in (docs/layers.md)"
+
+[[bin]]
+name = "horizon-official"
+path = "src/main.rs"
+
+[dependencies]
+horizon-game = { path = "../horizon-game", default-features = false }
+horizon-platform = { path = "../horizon-platform" }
+horizon-heartbeat = { path = "../horizon-heartbeat" }
+horizon-friends = { path = "../horizon-friends", features = ["game"] }
+horizon-official-servers = { path = "../horizon-official-servers" }
+horizon-discord = { path = "../horizon-discord" }
+log = "0.4"
+
+[build-dependencies]
+# The build script runs on the host, but embeds resources based on the target OS.
+winresource = "0.1"
+
+[lints]
+workspace = true
+
+[features]
+default = ["audio", "controllers", "horizon-extras"]
+audio = ["horizon-game/audio"]
+controllers = ["horizon-game/controllers"]
+horizon-extras = ["horizon-game/horizon-extras"]

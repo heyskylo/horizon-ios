@@ -1,4 +1,5 @@
 //! Unit tests that lived in game.rs's inline `tests` module.
+use super::inventory_input::drop_whole_stack;
 use super::loading_screen::unclean_start_recovery;
 use super::*;
 use horizon_client::container_screen::{Button, Clicks, Release, Target};
@@ -53,6 +54,8 @@ fn a_death_drops_the_off_hand_before_the_armour() {
     assert!(offhand.is_none() && armor.iter().all(Option::is_none));
 }
 
+#[path = "knot_command_view_tests.rs"]
+mod knot_command_view_tests;
 /// `MinecraftServer.computeNextAutosaveInterval`: three hundred seconds of
 /// ticks at the rate the server runs at, never fewer than a hundred.
 #[test]
@@ -203,6 +206,8 @@ fn glfw_modifier_bits_are_glfw_modifier_bits() {
     assert_eq!(glfw_modifiers(ModifiersState::all()), 15);
 }
 
+#[path = "knot_identity_tests.rs"]
+mod knot_identity_tests;
 /// The `button` a native mod's mouse hooks hand over is GLFW's index (0
 /// left, 1 right, 2 middle, 3 back, 4 forward, else the button's number),
 /// the one `keybinds::mouse_name` names (`key.mouse.<index + 1>` from the
@@ -231,8 +236,14 @@ fn glfw_button_indices_are_glfw_indices() {
 /// F3 left on when leaving a world kept the axes on the title screen.
 #[test]
 fn the_debug_crosshair_is_gone_once_the_world_is() {
-    assert!(debug_crosshair_drawn(true, true, false, false));
-    assert!(!debug_crosshair_drawn(true, true, false, true));
+    assert!(debug_crosshair_drawn(true, true, false, false, false));
+    assert!(!debug_crosshair_drawn(true, true, false, true, false));
+}
+
+/// F3's 3D crosshair drew beside the radial menu's stick, which the 2D one gives way to.
+#[test]
+fn the_debug_crosshair_gives_way_to_the_radial_menu() {
+    assert!(!debug_crosshair_drawn(true, true, false, false, true));
 }
 
 /// Opening a world in front of a block left its outline over Loading terrain's panorama (#12872).
@@ -278,6 +289,8 @@ fn equipment_modifiers_follow_their_slot_group() {
     assert!(!equipment_modifier_applies("offhand", "mainhand"));
 }
 
+#[path = "leash_knot_uuid_tests.rs"]
+mod leash_knot_uuid_tests;
 /// A guest's interact packet names its entity and the server keeps it:
 /// `ServerGamePacketListenerImpl.handleInteract` resolves
 /// `packet.entityId()` once and `Player.interactOn` clicks that entity,
@@ -294,6 +307,8 @@ fn an_interact_packet_clicks_the_entity_it_names_not_the_nearest() {
     assert_eq!(Game::named_entity(&cows, 31, |c| c.0), None);
 }
 
+#[path = "building_cache_tests.rs"]
+mod building_cache_tests;
 /// The id path keeps the crosshair pick's filters, so a packet cannot name
 /// a mob the pick would refuse: one in its death animation, the one the
 /// player rides, or the camera entity. Without them a guest could shear,
@@ -311,6 +326,10 @@ fn an_interact_packet_cannot_name_a_mob_the_pick_would_refuse() {
     assert!(named_mob_pickable(true, 17, Some(23), Some(29)));
 }
 
+#[path = "mob_display_name_tests.rs"]
+mod mob_display_name_tests;
+#[path = "pet_order_tests.rs"]
+mod pet_order_tests;
 /// The packet's location is `EntityHitResult.getLocation() -
 /// entity.position()`, the point the view ray met the box at measured
 /// from the mob's feet (`MultiPlayerGameMode.interact`). The old fixed
@@ -613,3 +632,6 @@ fn stack_drop_requires_ctrl_even_with_sprint_latched() {
         }
     }
 }
+
+#[path = "play_ping_tests.rs"]
+mod play_ping_tests;

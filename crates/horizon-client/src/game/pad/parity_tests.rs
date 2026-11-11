@@ -45,8 +45,9 @@ fn playing(test: impl FnOnce(&mut Game)) {
     test(&mut game);
 }
 
-/// Hold `button` on the pad, as a poll that saw it go down would.
-fn pad_press(game: &mut Game, button: Button, action: &str) {
+/// Hold `button` on the pad, as a poll that saw it go down would: the press
+/// is recorded as `pad_button` records it, which is what `holds_action` reads.
+fn pad_press(game: &mut Game, button: Button, action: &'static str) {
     let mut state = PadState::default();
     // A trigger is held by how far it's pulled, not by a button bit.
     match button {
@@ -55,6 +56,7 @@ fn pad_press(game: &mut Game, button: Button, action: &str) {
         _ => state.set(button, true),
     }
     game.pad.edges.update(&state, 0.4);
+    game.pad.actions[button as usize] = vec![action];
     game.pad_action(action, true).unwrap();
 }
 

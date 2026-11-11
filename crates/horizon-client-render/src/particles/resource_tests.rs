@@ -131,9 +131,12 @@ fn resource_reload_clears_old_live_pending_emitters_and_firework_groups() {
     engine.pending.push(smoke);
     engine.tracking_emitter_for(
         ParticleOptions::simple(ParticleType::Smoke),
-        [0.0; 3],
-        0.6,
-        1.8,
+        TrackingTarget::LocalPlayer,
+        TrackingBody {
+            feet: [0.0; 3],
+            width: 0.6,
+            height: 1.8,
+        },
         4,
     );
     engine.fireworks(
@@ -141,6 +144,7 @@ fn resource_reload_clears_old_live_pending_emitters_and_firework_groups() {
         [0.0; 3],
         vec![FireworkExplosion::default()],
         [0.0; 3],
+        true,
     );
     assert!(!engine.particles.is_empty());
     assert!(!engine.pending.is_empty());

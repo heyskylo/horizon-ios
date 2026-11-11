@@ -64,7 +64,7 @@ fn paragraph(ui: &mut ui_theme::Ui, y: &mut f32, size: f32, ink: u32, width: f32
 /// A heading, in the launcher's own voice: medium weight, the accent colour it uses for a section.
 fn heading(ui: &mut ui_theme::Ui, y: &mut f32, text: &str) {
     *y += GAP;
-    ui.text(Face::Medium, 15.0, MARGIN, *y, color::ACCENT, text);
+    ui.text(Face::Medium, 15.0, MARGIN, *y, color::accent(), text);
     *y += line_h(15.0);
 }
 
@@ -103,8 +103,8 @@ pub fn draw(batch: &mut HudBatch, atlas: &HudAtlas, status: &Status) {
         16.0,
         w - MARGIN,
         h - 32.0,
-        ui_theme::RADIUS,
-        color::BG,
+        ui_theme::radius(),
+        color::bg(),
     );
     let mut y = 34.0;
     ui.text(
@@ -112,7 +112,7 @@ pub fn draw(batch: &mut HudBatch, atlas: &HudAtlas, status: &Status) {
         24.0,
         MARGIN,
         y,
-        color::TEXT,
+        color::text(),
         &format!("Horizon {}", status.version),
     );
     y += line_h(24.0) + GAP - 2.0;
@@ -120,13 +120,13 @@ pub fn draw(batch: &mut HudBatch, atlas: &HudAtlas, status: &Status) {
         &mut ui,
         &mut y,
         15.0,
-        color::TEXT,
+        color::text(),
         text,
         "This app has no game files to run. They are yours already, on the computer that prepared them.",
     );
     if let Some(reason) = status.reason {
         y += GAP;
-        paragraph(&mut ui, &mut y, 13.0, color::MUTED, text, reason);
+        paragraph(&mut ui, &mut y, 13.0, color::muted(), text, reason);
     }
     if let Some((host, port)) = status.address {
         heading(&mut ui, &mut y, "OVER WI-FI");
@@ -134,7 +134,7 @@ pub fn draw(batch: &mut HudBatch, atlas: &HudAtlas, status: &Status) {
             &mut ui,
             &mut y,
             13.0,
-            color::TEXT,
+            color::text(),
             text,
             "Open this address on any device on the same network and choose the archive:",
         );
@@ -143,7 +143,7 @@ pub fn draw(batch: &mut HudBatch, atlas: &HudAtlas, status: &Status) {
             20.0,
             MARGIN,
             y,
-            color::ACCENT,
+            color::accent(),
             &format!("http://{host}:{port}/"),
         );
         y += line_h(20.0);
@@ -152,28 +152,28 @@ pub fn draw(batch: &mut HudBatch, atlas: &HudAtlas, status: &Status) {
                 &mut ui,
                 &mut y,
                 13.0,
-                color::MUTED,
+                color::muted(),
                 text,
                 &format!("The page will ask for this code: {pin}"),
             );
         }
         if let Some(fraction) = status.fraction() {
             let top = y + 4.0;
-            ui.rounded(MARGIN, top, text, 6.0, 3.0, color::HOVER);
+            ui.rounded(MARGIN, top, text, 6.0, 3.0, color::hover());
             ui.rounded(
                 MARGIN,
                 top,
                 (text * fraction).max(6.0),
                 6.0,
                 3.0,
-                color::ACCENT,
+                color::accent(),
             );
             y = top + 6.0 + GAP;
             paragraph(
                 &mut ui,
                 &mut y,
                 13.0,
-                color::MUTED,
+                color::muted(),
                 text,
                 &format!(
                     "{} of {} received",
@@ -188,7 +188,7 @@ pub fn draw(batch: &mut HudBatch, atlas: &HudAtlas, status: &Status) {
         &mut ui,
         &mut y,
         13.0,
-        color::TEXT,
+        color::text(),
         text,
         "Copy one .zip archive into this app's folder in the Files app. It installs itself as soon as it arrives:",
     );
@@ -196,7 +196,7 @@ pub fn draw(batch: &mut HudBatch, atlas: &HudAtlas, status: &Status) {
         &mut ui,
         &mut y,
         13.0,
-        color::MUTED,
+        color::muted(),
         text,
         &folder.display().to_string(),
     );
@@ -205,7 +205,7 @@ pub fn draw(batch: &mut HudBatch, atlas: &HudAtlas, status: &Status) {
         &mut ui,
         &mut y,
         13.0,
-        color::TEXT,
+        color::text(),
         text,
         &format!(
             "horizon-client --pack-resources .local/horizon-client/{} --out horizon-{}.zip",
@@ -245,11 +245,11 @@ pub fn draw_download(
         20.0,
         left,
         top,
-        color::TEXT,
+        color::text(),
         &format!("Horizon {version}"),
     );
     let bar = top + line_h(20.0) + GAP;
-    ui.rounded(left, bar, width, 6.0, 3.0, color::HOVER);
+    ui.rounded(left, bar, width, 6.0, 3.0, color::hover());
     let filled = fraction.unwrap_or(1.0).clamp(0.0, 1.0);
     ui.rounded(
         left,
@@ -257,14 +257,14 @@ pub fn draw_download(
         (width * filled).max(6.0),
         6.0,
         3.0,
-        color::ACCENT,
+        color::accent(),
     );
     ui.text(
         Face::Regular,
         13.0,
         left,
         bar + 6.0 + GAP,
-        color::MUTED,
+        color::muted(),
         line,
     );
     ui.finish();

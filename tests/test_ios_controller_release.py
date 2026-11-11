@@ -44,7 +44,7 @@ type Rect=[f32;4];
 #[derive(Clone,Copy)]struct Target{rect:Rect}impl Target{fn center(&self)->(f32,f32){(self.rect[0]+self.rect[2]/2.,self.rect[1]+self.rect[3]/2.)}}
 #[derive(Default)]struct HeldTrigger{pressed_a:bool}
 #[derive(Default)]struct Menu{trigger:Option<HeldTrigger>,armed:Option<Rect>,focus:Option<Target>,held:[bool;2],repeat:Option<(Button,usize,bool)>}
-#[derive(Default)]struct Pads{owner_epoch:u64,devices:Devices,menu:Menu,style:GlyphStyle,device:Option<Device>,connections:Vec<Connection>,feed_source:Option<PadId>}
+#[derive(Default)]struct Pads{peaks:[[f32;2];2],owner_epoch:u64,devices:Devices,menu:Menu,style:GlyphStyle,device:Option<Device>,connections:Vec<Connection>,feed_source:Option<PadId>}
 #[derive(Debug,PartialEq)]enum Connection{Connected(GlyphStyle),Disconnected{active:bool}}
 #[derive(Default)]struct Game{pad:Pads,clicks:usize}
 impl Game{fn pad_recipe_book_showing(&self)->bool{false}fn pad_tab(&mut self,_:&(),_:bool){panic!("recipe book must not be reached by device-handoff probe");}fn pad_click_at(&mut self,_:&(),_:(f32,f32),_:bool){self.clicks+=1;}fn pad_pointer_button(&mut self,_:&(),_:bool,_:bool){}}

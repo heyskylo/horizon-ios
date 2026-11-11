@@ -143,6 +143,7 @@ impl Game<'_> {
             facts: self.res.facts(),
             collision: &self.collision,
             player: None,
+            cached_chunk: std::cell::Cell::new(None),
         };
         find_noxious_gas_source_block(&level, [pos.0, pos.1, pos.2])
     }
@@ -198,6 +199,7 @@ impl Game<'_> {
             facts: self.res.facts(),
             collision: &self.collision,
             player: None,
+            cached_chunk: std::cell::Cell::new(None),
         };
         // The gas reads blocks only, so the mobs it reaches can be found
         // before any gets its effect.
@@ -264,6 +266,7 @@ impl Game<'_> {
                 facts: self.res.facts(),
                 collision: &self.collision,
                 player: None,
+                cached_chunk: std::cell::Cell::new(None),
             };
             can_be_reached_by_noxious_gas(&level, source, eye)
         };
@@ -356,6 +359,7 @@ impl Game<'_> {
             facts: self.res.facts(),
             collision: &self.collision,
             player: None,
+            cached_chunk: std::cell::Cell::new(None),
         };
         let height = unobstructed_block_count(&level, [pos.0, pos.1 + 1, pos.2], water_blocks);
         let area = launch_area(pos, height);
@@ -419,6 +423,7 @@ impl Game<'_> {
                 facts: self.res.facts(),
                 collision: &self.collision,
                 player: None,
+                cached_chunk: std::cell::Cell::new(None),
             };
             unobstructed_block_count(&level, [pos.0, pos.1 + 1, pos.2], water_blocks)
         };

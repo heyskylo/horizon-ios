@@ -21,7 +21,7 @@ def program():
     methods += '\n' + '\n'.join('pub(crate) ' + method(pad, n) for n in ('key_focus_mouse', 'key_focus_to_mouse'))
     controller = (ROOT / 'crates/horizon-client/src/game/pad.rs').read_text()
     methods += '\n' + method(controller, 'pad_yield_input')
-    emote = (ROOT / 'crates/horizon-client/src/game/emote_wheel.rs').read_text()
+    emote = (ROOT / 'crates/horizon-client/src/game/cosmetics/emote_wheel.rs').read_text().replace('self.cosmetics.wheel', 'self.emote_wheel').replace('self.cosmetics.emotes', 'self.emotes').replace('pub(in crate::game)', 'pub(super)')
     methods += '\n' + method(emote, 'cancel_emote_controller')
     return STUBS + '\nmod production { use super::*; impl Game {\n' + methods + '\n}\n' + CASES + '\n}\n'
 
@@ -48,7 +48,7 @@ struct Target{rect:[f32;4]}
 type WindowId=u32;
 #[derive(Default)]struct Wheel{controller:Option<()>}
 struct Game{emote_wheel:Wheel,touch:TouchInput,window:Option<Window>,pad:Pad,cursor:PhysicalPosition<f64>,clicks:Vec<PhysicalPosition<f64>>,scale:f32,airplay_scale:f32}
-impl Game{
+impl Game{fn pad_radial_captures(&self)->bool{false}
  fn screen_batch(&self)->Option<Batch>{Some(Batch{scale:self.scale})}
  fn screen_point(&self,p:(f32,f32))->(f32,f32){(p.0*self.airplay_scale,p.1*self.airplay_scale)}
  fn handle_window_event(&mut self,l:&dyn EventLoopCtl,_:u32,e:WindowEvent,origin:InputOrigin){

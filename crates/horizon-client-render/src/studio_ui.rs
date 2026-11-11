@@ -316,19 +316,19 @@ impl StudioUi {
 
                 // Card background & highlight
                 if is_selected {
-                    style::fill(batch, atlas, rect, style::OPEN);
+                    style::fill(batch, atlas, rect, style::open());
                 } else if is_hovered {
-                    style::fill(batch, atlas, rect, style::HOVER);
+                    style::fill(batch, atlas, rect, style::hover());
                 } else {
                     style::well(batch, atlas, rect);
                 }
 
                 let border_color = if is_selected {
-                    style::ACCENT
+                    style::accent()
                 } else if is_hovered {
                     style::WHITE
                 } else {
-                    style::ROW_RULE
+                    style::row_rule()
                 };
                 style::ring(batch, atlas, rect, border_color);
 

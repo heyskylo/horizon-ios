@@ -394,6 +394,47 @@ mod knockback_sync_tests {
         assert!(m.velocity.x < 0.0, "velocity {:?}", m.velocity);
         assert!(m.needs_sync);
     }
+    /// `TemptGoal` scales its range by the player's visibility: an invisible
+    /// player five blocks away does not tempt a sulfur cube.
+    #[test]
+    fn an_invisible_player_tempts_a_sulfur_cube_only_within_two_blocks() {
+        use crate::mobs::goals::Cx;
+        use crate::mobs::world::{test_player, with_test_world};
+        use horizon_core::random::LegacyRandom;
+        let mut outcomes = Vec::new();
+        if !with_test_world(&[], |w, _| {
+            for invisible in [false, true] {
+                let mut world = w.clone();
+                let mut p = test_player(Vec3::new(5.5, 64.0, 0.5));
+                p.main_hand = Some("minecraft:iron_ingot".into());
+                p.invisible = invisible;
+                world.player = Some(p);
+                let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+                kind.species = Species::SulfurCube;
+                kind.tempt = Arc::from(vec!["minecraft:iron_ingot".to_string()]);
+                let mut m = Mob::new(1, Arc::new(kind), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                m.ai.goals.add(1, SulfurTempt { player: None });
+                let mut lr = LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &world,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut m.ai.goals);
+                goals.tick(&mut m, &mut cx);
+                outcomes.push(goals.is_running("SulfurTempt"));
+                m.ai.goals = goals;
+            }
+        }) {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            vec![true, false],
+            "a visible player tempts at five; an invisible one does not"
+        );
+    }
 }
 /// Added controls (H192): the attribute part of `collectEquipmentChanges` on
 /// the cube's own map, with the amounts and ids of the pinned 26.3
@@ -561,6 +602,15 @@ pub(crate) mod adopt_body_tests {
 pub fn archetype(m: &Mob) -> Option<&'static Archetype> {
     m.extra.body.as_deref().and_then(archetype_of)
 }
+/// The explosion data `SulfurCube.explosionData` caches: the adopted body's,
+/// as `collectEquipmentChanges` last took it.
+pub fn adopted_explosion(m: &Mob) -> Option<(i32, f32, bool)> {
+    m.extra
+        .adopted_body
+        .as_deref()
+        .and_then(archetype_of)
+        .and_then(|a| a.explosion)
+}
 /// The archetype whose bounciness, friction and air drag attributes a
 /// sulfur cube's physics use (no other mob has those modifiers).
 pub fn physics(m: &Mob) -> Option<&'static Archetype> {
@@ -643,6 +693,44 @@ mod burning_arrow_tests {
             .collect();
         let hit = archetype_of("minecraft:tnt").unwrap().hit_sound;
         assert_eq!(sounds, ["entity.tnt.primed", hit]);
+    }
+
+    /// `SulfurCube.ageBoundaryReached` runs only where `AgeableMob.setAge`
+    /// crosses the baby boundary: a loaded adult of size 1 and a big baby
+    /// keep their size, and only a baby growing up becomes size 2 (#14916).
+    #[test]
+    fn only_growing_up_makes_a_cube_size_2() {
+        let mut events = Vec::new();
+        let ran = crate::mobs::world::with_test_world(&[], |w, _| {
+            // `/summon sulfur_cube` without Size or Age: an adult of size 1.
+            let mut adult = cube(None);
+            from_nbt(
+                &mut adult,
+                &horizon_world::nbt::Tag::Compound(Default::default()),
+            );
+            // A split of a size-4 cube: a baby of size 2.
+            let mut baby = cube(None);
+            baby.extra.age = -24000;
+            set_size(&mut baby, 2, true);
+            for tick in 1..=40 {
+                adult.age = tick;
+                baby.age = tick;
+                ai_step(&mut adult, w, &mut events);
+                ai_step(&mut baby, w, &mut events);
+            }
+            assert_eq!((adult.extra.size, adult.attrs.max_health), (1, 4.0));
+            assert!(!adult.is_baby());
+            assert_eq!((baby.extra.size, baby.attrs.max_health), (2, 8.0));
+            // The baby boundary: a cub of size 1 that grows up is size 2.
+            let mut cub = cube(None);
+            cub.extra.age = -1;
+            set_size(&mut cub, 1, true);
+            crate::mobs::finalize::set_age(&mut cub, 0);
+            assert_eq!((cub.extra.size, cub.health), (2, 8.0));
+        });
+        if !ran {
+            eprintln!("skipped: needs the prepared 26.3 data");
+        }
     }
 }
 /// Client copy of `tickFuse`: count the fuse down for the renderer. The
@@ -819,6 +907,12 @@ pub fn prime(m: &mut Mob, imminent: bool) -> bool {
     let Some((fuse, _, _)) = archetype(m).and_then(|a| a.explosion) else {
         return false;
     };
+    prime_with_fuse(m, imminent, fuse)
+}
+/// `primeTime` with the fuse of the cached `explosionData` (the body
+/// `collectEquipmentChanges` last adopted), which is not the live body's
+/// when the body changed since.
+pub fn prime_with_fuse(m: &mut Mob, imminent: bool, fuse: i32) -> bool {
     if !m.alive() || !TNT_EXPLODES.get() || primed(m) {
         return false;
     }
@@ -1129,13 +1223,8 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if m.extra.scratch[2] > 0 {
         m.extra.scratch[2] -= 1;
     }
-    // ageBoundaryReached: a grown baby is size 2 (and a baby made by
-    // feeding, summoning or the egg is size 1, as `getBreedOffspring` makes it).
-    if !m.is_baby() && m.extra.size == 1 && m.extra.age == 0 && m.age > 1 {
-        set_size(m, 2, true);
-    } else if m.is_baby() && m.extra.size > 1 {
-        set_size(m, 1, true);
-    }
+    // Growing to size 2 is `ageBoundaryReached`, run only where `setAge` crosses
+    // the baby boundary (`finalize::set_age`), never by the tick (#14916).
     let body = has_body(m);
     // collectEquipmentChanges: a swallowed block takes every goal away.
     if body {
@@ -1315,11 +1404,12 @@ impl Goal for SulfurTempt {
                 }
             })
         };
-        // Attributes.TEMPT_RANGE 8.
+        // Attributes.TEMPT_RANGE 8, scaled by visibility (floor 2).
+        let range = (8.0 * p.visibility_percent(Some(m.kind.id.as_str()), cx.w.items)).max(2.0);
         let ok = p.alive
             && !p.spectator
             && (wants(&p.main_hand) || wants(&p.off_hand))
-            && m.distance_sqr(p.position) <= 64.0;
+            && m.distance_sqr(p.position) <= range * range;
         self.player = ok.then_some(p.eye);
         ok
     }

@@ -59,7 +59,7 @@ jobs:
         # The public Microsoft sign-in app is shared by the Rust executable and native launcher.
         # The defaults minus `controllers` (GameController reads pads), with `audio`: project.yml's Cargo phase
         # uses the same flags, so HORIZON_GAME_PREBUILT below finds this build.
-        run: cargo build --release --locked --target "$IOS_TARGET" -p horizon-client --no-default-features --features audio,horizon-extras
+        run: cargo build --release --locked --target "$IOS_TARGET" -p horizon-official --no-default-features --features audio,horizon-extras
       - name: Bundle it
         run: |
           set -euo pipefail

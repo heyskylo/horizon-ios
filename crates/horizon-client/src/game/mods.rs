@@ -76,12 +76,13 @@ pub(super) fn content_for_loaded_root(
 pub(super) fn prepare_content(
     root: &std::path::Path,
     enabled: &std::collections::BTreeSet<String>,
+    disabled: &std::collections::BTreeSet<String>,
     dev: &[PathBuf],
 ) -> horizon_client::Result<Arc<PreparedContent>> {
     let home = Game::game_dir();
     horizon_client::mod_registry::with_content_snapshot(&home, || {
         let catalog = catalog::read(&home, dev, &Default::default())?;
-        let selected = Selection::wanted(enabled, &catalog);
+        let selected = Selection::wanted(&catalog.wanted_ids(enabled, disabled), &catalog);
         content::build(root, &home, &selected, catalog, false).map_err(|error| error.to_string())
     })?
     .map_err(Into::into)
@@ -484,7 +485,7 @@ impl Game<'_> {
         };
         let plan = catalog::switch_plan(
             &applied.selection,
-            &self.settings.mods.enabled,
+            &catalog.wanted_ids(&self.settings.mods.enabled, &self.settings.mods.disabled),
             catalog,
             self.integrated.is_some() || self.remote.is_none(),
         );
@@ -676,6 +677,57 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    #[test]
+    #[ignore = "prepared resources: run explicitly for native content"]
+    fn built_native_sound_content_reaches_the_resource_root_and_obeys_disable() {
+        let base = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
+        );
+        let scratch =
+            std::env::temp_dir().join(format!("horizon-native-content-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let version = scratch.join("version");
+        let home = scratch.join("game");
+        std::fs::create_dir_all(&home).unwrap();
+        let content = version.join("native-content/soundproof");
+        std::fs::create_dir_all(content.join("assets/soundproof/sounds")).unwrap();
+        std::fs::write(content.join("horizon-mod.toml"), "id=\"soundproof\"\nname=\"Sound proof\"\nversion=\"1\"\napi=\"0.2\"\ncapabilities=[\"registries\"]\n").unwrap();
+        std::fs::write(
+            content.join("assets/soundproof/sounds.json"),
+            r#"{"proof":{"sounds":["soundproof:proof"]}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            content.join("assets/soundproof/sounds/proof.ogg"),
+            b"synthetic existence marker; no audio decode",
+        )
+        .unwrap();
+        let legacy = home.join(mod_list::DIR).join("soundproof");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::copy(
+            content.join("horizon-mod.toml"),
+            legacy.join("horizon-mod.toml"),
+        )
+        .unwrap();
+        let enabled = ["soundproof".to_owned()].into();
+        let empty = Default::default();
+        let catalog =
+            catalog::read_at(&home, &[], &Default::default(), Some(&version), |_| {}).unwrap();
+        let build = |enabled, disabled| {
+            let selection = Selection::wanted(&catalog.wanted_ids(enabled, disabled), &catalog);
+            content::build(&base, &home, &selection, catalog.clone(), false).unwrap()
+        };
+        let loaded = build(&empty, &empty);
+        let root = &loaded.root;
+        assert_ne!(*root, base);
+        let sounds = horizon_client::sound_events::SoundRegistry::load(&root);
+        assert!(!sounds.tracks("soundproof:proof").is_empty());
+        let disabled = ["soundproof".to_owned()].into();
+        let off = build(&enabled, &disabled).root.clone();
+        assert_eq!(off, base, "disabled native mods contribute no assets");
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
     /// A content mod's living type is a mob of its template's species under
     /// its own id, with its own attributes: it saves its id with every field
     /// its template's class saves, loads back as itself, and rolls its own
@@ -833,6 +885,51 @@ capabilities = ["registries"]
         assert_eq!(plan.waiting, enabled);
         assert_eq!(plan.next, running, "worldgen changes wait for restart");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The mods read on threads at once come back in the order given, each with its own
+    /// files, and a refused mod's error stays with that mod alone.
+    #[test]
+    fn pinned_mods_keep_their_order_and_their_own_errors() {
+        let dir = std::env::temp_dir().join(format!("horizon-read-at-once-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths: Vec<PathBuf> = (0..12).map(|i| dir.join(format!("m{i}"))).collect();
+        for (i, path) in paths.iter().enumerate() {
+            std::fs::create_dir_all(path).unwrap();
+            std::fs::write(
+                path.join("horizon-mod.toml"),
+                format!(
+                    "id = \"m{i}\"\nname = \"M\"\nversion = \"0.1.0\"\napi = \"0.2\"\n\
+                     side = \"both\"\ncapabilities = [\"registries\"]\n"
+                ),
+            )
+            .unwrap();
+            // Mod i has i + 1 language files; mod 5 also writes into another mod's namespace.
+            let lang = path.join(format!("assets/m{i}/lang"));
+            std::fs::create_dir_all(&lang).unwrap();
+            for n in 0..=i {
+                std::fs::write(lang.join(format!("l{n}.json")), "{}").unwrap();
+            }
+            if i == 5 {
+                std::fs::create_dir_all(path.join("assets/m0/lang")).unwrap();
+                std::fs::write(path.join("assets/m0/lang/x.json"), "{}").unwrap();
+            }
+        }
+        let catalog = catalog::read_at(&dir, &paths, &Default::default(), None, |_| {}).unwrap();
+        let expected: Vec<_> = (0..12)
+            .filter(|i| *i != 5)
+            .map(|i| format!("m{i}"))
+            .collect();
+        assert_eq!(catalog.order, expected);
+        assert!(catalog.invalid.contains("m5"));
+        for (i, path) in paths.iter().enumerate().filter(|(i, _)| *i != 5) {
+            let entry = &catalog.entries[&format!("m{i}")];
+            assert_ne!(&entry.source, path);
+            let package = horizon_mods::Package::read(&entry.source).unwrap();
+            let content = horizon_mods::Content::read(&entry.source, &package.manifest).unwrap();
+            assert_eq!(content.files.len(), i + 1);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Only a build whose `native-mods.json` lists a mod counts as built with mods.

@@ -9,11 +9,10 @@ description = "The client's input layer: key bindings and their names, mouse, co
 [dependencies]
 horizon-client-core = { path = "../horizon-client-core" }
 winit = "0.30.13"
-# The window icon.
-horizon-theme = { path = "../horizon-theme" }
 png = "0.18"
-# The DualSense's trigger effects (the `controllers` feature).
-horizon-dualsense = { path = "../horizon-dualsense", optional = true }
+
+[dev-dependencies]
+horizon-theme = { path = "../horizon-theme" }
 
 # arboard has only desktop backends. Its Unix fallback otherwise pulls Wayland
 # into iOS, which has no compositor libraries; clipboard.rs already gates its use.
@@ -24,7 +23,7 @@ arboard = { version = "3.6.1", default-features = false, features = ["wayland-da
 horizon-gamecontroller = { path = "../horizon-gamecontroller" }
 
 [features]
-controllers = ["dep:horizon-dualsense"]
+controllers = []
 
 [lints]
 workspace = true

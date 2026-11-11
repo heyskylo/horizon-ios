@@ -11,7 +11,7 @@ use horizon_core::{
     position::BlockPos,
 };
 use horizon_world::{
-    fluid::{FluidKind, FluidState},
+    fluid::{FluidState, FluidTemplate},
     fluid_flow::{FluidFlowWorld, flow_at},
 };
 use std::{convert::Infallible, sync::OnceLock};
@@ -265,7 +265,8 @@ pub(super) fn tesselate(
     if !render_up && !render_down && !sides.iter().any(|&s| s) {
         return;
     }
-    let water = matches!(kind, FluidKind::Water | FluidKind::FlowingWater);
+    // A mod fluid looks like its template until it has its own model (#6301 step 6).
+    let water = kind.template() == FluidTemplate::Water;
     let tint = if water {
         water_color & 0xFF_FFFF
     } else {

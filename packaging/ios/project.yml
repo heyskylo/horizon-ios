@@ -68,7 +68,7 @@ targets:
 
   # The game, in a bundle Xcode can sign. Two build phases and one placeholder source make this work:
   #
-  #   1. Cargo builds `horizon-client` for the phone (the pre-compile phase). rustc cannot emit a library from
+  #   1. Cargo builds `horizon-official` for the phone (the pre-compile phase). rustc cannot emit a library from
   #      a bin target, and `Game` is bin-only code, so there is no archive for Xcode to link here -- unlike the
   #      shell above, whose crate is a library written to be linked.
   #   2. Xcode links GameShell/main.m, which does nothing but exist so the target has an executable.
@@ -108,21 +108,21 @@ targets:
           }
           cd "$SRCROOT/../.."
           # CI builds the game in its own step first and sets this, so the bundle step does not compile it twice.
-          if [ -n "${HORIZON_GAME_PREBUILT:-}" ] && [ -x "target/$IOS_TARGET/release/horizon-client" ]; then
+          if [ -n "${HORIZON_GAME_PREBUILT:-}" ] && [ -x "target/$IOS_TARGET/release/horizon-official" ]; then
             echo "Horizon: using the game Cargo already built (HORIZON_GAME_PREBUILT)."
             exit 0
           fi
           # The profile and flags the workflow builds with, so what a player runs from Xcode is what CI measured.
           # `audio` is cpal, whose CoreAudio backend plays through RemoteIO on a phone; `controllers` stays off
           # (gilrs and hidapi want libudev or IOKit: GameController reads pads instead).
-          cargo build --release --locked --target "$IOS_TARGET" -p horizon-client --no-default-features --features audio,horizon-extras
+          cargo build --release --locked --target "$IOS_TARGET" -p horizon-official --no-default-features --features audio,horizon-extras
     postCompileScripts:
       - name: Put the Rust game in the bundle
         shell: /bin/bash
         showEnvVarsInLog: false
         script: |
           set -euo pipefail
-          game="$SRCROOT/../../target/$IOS_TARGET/release/horizon-client"
+          game="$SRCROOT/../../target/$IOS_TARGET/release/horizon-official"
           test -x "$game" || {
             echo "error: the Cargo phase reported success and left no $game" >&2
             exit 1

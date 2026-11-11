@@ -3,9 +3,8 @@ use crate::game::{Audio, Options, Progress, Settings, load_resources};
 use horizon_client::motion::PlayerMotion;
 use horizon_core::geometry::Vec3;
 
-#[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-fn tag_commands_and_explicit_empty_loads_save_without_empty_tags() {
+/// A server-side game that runs commands, its world in a scratch folder.
+fn with_command_game(name: &str, test: impl FnOnce(&mut Game<'_>)) {
     let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
     let settings = Settings::default();
     let loaded = load_resources(
@@ -34,7 +33,7 @@ fn tag_commands_and_explicit_empty_loads_save_without_empty_tags() {
     )
     .unwrap();
     let scratch = std::env::temp_dir().join(format!(
-        "horizon-saved-tags-{}-{}",
+        "horizon-saved-{name}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -46,6 +45,17 @@ fn tag_commands_and_explicit_empty_loads_save_without_empty_tags() {
     game.player = Some(PlayerMotion::new(&game.motion, Vec3::new(10.5, 200.0, 0.5)).unwrap());
     game.build_registries();
     game.set_allow_commands(true);
+    test(&mut game);
+    drop(game);
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn tag_commands_and_explicit_empty_loads_save_without_empty_tags() {
+    with_command_game("tags", tag_commands_and_explicit_empty);
+}
+fn tag_commands_and_explicit_empty(game: &mut Game<'_>) {
     let start = game.world.game_time;
     let uuid = "00000148-0000-0000-0000-000000000001";
     assert!(game.run_command("summon pig 4.5 200 4.5 {UUID:[I;328,0,0,1],Health:10f,NoAI:1b,NoGravity:1b,PortalCooldown:17}"));
@@ -99,6 +109,23 @@ fn tag_commands_and_explicit_empty_loads_save_without_empty_tags() {
         Some(&Tag::List(vec![Tag::String("keep".into())]))
     );
     assert_eq!(game.world.game_time, start);
-    drop(game);
-    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+/// `/data get` on a cloud that was never saved shows `Entity.saveWithoutId`'s
+/// common fields, as 26.3 prints them (#13057).
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_live_area_effect_cloud_reads_with_the_common_entity_fields() {
+    with_command_game("cloud", |game| {
+        assert!(game.run_command("summon area_effect_cloud 4.5 200 4.5 {UUID:[I;328,0,0,3]}"));
+        let target = game.target_with_uuid([328, 0, 0, 3]).unwrap();
+        let read = game.data_of(&DataRef::Entity(target)).unwrap();
+        let zero = Tag::Double(0);
+        assert_eq!(read.get("Motion"), Some(&Tag::List(vec![zero.clone(); 3])));
+        assert_eq!(read.get("fall_distance"), Some(&zero));
+        assert_eq!(read.get("Air"), Some(&Tag::Short(300)));
+        assert_eq!(read.get("OnGround"), Some(&Tag::Byte(0)));
+        assert_eq!(read.get("Invulnerable"), Some(&Tag::Byte(0)));
+        assert_eq!(read.get("PortalCooldown"), Some(&Tag::Int(0)));
+    });
 }

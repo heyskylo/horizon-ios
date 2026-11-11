@@ -1,8 +1,8 @@
 SmithingTemplateItem.createArmorTrimTemplate	port	crates/horizon-client/src/game/stations.rs::smithing_slot_icons	the empty template slot cycles the armour trim and netherite upgrade template icons, the base slot the helmet to boots and the additions slot the ingot to amethyst shard, as CyclingSlotBackground (30 ticks, a 4 tick fade)
 SmithingTemplateItem.createNetheriteUpgradeTemplate	port	crates/horizon-client/src/game/stations.rs::smithing_slot_icons	the netherite upgrade template: the 11 tool and armour icons in the base slot and the ingot in the additions slot
 SmithingTemplateItem.createNetheriteUpgradeIconList	port	crates/horizon-client/src/game/stations.rs::smithing_slot_icons	the 11 tool and armour icons the base slot cycles for a netherite upgrade template (smithing_slot_icons)
-SpawnEggItem.spawnMob	port	crates/horizon-client/src/game/creatures.rs::Game::use_spawn_egg	gap: minor: no ENTITY_PLACE game event (sculk sensors do not hear the egg); consumes the egg and spawns the mob on the clicked face
-SpawnEggItem.getType	port	crates/horizon-client/src/game/creatures.rs::Game::use_spawn_egg	kind taken from the item id suffix (*_spawn_egg), not an ENTITY_DATA component
+SpawnEggItem.spawnMob	port	crates/horizon-client/src/game/creatures/spawn_eggs.rs::Game::use_spawn_egg	gap: minor: no ENTITY_PLACE game event (sculk sensors do not hear the egg); consumes the egg and spawns the mob on the clicked face
+SpawnEggItem.getType	port	crates/horizon-client/src/game/creatures/spawn_eggs.rs::Game::use_spawn_egg	kind taken from the item id suffix (*_spawn_egg), not an ENTITY_DATA component
 TridentItem.createAttributes	skip:data		attack damage 8 and attack speed -2.9 are item table data (horizon-items attack_speed modifier)
 TridentItem.asProjectile	skip:other		ProjectileItem override that no code calls: no dispenser behaviour is registered for the trident in vanilla
 WindChargeItem.asProjectile	port	crates/horizon-client/src/game/dispenser.rs::Game::shoot_projectile_item	gap: minor: aims with the level random as vanilla does, then shoots with the dispenser uncertainty (6.67); vanilla's shoot is a no-op for wind charges, so the spread is wider in Horizon
@@ -17,7 +17,7 @@ PotionContents.withEffectAdded	inline	crates/horizon-client/src/game/dragon.rs::
 PotionContents.getColorOptional	port	crates/horizon-client-core/src/potions.rs::potion_color	amplifier-weighted mix; base colour when there are no effects
 PotionContents.hasEffects	inline	crates/horizon-client/src/game/potions.rs::Game::splash	a lingering cloud is made only when the potion has effects
 PotionContents.getPotionDescription	port	crates/horizon-client-render/src/brewing.rs::tooltip	effect name with potency; joined with a space, not the potion.withAmplifier translation
-PotionContents.onConsume	port	crates/horizon-client/src/game/potions.rs::Game::tick_drinking	gap: minor: duration scale is always 1.0; POTION_DURATION_SCALE is not read
+PotionContents.onConsume	inline	crates/horizon-client/src/game/potions.rs::Game::finish_drinking	the potion's and custom effects at the stack's potion_duration_scale (stack.potion_duration_scale), then the bottle swap; instant effects run at once
 AttackRange.defaultFor	inline	crates/horizon-client/src/game/hand.rs::attack_range_contains	gap: minor: fixed reach 0 to 3 with a 0.3 margin; no entity interaction range attribute
 AttackRange.getClosesetHit	port	crates/horizon-client/src/game/hand.rs::GameHands::hit	gap: minor: uses the crosshair's entity or block, not the closest hit along the attack range
 AttackRange.effectiveMaxRange	inline	crates/horizon-client/src/game/hand.rs::attack_range_contains	creative or survival reach; the mob factor is not used
@@ -80,11 +80,11 @@ ResolvableProfile.Static.hashCode	skip:java		hash for collections
 Tool.Rule.minesAndDrops	port	crates/horizon-items/src/items.rs::Items::load_with	rule read from the item JSON: speed and correct_for_drops set to true
 TooltipDisplay.withHidden	port	crates/horizon-client/src/game/commands/items.rs::Game::apply_item_modifier	gap: minor: only the /item modify toggle_tooltips path; the loot-table toggle function is not ported, and the raid banner's hidden pattern is read in item_tooltip shows()
 WrittenBookContent.craftCopy	port	crates/horizon-client/src/crafting.rs::Special::assemble	book copy: generation plus one, pages kept
-WrittenBookContent.resolveForItem	missing		minor: selectors in a written book's text (@p and so on) are not resolved when the book reaches a player; the raw text shows
-WrittenBookContent.resolve	missing		minor: no selector resolution for written book pages; the raw text shows
-WrittenBookContent.markResolved	missing		minor: resolved flag is not kept, so a book is never marked as resolved
-WrittenBookContent.resolvePage	missing		minor: no per-page selector resolution, and no drop of pages over 32767 characters
-WrittenBookContent.isPageTooLarge	missing		minor: no check that a resolved page stays under the 32767 character limit
+WrittenBookContent.resolveForItem	port	crates/horizon-client/src/game/books.rs::Game::resolve_held_book	the book in the acting hand resolves when `use_book` opens it, as `ServerPlayer.openItemGui` does before the book screen reads it
+WrittenBookContent.resolve	port	crates/horizon-items/src/item_data.rs::WrittenBook::resolve	every page's selectors and scores become their text (`extra` and `with` recurse), and the book is marked resolved
+WrittenBookContent.markResolved	port	crates/horizon-items/src/item_data.rs::WrittenBook::resolve	the `resolved` component field is kept and written by the codec; a resolved book is never resolved again
+WrittenBookContent.resolvePage	port	crates/horizon-items/src/item_data.rs::resolve_page_tag	one page's component with its selectors and scores replaced, recursing into `extra` and `with`
+WrittenBookContent.isPageTooLarge	port	crates/horizon-items/src/item_data.rs::WrittenBook::resolve	a page whose resolved text passes 32767 characters cancels the resolution and only marks the book resolved
 WrittenBookContent.getPages	port	crates/horizon-client/src/game/books.rs::view_pages	gap: minor: returns the stored pages; the filtered-text choice (filterEnabled) is not modelled
 WrittenBookContent.withReplacedPages	missing		minor: loot function set_written_book_pages is not in the loot modifiers, so a loot book gets no pages
 BookCloningRecipe.matches	port	crates/horizon-client/src/crafting.rs::Special::matches	BookCloning arm: one written book within the allowed generations, plus material

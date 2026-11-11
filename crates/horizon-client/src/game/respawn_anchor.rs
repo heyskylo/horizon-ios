@@ -29,12 +29,13 @@ pub(super) struct RespawnConfig {
     pub dim: Dim,
     pub pos: [i32; 3],
     pub yaw: f32,
+    pub pitch: f32,
     pub forced: bool,
 }
 
 /// A respawn point as a player's save keeps it (`respawn`): dimension,
-/// block, yaw and whether it is forced.
-pub(super) type SavedRespawn = (String, [i32; 3], f32, bool);
+/// block, yaw, pitch and whether it is forced.
+pub(super) type SavedRespawn = (String, [i32; 3], f32, f32, bool);
 
 impl RespawnConfig {
     /// `RespawnData.of`: the yaw wrapped to [-180, 180).
@@ -43,19 +44,37 @@ impl RespawnConfig {
             dim,
             pos,
             yaw: wrap_degrees(f64::from(yaw)) as f32,
+            pitch: 0.0,
             forced,
         }
     }
-    pub(super) fn from_saved((dim, pos, yaw, forced): &SavedRespawn) -> Self {
+    /// `SetSpawnCommand`: the forced literal, with its already parsed angles.
+    pub(super) fn forced(dim: Dim, pos: [i32; 3], yaw: f32, pitch: f32) -> Self {
+        Self {
+            dim,
+            pos,
+            yaw,
+            pitch,
+            forced: true,
+        }
+    }
+    pub(super) fn from_saved((dim, pos, yaw, pitch, forced): &SavedRespawn) -> Self {
         Self {
             dim: Dim::from_id(dim),
             pos: *pos,
             yaw: *yaw,
+            pitch: *pitch,
             forced: *forced,
         }
     }
     pub(super) fn saved(&self) -> SavedRespawn {
-        (self.dim.id().to_owned(), self.pos, self.yaw, self.forced)
+        (
+            self.dim.id().to_owned(),
+            self.pos,
+            self.yaw,
+            self.pitch,
+            self.forced,
+        )
     }
 }
 
@@ -180,6 +199,7 @@ impl Game<'_> {
             dim: self.dim,
             pos,
             yaw: 0.0,
+            pitch: 0.0,
             forced: false,
         };
         // RespawnConfig.isSamePosition: dimension and block.
@@ -478,14 +498,14 @@ impl Game<'_> {
         rule.can_set_spawn.test(self.dark_outside())
     }
     /// `ServerPlayer.findRespawnAndUseSpawnBlock` for a config in the loaded
-    /// dimension: the position and yaw, using an anchor's charge; a bed's
+    /// dimension: position and angles, using an anchor's charge; a bed's
     /// stand-up spot. A forced point (`spawnpoint`) that is no anchor or bed
     /// holds if a player fits in it; anything else is gone.
     pub(super) fn find_respawn_and_use(
         &mut self,
         c: RespawnConfig,
         consume: bool,
-    ) -> Result<Option<(Vec3, f32)>> {
+    ) -> Result<Option<(Vec3, f32, f32)>> {
         let state = self.world.block(c.pos[0], c.pos[1], c.pos[2]);
         if !(self.is_anchor(state)
             && (c.forced || self.anchor_charges(state) > 0)
@@ -495,7 +515,7 @@ impl Game<'_> {
             if self.is_bed(state) && self.bed_sets_spawn(state) {
                 let facing = self.bed_forward(state);
                 let stand = self.bed_stand_up(c.pos, facing, c.yaw);
-                return Ok(stand.map(|p| (p, look_at_yaw(p, c.pos))));
+                return Ok(stand.map(|p| (p, look_at_yaw(p, c.pos), 0.0)));
             }
             let [x, y, z] = c.pos;
             let free = c.forced
@@ -503,7 +523,7 @@ impl Game<'_> {
                 && self.possible_to_respawn_in(state)
                 && self.possible_to_respawn_in(self.world.block(x, y + 1, z));
             let at = Vec3::new(f64::from(x) + 0.5, f64::from(y) + 0.1, f64::from(z) + 0.5);
-            return Ok(free.then_some((at, c.yaw)));
+            return Ok(free.then_some((at, c.yaw, c.pitch)));
         }
         let stand = self.anchor_stand_up(c.pos);
         if !c.forced
@@ -513,7 +533,7 @@ impl Game<'_> {
         {
             self.level_set(c.pos, next)?;
         }
-        Ok(stand.map(|p| (p, look_at_yaw(p, c.pos))))
+        Ok(stand.map(|p| (p, look_at_yaw(p, c.pos), 0.0)))
     }
 }
 
@@ -558,5 +578,356 @@ mod tests {
         // Standing one block east of the bed head (x + 1) looks west (90 deg).
         let east = Vec3::new(11.5, 64.0, 5.5);
         assert!((look_at_yaw(east, head) - 90.0).abs() < 1.0e-4);
+    }
+}
+
+#[cfg(test)]
+mod connected_spawnpoint_rotation_tests {
+    use crate::game::{Game, lan::LanSettings};
+    use horizon_client::{
+        chunk::Chunk,
+        lan::{Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig, playerdata},
+    };
+    use horizon_protocol::packets::{
+        configuration::ClientInformation,
+        play::{self, Clientbound as C, Serverbound as S},
+    };
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
+
+    fn command(game: &mut Game<'_>, text: &str) {
+        game.chat_capture = Some(Vec::new());
+        game.ui.registries.permission = 4;
+        let dispatcher = horizon_client::command::vanilla::build_for(false, true);
+        let parsed = dispatcher.parse(text, &game.ui.registries);
+        let (ctx, _) = parsed
+            .executable()
+            .expect("actual registered dedicated command");
+        let (root, ctx) = (parsed.context.clone(), ctx.clone());
+        assert_eq!(game.run_chain(&root, &ctx).unwrap(), 1, "{text}");
+        assert!(
+            !game.chat_capture.take().unwrap().is_empty(),
+            "actual command feedback {text}"
+        );
+    }
+
+    #[test]
+    #[ignore = "prepared resources and isolated scratch homes/cwd"]
+    fn command_forced_free_point_survives_real_guest_death_and_respawn_packet() {
+        let mut game = crate::game::native_machines::tests::server_game();
+        game.set_allow_commands(true);
+        let scratch = std::env::temp_dir().join(format!(
+            "horizon-forced-spawn-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&scratch).unwrap();
+        game.world_root = scratch.clone();
+        // Fixture setup through the existing column insertion API; admit every lit column below.
+        for x in -2..=2 {
+            for z in -2..=2 {
+                game.streaming
+                    .insert_remote(&mut game.world, Chunk::empty(x, z));
+                assert!(game.streaming.is_lit(x, z));
+            }
+        }
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        let air = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:air")
+            .unwrap();
+        game.world.set(12, 99, 12, stone).unwrap();
+        for y in [100, 101] {
+            game.world.set(12, y, 12, air).unwrap();
+        }
+        assert_eq!(game.world.block(12, 99, 12), stone);
+        assert!(game.world.loaded(12, 12));
+        game.level.world_spawn = Some([4, 100, 4]);
+        game.level.world_spawn_angle = [-30.0, -5.0];
+        game.lan_host(
+            LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                listen: false,
+                announce: false,
+                ..NetConfig::loopback(0, String::new(), 2)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 2,
+                integrated: false,
+                levels: Default::default(),
+            },
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut guest = Guest::new(
+            Joined {
+                conn: 7,
+                uuid: 77,
+                name: "Alice".into(),
+                properties: Vec::new(),
+                info: ClientInformation::new(2),
+                brand: "test".into(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:7".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
+            },
+            7,
+            [4.5, 100.0, 4.5],
+            2,
+        );
+        guest.dimension = "minecraft:overworld".into();
+        guest.placed = true;
+        guest.loaded = true;
+        guest.health = 20.0;
+        guest.game_mode = 0;
+        guest.yaw = 0.0;
+        guest.pitch = 0.0;
+        game.lan.as_mut().unwrap().hub.guests.push(guest);
+        let clock = game.world.game_time;
+        command(&mut game, "spawnpoint Alice 12 100 12 45 10");
+        let host = game.lan.as_ref().unwrap();
+        assert!(host.owner.is_none());
+        let guest = &host.hub.guests[0];
+        assert_eq!(
+            (guest.uuid, guest.health, guest.game_mode, guest.position),
+            (77, 20.0, 0, [4.5, 100.0, 4.5])
+        );
+        let tag = playerdata::player_tag(guest);
+        let respawn = tag
+            .get("respawn")
+            .expect("actual serialized personal configuration")
+            .clone();
+        assert_eq!(
+            respawn.get("yaw"),
+            Some(&horizon_world::nbt::Tag::Float(45f32.to_bits()))
+        );
+        assert_eq!(
+            respawn.get("pos"),
+            Some(&horizon_world::nbt::Tag::IntArray(vec![12, 100, 12]))
+        );
+        command(&mut game, "kill Alice");
+        game.tick_lan(false);
+        let mut host = game.lan.take().unwrap();
+        assert_eq!(host.hub.guests[0].uuid, 77);
+        assert_eq!(host.hub.guests[0].health, 0.0);
+        assert!(
+            host.hub.guests[0].dead,
+            "actual command death before request"
+        );
+        for _ in rx.try_iter() {}
+        game.lan_guest_packet(
+            &mut host,
+            7,
+            S::ClientCommand(play::ClientCommand { action: 0 }),
+        );
+        game.tick_server_travel(&mut host);
+        assert!(
+            !game.on_server_trip(7),
+            "admitted lit columns permit actual arrival"
+        );
+        let guest = &host.hub.guests[0];
+        assert_eq!(guest.uuid, 77);
+        assert_eq!(guest.health, 20.0);
+        assert!(!guest.dead);
+        assert_eq!(guest.position, [12.5, 100.1, 12.5]);
+        assert_eq!(game.level.world_spawn, Some([4, 100, 4]));
+        assert_eq!(game.level.world_spawn_angle, [-30.0, -5.0]);
+        assert_eq!(game.world.game_time, clock);
+        let physical = [guest.yaw.to_bits(), guest.pitch.to_bits()];
+        let awaiting_id = guest
+            .awaiting_teleport
+            .expect("actual final arrival awaits its acknowledgement")
+            .0;
+        let mut packets = Vec::new();
+        for out in rx.try_iter() {
+            match out {
+                Out::Packet(p) => packets.push(p),
+                Out::Packets(p) => packets.extend(p),
+                Out::Disconnect(_) => panic!("unexpected disconnect"),
+            }
+        }
+        let mut positions = Vec::new();
+        let mut respawns = 0;
+        for p in packets {
+            println!("complete actual Hub frame {p:?}");
+            let mut r = horizon_protocol::buf::Reader::new(&p);
+            let id = r.varint().unwrap();
+            match C::decode(id, r.rest()).unwrap() {
+                C::PlayerPosition(p) => positions.push(p),
+                C::Respawn(_) => respawns += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(respawns, 1);
+        assert!(!positions.is_empty());
+        println!("all actual arrival positions {positions:?}");
+        let selected: Vec<_> = positions
+            .iter()
+            .filter(|p| p.teleport == awaiting_id)
+            .collect();
+        assert_eq!(
+            selected.len(),
+            1,
+            "select by actual authoritative pending id, never expected position/pitch"
+        );
+        let p = selected[0];
+        assert_eq!(p.position, [12.5, 100.1, 12.5]);
+        // All successful command/death/arrival/identity/world controls precede the intended regression.
+        assert_eq!(
+            (
+                respawn.get("pitch"),
+                physical,
+                [p.yaw.to_bits(), p.pitch.to_bits()]
+            ),
+            (
+                Some(&horizon_world::nbt::Tag::Float(10f32.to_bits())),
+                [45f32.to_bits(), 10f32.to_bits()],
+                [45f32.to_bits(), 10f32.to_bits()]
+            )
+        );
+        drop(host);
+        drop(game);
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod pitch_preservation_controls {
+    use super::*;
+
+    #[test]
+    fn wrapped_existing_callers_default_to_positive_zero_pitch() {
+        let c = RespawnConfig::wrapped(Dim::Overworld, [5, 100, 5], 45.0, false);
+        assert_eq!(c.yaw.to_bits(), 45f32.to_bits());
+        assert_eq!(c.pitch.to_bits(), 0.0f32.to_bits());
+        assert!(!c.forced);
+    }
+
+    /// Added source/model controls; these do not add a connected bed/anchor runtime claim.
+    #[test]
+    #[ignore = "prepared resources and isolated scratch homes/cwd"]
+    fn bed_anchor_facing_and_invalid_personal_fallback_ignore_stored_pitch() {
+        let mut game = crate::game::native_machines::tests::server_game();
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        for x in 0..16 {
+            for z in 0..16 {
+                game.world.set(x, 99, z, stone).unwrap();
+            }
+        }
+        let state = |game: &Game<'_>, name: &str, properties: &[(&str, &str)]| {
+            let registry = game.pack.assets.registry;
+            let id = registry.default_state(name).unwrap();
+            let mut value = registry.state(id).unwrap().clone();
+            for (key, value_) in properties {
+                value.properties.insert((*key).into(), (*value_).into());
+            }
+            registry.resolve(&value).unwrap()
+        };
+        let head = state(
+            &game,
+            "minecraft:red_bed",
+            &[("facing", "north"), ("part", "head")],
+        );
+        let foot = state(
+            &game,
+            "minecraft:red_bed",
+            &[("facing", "north"), ("part", "foot")],
+        );
+        game.world.set(5, 100, 5, head).unwrap();
+        game.world.set(5, 100, 6, foot).unwrap();
+        assert!(game.is_bed(head) && game.bed_sets_spawn(head));
+        let bed = RespawnConfig {
+            dim: Dim::Overworld,
+            pos: [5, 100, 5],
+            yaw: 45.0,
+            pitch: 0.0,
+            forced: true,
+        };
+        let zero = game
+            .find_respawn_and_use(bed, false)
+            .unwrap()
+            .expect("valid bed geometry");
+        let stored = game
+            .find_respawn_and_use(RespawnConfig { pitch: 75.0, ..bed }, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored, zero);
+        assert_eq!(stored.2.to_bits(), 0.0f32.to_bits());
+        assert_eq!(stored.1.to_bits(), look_at_yaw(stored.0, bed.pos).to_bits());
+
+        // Existing built-in dimension facts select the anchor rule; no new world or actor API.
+        game.dim = Dim::Nether;
+        let anchor = state(&game, "minecraft:respawn_anchor", &[("charges", "2")]);
+        game.world.set(10, 100, 10, anchor).unwrap();
+        assert!(game.anchor_works() && game.is_anchor(anchor));
+        let c = RespawnConfig {
+            dim: Dim::Nether,
+            pos: [10, 100, 10],
+            yaw: 45.0,
+            pitch: 0.0,
+            forced: true,
+        };
+        let zero = game
+            .find_respawn_and_use(c, false)
+            .unwrap()
+            .expect("valid anchor geometry");
+        let stored = game
+            .find_respawn_and_use(RespawnConfig { pitch: 75.0, ..c }, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored, zero);
+        assert_eq!(stored.2.to_bits(), 0.0f32.to_bits());
+        assert_eq!(stored.1.to_bits(), look_at_yaw(stored.0, c.pos).to_bits());
+        assert_eq!(
+            game.world.block(10, 100, 10),
+            anchor,
+            "existing forced-charge behavior"
+        );
+
+        game.dim = Dim::Overworld;
+        game.level.world_spawn = Some([4, 100, 4]);
+        game.level.world_spawn_angle = [-30.0, -5.0];
+        game.world.set(12, 100, 12, stone).unwrap();
+        let invalid = RespawnConfig {
+            dim: Dim::Overworld,
+            pos: [12, 100, 12],
+            yaw: 45.0,
+            pitch: 10.0,
+            forced: true,
+        };
+        game.respawn_config = Some(invalid);
+        assert!(game.resolve_server_respawn(invalid).is_none());
+        assert!(game.respawn_config.is_none());
+        assert_eq!(game.level.world_spawn, Some([4, 100, 4]));
+        assert_eq!(game.level.world_spawn_angle, [-30.0, -5.0]);
     }
 }

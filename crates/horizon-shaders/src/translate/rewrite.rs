@@ -740,6 +740,8 @@ impl Stage<'_> {
                 "gl_FogFragCoord" => Some("hz_FogFragCoord".into()),
                 "gl_Fog" => Some("hz_Fog".into()),
                 // Before the compatibility inputs, of which `gl_Vertex` is a prefix.
+                // GLSL IDs are signed, while naga's index inputs are unsigned. Convert the
+                // builtin itself so arithmetic and overload resolution keep GLSL's type.
                 "gl_VertexID" => Some("int(gl_VertexIndex)".into()),
                 "gl_InstanceID" => Some("int(gl_InstanceIndex)".into()),
                 "gl_VertexIndex" | "gl_InstanceIndex" => None,

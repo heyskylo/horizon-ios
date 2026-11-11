@@ -19,13 +19,16 @@ def program():
     router = router.replace('pub(in crate::game)', 'pub(crate)')
     code = '#![allow(dead_code)]\n'
     code += f'#[path={str(ROOT / "crates/horizon-gamecontroller/src/lib.rs")!r}] mod horizon_gamecontroller;\n'.replace("'", '"')
+    for name in ("radial", "input_source"):
+        code += f'#[path="{ROOT / "crates/horizon-client-input/src" / (name + ".rs")}"] mod {name};\n'
     gamepad = (ROOT / 'crates/horizon-client-input/src/gamepad.rs').read_text()
+    gamepad = gamepad.replace("mod radial_file;", f'#[path="{ROOT / "crates/horizon-client-input/src/gamepad/radial_file.rs"}"] mod radial_file;')
     # This probe owns native snapshot/seat/edge behavior, not the separate
     # keyboard binding dispatcher. Keep real production state, hysteresis,
     # cancellation and glyph code without inventing winit/keybind shims.
     begin = gamepad.index('/// How a bindable action reaches the game:')
     end = gamepad.index("/// An action's name in the binds list:", begin)
-    code += 'mod gamepad {\n' + gamepad[:begin] + gamepad[end:] + '\n}\n'
+    code += 'mod gamepad {\n' + gamepad[:begin] + gamepad[gamepad.index('pub const RADIAL_CAPTION:'):gamepad.index(';', gamepad.index('pub const RADIAL_CAPTION:'))+1] + gamepad[end:] + '\n}\n'
     code += 'use gamepad::{Button,PadState,Edges,GlyphStyle};\n#[derive(Clone,Debug,Default,PartialEq)]struct Device{name:String,vendor:Option<u16>,product:Option<u16>}\n'
     # The JSON endpoint double retains every controller field, so the actual
     # report_status method can be checked without linking the whole renderer.
@@ -40,7 +43,7 @@ macro_rules! json {
     code += r'''
 #[derive(Default)]struct Menu { armed:Option<Button> }
 #[derive(Default)]struct Pads {
-    owner_epoch: u64,
+    owner_epoch: u64, peaks: [[f32;2];2],
  devices:Devices,feed_source:Option<PadId>,device:Option<Device>,style:GlyphStyle,
  menu:Menu,connections:Vec<Connection>,
 }

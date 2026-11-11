@@ -1217,6 +1217,10 @@ fn components(name: &str) -> usize {
         "lightningBoltPosition" => 4,
         "eyeBrightness" | "eyeBrightnessSmooth" | "atlasSize" => 2,
         "entityColor" => 4,
+        // Horizon's own vec4s, a dynamic light and half a boat's water patch box; their counts
+        // are ints.
+        n if n.starts_with("horizonDynamicLight") && n != "horizonDynamicLightCount" => 4,
+        n if n.starts_with("horizonWaterPatch") && n != "horizonWaterPatchCount" => 4,
         n if n.starts_with("gbuffer") || n.starts_with("shadow") && n != "shadowAngle" => 16,
         _ => 1,
     }
@@ -1483,6 +1487,28 @@ mod tests {
             (&matrix, "gbufferModelView", "mat4", true),
             (&matrix, "gbufferModelView", "mat3", false),
             (&Value::i(&[1]), GBUFFERS_FOG_MODE, "int", true),
+            // Horizon's own: a dynamic light and a water patch box half are vec4s, their counts
+            // ints.
+            (
+                &Value::f(&[1.0, 64.0, 2.0, 14.0]),
+                "horizonDynamicLight0",
+                "vec4",
+                true,
+            ),
+            (
+                &Value::f(&[1.0, 64.0, 2.0, 14.0]),
+                "horizonDynamicLight0",
+                "float",
+                false,
+            ),
+            (
+                &Value::f(&[0.5, -1.0, 62.0, 62.5]),
+                "horizonWaterPatch0",
+                "vec4",
+                true,
+            ),
+            (&Value::i(&[3]), "horizonDynamicLightCount", "int", true),
+            (&Value::i(&[1]), "horizonWaterPatchCount", "int", true),
         ] {
             assert_eq!(value.read_as(name, ty), kept, "{ty} {name}");
         }

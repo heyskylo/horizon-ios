@@ -21,6 +21,7 @@ use std::{
 type ChunkKey = (i32, i32);
 type SectionKey = (i32, i32, i32);
 const MAX_SNAPSHOT_CHUNKS: i64 = 4_096;
+const MAX_PARTICLE_ANSWERS: usize = 4_096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct CullKey {
@@ -232,25 +233,48 @@ impl ParticleAsyncCuller {
     }
 
     fn begin_frame(&mut self, camera: glam::DVec3, world: &World) {
-        while let Ok(mut results) = self.results_rx.try_recv() {
-            self.pending = false;
-            let scratch = std::mem::take(&mut results.scratch_queries);
-            if scratch.capacity() > self.queries.get_mut().capacity() {
-                *self.queries.get_mut() = scratch;
-            }
-            self.results = Some(results);
-        }
         self.camera = camera.to_array();
         self.stamp = SnapshotKey {
             world_revision: world.revision,
             chunks_revision: world.chunks.membership_revision(),
             bottom_y: world.bottom_y(),
         };
-        if self
-            .results
-            .as_ref()
-            .is_some_and(|results| results.stamp != self.stamp)
-        {
+        let camera_bits = self.camera.map(f64::to_bits);
+        while let Ok(mut results) = self.results_rx.try_recv() {
+            self.pending = false;
+            let scratch = std::mem::take(&mut results.scratch_queries);
+            if scratch.capacity() > self.queries.get_mut().capacity() {
+                *self.queries.get_mut() = scratch;
+            }
+            // A job only answers the clusters that missed, so merge instead of replacing.
+            if results.stamp != self.stamp {
+                continue;
+            }
+            results.answers.retain(|(key, _)| key.camera == camera_bits);
+            if let Some(old) = self
+                .results
+                .as_mut()
+                .filter(|old| old.stamp == results.stamp)
+            {
+                old.answers.retain(|(key, _)| key.camera == camera_bits);
+                // Newest first, so dedup keeps the newest answer of a key.
+                let mut merged = std::mem::take(&mut results.answers);
+                merged.append(&mut old.answers);
+                merged.sort_by_key(|(key, _)| *key);
+                merged.dedup_by_key(|(key, _)| *key);
+                merged.truncate(MAX_PARTICLE_ANSWERS);
+                old.answers = merged;
+            } else {
+                self.results = Some(results);
+            }
+        }
+        if self.results.as_ref().is_some_and(|results| {
+            results.stamp != self.stamp
+                || results
+                    .answers
+                    .iter()
+                    .any(|(key, _)| key.camera != camera_bits)
+        }) {
             self.results = None;
         }
         self.queries.get_mut().clear();
@@ -935,5 +959,46 @@ mod tests {
         let results = cull_job(wall_job(snapshot), &AtomicBool::new(false));
         assert!(results.answers[0].1.is_none());
         drop(live);
+    }
+
+    #[test]
+    fn answers_of_an_earlier_job_survive_a_later_job_for_other_clusters() {
+        use std::time::{Duration, Instant};
+        let world = World::new(horizon_world::registry::BlockStateId(0), 0);
+        let mut culler = ParticleAsyncCuller::new().unwrap();
+        culler.begin_frame(glam::DVec3::ZERO, &world);
+        let (snapshot, _live) = wall(None);
+        let key = |x: f64| CullKey {
+            camera: [0.0; 3].map(f64::to_bits),
+            min: [x, -0.55, -0.55].map(f64::to_bits),
+            max: [x + 2.1, 0.55, 0.55].map(f64::to_bits),
+        };
+        let (a, b) = (key(7.95), key(11.95));
+        for k in [a, b] {
+            culler
+                .jobs
+                .as_ref()
+                .expect("live culling worker")
+                .send(CullJob {
+                    stamp: culler.stamp,
+                    snapshot: Arc::clone(&snapshot),
+                    queries: vec![k],
+                })
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                culler.begin_frame(glam::DVec3::ZERO, &world);
+                if culler.cached(&k).is_some() {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "worker did not answer");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        assert!(
+            culler.cached(&a).is_some(),
+            "answer of the first job was dropped"
+        );
+        assert!(culler.cached(&b).is_some());
     }
 }

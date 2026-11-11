@@ -2,7 +2,7 @@
 //! settings, kept in `horizon-extras.txt` next to `options.txt` so that file
 //! stays exactly vanilla's, and the logic behind them. Every extra is off by
 //! default; see `docs/extras.md`. Horizon's own switches outside the Extras page
-//! (No AI, Agent Control, Discord Rich Presence) are kept here too.
+//! (No AI, Agent Control) are kept here too.
 use std::{collections::VecDeque, fs, path::Path};
 
 pub const FILE: &str = "horizon-extras.txt";
@@ -145,8 +145,6 @@ pub struct Extras {
     /// F3+R and F3+E start/stop a repro recording and write its bundle (off by
     /// default: a recording copies the world).
     pub repro_keys: bool,
-    /// "Playing Horizon" on the player's Discord profile (`discord_presence`; on by default).
-    pub discord_presence: bool,
     /// Another controller can join P1's world (`splitscreen`, off by default).
     pub splitscreen: bool,
     /// Two players in one window: 0 auto (side by side when wider than tall), 1 side by side,
@@ -233,7 +231,6 @@ impl Default for Extras {
             no_ai: false,
             agent_control: false,
             repro_keys: false,
-            discord_presence: true,
             splitscreen: false,
             splitscreen_two: 0,
             splitscreen_three: 0,
@@ -338,7 +335,6 @@ impl Extras {
                 horizon_core::no_ai::KEY => e.no_ai = flag(e.no_ai),
                 "agentControl" => e.agent_control = flag(e.agent_control),
                 "reproKeys" => e.repro_keys = flag(e.repro_keys),
-                "discordPresence" => e.discord_presence = flag(e.discord_presence),
                 "splitscreen" => e.splitscreen = flag(e.splitscreen),
                 "splitscreenTwo" => e.splitscreen_two = value.parse().unwrap_or(0).min(2),
                 "splitscreenThree" => e.splitscreen_three = value.parse().unwrap_or(0).min(2),
@@ -372,14 +368,12 @@ impl Extras {
                 }
             }
         }
-        // The shared parser migrates the opposite-sense legacy switch and gives
-        // an explicit current key precedence regardless of line order.
         e.cosmetics_hide_fx = horizon_cosmetics::prefs::Prefs::parse(text).hide_fx;
         e
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "packBrowser:{}\npregen:{}\nfullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nlodZoomDetail:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nreproKeys:{}\ndiscordPresence:{}\nsplitscreen:{}\nsplitscreenTwo:{}\nsplitscreenThree:{}\nsplitscreenNames:{}\nwheelCyclesListSettings:{}\nmusicOff:{}\nmusicPage:{}\ncosmeticsMine:{}\n{}cosmeticsHideFx:{}\ncosmeticsSolo:{}\n{}:{}\n{}:{}\n{}:{}\n",
+            "packBrowser:{}\npregen:{}\nfullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nlodZoomDetail:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nreproKeys:{}\nsplitscreen:{}\nsplitscreenTwo:{}\nsplitscreenThree:{}\nsplitscreenNames:{}\nwheelCyclesListSettings:{}\nmusicOff:{}\nmusicPage:{}\ncosmeticsMine:{}\n{}cosmeticsHideFx:{}\ncosmeticsSolo:{}\n{}:{}\n{}:{}\n{}:{}\n",
             bool_text(self.pack_browser),
             bool_text(self.pregen),
             bool_text(self.fullbright),
@@ -421,7 +415,6 @@ impl Extras {
             bool_text(self.no_ai),
             bool_text(self.agent_control),
             bool_text(self.repro_keys),
-            bool_text(self.discord_presence),
             bool_text(self.splitscreen),
             self.splitscreen_two,
             self.splitscreen_three,
@@ -474,26 +467,29 @@ impl Extras {
             self.emote_key = value.to_owned();
         }
     }
-    /// Binds an extra key (`SORT_KEY`, and native mobile zoom); false for
+    /// Binds the extra key `name` (`SORT_KEY`); false for
     /// another name (a vanilla mapping).
     pub fn set_key(&mut self, name: &str, value: String) -> bool {
         match name {
             SORT_KEY => self.sort_key = value,
-            crate::pvp::HUD_EDITOR_KEY => self.pvp.editor_key = value,
             #[cfg(target_os = "ios")]
             ZOOM_KEY => self.zoom_key = value,
+            crate::pvp::HUD_EDITOR_KEY => self.pvp.editor_key = value,
             _ => return false,
         }
         true
     }
     /// Written only once something differs from the defaults, so a vanilla
-    /// setup gains no file.
+    /// setup gains no file. The settings stores of this file follow these lines
+    /// (`horizon_hooks::settings`).
     pub fn save(&self, dir: &Path) {
         let path = dir.join(FILE);
-        if *self == Self::default() && !path.exists() {
+        let mut text = self.serialize();
+        let stores_default = horizon_hooks::settings::engine::append(FILE, &mut text);
+        if *self == Self::default() && stores_default && !path.exists() {
             return;
         }
-        let _ = fs::write(path, self.serialize());
+        let _ = fs::write(path, text);
     }
 }
 
@@ -618,8 +614,6 @@ mod desktop_ui {
         /// Not on the Extras page: Horizon Settings shows No AI, its AI Agent page Agent Control.
         NoAi,
         AgentControl,
-        /// On the Horizon Settings page.
-        DiscordPresence,
         /// On the AI Agent page, next to Agent Control: the F3 recording shortcuts.
         ReproKeys,
         /// On the Splitscreen settings page.
@@ -641,6 +635,8 @@ mod desktop_ui {
     /// The Extras page: headers (language keys) and items.
     pub fn rows() -> Vec<Result<Item, &'static str>> {
         use Item::*;
+        // Fullbright, Dynamic lights and Hide block-break particles change the picture: they
+        // are on the graphics screen's Quality page (`graphics_ui::rows`), not here.
         let mut rows = vec![
             Err("horizon.extras.header.third_person"),
             Ok(OwnNameTag),
@@ -694,7 +690,6 @@ mod desktop_ui {
                 Item::NoAi => "horizon.extras.no_ai",
                 Item::AgentControl => "horizon.extras.agent_control",
                 Item::ReproKeys => "horizon.extras.repro_keys",
-                Item::DiscordPresence => "horizon.extras.discord_presence",
                 Item::Splitscreen => "horizon.extras.splitscreen",
                 Item::ChatAnimation => "horizon.extras.chat_animation",
                 Item::ChatIndicator => "horizon.extras.chat_indicator",
@@ -727,11 +722,10 @@ mod desktop_ui {
                 Item::NoAi => "horizon.extras.no_ai.tooltip",
                 Item::AgentControl => "horizon.extras.agent_control.tooltip",
                 Item::ReproKeys => "horizon.extras.repro_keys.tooltip",
-                Item::DiscordPresence => "horizon.extras.discord_presence.tooltip",
                 Item::Splitscreen => "horizon.extras.splitscreen.tooltip",
                 Item::ChatAnimation => "horizon.extras.chat_animation.tooltip",
                 Item::ChatIndicator => "horizon.extras.chat_indicator.tooltip",
-                Item::WheelCyclesSettings => "horizon.extras.wheel_cycles_settings.tooltip",
+                Item::WheelCyclesSettings => "horizon.extras.wheel_cycles_list_settings.tooltip",
                 Item::PackBrowser => "horizon.extras.pack_browser.tooltip",
                 Item::Pregen => "horizon.extras.pregen.tooltip",
                 Item::CosmeticsMine => "horizon.extras.cosmetics_mine.tooltip",
@@ -771,7 +765,6 @@ mod desktop_ui {
                 Item::NoAi => "No AI",
                 Item::AgentControl => "Agent Control",
                 Item::ReproKeys => "Recording shortcuts",
-                Item::DiscordPresence => "Discord Rich Presence",
                 Item::Splitscreen => "Splitscreen",
                 Item::WheelCyclesSettings => "Scroll wheel changes settings",
                 Item::PackBrowser => "Resource pack browser",
@@ -795,10 +788,10 @@ mod desktop_ui {
                 ChatIndicator => ChatAnimation,
                 Pvp(o) => return o.parent().map(Pvp),
                 Fullbright | DynamicLights | OwnNameTag | HideBlockParticles | MouseTweaks
-                | Sort | AutoReconnect | NoAi | AgentControl | ReproKeys | DiscordPresence
-                | Splitscreen | ChatAnimation | WheelCyclesSettings | MusicPage | PackBrowser
-                | CosmeticsMine | CosmeticsOthers | CosmeticsHideFx | CosmeticsSolo
-                | HorizonMarks | HorizonMe | Pregen => {
+                | Sort | AutoReconnect | NoAi | AgentControl | ReproKeys | Splitscreen
+                | ChatAnimation | WheelCyclesSettings | MusicPage | PackBrowser | CosmeticsMine
+                | CosmeticsOthers | CosmeticsHideFx | CosmeticsSolo | HorizonMarks | HorizonMe
+                | Pregen => {
                     return None;
                 }
             })
@@ -846,9 +839,6 @@ mod desktop_ui {
                 Item::ChatIndicator => "The coloured bar at the left of a chat line.",
                 Item::NoAi => {
                     "Hides and turns off every AI feature: agent control, horizon-ctl and the MCP servers. The launcher's switch too."
-                }
-                Item::DiscordPresence => {
-                    "Shows Playing Horizon on your Discord profile while Discord runs: menus, single player or multiplayer, the dimension and the time played. Never a world's name or a server's address."
                 }
                 Item::Splitscreen => {
                     "In a world, another controller can join as a new player: press A when it asks, then pick a profile and where to play."
@@ -930,7 +920,6 @@ mod desktop_ui {
                 Item::NoAi => e.no_ai,
                 Item::AgentControl => e.agent_control,
                 Item::ReproKeys => e.repro_keys,
-                Item::DiscordPresence => e.discord_presence,
                 Item::Splitscreen => e.splitscreen,
                 Item::WheelCyclesSettings => e.wheel_cycles_settings,
                 Item::PackBrowser => e.pack_browser,
@@ -992,7 +981,6 @@ mod desktop_ui {
                 Item::NoAi => e.no_ai = !e.no_ai,
                 Item::AgentControl => e.agent_control = !e.agent_control,
                 Item::ReproKeys => e.repro_keys = !e.repro_keys,
-                Item::DiscordPresence => e.discord_presence = !e.discord_presence,
                 Item::Splitscreen => e.splitscreen = !e.splitscreen,
                 Item::WheelCyclesSettings => e.wheel_cycles_settings = !e.wheel_cycles_settings,
                 Item::PackBrowser => e.pack_browser = !e.pack_browser,
@@ -1025,39 +1013,22 @@ mod desktop_ui {
 pub use desktop_ui::{Item, rows};
 #[cfg(any(target_os = "ios", test))]
 #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+#[path = "extras/mobile_ui.rs"]
 mod mobile_ui;
 #[cfg(target_os = "ios")]
 pub use mobile_ui::{Item, rows};
 #[cfg(any(target_os = "ios", test))]
 #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+#[path = "extras/native_ios.rs"]
 mod native_ios;
 #[cfg(target_os = "ios")]
 pub use native_ios::{
     ZOOM_KEY, ZOOM_LEVELS, ZOOM_MAX, ZOOM_MIN, Zoom, turn_scale, zoom_key_conflicts,
 };
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn legacy_effect_visibility_migrates_with_the_shared_wardrobe_policy() {
-        for (text, hidden) in [
-            ("cosmeticsAuras:false\n", true),
-            ("cosmeticsAuras:true\n", false),
-            ("cosmeticsAuras:false\ncosmeticsHideFx:false\n", false),
-            ("cosmeticsHideFx:true\ncosmeticsAuras:true\n", true),
-        ] {
-            let extras = Extras::parse(text);
-            assert_eq!(extras.cosmetics_hide_fx, hidden, "{text}");
-            assert_eq!(
-                extras.cosmetics_hide_fx,
-                horizon_cosmetics::prefs::Prefs::parse(text).hide_fx
-            );
-            let saved = extras.serialize();
-            assert!(!saved.contains("cosmeticsAuras:"));
-            assert_eq!(Extras::parse(&saved).cosmetics_hide_fx, hidden);
-        }
-    }
 
     #[test]
     fn other_players_cosmetics_cycle_three_ways_and_read_the_old_switch() {
@@ -1144,7 +1115,7 @@ mod tests {
         assert!(!d.mouse_tweaks && !d.sort && !d.own_name_tag && !d.ui_sound_reserve);
         assert!(!d.hide_block_particles && !d.pregen);
         assert!(!d.music_page && d.music_off.is_empty());
-        assert!(d.discord_presence && !d.wheel_cycles_settings);
+        assert!(!d.wheel_cycles_settings);
         assert_eq!(Extras::parse(""), d);
         assert_eq!(Extras::parse(&d.serialize()), d);
         let mut e = d.clone();
@@ -1183,7 +1154,6 @@ mod tests {
         e.sort_key = "key.keyboard.r".into();
         e.chat_animation = true;
         e.chat_indicator = false;
-        e.discord_presence = false;
         assert!(!e.splitscreen);
         Item::Splitscreen.cycle(&mut e, false);
         assert_eq!(Item::Splitscreen.switch(&e), Some(true));

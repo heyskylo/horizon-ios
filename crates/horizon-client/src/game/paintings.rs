@@ -267,7 +267,7 @@ impl Game<'_> {
             "minecraft:painting",
             &own,
         );
-        if let Some((_, _, variant)) = horizon_client::entity_nbt::painting_from_nbt(&raw)
+        if let Some((_, _, Some(variant))) = horizon_client::entity_nbt::painting_from_nbt(&raw)
             && *candidate.variant != *variant
             && let Some(v) = self
                 .painting_variants
