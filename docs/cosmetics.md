@@ -304,6 +304,11 @@ same cached `/v1/worn` answers as what they wear (no request of its own, nothing
     know, so in single player (open to LAN too) the game draws and asks nothing for the player's
     own model. On, it asks by the signed-in account's UUID: their cosmetics, their name tag style
     (with *Own name tag*) and Horizon's mark show in their own worlds. Offline accounts: nothing.
+  - **Offline-mode servers** (#12820): such a server names the player by `nameUUIDFromBytes` of
+    their name (a version 3 UUID), which the service doesn't know, so the game asks for the
+    player's own model by the signed-in account's UUID, as on an online server; *My cosmetics*
+    decides, with no setting of its own. Only the own model: on an offline server anyone can take
+    any name, so other players are still asked by the UUID the server gives them.
 - **Name tag styles** (`game/names.rs`): the badge, 8 text pixels square, after the name and a
   one-pixel line in the style's colour under the name's background, in the name tag's own pass
   (the badge is in the atlas like the other items' textures). Horizon's mark goes before the name.

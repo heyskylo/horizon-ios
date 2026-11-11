@@ -941,18 +941,6 @@ impl Behaviours {
         {
             return Some(InteractionResult::Pass);
         }
-        // WallHangingSignBlock.useItemOn: a hanging sign aimed at the sign's side
-        // (not its editable faces, `isHittingEditableSide`) chains onto it. Sign
-        // text has no click commands here, so `canExecuteClickCommands` is false.
-        if self.data(state).is(Class::WallHangingSign)
-            && item
-                .and_then(|i| self.item_binding(i))
-                .is_some_and(|binding| binding.kind == super::data::ItemKind::HangingSign)
-            && face != self.facing(state)
-            && face != self.facing(state).opposite()
-        {
-            return Some(InteractionResult::Pass);
-        }
         // CandleCakeBlock.useItemOn: flint and steel and fire charges pass, so
         // the item lights a fire by the cake instead of eating it.
         if self.data(state).chain.contains(&Class::CandleCake)

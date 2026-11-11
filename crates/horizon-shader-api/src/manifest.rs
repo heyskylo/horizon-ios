@@ -51,6 +51,26 @@ pub enum Blend {
     /// Linear light: glass, water and smoke blend as light does.
     Linear,
 }
+
+/// `[frame] primaries` (0.2): the primaries of every colour a stage reads or returns.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Primaries {
+    /// BT.709 (sRGB).
+    #[default]
+    Bt709,
+    /// BT.2020, for colours outside sRGB. Needs `[frame] blend = "linear"`.
+    Bt2020,
+}
+
+impl Primaries {
+    /// `Frame.luminance`: the weights that give a colour's luminance in these primaries.
+    pub const fn luminance(self) -> [f32; 3] {
+        match self {
+            Primaries::Bt709 => [0.2126, 0.7152, 0.0722],
+            Primaries::Bt2020 => [0.2627, 0.6780, 0.0593],
+        }
+    }
+}
 /// Full-screen passes a pack may chain.
 pub const MAX_POST_PASSES: usize = 12;
 /// Options a pack may declare.
@@ -98,6 +118,8 @@ pub struct Manifest {
     pub tonemap: Option<Stage>,
     /// 0.2: `[frame] blend`.
     pub blend: Blend,
+    /// 0.2: `[frame] primaries`.
+    pub primaries: Primaries,
     pub options: Vec<PackOption>,
     /// How the settings page lays the options out; the first page is the one it opens on.
     /// Empty: one page with every option.
@@ -519,6 +541,7 @@ struct RawOption {
 #[serde(deny_unknown_fields)]
 struct RawFrame {
     blend: Option<String>,
+    primaries: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -630,6 +653,19 @@ impl Manifest {
             None | Some("gamma") => Blend::Gamma,
             Some("linear") => Blend::Linear,
             Some(b) => return Err(err(format!("frame.blend {b:?}: gamma or linear"))),
+        };
+        let primaries = match raw.frame.as_ref().and_then(|f| f.primaries.as_deref()) {
+            None | Some("bt709") => Primaries::Bt709,
+            Some("bt2020") if blend == Blend::Linear => Primaries::Bt2020,
+            Some("bt2020") => {
+                return Err(err(
+                    "frame.primaries \"bt2020\" needs blend = \"linear\": a change of primaries is \
+                     only right in linear light, and a gamma frame takes Horizon's own draws \
+                     without a decode"
+                        .into(),
+                ));
+            }
+            Some(p) => return Err(err(format!("frame.primaries {p:?}: bt709 or bt2020"))),
         };
         let id_ok = (1..=64).contains(&raw.id.len())
             && raw
@@ -1020,6 +1056,7 @@ impl Manifest {
             post: raw.post,
             tonemap: raw.tonemap,
             blend,
+            primaries,
             options,
             pages,
             tags: raw.tags,
