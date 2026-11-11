@@ -102,6 +102,7 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
         // depth. Its fragments read their own depth, as in Iris.
         after: String::new(),
         alpha_test: None,
+        parts: None,
         item_id_declared: false,
         far_depth: true,
         paged_maps: false,
@@ -132,6 +133,7 @@ pub fn celestial_inputs() -> horizon_shaders::GbuffersInputs {
         ],
         after: String::new(),
         alpha_test: None,
+        parts: None,
         item_id_declared: false,
         far_depth: true,
         paged_maps: false,

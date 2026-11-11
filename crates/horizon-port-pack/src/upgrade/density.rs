@@ -315,7 +315,10 @@ impl<'a> Context<'a> {
                             .iter()
                             .any(|k| o.get(*k).is_some_and(|x| self.depends_on_y(x, visiting)))
                 }
-                Some("spline") => self.spline_depends_on_y(&o["spline"], visiting),
+                // A spline function without its spline is the pack's mistake: no Y from it.
+                Some("spline") => o
+                    .get("spline")
+                    .is_some_and(|s| self.spline_depends_on_y(s, visiting)),
                 _ => o
                     .iter()
                     .filter(|(k, _)| *k != "type")

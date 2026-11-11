@@ -86,6 +86,7 @@ LlamaRenderer.getTextureLocation	port	crates/horizon-client/src/mobs/render.rs::
 LlamaRenderer.extractRenderState	port	crates/horizon-client/src/mobs/body_anim.rs::llama	chest flag; decor layers in mobs/render.rs::layers
 LlamaSpitRenderer.submit	port	crates/horizon-client/src/game/creatures/mob_geometry.rs::Game::mob_geometry	gap: minor: drawn as a camera-facing sprite, not the spit model with its rotation
 LlamaSpitRenderer.extractRenderState	inline	crates/horizon-client/src/game/creatures/mob_geometry.rs::Game::mob_geometry	rotation read there
+MobRenderer.checkMagicName	inline	crates/horizon-client/src/mobs/render.rs::body	gap: player: Toast is handled; a sheep named jeb_ does not get rainbow wool
 MobRenderer.checkMagicName	inline	crates/horizon-client/src/mobs/render.rs::body	Toast is handled here; jeb_ (rainbow wool) is matched in render::layers
 MushroomCowRenderer.getTextureLocation	port	crates/horizon-client/src/mobs/render.rs::body	variant and baby texture
 MushroomCowRenderer.extractRenderState	port	crates/horizon-client/src/mobs/render.rs::body	the mushroom blocks are drawn by crates/horizon-client/src/game/mob_blocks.rs::Game::worn_block_geometry
