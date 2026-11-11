@@ -2423,7 +2423,7 @@ pub fn mob_from_nbt_with_random(
         restore_axolotl_memories(&mut m, tag);
     }
     read_variant(&mut m, tag);
-    m.fire_ticks = number(tag.get("Fire")).unwrap_or(0) as i32;
+    m.fire_ticks = i32::from(number(tag.get("Fire")).unwrap_or(0) as i16);
     // Entity.load: `input.getIntOr("Air", getMaxAirSupply())`, 4800 for a dolphin.
     m.air = number(tag.get("Air")).map_or(m.max_air_supply(), |air| air as i32);
     if m.species() == crate::mobs::Species::Allay {
@@ -3833,7 +3833,7 @@ pub fn armor_stand_from_nbt(tag: &Tag, id: u32) -> Option<ArmorStand> {
         if list.iter().any(|attr| text(attr.get("id")).as_deref() == Some(SPEED_ATTRIBUTE)));
     a.velocity = loaded_motion(tag);
     a.health = float(tag.get("Health")).unwrap_or(20.0) as f32;
-    a.fire_ticks = number(tag.get("Fire")).unwrap_or(0) as i32;
+    a.fire_ticks = i32::from(number(tag.get("Fire")).unwrap_or(0) as i16);
     a.custom_name = tag.get("CustomName").map(name_text);
     a.name_visible = flag(tag, "CustomNameVisible");
     if let Some(eq) = tag.get("equipment") {
@@ -9468,6 +9468,34 @@ mod pickup_loot_save_tests {
 #[cfg(test)]
 mod stand_fall_save_tests {
     use super::*;
+
+    /// `Entity.load` reads `Fire` with `getShortOr`: an int tag is narrowed
+    /// (`(short)(value & 65535)`), so 40000 is -25536 and the stand or mob
+    /// does not burn.
+    #[test]
+    fn a_stand_and_a_mob_narrow_a_loaded_fire_to_a_short() {
+        let kind = crate::mobs::sensor_scan_tests::kind();
+        let types = [(kind.id.to_string(), kind.clone())].into();
+        for (fire, expected) in [
+            (Tag::Int(40000), -25536),
+            (Tag::Int(65546), 10),
+            (Tag::Short(60), 60),
+        ] {
+            let input = Tag::compound([
+                ("id", string(&kind.id)),
+                ("Pos", doubles(&[4.5, 205.0, 4.5])),
+                ("Fire", fire),
+            ]);
+            assert_eq!(
+                armor_stand_from_nbt(&input, 1).unwrap().fire_ticks,
+                expected
+            );
+            assert_eq!(
+                mob_from_nbt(&input, &types, 1, None).unwrap().fire_ticks,
+                expected
+            );
+        }
+    }
 
     #[test]
     fn decoded_stand_fall_distance_survives_save_without_raw_or_with_stale_raw() {
