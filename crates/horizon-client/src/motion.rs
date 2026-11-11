@@ -284,7 +284,7 @@ pub struct PlayerMotion {
     /// Entity-owned random stream, independent of the level. Like mobs, a new
     /// body seeds it from its initial identity/position without drawing from the
     /// level. It lives with this body (including guest turns), not player NBT.
-    pub random: horizon_core::random::LegacyRandom,
+    pub random: horizon_core::random::EntityRandom,
     pub swimming: bool,
     /// `Entity.isPassenger()`: this body rides a vehicle. `Entity.updateSwimming`
     /// needs it false, so the server's copy of a guest who boards a boat while
