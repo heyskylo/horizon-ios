@@ -5821,22 +5821,7 @@ mod tests {
     fn entities_without_fire_save_zero_and_a_mob_saves_its_speed_instance() {
         // Entity.remainingFireTicks starts at 0; LivingEntity.removeFrost makes
         // the movement_speed instance AttributeMap.pack then saves.
-        let orb = ExperienceOrb {
-            rotation: [0.0, 0.0],
-            join: Default::default(),
-            no_gravity: false,
-            id: 0,
-            position: Vec3::ZERO,
-            previous: Vec3::ZERO,
-            velocity: Vec3::ZERO,
-            value: 1,
-            age: 0,
-            on_ground: false,
-            count: 1,
-            ticks: 0,
-            health: 5,
-            following: None,
-        };
+        let orb = orbs_from_nbt(&Tag::compound([("Pos", doubles(&[0.0; 3]))])).remove(0);
         let tag = orb_to_nbt(&orb, [0; 4]);
         assert_eq!(tag.get("Fire"), Some(&Tag::Short(0)));
         // A stand summoned this tick has no instance yet; its first tick makes
@@ -5936,27 +5921,21 @@ mod tests {
     }
     #[test]
     fn orbs_keep_their_count() {
-        let o = ExperienceOrb {
-            rotation: [0.0, 0.0],
-            join: Default::default(),
-            no_gravity: false,
-            id: 0,
-            position: Vec3::new(1.0, 2.0, 3.0),
-            previous: Vec3::ZERO,
-            velocity: Vec3::ZERO,
-            value: 7,
-            age: 3,
-            on_ground: false,
-            count: 3,
-            ticks: 0,
-            health: 5,
-            following: None,
-        };
+        let at = ("Pos", doubles(&[1.0, 2.0, 3.0]));
+        let loaded = [at, ("Value", Tag::Short(7)), ("Age", Tag::Short(3))];
+        let o = orbs_from_nbt(&Tag::compound(
+            loaded
+                .into_iter()
+                .chain([("Count", Tag::Int(3)), ("Air", Tag::Short(32767))]),
+        ))
+        .remove(0);
         let tag = orb_to_nbt(&o, [0; 4]);
         let back = orbs_from_nbt(&tag);
         assert_eq!(back.len(), 1);
         assert_eq!(back[0].value, 7);
         assert_eq!(back[0].count, 3);
+        // Entity.load keeps the saved Air; the orb writes it back unchanged.
+        assert_eq!(tag.get("Air"), Some(&Tag::Short(32767)));
     }
 }
 

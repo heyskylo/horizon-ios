@@ -2782,8 +2782,7 @@ impl Game<'_> {
             seat_passengers(&mut r.entities, vehicle, passengers);
         }
     }
-    /// `recreateFromPacket`: yRot and xRot from the packet, the body and head
-    /// both at its head yaw (LivingEntity).
+    /// `recreateFromPacket`: yRot, xRot from the packet; body and head at head yaw.
     fn spawn_entity(&mut self, id: i32, kind: &str, position: [f64; 3], rotation: [f32; 3]) {
         self.detach_remote_tracking_entity(id);
         let [yaw, pitch, head] = rotation;
@@ -2813,6 +2812,7 @@ impl Game<'_> {
                 count: 1,
                 ticks: 0,
                 health: 5,
+                air: 300,
                 following: None,
             });
         }
