@@ -1755,6 +1755,17 @@ struct PlayConn {
     /// Shared with the player's [`PlayerSender`]: what the hub hasn't taken yet.
     undrained: Arc<Undrained>,
 }
+impl PlayConn {
+    /// `IntegratedServer.isSingleplayerOwner`: the integrated server's own player,
+    /// by name (ignoring case).
+    fn is_owner(&self) -> bool {
+        self.shared
+            .config
+            .singleplayer_profile
+            .as_ref()
+            .is_some_and(|(owner, _)| owner.eq_ignore_ascii_case(&self.name))
+    }
+}
 impl io_pool::Session for PlayConn {
     /// Forward the player's packet, or say why it ends the connection: a
     /// required resource pack declined, a rate-limit excess, a malformed packet.
@@ -1769,17 +1780,26 @@ impl io_pool::Session for PlayConn {
             return kick(rate_exceeded(&self.shared, average));
         }
         match play::Serverbound::decode(id, &payload).and_then(checked_play) {
+            // ServerCommonPacketListenerImpl.handleKeepAlive: the pending one counts;
+            // any other answer disconnects, unless the player is the singleplayer owner.
             Ok(play::Serverbound::KeepAlive(k)) => {
-                self.watch.alive.store(k.id, Ordering::Relaxed);
                 if let Some((sent, at)) = self.sent_at
                     && k.id == sent
                 {
+                    self.watch.alive.store(k.id, Ordering::Relaxed);
                     let ms = i32::try_from(at.elapsed().as_millis()).unwrap_or(i32::MAX);
                     let old = self.latency.load(Ordering::Relaxed);
                     self.latency.store((old * 3 + ms) / 4, Ordering::Relaxed);
                     self.sent_at = None;
+                    Verdict::Go
+                } else if self.is_owner() {
+                    Verdict::Go
+                } else {
+                    kick((
+                        translatable("disconnect.timeout", &[]),
+                        "Timed out".to_owned(),
+                    ))
                 }
-                Verdict::Go
             }
             Ok(play::Serverbound::ResourcePack(r))
                 if r.action == PACK_DECLINED && self.required_pack =>
@@ -2500,5 +2520,58 @@ mod tests {
         assert_eq!(rate.received(t0 + Duration::from_secs(10)), None);
         assert!(rate.average > 1.5 && rate.average < 2.0, "{}", rate.average);
         assert!(rate.next > t0 + Duration::from_secs(10));
+    }
+
+    /// `ServerCommonPacketListenerImpl.handleKeepAlive`: an answer to the
+    /// pending keep-alive with its id counts (and times the round trip); any
+    /// other answer, or one with nothing pending, disconnects the player with
+    /// `disconnect.timeout`, unless they are the singleplayer owner. A refused
+    /// answer must not count as "alive" either.
+    #[test]
+    fn a_keep_alive_that_is_not_the_pending_one_disconnects_all_but_the_owner() {
+        use super::io_pool::Verdict;
+        use horizon_protocol::ids::play::serverbound::KEEP_ALIVE;
+        let config = crate::lan::NetConfig {
+            announce: false,
+            listen: false,
+            singleplayer_profile: Some(("Owner".to_owned(), 1)),
+            ..crate::lan::NetConfig::loopback(0, "KeepAlive".into(), 8)
+        };
+        let lan = crate::lan::Lan::start_with(Arc::new(SyncData::empty()), config).unwrap();
+        let conn = |uuid: u128, pending: Option<i64>| PlayConn {
+            conn: 1,
+            shared: lan.shared.clone(),
+            uuid,
+            name: if uuid == 1 { "Owner" } else { "p" }.to_owned(),
+            required_pack: false,
+            rate: None,
+            watch: Arc::new(KeepAliveWatch {
+                start: Instant::now(),
+                alive: Arc::new(AtomicI64::new(-1)),
+            }),
+            latency: Arc::new(AtomicI32::new(0)),
+            sent_at: pending.map(|id| (id, Instant::now())),
+            next_keep_alive: Instant::now(),
+            counted: None,
+            undrained: Arc::default(),
+        };
+        let answer = |c: &mut PlayConn, id: i64| c.packet(KEEP_ALIVE, id.to_be_bytes().to_vec());
+        // The pending one: accepted.
+        let mut c = conn(2, Some(7));
+        assert!(matches!(answer(&mut c, 7), Verdict::Go));
+        assert!(c.sent_at.is_none());
+        assert_eq!(c.watch.alive.load(Ordering::Relaxed), 7);
+        // Another id while one is pending: kicked, and not counted as alive.
+        let mut c = conn(2, Some(7));
+        assert!(matches!(answer(&mut c, 8), Verdict::Kick(..)));
+        assert_eq!(c.watch.alive.load(Ordering::Relaxed), -1);
+        assert!(c.sent_at.is_some());
+        // Nothing pending: kicked.
+        let mut c = conn(2, None);
+        assert!(matches!(answer(&mut c, 7), Verdict::Kick(..)));
+        // The singleplayer owner is never disconnected for it, nor counted alive.
+        let mut c = conn(1, Some(7));
+        assert!(matches!(answer(&mut c, 8), Verdict::Go));
+        assert_eq!(c.watch.alive.load(Ordering::Relaxed), -1);
     }
 }
