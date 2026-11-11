@@ -852,7 +852,13 @@ mod tests {
         game.world.set(9, 63, 8, stone).unwrap();
         game.world.set(9, 64, 8, wire).unwrap();
         game.world.set(8, 65, 8, rod).unwrap();
-        assert!(!game.redstone_experiments);
+        assert!(
+            !game
+                .level
+                .enabled_features
+                .iter()
+                .any(|feature| feature == "minecraft:redstone_experiments")
+        );
         game.strike_rod([8.5, 66.0, 8.5]);
         let power = registry
             .state(game.world.block(9, 64, 8))
