@@ -4,6 +4,7 @@
 //! same on vanilla 26.3).
 use super::*;
 use horizon_client::chunk::Chunk;
+use horizon_client::mobs::allay;
 use horizon_core::position::ChunkPos;
 use horizon_world::nbt::Tag;
 use std::sync::Arc;
@@ -84,7 +85,7 @@ fn an_allay_keeps_its_item_pickup_cooldown_memory() {
     let mut game = game();
     let i = index(&mut game);
     // The supplied memory is loaded into the pickup cooldown and saved back.
-    assert_eq!(game.mobs[i].extra.ints[3], 30, "loaded");
+    assert_eq!(allay::pickup_cooldown(&game.mobs[i]), Some(30), "loaded");
     assert_eq!(
         saved(&mut game, i),
         Some(Tag::compound([("value", Tag::Int(30))])),
@@ -100,6 +101,53 @@ fn an_allay_keeps_its_item_pickup_cooldown_memory() {
         Some(Tag::compound([("value", Tag::Int(20))])),
         "after 10 ticks"
     );
+    // CountDownCooldownTicks: the memory reaches 0 and is erased a tick later
+    // (`stop`).
+    step(&mut game, 20);
+    assert_eq!(
+        saved(&mut game, i),
+        Some(Tag::compound([("value", Tag::Int(0))])),
+        "at 0"
+    );
+    step(&mut game, 1);
+    assert_eq!(saved(&mut game, i), None, "erased the tick after");
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn pickup_cooldown_saves_the_full_integer_value() {
+    let mut game = game();
+    let i = index(&mut game);
+    assert!(game.run_command(&format!(
+        "item replace entity {SUPPLIED} weapon.mainhand with minecraft:diamond 1"
+    )));
+    for ticks in [i32::MIN, -1, 0, 1, i32::MAX] {
+        allay::set_pickup_cooldown(&mut game.mobs[i], Some(ticks));
+        assert!(
+            !game.mobs[i].can_pick_up_loot(),
+            "memory present at {ticks}"
+        );
+        assert_eq!(
+            saved(&mut game, i),
+            Some(Tag::compound([("value", Tag::Int(ticks))])),
+            "saved {ticks}"
+        );
+        let tag = game.mob_tree_nbt(i);
+        let loaded = horizon_client::entity_nbt::mob_from_nbt(
+            &tag,
+            game.res.mob_types(),
+            game.mobs[i].id,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            allay::pickup_cooldown(&loaded),
+            Some(ticks),
+            "loaded {ticks}"
+        );
+    }
+    allay::set_pickup_cooldown(&mut game.mobs[i], None);
+    assert!(game.mobs[i].can_pick_up_loot(), "memory erased");
 }
 
 // Added controls (after the frozen baseline above).
@@ -135,10 +183,10 @@ fn the_saved_pickup_cooldown_follows_the_model() {
     assert_eq!(saved(&mut game, plain), None, "no raw memory");
     // A loaded memory the model has ended: no key (the raw copy is not echoed).
     let supplied = index(&mut game);
-    game.mobs[supplied].extra.ints[3] = 0;
+    allay::set_pickup_cooldown(&mut game.mobs[supplied], None);
     assert_eq!(saved(&mut game, supplied), None, "stale raw memory");
     // A model mutation, as a throw does (`allays.rs`): saved with its value.
-    game.mobs[plain].extra.ints[3] = 60;
+    allay::set_pickup_cooldown(&mut game.mobs[plain], Some(60));
     let tag = saved(&mut game, plain);
     assert_eq!(
         tag,
@@ -149,7 +197,11 @@ fn the_saved_pickup_cooldown_follows_the_model() {
     let whole = game.mob_tree_nbt(plain);
     let reloaded =
         horizon_client::entity_nbt::mob_from_nbt(&whole, game.res.mob_types(), 99, None).unwrap();
-    assert_eq!(reloaded.extra.ints[3], 60, "load after save");
+    assert_eq!(
+        allay::pickup_cooldown(&reloaded),
+        Some(60),
+        "load after save"
+    );
     // NoAI: no Brain tick, the value stays.
     let frozen = at(&mut game, 2);
     step(&mut game, 5);

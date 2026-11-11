@@ -1940,8 +1940,8 @@ impl Title {
                     )
                     .does(crate::widgets::Action::Exit),
                 ];
-                // CommonButtons' icon buttons; Horizon's Join a Friend (an
-                // invite code) sits behind vanilla's Friends button.
+                // CommonButtons' icon buttons: vanilla's Friends button opens a crate's page or
+                // Join a Friend, inactive with neither (`multiplayer::title_entry`).
                 for (i, (key, plain, id, icon)) in [
                     ("gui.friends.open", "Friends", 5, "friends/friends"),
                     ("options.language", "Language...", 6, "icon/language"),
@@ -1960,7 +1960,7 @@ impl Title {
                         y + 72.0,
                         20.0,
                         &lang::get_or(key, plain),
-                        true,
+                        id != 5 || crate::multiplayer::has_title_entry(),
                         id,
                     );
                     button.icon = Some((icon, 15.0));
@@ -3658,12 +3658,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             .map(|b| b.id);
         if hit.is_some() {
             self.focused_button = hit;
-        } else if matches!(
-            self.mode,
-            Mode::Multiplayer(
-                crate::multiplayer::Screen::Edit { .. } | crate::multiplayer::Screen::Friend { .. }
-            )
-        ) {
+        } else if matches!(&self.mode, Mode::Multiplayer(screen) if screen.has_fields()) {
             // A press on a text field takes the focus from the button.
             self.focused_button = None;
         }
@@ -3782,7 +3777,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 crate::multiplayer::Outcome::None => Action::None,
             },
             (Mode::Main, Some(5)) => {
-                self.mode = Mode::Multiplayer(crate::multiplayer::Screen::friend(true));
+                self.mode = crate::multiplayer::title_entry().map_or(Mode::Main, Mode::Multiplayer);
                 Action::None
             }
             (Mode::Onboarding(_), Some(onboarding::SOUNDS)) => Action::Sounds,
@@ -5306,6 +5301,8 @@ mod classic_tests {
 
     #[test]
     fn classic_main_menu_icons_route_language_and_accessibility() {
+        // Join a Friend needs a resolver (title/tests.rs tests the icon without one).
+        crate::net::JOINS_FRIENDS_IN_TEST.set(true);
         let mut title = Title::new(
             PathBuf::new(),
             Path::new("/nonexistent/horizon-test-resources"),

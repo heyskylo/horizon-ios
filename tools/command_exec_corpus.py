@@ -183,6 +183,53 @@ def group_setup():
     ]
 
 
+# The opt-out from group_cleanup(): groups that go on with the entities the group before them left, so no
+# cleanup runs before them. The wolf anger clock diagnostic reads the anger_written_* actors of
+# 'wolf anger live writes' (--wolf-anger-clock-diagnostic) and removes them itself.
+CONTINUES_PREVIOUS = frozenset({'wolf anger clock diagnostic'})
+
+
+# Where group_cleanup() looks, per dimension: from this height up, where the groups work (y 100 and up) and
+# no generated entity is. Below are the world's own: mineshaft chest minecarts, mobs, falling gravel and
+# items the terrain drops, which each engine loads at its own times. The Nether's terrain ends at its roof
+# (y 127); the End's pillars and their crystals stay under y 110.
+CLEANUP_FLOOR = {'overworld': 100, 'the_nether': 128, 'the_end': 128}
+
+
+def group_cleanup():
+    """Removes the entities the last group left alive, right after it, the same way in both engines.
+
+    The groups share one world: an entity a group leaves is still there for later groups' unbounded
+    selectors. The bell group's persistent zombie burned in daylight and died at a random tick in each
+    engine, so whether the entities group's PersistenceRequired check still saw it was chance.
+
+    Only the groups' own entities: above CLEANUP_FLOOR. A killed cube mob splits when its body goes 20
+    ticks later, inside the next group, unless it has the smallest size first. What a death still drops
+    with mob_drops and entity_drops off (setup) comes at once, an allay's inventory or a chest minecart's
+    contents; the second kill removes it. Blocks, forced chunks and rules are the groups' own business
+    (tests/test_command_fixture_state.py).
+    """
+    ops = []
+    for level, floor in CLEANUP_FLOOR.items():
+        # Each entity tests its own height: a volume selector as wide as the world is slow in vanilla, which
+        # walks every chunk column in its x range.
+        own = (f'at @s if dimension minecraft:{level} positioned ~-1 {floor} ~-1 '
+               'if entity @s[dx=2,dy=4096,dz=2] run')
+        # The End's own dragon (EndDragonFight spawns it when the level loads) is no group's but flies above the
+        # floor at times: vanilla killed it there and Horizon, which had none up there, didn't.
+        kept = 'type=!player,type=!minecraft:ender_dragon' if level == 'the_end' else 'type=!player'
+        # Horizon finds an @s of another level only from that level ('in').
+        ops += setup(*[f'/execute in minecraft:{level} as @e[type=minecraft:{kind}] {own} '
+                       'data merge entity @s {Size:0}' for kind in ('slime', 'magma_cube', 'sulfur_cube')],
+                     *[f'/execute in minecraft:{level} as @e[{kept}] {own} kill @s'] * 2)
+    return ops
+
+
+# A killed cube mob bigger than size 1 splits when its body goes, 20 ticks later: a group that kills its own
+# cubes last shrinks them first, or the pieces appear in the next group, where group_cleanup() can't reach the
+# dying bodies (selectors skip them).
+SHRINK_SULFUR_CUBES = '/execute as {} run data merge entity @s {{Size:0}}'
+
 def allay_pocket_inventory():
     """The one-slot pocket stores full stacks independently of the held filter."""
     stone = '{id:"minecraft:stone",count:2}'
@@ -947,6 +994,90 @@ def item_command_damage():
             cmd(f'/damage {mob} 3', expect_result=1),
             cmd(f'/data get entity {mob} Health', expect_result=7)]
     return ops + setup('/kill @e[tag=item_hurt_actor]', '/scoreboard objectives remove item_hurt', '/tick unfreeze')
+
+
+def vehicle_item_stack_config():
+    """MinecartItem.useOn, BoatItem.use and the dispenser's MinecartDispenseItemBehavior /
+    BoatDispenseItemBehavior apply EntityType.createDefaultStackConfig: the item's custom name
+    (applyComponentsFromItemStack), then minecraft:entity_data (updateCustomEntityTag) when its
+    id is the vehicle's; command block and spawner minecarts take it from an op player only, never
+    from a dispenser. (The op case by a player is left out: this harness's owner is an op in vanilla
+    and not in Horizon.)"""
+    ops = setup('/forceload add 0 0 15 15', '/fill 0 199 0 15 199 15 stone', '/fill 0 200 0 15 203 15 air',
+                '/gamemode creative', '/tp @s 4.5 200 4.5 0 0')
+    ops += [{'op': 'settle'}]
+    near = '@e[type={kind},x={x}.5,y=200,z={z}.5,distance=..1.5,limit=1]'
+    # Placed on a rail by the player.
+    for i, (kind, item, reads) in enumerate((
+        ('minecart', 'minecart[custom_name="Cart A"]', ('CustomName',)),
+        ('tnt_minecart', 'tnt_minecart[entity_data={id:"minecraft:tnt_minecart",fuse:80,Tags:["item_data"]}]',
+         ('Tags', 'fuse')),
+        ('minecart', 'minecart[custom_name="Named",entity_data={id:"minecraft:minecart",Tags:["both"]}]',
+         ('CustomName', 'Tags')),
+        ('minecart', 'minecart[entity_data={id:"minecraft:tnt_minecart",Tags:["wrong_id"]}]', ('Tags',)),
+        # Entity.applyImplicitComponent's other component, saved as `data`; entity_data's merges over it.
+        ('minecart', 'minecart[custom_data={a:1b},entity_data={id:"minecraft:minecart",data:{b:2b}}]', ('data',)),
+    )):
+        x, z = 1 + i * 2, 7
+        ops += setup(f'/setblock {x} 200 {z} rail', f'/item replace entity @s weapon.mainhand with minecraft:{item}')
+        ops += [{'op': 'use_block', 'pos': [x, 200, z], 'face': 1}]
+        sel = near.format(kind=kind, x=x, z=z)
+        ops += [cmd(f'/execute if entity {sel}')]
+        ops += [cmd(f'/data get entity {sel} {r}') for r in reads]
+    ops += setup('/kill @e[type=#minecraft:boat]', '/kill @e[type=minecraft:command_block_minecart]',
+                 '/kill @e[type=minecraft:minecart]', '/kill @e[type=minecraft:tnt_minecart]')
+    # A boat, used looking down ahead at the floor (BoatItem refuses a spot that overlaps the player).
+    ops += setup('/tp @s 8.5 200 3.5 0 45',
+                 '/item replace entity @s weapon.mainhand with minecraft:oak_boat[custom_name="Boaty",'
+                 'entity_data={id:"minecraft:oak_boat",Tags:["boat_data"],Rotation:[90f,10f]}]')
+    # The packet's rotation, on both sides (the plain use_item op sends 0, 0 to Horizon).
+    ops += [{'op': 'use_item', 'sequence': 1, 'yaw': 0.0, 'pitch': 45.0}]
+    boat = '@e[type=minecraft:oak_boat,x=8.5,y=200,z=5,distance=..2,limit=1]'
+    # BoatItem.use turns the boat to the player's yaw after the data loads.
+    ops += [cmd(f'/execute if entity {boat}'), cmd(f'/data get entity {boat} CustomName'),
+            cmd(f'/data get entity {boat} Tags'), cmd(f'/data get entity {boat} Rotation[0] 10')]
+    # Dispensed: a minecart onto a rail and a boat into the air, then a powered dispenser.
+    for i, (item, kind, front) in enumerate((
+        ('tnt_minecart[custom_name="Disp",entity_data={id:"minecraft:tnt_minecart",Tags:["disp_data"]}]',
+         'tnt_minecart', 'rail'),
+        ('oak_boat[custom_name="DispBoat",entity_data={id:"minecraft:oak_boat",Tags:["disp_boat"],Rotation:[90f,0f]}]',
+         'oak_boat', 'air'),
+        ('command_block_minecart[entity_data={id:"minecraft:command_block_minecart",Command:"say no"}]',
+         'command_block_minecart', 'rail'),
+    )):
+        x = 3 + i * 4
+        ops += setup(f'/setblock {x} 200 12 dispenser[facing=south]{{Items:[{{Slot:0b,id:"minecraft:{item.split("[")[0]}",'
+                     f'count:1,components:{{{components(item)}}}}}]}}',
+                     f'/setblock {x} 200 13 {front}', f'/setblock {x} 199 13 {"water" if kind == "oak_boat" else "stone"}',
+                     f'/setblock {x} 201 12 redstone_block')
+        ops += [{'op': 'tick', 'n': 6}]
+        sel = f'@e[type=minecraft:{kind},x={x}.5,y=200,z=13.5,distance=..1.5,limit=1]'
+        ops += [cmd(f'/execute if entity {sel}'), cmd(f'/data get entity {sel} CustomName'),
+                cmd(f'/data get entity {sel} Tags')]
+        if kind == 'command_block_minecart':
+            ops += [cmd(f'/data get entity {sel} Command')]
+        if kind == 'oak_boat':
+            ops += [cmd(f'/data get entity {sel} Rotation[0] 10')]
+    ops += setup('/kill @e[type=#minecraft:boat]', '/kill @e[type=minecraft:command_block_minecart]',
+                 '/kill @e[type=minecraft:tnt_minecart]', '/kill @e[type=minecraft:minecart]',
+                 '/fill 0 200 0 15 203 15 air', '/gamemode survival', '/forceload remove 0 0 15 15')
+    return ops
+
+
+def components(item):
+    """An item argument's components, `a=x,b=y`, as a components compound's body."""
+    body = item[item.index('[') + 1:-1]
+    out, depth, start = [], 0, 0
+    for i, ch in enumerate(body):
+        if ch in '{[':
+            depth += 1
+        elif ch in '}]':
+            depth -= 1
+        elif ch == ',' and depth == 0:
+            out.append(body[start:i])
+            start = i + 1
+    out.append(body[start:])
+    return ','.join(f'"minecraft:{k}":{v}' for k, v in (part.split('=', 1) for part in out))
 
 
 def minecart_numeric_fields():
@@ -1779,6 +1910,29 @@ def aquatic_from_bucket():
     return ops
 
 
+def noai_tadpole_age():
+    """`Tadpole.aiStep` counts the age up and grows the tadpole into a frog at
+    24000; `NoAI` skips only `serverAiStep`, so a NoAI tadpole ages too. An
+    age-locked one doesn't (#14615)."""
+    box = 'x=8,y=218,z=8,dx=10,dy=6,dz=4'
+    # (tag, x, saved Age, AgeLocked)
+    tadpoles = [('h14615_young', 10, 0, False), ('h14615_due', 13, 23998, False),
+                ('h14615_locked', 16, 0, True)]
+    ops = []
+    for tag, x, age, locked in tadpoles:
+        lock = ',AgeLocked:1b' if locked else ''
+        ops += setup(f'/summon minecraft:tadpole {x}.5 220 10.5 {{Tags:["{tag}"],NoAI:1b,'
+                     f'NoGravity:1b,Silent:1b,PersistenceRequired:1b,Age:{age}{lock}}}')
+    for ticks in (1, 2):
+        ops.append({'op': 'tick', 'n': ticks})
+        for tag, *_ in tadpoles:
+            target = f'@e[type=minecraft:tadpole,tag={tag},limit=1]'
+            ops += [cmd(f'/execute if entity {target}'), cmd(f'/data get entity {target} Age')]
+        ops.append(cmd(f'/execute if entity @e[type=minecraft:frog,{box}]'))
+    ops += setup(f'/kill @e[type=minecraft:tadpole,{box}]', f'/kill @e[type=minecraft:frog,{box}]')
+    return ops
+
+
 def dispensed_spawn_egg_persistence():
     """`SpawnEggItemBehavior.execute` spawns with `EntitySpawnReason.DISPENSER`
     and never calls `Mob.setPersistenceRequired`: the mob saves
@@ -1817,6 +1971,49 @@ def dispensed_spawn_egg_persistence():
             *setup(f'/forceload add {x} {z} {x + 15} {z + 15}'),
             {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4]]}]
     ops += reads()
+    return ops + setup(f'/kill @e[type=!minecraft:player,x={x},y={y - 8},z={z},dx=16,dy=24,dz=16]',
+                       f'/fill {x} {y - 1} {z} {x + 15} {y + 1} {z + 15} minecraft:air',
+                       f'/forceload remove {x} {z} {x + 15} {z + 15}')
+
+
+def dispensed_bucket_mobs():
+    """`MobBucketItem.spawn` loads the bucket's entity data into the mob (`loadFromBucketTag`:
+    a sulfur cube's lowercase `age`, absent meaning 0, and a tadpole's `Age`) and calls
+    `setFromBucket(true)`, never `setPersistenceRequired`: a sulfur cube saves `from_bucket:1b`
+    and `PersistenceRequired:0b`, keeping the size 2 its finalizeSpawn gave it even as a baby. A
+    tadpole's `fromBucket()` is always true, so `requiresCustomPersistence` keeps every tadpole
+    far from the player, a summoned one too, and saves `PersistenceRequired:0b`."""
+    x, z, y = 5376, 5120, 300
+    # (dispenser x, bucket, its entity data, mob)
+    buckets = [(x + 2, 'sulfur_cube_bucket', '{age:-24000,NoAI:1b}', 'sulfur_cube'),
+               (x + 6, 'sulfur_cube_bucket', '{NoAI:1b}', 'sulfur_cube'),
+               (x + 10, 'tadpole_bucket', '{Age:100,AgeLocked:1b,NoAI:1b}', 'tadpole')]
+    ops = [*setup(f'/forceload add {x} {z} {x + 15} {z + 15}'),
+           {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4]]},
+           *setup(f'/fill {x} {y - 1} {z} {x + 15} {y - 1} {z + 15} minecraft:stone')]
+    for bx, bucket, data, _ in buckets:
+        ops += [cmd(f'/setblock {bx} {y} {z + 4} minecraft:dispenser[facing=south]'
+                    f'{{Items:[{{Slot:0b,id:"minecraft:{bucket}",count:1,'
+                    f'components:{{"minecraft:bucket_entity_data":{data}}}}}]}}', expect_result=1),
+                cmd(f'/setblock {bx} {y + 1} {z + 4} minecraft:redstone_block', expect_result=1)]
+    ops += [cmd(f'/summon minecraft:tadpole {x + 14}.5 {y} {z + 10}.5 {{NoAI:1b,Tags:["summoned_tadpole"]}}',
+                expect_result=1),
+            {'op': 'tick', 'n': 6}]
+    for bx, _, data, kind in buckets:
+        box = f'type=minecraft:{kind},x={bx - 1},y={y - 2},z={z + 4},dx=3,dy=4,dz=3,limit=1'
+        mob = f'@e[{box}]'
+        ops += [cmd(f'/execute if entity {mob}', expect_result=1),
+                cmd(f'/data get entity {mob} PersistenceRequired', expect_result=0)]
+        if kind == 'sulfur_cube':
+            ops += [cmd(f'/data get entity {mob} from_bucket', expect_result=1),
+                    cmd(f'/data get entity {mob} Size', expect_result=1),
+                    cmd(f'/execute {"unless" if "age" in data else "if"} entity @e[{box},nbt={{Age:0}}]', expect_result=1)]
+        else:
+            ops += [cmd(f'/data get entity {mob} FromBucket', expect_result=1),
+                    cmd(f'/data get entity {mob} Age')]
+    tadpole = '@e[type=minecraft:tadpole,tag=summoned_tadpole,limit=1]'
+    ops += [cmd(f'/execute if entity {tadpole}', expect_result=1),
+            cmd(f'/data get entity {tadpole} PersistenceRequired', expect_result=0)]
     return ops + setup(f'/kill @e[type=!minecraft:player,x={x},y={y - 8},z={z},dx=16,dy=24,dz=16]',
                        f'/fill {x} {y - 1} {z} {x + 15} {y + 1} {z + 15} minecraft:air',
                        f'/forceload remove {x} {z} {x + 15} {z + 15}')
@@ -1932,6 +2129,37 @@ def entity_landing_sensors():
             y = 203 if no_gravity else 200
             ops += [cmd(f'/execute if entity {target[:-1]},nbt={{Pos:[6.5d,{y}d,10.5d]}}]', expect_result=1),
                     cmd('/data get block 9 200 10 last_vibration_frequency', expect_result=0 if no_gravity else 2)]
+    # #14440: primed TNT and a falling block land through Entity.move too, so checkFallDamage posts
+    # HIT_GROUND after a fall.
+    for kind, nbt in (('tnt', 'fuse:80'), ('falling_block', 'BlockState:{Name:"minecraft:sand"},Time:1')):
+        target = f'@e[tag=landing_{kind},limit=1]'
+        ops += setup('/setblock 9 200 10 air strict', '/kill @e[tag=landing_actor]', '/tick step 25')
+        ops += [{'op': 'tick', 'n': 25}]
+        ops += setup('/fill 0 200 0 31 206 31 air', '/fill 0 199 0 31 199 31 stone', '/tp @s 6.5 200 28.5',
+                     '/setblock 9 200 10 sculk_sensor strict', '/tick step 2')
+        ops += [{'op': 'tick', 'n': 2}]
+        ops += [cmd('/execute if block 9 200 10 sculk_sensor[sculk_sensor_phase=inactive,power=0]', expect_result=1)]
+        ops += setup(f'/summon {kind} 6.5 203 10.5 {{Tags:["landing_actor","landing_{kind}"],{nbt}}}')
+        for _ in range(20):
+            ops += setup('/tick step 1')
+            ops += [{'op': 'tick', 'n': 1}]
+            ops += [cmd(f'/execute if entity {target[:-1]},nbt={{OnGround:1b}}]'),
+                    cmd('/execute if block 9 200 10 sculk_sensor[sculk_sensor_phase=active]')]
+        ops += [cmd('/data get block 9 200 10 last_vibration_frequency')]
+    # A piston's push is Entity.move too: a falling block it pushes onto the ground lands in that
+    # step (fallOn, HIT_GROUND, the fall forgotten), not on its own next tick.
+    ops += setup('/kill @e[tag=landing_actor]', '/fill 0 200 0 31 206 31 air',
+                 '/setblock 6 202 10 piston[facing=down]',
+                 '/summon falling_block 6.5 200.3 10.5 {Tags:["landing_actor","landing_pushed"],'
+                 'BlockState:{Name:"minecraft:sand"},NoGravity:1b,fall_distance:3d,Time:1}',
+                 '/setblock 6 203 10 redstone_block')
+    for _ in range(4):
+        ops += setup('/tick step 1')
+        ops += [{'op': 'tick', 'n': 1}]
+        ops += [cmd('/data get entity @e[tag=landing_pushed,limit=1] fall_distance'),
+                cmd('/data get entity @e[tag=landing_pushed,limit=1] Pos[1]'),
+                cmd('/execute if entity @e[tag=landing_pushed,nbt={OnGround:1b}]')]
+    ops += setup('/fill 0 200 0 31 206 31 air', '/tp @s 6.5 200 7.5')
     return ops + setup('/setblock 9 200 10 air strict', '/kill @e[tag=landing_actor]',
                        '/scoreboard objectives remove landing_probe',
                        '/tick unfreeze', '/gamerule random_tick_speed 3')
@@ -1951,6 +2179,12 @@ def bird_flap_sensors():
             ops += setup('/setblock 9 200 10 sculk_sensor strict')
             ops += [{'op': 'tick', 'n': 2}]
             ops += [cmd('/execute if block 9 200 10 sculk_sensor[sculk_sensor_phase=inactive,power=0]')]
+            # A bird's own random decides when it flaps: seed it here, not from the last sync before this group
+            # (item honey bounce's), which every group in between can move. Entity ids far above those the
+            # world's loaded entities have: Horizon keeps an entity's UUID and tags by its id.
+            case = len([op for op in ops if op['op'] == 'sync_randoms'])
+            ops += [{'op': 'sync_randoms', 'uniquifier': 19870 + case, 'entity_id': 1987000 + 1000 * case,
+                     'level_seed': 1987}]
             ops += setup(f'/summon {species} 6.5 205 10.5 '
                          f'{{Tags:["flap_bird"],NoAI:{no_ai}b,Silent:1b,NoGravity:1b,'
                          'Motion:[0d,-1d,0d],attributes:['
@@ -2251,6 +2485,12 @@ def world_misc():
         cmd('/tp 8.5 230 8.5'),
         cmd('/rotate @s facing 0 230 0'),
         cmd('/rotate @s ~10 ~'),
+        # Relative angles are the command source's rotation plus the offset, not the target's own.
+        cmd('/tp @s 8.5 230 8.5 100 -20'),
+        cmd('/execute rotated 30 10 run rotate @s ~90 ~'),
+        cmd('/data get entity @s Rotation'),
+        cmd('/execute rotated 30 10 run rotate @s 5 ~-5'),
+        cmd('/data get entity @s Rotation'),
         cmd('/tp @s 8.5 230 8.5 0 0'),
         cmd('/locate biome minecraft:plains'),
         cmd('/locate biome #minecraft:is_ocean'),
@@ -3132,6 +3372,14 @@ def shulker_box_empty_items():
             *setup(f'/forceload add {x} {z}'), {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4]]}]
     ops += reads()
     return ops + setup(f'/fill {x} {y} {z + 8} {x + 6} {y} {z + 8} minecraft:air', f'/forceload remove {x} {z}')
+
+
+def shulker_lock_drop_cases():
+    try:
+        from .shulker_lock_drop_corpus import cases
+    except ImportError:
+        from shulker_lock_drop_corpus import cases
+    return cases(cmd)
 
 
 def creative_shulker_drops():
@@ -4989,9 +5237,92 @@ def sulfur_cube_loaded_health():
             cmd(f'/data get entity {selector[:-1]},limit=1] Size', expect_result=1),
             cmd(f'/data get entity {selector[:-1]},limit=1] Health 100', expect_result=800),
         ])
-    lines.extend(setup('/kill @e[type=sulfur_cube]', '/forceload remove 0 0 31 31'))
+    lines.extend(setup(SHRINK_SULFUR_CUBES.format('@e[type=sulfur_cube]'), '/kill @e[type=sulfur_cube]',
+                       '/forceload remove 0 0 31 31'))
     return lines
 
+
+def sulfur_cube_size_attributes():
+    """#13801: `SulfurCube.setSize` (`setCubeMobHealth`) sets the max_health (4 per size) and
+    movement_speed (0.2F + 0.1F * size) bases, so the save holds both from the load on, after the
+    first tick and across a chunk reload, and so does a cube released from a bucket
+    (`finalizeSpawn`'s size 2). A saved base wins over the size: `LivingEntity`'s load applies it
+    after `AbstractCubeMob.readAdditionalSaveData` sizes the cube, and so does its Health under Health
+    Boost (`setHealth` clamps to the sized maximum). Entries are read by id: the list's order is the
+    attribute map's."""
+    x, z = 4096, 4096
+    chunk = [[x >> 4, z >> 4]]
+    cases = ['', ',Size:2', ',attributes:[{id:"minecraft:movement_speed",base:0.25d}]',
+             ',Size:1,attributes:[{id:"minecraft:max_health",base:10.0d}]',
+             ',Size:2,Health:12f,active_effects:[{id:"minecraft:health_boost",duration:200}]']
+
+    def reads(uuid):
+        return [cmd(f'/data get entity {uuid} attributes[{{id:"minecraft:{a}"}}].base')
+                for a in ('max_health', 'movement_speed')] + [cmd(f'/data get entity {uuid} Health')]
+
+    uuids = [f'00000000-0000-0000-0000-0315{n + 1:08x}' for n in range(len(cases))]
+    ops = setup(f'/forceload add {x} {z}')
+    ops.append({'op': 'wait_chunks', 'chunks': chunk})
+    ops += setup(f'/fill {x} 299 {z} {x + 15} 299 {z + 15} stone')
+    for n, extra in enumerate(cases):
+        ops += setup(f'/summon sulfur_cube {x + 2 + 3 * n}.5 300 {z + 3}.5 '
+                     f'{{UUID:[I;0,0,789,{n + 1}],NoAI:1b,PersistenceRequired:1b{extra}}}')
+    for step in ('loaded', 'tick', 'reload'):
+        if step == 'tick':
+            ops.append({'op': 'tick', 'n': 1})
+        if step == 'reload':
+            ops += setup(f'/forceload remove {x} {z}')
+            ops.append({'op': 'tick', 'n': 60})
+            ops.append(cmd(f'/execute unless loaded {x} 300 {z}', expect_result=1))
+            ops += setup(f'/forceload add {x} {z}')
+            ops.append({'op': 'wait_chunks', 'chunks': chunk})
+        for uuid in uuids:
+            ops += reads(uuid)
+    ops += [cmd(f'/attribute {uuid} minecraft:movement_speed get 1000') for uuid in uuids]
+    ops += setup(SHRINK_SULFUR_CUBES.format('@e[type=sulfur_cube]'), '/kill @e[type=sulfur_cube]',
+                 f'/forceload remove {x} {z}')
+    # A real bucket release, looking down at the floor (the bucket's own use, not useOn).
+    ops += setup('/forceload add 0 0 15 15', '/fill 0 199 0 12 210 12 air', '/fill 0 199 0 12 199 12 stone',
+                 '/gamemode survival', '/tp @s 4.5 200 4.5 0 90',
+                 '/item replace entity @s weapon.mainhand with minecraft:sulfur_cube_bucket')
+    ops.append({'op': 'settle'})
+    ops.append({'op': 'use_item', 'sequence': 1, 'yaw': 0.0, 'pitch': 90.0})
+    ops += reads('@e[type=sulfur_cube,limit=1]')
+    ops += setup(SHRINK_SULFUR_CUBES.format('@e[type=sulfur_cube]'), '/kill @e[type=sulfur_cube]',
+                 '/fill 0 199 0 12 199 12 air', '/gamemode creative', '/clear @s',
+                 '/tp @s 8.5 230 8.5', '/forceload remove 0 0 15 15')
+    return ops
+
+
+def sulfur_cube_size_ticks():
+    # SulfurCube.ageBoundaryReached grows a cube to size 2 only where setAge crosses
+    # the baby boundary (#14916). Cubes with their AI on: an adult loaded at size 1
+    # and a baby of size 2 keep their size; a baby of size 1 that grows up is size 2.
+    cases = [(None, 0, [(0, 400)] * 4), (1, -24000, [(1, 800)] * 4),
+             (None, -2, [(0, 400), (0, 400), (1, 800), (1, 800)])]
+    lines = [cmd('/forceload add 0 0 31 31'), {'op': 'settle'}]
+    lines.extend(setup('/fill 0 199 0 31 208 31 air'))
+    lines.append(cmd('/fill 0 199 0 31 199 31 stone', expect_result=1024))
+    for i, (size, age, reads) in enumerate(cases):
+        uuid = f'00000000-0000-0000-0000-00e70000000{i + 1}'
+        nbt = f'UUID:[I;0,0,231,{i + 1}],NoGravity:1b,Silent:1b,PersistenceRequired:1b,Age:{age}'
+        if size is not None:
+            nbt += f',Size:{size}'
+        lines.append(cmd(f'/summon sulfur_cube {4.5 + 8 * i} 200 4.5 {{{nbt}}}', expect_result=1))
+    # Reads after 0, 1, 2 and 4 ticks.
+    for step, ticks in enumerate([0, 1, 1, 2]):
+        if ticks:
+            lines.append({'op': 'tick', 'n': ticks})
+        for i, (_, _, reads) in enumerate(cases):
+            uuid = f'00000000-0000-0000-0000-00e70000000{i + 1}'
+            size, health = reads[step]
+            lines.extend([
+                cmd(f'/data get entity {uuid} Size', expect_result=size),
+                cmd(f'/data get entity {uuid} Health 100', expect_result=health),
+            ])
+    lines.extend(setup(SHRINK_SULFUR_CUBES.format('@e[type=sulfur_cube]'), '/kill @e[type=sulfur_cube]',
+                       '/forceload remove 0 0 31 31'))
+    return lines
 
 
 def numeric_array_edits(include_storage_side_effects=False):
@@ -5161,7 +5492,8 @@ def sulfur_cube_fuse_ticks(immediate_power=False):
     for n in (9, 10):
         ops.append(cmd(f'/execute if entity {target(n)}', expect_result=1))
         ops.append(cmd(f'/data get entity {target(n)} fuse'))
-    return ops + setup('/kill @e[tag=sulfur_fuse]', '/forceload remove 0 0 79 15')
+    return ops + setup(SHRINK_SULFUR_CUBES.format('@e[tag=sulfur_fuse,type=sulfur_cube]'),
+                       '/kill @e[tag=sulfur_fuse]', '/forceload remove 0 0 79 15')
 
 
 
@@ -5429,7 +5761,8 @@ def sulfur_cube_mob_contact():
                        expect_result=1))
         ops.append(cmd(f'/data get entity {uuid(n + 10)} Health',
                        expect_result=9 if n == 1 else 10))
-    return ops + setup('/kill @e[tag=sulfur_contact]', '/forceload remove 0 0 15 15')
+    return ops + setup(SHRINK_SULFUR_CUBES.format('@e[tag=sulfur_contact,type=sulfur_cube]'),
+                       '/kill @e[tag=sulfur_contact]', '/forceload remove 0 0 15 15')
 
 
 
@@ -5603,6 +5936,14 @@ def jukebox_saved_clock_cases():
         from .jukebox_saved_clock_corpus import cases
     except ImportError:
         from jukebox_saved_clock_corpus import cases
+    return cases(cmd)
+
+
+def item_count_predicate_cases():
+    try:
+        from .item_count_predicate_corpus import cases
+    except ImportError:
+        from item_count_predicate_corpus import cases
     return cases(cmd)
 
 
@@ -6291,6 +6632,14 @@ def moving_piston_presentation_diagnostic():
     return moving_piston_presentation(cmd, setup)
 
 
+def piston_mob_bounce():
+    try:
+        from .piston_bounce_corpus import piston_bounce
+    except ImportError:
+        from piston_bounce_corpus import piston_bounce
+    return piston_bounce(cmd, setup)
+
+
 def piston_entity_tick_order():
     """#9337: entities travel before moving pistons push them, not afterward."""
     ops = []
@@ -6782,19 +7131,33 @@ def beacon_levels_load():
 def zombie_villager_summoned_data():
     """#13198: `ZombieVillager.defineSynchedData` picks a random profession in the constructor and
     leaves `villagerDataFinalized` false; `readAdditionalSaveData` sets it only for a save with
-    `VillagerDataFinalized` or `VillagerData`. `/summon` with NBT does not finalize the mob."""
+    `VillagerDataFinalized` or `VillagerData`. `/summon` with NBT does not finalize the mob.
+
+    The random profession (`VILLAGER_PROFESSION.getRandom(this.random)`, `none` 1 time in 15) comes
+    from `Entity.random`, which is `RandomSource.create()`: two vanilla runs disagree on it. Check the
+    first two professions' registry domain instead; the third subject's saved data stays exact."""
     x0, y0, z0 = 3776, 260, 3648
     ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
            cmd('/tick freeze', False)]
     subjects = ['NoAI:1b', 'NoAI:1b,VillagerDataFinalized:1b',
                 'NoAI:1b,VillagerData:{type:"minecraft:taiga",profession:"minecraft:cleric",level:2}']
+    # VillagerProfession's 26.3 built-in registry, including none and nitwit.
+    professions = ('none', 'armorer', 'butcher', 'cartographer', 'cleric', 'farmer', 'fisherman',
+                   'fletcher', 'leatherworker', 'librarian', 'mason', 'nitwit', 'shepherd',
+                   'toolsmith', 'weaponsmith')
     for n, fields in enumerate(subjects, 1):
         uuid = f'000033ce-0000-0000-0000-{n:04x}00000001'
         ops.append(cmd(f'/summon zombie_villager {x0 + 3 * n}.5 {y0} {z0 + 4}.5 {{UUID:[I;13262,0,{n},1],{fields}}}',
                        expect_result=1))
         ops.append(cmd(f'/data get entity {uuid} VillagerDataFinalized'))
-        ops.append(cmd(f'/execute if data entity {uuid} VillagerData{{profession:"minecraft:none"}}'))
-        if n == 3:
+        if n < 3:
+            # Every valid draw stops with the same empty feedback and callbacks. Invalid or
+            # missing data reaches /data get, whose feedback/callback must differ, without masking.
+            conditions = ''.join(f' unless data entity {uuid} VillagerData{{profession:"minecraft:{p}"}}'
+                                 for p in professions)
+            ops.append(cmd(f'/execute{conditions} run data get entity {uuid} VillagerData.profession'))
+        else:
+            ops.append(cmd(f'/execute if data entity {uuid} VillagerData{{profession:"minecraft:none"}}'))
             ops.append(cmd(f'/data get entity {uuid} VillagerData'))
     return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
                        f'/forceload remove {x0} {z0}')
@@ -6821,6 +7184,56 @@ def projectile_fall_distance():
         ops.append(cmd(f'/data get entity 000035f0-0000-0000-0000-{n:04x}00000001 fall_distance'))
     return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
                        f'/forceload remove {x0} {z0}')
+
+
+def ominous_spawner_loaded_entity_fields():
+    """`Entity.load` reads Rotation (the pitch through `setXRot`: `% 360`, then within -90..90),
+    OnGround and fall_distance, and `OminousItemSpawner` never moves or turns, so it saves them as
+    loaded, before its first tick, after it and across a chunk reload."""
+    x0, y0, z0 = 5440, 300, 5120
+    cases = ['Rotation:[30.0f,20.0f],OnGround:1b,fall_distance:3.5d', 'Rotation:[-560.0f,100.0f]',
+             'Rotation:[10.0f,-450.0f],fall_distance:-1.0d', '']
+    ops = [*setup(f'/forceload add {x0} {z0}'), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]}]
+    for n, fields in enumerate(cases, 1):
+        sep = ',' if fields else ''
+        ops.append(cmd(f'/summon ominous_item_spawner {x0 + 3 * n}.5 {y0} {z0 + 8}.5 {{UUID:[I;14700,0,{n},1],'
+                       f'spawn_item_after_ticks:2000L,item:{{id:"minecraft:stone",count:1}}{sep}{fields}}}',
+                       expect_result=1))
+
+    def reads():
+        return [cmd(f'/data get entity 0000396c-0000-0000-0000-{n:04x}00000001 {key}')
+                for n in range(1, len(cases) + 1) for key in ('Rotation', 'OnGround', 'fall_distance')]
+
+    ops += reads() + [{'op': 'tick', 'n': 1}] + reads()
+    ops += [*setup(f'/forceload remove {x0} {z0}'), {'op': 'tick', 'n': 60},
+            cmd(f'/execute unless loaded {x0} {y0} {z0}', expect_result=1),
+            *setup(f'/forceload add {x0} {z0}'), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]}]
+    return ops + reads() + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16]',
+                                 f'/forceload remove {x0} {z0}')
+
+
+def thrown_projectile_rotation():
+    """`ThrowableProjectile.tick` and `LlamaSpit.tick` end their move with `Projectile.updateRotation`:
+    the pitch and yaw go a fifth of the way (`lerpRotation`) from the last tick's towards the
+    movement's, the old yaw first brought within 180 degrees of the new one. A snowball that only
+    falls tips over gradually, not at once. Fireballs and shulker bullets turn by
+    `ProjectileUtil.rotateTowardsMovement` instead (#14466)."""
+    x0, y0, z0 = 20, 240, 20
+    # (type, extra NBT): no motion, a sideways throw, a climb, a yaw that wraps (170 to -170),
+    # and the spit, whose drag comes after its turn.
+    cases = [('snowball', ''), ('egg', ',Motion:[0.3d,0.1d,-0.2d]'),
+             ('ender_pearl', ',Motion:[-0.2d,0.4d,0.1d]'),
+             ('experience_bottle', ',Rotation:[170.0f,10.0f],Motion:[-0.0868241d,0.0d,-0.9848078d]'),
+             ('llama_spit', ',Motion:[0.2d,0.0d,-0.4d]')]
+    ops = []
+    for n, (kind, extra) in enumerate(cases, 1):
+        ops.append(cmd(f'/summon {kind} {x0 + 4 * n}.5 {y0} {z0}.5 {{UUID:[I;14600,0,{n},1]{extra}}}',
+                       expect_result=1))
+    for _ in range(3):
+        ops.append({'op': 'tick', 'n': 1})
+        ops += [cmd(f'/data get entity 00003908-0000-0000-0000-{n:04x}00000001 Rotation')
+                for n in range(1, len(cases) + 1)]
+    return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 16},z={z0 - 16},dx=32,dy=32,dz=32]')
 
 
 def living_short_timers():
@@ -6858,6 +7271,27 @@ def command_block_last_output():
         ops.append(cmd(f'/data get block {x} {y} {z} LastOutput'))
     return ops + setup(f'/fill {x0} {y0} {z0} {x0 + 15} {y0 + 1} {z0 + 15} air',
                        '/scoreboard objectives remove cb_out', f'/forceload remove {x0} {z0}')
+
+def glide_fall_accumulation():
+    """#13868: `LivingEntity.updateFallFlying` starts with `checkFallDistanceAccumulation`: a glide whose vertical speed
+    is above -0.5 keeps at most 1 of its fall; a dive keeps it all."""
+    # Entities tick once the forced chunk's 2-column neighbourhood is loaded (ChunkMap.prepareEntityTickingChunk).
+    x0, y0, z0 = 4096 - 288, 280, 3584
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks',
+            'chunks': [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]},
+           cmd('/tick freeze', False)]
+    subjects = [('pufferfish', 'fall_distance:20.0d'), ('zombie', 'fall_distance:5.5d,NoAI:1b'),
+                ('zombie', 'fall_distance:5.5d,NoAI:1b,Motion:[0.0d,-0.8d,0.0d]'),
+                ('zombie', 'fall_distance:0.75d,NoAI:1b')]
+    for n, (kind, fields) in enumerate(subjects, 1):
+        ops.append(cmd(f'/summon {kind} {x0 + 3 * n}.5 {y0} {z0 + 8}.5 '
+                       f'{{UUID:[I;14400,0,{n},1],FallFlying:1b,PersistenceRequired:1b,{fields}}}', expect_result=1))
+    ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 1}, cmd('/tick freeze', False)]
+    for n in range(1, len(subjects) + 1):
+        for key in ('fall_distance', 'FallFlying'):
+            ops.append(cmd(f'/data get entity 00003840-0000-0000-0000-{n:04x}00000001 {key}'))
+    return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
+                       f'/forceload remove {x0} {z0}')
 
 def loaded_ticket_removal(blocks=False):
     """Entity-ticking command visibility after forced tickets leave; FULL is separate."""
@@ -7176,8 +7610,10 @@ ISOLATED_SEED_SYNC = frozenset({'seed sync proof'})
 ISOLATED_EFFECTIVE_PRESENCE = frozenset({'effective component presence'})
 ISOLATED_BOAT_TREE = frozenset({'boat passenger tree'})
 ISOLATED_GUEST_CLOSE = frozenset({'guest container close event'})
+ISOLATED_ITEM_COUNT = frozenset({'item count predicate'})
+ISOLATED_SHULKER_LOCK = frozenset({'shulker external lock drop'})
 ISOLATED_POT_HOPPER = frozenset({'hopper pot saved slot'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC | ISOLATED_EFFECTIVE_PRESENCE | ISOLATED_BOAT_TREE | ISOLATED_GUEST_CLOSE | ISOLATED_POT_HOPPER
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC | ISOLATED_EFFECTIVE_PRESENCE | ISOLATED_BOAT_TREE | ISOLATED_GUEST_CLOSE | ISOLATED_POT_HOPPER | ISOLATED_ITEM_COUNT | ISOLATED_SHULKER_LOCK
 
 
 def vehicle_fall_clip():
@@ -7187,7 +7623,8 @@ def vehicle_fall_clip():
     falls through one block of water and ends the move below it, out of the water's own reset.
     """
     x0, y0, z0 = 3648, 260, 3648
-    chunk = [[x0 >> 4, z0 >> 4]]
+    # Entities tick once the forced chunk's 2-column neighbourhood is loaded (ChunkMap.prepareEntityTickingChunk).
+    chunk = [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]
     ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
            cmd('/tick freeze', False),
            cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', expect_result=256)]
@@ -7259,6 +7696,59 @@ def mob_fall_clip():
                        f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 30} {z0 + 15} air',
                        f'/forceload remove {x0} {z0}')
 
+def rocket_fall_distance():
+    """#14318: a firework rocket's fall (`Entity.fallDistance`). `Entity.move` casts a move of a block or
+    more over fall-resetting blocks and water, then `checkFallDamage` adds the drop outside water and on
+    the ground calls `fallOn` and resets it; `Entity.updateFluidInteraction` resets it in water and
+    `Entity.baseTick` halves it in lava; a cobweb (`makeStuckInBlock`) resets it. `saveWithoutId` and
+    `load` keep it. Angled rockets fly down; a rising one keeps the fall it was loaded with. Frozen, then
+    read tick by tick.
+    """
+    x0, y0, z0 = 4416, 250, 4416
+    # Entities tick once every chunk within 2 columns is loaded (ChunkMap.prepareEntityTickingChunk).
+    chunk = [[(x0 >> 4) + dx, (z0 >> 4) + dz] for dx in range(-2, 3) for dz in range(-2, 3)]
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
+           cmd('/tick freeze', False),
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', expect_result=256)]
+    # (name, x, z, start y, NBT); each in its own column.
+    cases = [('drop', 1, 8, y0 + 4, 'ShotAtAngle:1b,Motion:[0d,-0.5d,0d],fall_distance:1d'),
+             ('water', 3, 4, y0 + 5, 'ShotAtAngle:1b,Motion:[0d,-0.25d,0d],fall_distance:3d'),
+             ('lava', 7, 4, y0 + 5, 'ShotAtAngle:1b,Motion:[0d,-0.25d,0d],fall_distance:6d'),
+             ('vine', 8, 8, y0 + 14, 'ShotAtAngle:1b,Motion:[0d,-1.5d,0d],fall_distance:5d'),
+             ('novine', 11, 8, y0 + 14, 'ShotAtAngle:1b,Motion:[0d,-1.5d,0d],fall_distance:5d'),
+             ('cobweb', 13, 8, y0 + 4, 'ShotAtAngle:1b,Motion:[0d,-0.5d,0d],fall_distance:2d'),
+             ('rise', 15, 8, y0 + 4, 'fall_distance:4d'),
+             # Summoned inside lava: Entity.isInLava is false on its first tick, so no halving yet.
+             ('inlava', 7, 4, y0 + 1, 'ShotAtAngle:1b,Motion:[0d,0d,0d],fall_distance:4d')]
+    # Water and lava stand in a stone well, so they have no flow to push with.
+    for x, fluid in ((3, 'water'), (7, 'lava')):
+        ops.append(cmd(f'/fill {x0 + x - 1} {y0} {z0 + 3} {x0 + x + 1} {y0 + 2} {z0 + 5} stone', expect_result=27))
+        ops.append(cmd(f'/fill {x0 + x} {y0} {z0 + 4} {x0 + x} {y0 + 2} {z0 + 4} {fluid}', expect_result=3))
+    for x in (8, 11):
+        ops.append(cmd(f'/fill {x0 + x - 1} {y0} {z0 + 8} {x0 + x - 1} {y0 + 14} {z0 + 8} stone', expect_result=15))
+    ops.append(cmd(f'/setblock {x0 + 8} {y0 + 7} {z0 + 8} vine[west=true]', expect_result=1))
+    ops.append(cmd(f'/setblock {x0 + 13} {y0 + 1} {z0 + 8} cobweb', expect_result=1))
+    for n, (name, x, z, y, nbt) in enumerate(cases, 1):
+        ops.append(cmd(f'/summon firework_rocket {x0 + x}.5 {y} {z0 + z}.5 {{UUID:[I;17000,0,{n},1],LifeTime:200,'
+                       f'{nbt}}}', expect_result=1))
+
+    def reads():
+        for n, _ in enumerate(cases, 1):
+            for key in ('fall_distance', 'OnGround', 'Pos[1]'):
+                ops.append(cmd(f'/data get entity 00004268-0000-0000-0000-{n:04x}00000001 {key}'))
+
+    reads()
+    for _ in range(12):
+        ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 1}, cmd('/tick freeze', False)]
+        reads()
+    # A loaded fall_distance replaces the one it built up.
+    ops.append(cmd('/data merge entity 00004268-0000-0000-0000-000700000001 {fall_distance:9d}', expect_result=1))
+    ops.append(cmd('/data get entity 00004268-0000-0000-0000-000700000001 fall_distance'))
+    return ops + setup('/tick unfreeze', f'/kill @e[type=firework_rocket,x={x0},y={y0 - 8},z={z0},dx=16,dy=48,dz=16]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 20} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
 
 def boat_float_height():
     """#13022: `AbstractBoat.checkInWater` and `isUnderwater` sum a block's y and its water height
@@ -7268,7 +7758,8 @@ def boat_float_height():
     coarse, and are read for 10 ticks.
     """
     x0, y0, z0 = 3776, 279, 3776
-    chunk = [[x0 >> 4, z0 >> 4]]
+    # Entities tick once the forced chunk's 2-column neighbourhood is loaded (ChunkMap.prepareEntityTickingChunk).
+    chunk = [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]
     ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
            cmd('/tick freeze', False)]
     # (x, water blocks to set, boat y, motion y)
@@ -7291,6 +7782,47 @@ def boat_float_height():
                        f'/fill {x0} {y0 - 4} {z0} {x0 + 15} {y0 + 4} {z0 + 15} air',
                        f'/forceload remove {x0} {z0}')
 
+
+def dispensed_item_escape():
+    """#14537: `DefaultDispenseItemBehavior.spawnItem` builds the item with `new ItemEntity(level, x, y, z, stack)`,
+    whose constructor draws its default motion (two `nextDouble`s) from the item's own random before `spawnItem`
+    sets the thrown one. A down-facing dispenser over stone drops the item inside the floor, and
+    `moveTowardsClosestSpace`'s escape speed is the next draw from that random."""
+    # Entities tick once the forced chunk's 2-column neighbourhood is loaded (ChunkMap.prepareEntityTickingChunk).
+    x0, y0, z0 = 4096 - 64, 300, 3584
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks',
+            'chunks': [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]},
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', False),
+           {'op': 'sync_randoms', 'uniquifier': 332, 'entity_id': 10_000_000, 'level_seed': 332},
+           cmd(f'/setblock {x0 + 7} {y0} {z0 + 7} dispenser[facing=down]'
+               '{Items:[{Slot:0b,id:"minecraft:stone",count:2}]}', expect_result=1),
+           {'op': 'crafter_tick', 'pos': [x0 + 7, y0, z0 + 7]}]
+    item = f'@e[type=item,x={x0 + 7}.5,y={y0},z={z0 + 7}.5,distance=..6,sort=nearest,limit=1]'
+    for tick in range(4):
+        if tick:
+            ops.append({'op': 'tick', 'n': 1})
+        for key in ('Pos[0]', 'Pos[1]', 'Pos[2]', 'Motion[0]', 'Motion[1]', 'Motion[2]'):
+            ops.append(cmd(f'/data get entity {item} {key}'))
+    return ops + setup(f'/kill @e[type=item,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0} {z0 + 15} air', f'/forceload remove {x0} {z0}')
+
+
+def comparator_setblock_output():
+    """#13870: `BlockInput.place` loads a comparator's tag (`ComparatorBlockEntity.loadAdditional`:
+    `getIntOr("OutputSignal", 0)`), as `/data merge block` does."""
+    x0, y0, z0 = 4096 - 320, 260, 3584
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd('/tick freeze', False),
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', False)]
+    for n, data in enumerate(('{OutputSignal:20}', '{OutputSignal:-1}', '{}', '{OutputSignal:7}'), 1):
+        x = x0 + 2 * n
+        ops += [cmd(f'/setblock {x} {y0} {z0 + 8} comparator{data}', expect_result=1),
+                cmd(f'/data get block {x} {y0} {z0 + 8} OutputSignal')]
+    # A second /setblock over the same comparator loads the tag again.
+    ops += [cmd(f'/setblock {x0 + 8} {y0} {z0 + 8} comparator{{OutputSignal:3}}'),
+            cmd(f'/data get block {x0 + 8} {y0} {z0 + 8} OutputSignal')]
+    return ops + setup('/tick unfreeze', f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
 
 def groups():
     try:
@@ -7433,6 +7965,7 @@ def groups():
         ('boat passenger tree', boat_passenger_tree_cases()),
         ('effective component presence', effective_component_presence_cases()),
         ('jukebox saved clock', jukebox_saved_clock_cases()),
+        ('item count predicate', item_count_predicate_cases()),
         ('loaded potion clouds', loaded_clouds(cmd, setup)),
         ('server clock', server_clock()),
         ('inline execute predicates', inline_execute_predicates()),
@@ -7462,11 +7995,13 @@ def groups():
         ('axolotl integer memory TTL', axolotl_integer_memory_ttl()),
         ('parrot saved Age', parrot_saved_age()),
         ('animal NoAI love', animal_noai_love()),
+        ('NoAI tadpole age', noai_tadpole_age()),
         ('turtle summon home', turtle_summon_home()),
         ('command minecart loaded success', command_minecart_loaded_success()),
         ('ravager NoAI counters', ravager_noai_counters()),
         ('aquatic FromBucket', aquatic_from_bucket()),
         ('dispensed spawn egg persistence', dispensed_spawn_egg_persistence()),
+        ('dispensed bucket mobs', dispensed_bucket_mobs()),
         ('villager command names', villager_command_names()),
         ('item lifetime counters', item_lifetime_counters()),
         ('seed sync proof', seed_sync_proof(cmd, setup)),
@@ -7481,11 +8016,17 @@ def groups():
         ('wither spawn', wither_spawn()),
         ('riding teleport', riding_teleport()),
         ('piston entity tick order', piston_entity_tick_order()),
+        ('piston mob bounce', piston_mob_bounce()),
         ('primed tnt box', primed_tnt_box()),
         ('primed tnt fall', primed_tnt_fall()),
+        ('dispensed item escape', dispensed_item_escape()),
         ('command block last output', command_block_last_output()),
+        ('comparator setblock output', comparator_setblock_output()),
+        ('glide fall accumulation', glide_fall_accumulation()),
         ('living short timers', living_short_timers()),
         ('projectile fall distance', projectile_fall_distance()),
+        ('ominous spawner loaded fields', ominous_spawner_loaded_entity_fields()),
+        ('thrown projectile rotation', thrown_projectile_rotation()),
         ('item fall distance', item_fall_distance()),
         ('beacon levels load', beacon_levels_load()),
         ('zombie villager summoned data', zombie_villager_summoned_data()),
@@ -7514,6 +8055,7 @@ def groups():
         ('mannequin pose anchors', mannequin_pose_anchors()),
         ('item command damage', item_command_damage()),
         ('dragon command damage', dragon_command_damage()),
+        ('vehicle item stack config', vehicle_item_stack_config()),
         ('minecart numeric fields', minecart_numeric_fields()),
         ('enderman command damage', enderman_command_damage()),
         ('shulker command damage', shulker_command_damage()),
@@ -7556,6 +8098,8 @@ def groups():
         ('mob NBT damage cooldown', mob_nbt_damage_cooldown()),
         ('mob full resistance hits', mob_full_resistance_hits()),
         ('sulfur cube loaded health', sulfur_cube_loaded_health()),
+        ('sulfur cube size attributes', sulfur_cube_size_attributes()),
+        ('sulfur cube size ticks', sulfur_cube_size_ticks()),
         ('function return feedback', function_return_feedback()),
         ('fork function feedback', fork_function_feedback_cases()),
         ('function condition fallthrough', function_condition_fallthrough()),
@@ -7567,6 +8111,7 @@ def groups():
         ('tnt minecart rails', tnt_minecart_rails()),
         ('creative shulker drops', creative_shulker_drops()),
         ('shulker box empty Items', shulker_box_empty_items()),
+        ('shulker external lock drop', shulker_lock_drop_cases()),
         ('minecart drag', minecart_drag()),
         ('ender dragon', ender_dragon()),
         ('summoned dragon hovers', summoned_dragon_hovers()),
@@ -7588,6 +8133,7 @@ def groups():
         ('teleport lands', teleport_lands()),
         ('rocket data merge', rocket_data_merge()),
         ('mob fall clip', mob_fall_clip()),
+        ('rocket fall distance', rocket_fall_distance()),
         ('vehicle ground and fall', vehicle_ground_and_fall()),
         ('vehicle saved ground and fall', vehicle_saved_ground_and_fall()),
         ('ravager saved movement speed', ravager_saved_movement_speed()),

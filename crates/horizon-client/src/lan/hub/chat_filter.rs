@@ -1,42 +1,15 @@
 //! The chat filter on the server side (docs/chat-filter.md): a player's text, before the server relays
-//! it, through `horizon_chat_filter`'s list, mutes and escalation. A refused text reaches nobody; the
-//! sender is told in private, and the game logs it and bans when the escalation says so
-//! (`HostEvent::ChatFiltered`).
+//! it, through the server's [`ChatGuard`] (the platform's `horizon-chat-filter` on a dedicated server):
+//! its list, mutes and escalation. A refused text reaches nobody; the sender is told in private, and the
+//! game logs it and bans when the escalation says so (`HostEvent::ChatFiltered`).
 use super::{HostEvent, Hub, chat::now_millis};
-use horizon_chat_filter::{Action, Guard, Mute, duration_text};
 use horizon_protocol::{
     packets::play::{self, Clientbound as C},
     text::literal,
 };
+pub use horizon_server_files::chat_guard::Place;
+use horizon_server_files::chat_guard::{Action, ChatGuard, Mute, duration_text};
 use horizon_world::nbt::{JavaString, Tag};
-
-/// Where a player's text was going.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Place {
-    /// A chat message.
-    Chat,
-    /// A command's message: `/msg`, `/tell`, `/w`, `/me`, `/say`, `/teammsg`.
-    Command,
-    Sign,
-    Anvil,
-    Book,
-}
-
-impl Place {
-    pub fn name(self) -> &'static str {
-        match self {
-            Place::Chat => "chat",
-            Place::Command => "command",
-            Place::Sign => "sign",
-            Place::Anvil => "anvil",
-            Place::Book => "book",
-        }
-    }
-    /// Chat and commands: a muted player can't use them.
-    fn is_chat(self) -> bool {
-        matches!(self, Place::Chat | Place::Command)
-    }
-}
 
 /// What the sender reads when their text held a slur.
 pub fn notice(place: Place, action: Action, now: i64) -> String {
@@ -91,8 +64,8 @@ fn red(text: &str) -> Tag {
 
 impl Hub {
     /// `server.toml`'s `[chat_filter]` (dedicated servers); `None` turns it off.
-    pub fn set_chat_filter(&mut self, guard: Option<Guard>) {
-        self.chat_filter = guard.map(Box::new);
+    pub fn set_chat_filter(&mut self, guard: Option<Box<dyn ChatGuard>>) {
+        self.chat_filter = guard;
     }
 
     pub fn chat_filter_on(&self) -> bool {
@@ -112,7 +85,7 @@ impl Hub {
             return true;
         };
         let (uuid, now) = (self.guests[i].uuid, now_millis());
-        let hit = texts.iter().any(|t| guard.filter.matches(t));
+        let hit = texts.iter().any(|t| guard.matches(t));
         let muted = place.is_chat().then(|| guard.muted(uuid, now)).flatten();
         if !hit {
             let Some(mute) = muted else {
@@ -187,14 +160,6 @@ impl Hub {
     /// `/unmute <player>`: the name as it was muted, if they were.
     pub fn unmute(&mut self, name: &str) -> Option<String> {
         self.chat_filter.as_deref_mut()?.unmute(name)
-    }
-
-    /// The `[chat_filter]` log's path, relative to the server's folder.
-    pub fn chat_filter_log(&self) -> Option<&str> {
-        self.chat_filter
-            .as_deref()
-            .map(|g| g.config.log.as_str())
-            .filter(|l| !l.is_empty())
     }
 }
 

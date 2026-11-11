@@ -156,8 +156,8 @@ Horizon's own extras and its product, and every built-in address of an outside s
   benchmark uploads, releases and updates, the hosting supervisor, the launcher.
 - **Examples:** `horizon-addresses`, `horizon-cosmetics`, `horizon-friends`, `horizon-relay`, `horizon-telemetry`,
   `horizon-bench`, `horizon-release-sign`, `horizon-server`, `horizon-mod-registry`, `horizon-heartbeat`,
-  `horizon-official`, `horizon-official-servers`, `launcher/`. Still in engine crates today: `game/cosmetics.rs`, `game/emotes.rs`,
-  `game/discord.rs`, `game/extras.rs`, `game/tweaks.rs`, `extras_ui.rs`, `pvp.rs`.
+  `horizon-official`, `horizon-official-servers`, `horizon-discord`, `launcher/`. Still in engine crates today:
+  `game/cosmetics.rs`, `game/emotes.rs`, `game/extras.rs`, `game/tweaks.rs`, `extras_ui.rs`, `pvp.rs`.
 - **Rules:**
   - It uses the platform's public API only, never the engine.
   - Until it moves, every Horizon feature in the game sits behind the `horizon-extras` feature
@@ -322,8 +322,8 @@ hook (#14081), `seat()` (#14096).
   only calls it.
 - With nothing registered, the engine does no work: a load of an empty slice where it would dispatch. It makes
   no allocation, no draw call and no file. A vanilla build (horizon-client, horizon-plain) is unchanged.
-- Visible text is a translation key the registrant ships in its lang files, never English in code. Values a
-  player typed (a name, a path) are the exception.
+- Visible text is a translation key the registrant ships in its lang files ([Lang files](#lang-files-horizon_platformlang)),
+  never English in code. Values a player typed (a name, a path) are the exception.
 - Splitscreen players are one process, one thread, each `Game` in turn (`game/split.rs`), so a crate's statics
   are shared by them. Every call (stores, pages, layers, hooks) happens on one player's turn, and
   `horizon_platform::hooks::seat()` (0 for P1) says whose: a crate keeps per-player state indexed by it.
@@ -363,7 +363,7 @@ pub trait Store: Sync {
 A page lives in the options screen's shell, and its entry sits on one of the game's menus.
 
 ```rust
-pub enum Place { HorizonSettings, Title, Pause }
+pub enum Place { HorizonSettings, Pause, Extras, Title }
 pub trait Page: Sync {
     fn id(&self) -> &'static str;            // stable, for horizon-ctl and the page stack
     fn title(&self) -> &'static str;         // translation key
@@ -371,6 +371,7 @@ pub trait Page: Sync {
     fn rows(&self, rows: &mut Vec<Row>);     // asked when the page is drawn, not every frame elsewhere
     fn act(&self, row: usize, act: Act);     // a click, a reverse click, a slider's value, a key
     fn tooltip(&self, row: usize) -> Option<Label> { None }   // hover text, may follow the value
+    fn back(&self) -> &'static str { "gui.done" }            // the leave button of a page drawn as a screen
 }
 pub enum Row {
     Heading(&'static str),                   // translation key
@@ -378,17 +379,36 @@ pub enum Row {
     Toggle { label: &'static str, on: bool },
     Cycle { label: &'static str, value: Label },
     Slider { label: &'static str, value: f32, text: Label },   // value in 0..=1
-    Button { label: &'static str },
+    Button { label: &'static str, active: bool, half: bool, footer: bool },  // Row::button(..).half()...
     Key { label: &'static str, key: String },                 // a binding: `key.keyboard.z`
+    Text { text: String, quiet: bool, groups: bool },         // Row::text(..): white or grey, wrapped
+    Space(u8),                                                // GUI pixels, on a page drawn as a screen
+    Field { label: &'static str, text: String, max: usize },  // Row::field(..).max(n): an EditBox, on a page drawn as a screen
 }
 pub enum Label { Key(&'static str), Value(String) }
-pub enum Act { Press, PressBack, Slide(f32), Bind(String) }
+pub enum Act { Press, PressBack, Slide(f32), Bind(String), Edit(String), Submit }
+pub fn connect(address: impl Into<String>);                   // from a Title page's act: join that server
 ```
 
 - `HorizonSettings`: a row of the Horizon Settings page, after the engine's own pages. `Title` and `Pause`: a
   button on the title screen or the pause menu that opens the page. These buttons exist only when something
   registered, so the vanilla menus keep vanilla's look. The page is drawn with the same widgets, tooltips,
   narration, controller focus and `horizon-ctl` ids as the engine's pages.
+- `Button` and `Text` are built with `Row::button` and `Row::text` and their options: `.active(false)` greys a
+  button, `.half()` puts two side by side, `.footer()` sets one beside Done on a page drawn as its own screen,
+  `.quiet()` greys text, `.groups()` breaks it only between `-`-separated groups (an invite code). In the options
+  shell, text is notes and space is nothing.
+- `Title` is the title screen's Friends icon slot (vanilla's `CommonButtons.friends`), not a new row: the icon
+  keeps its place and look at every GUI scale, and opens the first page registered there as a form drawn as Join a
+  Friend is (`multiplayer/page.rs`): the title, the rows from y 53 (a field's grey label, its 200-wide box 11
+  below, 41 a field), the buttons in a column from a quarter of the height + 114, the back button last
+  (`Page::back`, `gui.cancel` for a form). It shows heading, note, text, space, field and button rows. With no page
+  there the icon opens the engine's Join a Friend while an invite-code resolver is registered, else it is
+  inactive.
+- `Field` is vanilla's `EditBox` on a page drawn as its own screen: focus by click or Tab, typing, the caret keys,
+  selection, copy and paste, at most `max` characters (32 by default). The engine keeps its text while the page is
+  open and sends each change (`Act::Edit`, before any other act or redraw reaches the page) and Enter
+  (`Act::Submit`). The options shell has no field.
 - Rows are rebuilt when the page is drawn or acted on, like the engine's own pages: no cost while no page is
   open.
 - The engine keeps native mods' pages (`Page::NativeMod`) as they are. Both kinds sit in one module that
@@ -493,6 +513,30 @@ fn container_draw(&self, c: &dyn Container, canvas: &mut dyn hud::Canvas);    //
   Without one there is no cost, and vanilla's handling is unchanged.
 - `order` is the only text: Sorting ranks by it. The rest is ids and numbers, so the API names no engine type
   (`ItemStack` stays in the engine).
+
+### Lang files (`horizon_platform::lang`)
+
+A crate keeps the text for its keys in its own folder, `crates/<name>/assets/lang/<code>.json`, with the same
+shape as the engine's `assets/horizon/lang` files (flat `"key": "text"` lines, `en_us.json` the reference).
+It registers them as `(code, JSON)` pairs, usually `include_str!`s:
+
+```rust
+static LANG: &horizon_platform::lang::Files = &[
+    ("en_us", include_str!("../assets/lang/en_us.json")),
+    ("fr_fr", include_str!("../assets/lang/fr_fr.json")),
+];
+horizon_platform::lang::register(LANG)?;
+```
+
+- The game loads them into its `horizon` namespace right after its own bundled file for the same language, so a
+  resource pack still overrides them, and a language a crate lacks falls back to its English.
+- A key belongs to one folder. On a key the engine's file also has, the engine's text wins (and the
+  `lang.rs` test fails).
+- Regional variants read their language's file as the engine's do (`fr_ca` reads `fr_fr`, `de_ch` reads `de_de`
+  without `ß`).
+- `tools/lang_coverage.py` reports each crate's folder beside the engine's. A person's review of a crate's entry
+  is kept in `tools/lang_review/<name>/<code>.json` ([translations.md](translations.md)).
+- With nothing registered, a language loads exactly as before.
 
 ## Extras that may leave the game
 
