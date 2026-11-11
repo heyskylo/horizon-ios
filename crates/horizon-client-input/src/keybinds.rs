@@ -652,6 +652,21 @@ mod tests {
         assert_eq!(k.translate_all(KeyCode::F3), [Ok(KeyCode::F3)]);
     }
 
+    /// `KeyBindsScreen.extractRenderState`: Reset All is active only while a
+    /// binding differs from its default.
+    #[test]
+    fn reset_all_is_active_only_after_a_binding_moves() {
+        let mut keys = KeyBinds::default();
+        assert!(!keys.changed_from_defaults());
+        keys.set("key.attack", "key.mouse.right");
+        assert!(keys.changed_from_defaults());
+        // Setting a mapping back to its own default leaves nothing to reset.
+        keys.set("key.attack", KeyBinds::default_of("key.attack"));
+        assert!(!keys.changed_from_defaults());
+        keys.set("key.jump", "key.keyboard.z");
+        keys.reset_all();
+        assert!(!keys.changed_from_defaults());
+    }
     #[test]
     fn display_names() {
         assert_eq!(display_name("key.keyboard.w").plain(), "W");
