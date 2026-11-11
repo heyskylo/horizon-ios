@@ -1045,7 +1045,12 @@ impl Game<'_> {
                                 _ => Tag::Compound(Default::default()),
                             };
                             merge_compound(&mut data, &tag);
-                            c.insert("minecraft:custom_data".into(), data);
+                            // Vanilla CustomData.update removes the component when the result is empty.
+                            if matches!(&data, Tag::Compound(m) if m.is_empty()) {
+                                c.remove(&"minecraft:custom_data".into());
+                            } else {
+                                c.insert("minecraft:custom_data".into(), data);
+                            }
                         });
                     }
                     "minecraft:set_components" => {
