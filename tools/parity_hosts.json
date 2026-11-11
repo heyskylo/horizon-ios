@@ -75,7 +75,8 @@
   "unused_feature_startup": "capture-preserving harness: needs --kind, --output (a new capture folder) and --binary, which an automatic run doesn't pass, so it fails at startup whatever changed",
   "warden_owned_memories": "capture-preserving harness: writes .local/h029/capture and asserts it is new, so it fails at startup on any checkout that ran it before (the Mac mini runner)",
   "shulker_lock_drop": "capture-preserving harness: needs --work-dir (a fresh capture folder) and --reference-dir, which an automatic run doesn't pass, so it fails at startup whatever changed",
-  "pot_hopper": "capture-preserving harness: needs --work-dir (a fresh capture folder) and --reference-dir, which an automatic run doesn't pass, so it fails at startup whatever changed"
+  "pot_hopper": "capture-preserving harness: needs --work-dir (a fresh capture folder) and --reference-dir, which an automatic run doesn't pass, so it fails at startup whatever changed",
+  "stand_lodestone": "capture-preserving harness: needs --work-dir (a new capture folder), --reference-dir and --binary, which an automatic run doesn't pass, so it fails at startup whatever changed"
  },
  "known_flaky": {
   "world_reopen": "counted 4 minecarts instead of 3 once on a loaded Mac mini runner, then passed at the same head (10-26)",
