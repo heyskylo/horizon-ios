@@ -3776,6 +3776,19 @@ in VertexData {{ {member} }} vIn;
     }
 
     #[test]
+    fn subgroup_ids_in_a_two_dimensional_work_group() {
+        let csh = "#version 460\n#extension GL_KHR_shader_subgroup_basic : enable\n\
+                   layout(local_size_x = 32, local_size_y = 16) in;\n\
+                   layout(r32ui) uniform uimage2D colorimg4;\n\
+                   void main() { imageStore(colorimg4, ivec2(gl_GlobalInvocationID.xy), \
+                   uvec4(gl_SubgroupID, gl_SubgroupInvocationID, 0u, 1u)); }\n";
+        let pack = Pack::from_zip_bytes("P.zip", zip(&[("shaders/deferred_a.csh", csh)])).unwrap();
+        let c = translate_compute(&preprocess(&pack, "deferred_a.csh", &Macros::standard()))
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(c.module.entry_points[0].workgroup_size, [32, 16, 1]);
+    }
+
+    #[test]
     fn compute_programs_translate() {
         let csh = "#version 430\nlayout(local_size_x = 64) in;\nconst ivec3 workGroups = ivec3(2, 1, 1);\n\
                    layout(rgba16f) writeonly uniform image2D colorimg4;\nuniform sampler2D colortex4;\n\
