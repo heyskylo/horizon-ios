@@ -50,8 +50,9 @@ impl Damage {
     }
     pub fn from_nbt(tag: &Tag, anvil: bool) -> Self {
         Self {
-            hurt_entities: number(tag.get("HurtEntities")).map_or(anvil, |v| v != 0),
-            cancel_drop: number(tag.get("CancelDrop")).is_some_and(|v| v != 0),
+            // getBooleanOr: a number is true when its byte value is not 0.
+            hurt_entities: crate::entity_nbt::flag_or(tag, "HurtEntities", anvil),
+            cancel_drop: crate::entity_nbt::flag(tag, "CancelDrop"),
             per_distance: float(tag.get("FallHurtAmount")).unwrap_or(0.0) as f32,
             max: number(tag.get("FallHurtMax")).unwrap_or(40) as i32,
         }
@@ -284,6 +285,27 @@ pub fn hurt_mobs_with_kind(mobs: &mut [Mob], position: Vec3, amount: f32, kind: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `FallingBlockEntity.readAdditionalSaveData` reads `HurtEntities` and
+    /// `CancelDrop` with `getBooleanOr`: an int 256 has byte value 0 and is
+    /// false, 257 is true.
+    #[test]
+    fn saved_flags_are_read_as_bytes() {
+        let load = |hurt: i32, cancel: i32| {
+            let tag = Tag::compound([
+                ("HurtEntities", Tag::Int(hurt)),
+                ("CancelDrop", Tag::Int(cancel)),
+            ]);
+            let d = Damage::from_nbt(&tag, true);
+            (d.hurt_entities, d.cancel_drop)
+        };
+        assert_eq!(load(1, 1), (true, true));
+        assert_eq!(load(256, 256), (false, false));
+        assert_eq!(load(257, 257), (true, true));
+        // Absent: an anvil hurts, nothing cancels its drop.
+        let absent = Damage::from_nbt(&Tag::compound([("Time", Tag::Int(1))]), true);
+        assert_eq!((absent.hurt_entities, absent.cancel_drop), (true, false));
+    }
+
     #[test]
     fn only_brushable_blocks_break_where_they_land() {
         assert!(Damage::falling("minecraft:suspicious_gravel").cancel_drop);
