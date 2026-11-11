@@ -36,3 +36,12 @@ pub(super) fn put_projectile_entity_fields(tag: &mut Tag, p: &Projectile) {
         put(tag, "HasVisualFire", Tag::Byte(1));
     }
 }
+
+/// `Projectile.readAdditionalSaveData`'s `LeftOwner`, `HasBeenShot` and
+/// `NoGravity`, then the `Entity` fields.
+pub(super) fn load_projectile_flags_and_entity_fields(p: &mut Projectile, tag: &Tag) {
+    p.left_owner = flag(tag, "LeftOwner");
+    p.has_been_shot = flag(tag, "HasBeenShot");
+    p.no_gravity = flag(tag, "NoGravity");
+    load_projectile_entity_fields(p, tag);
+}
