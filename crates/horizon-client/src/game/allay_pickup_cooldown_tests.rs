@@ -113,6 +113,34 @@ fn an_allay_keeps_its_item_pickup_cooldown_memory() {
     assert_eq!(saved(&mut game, i), None, "erased the tick after");
 }
 
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn pickup_cooldown_saves_the_full_integer_value() {
+    let mut game = game();
+    let i = index(&mut game);
+    for ticks in [i32::MIN, -1, 0, 1, i32::MAX] {
+        allay::set_pickup_cooldown(&mut game.mobs[i], Some(ticks));
+        assert_eq!(
+            saved(&mut game, i),
+            Some(Tag::compound([("value", Tag::Int(ticks))])),
+            "saved {ticks}"
+        );
+        let tag = game.mob_tree_nbt(i);
+        let loaded = horizon_client::entity_nbt::mob_from_nbt(
+            &tag,
+            game.res.mob_types(),
+            game.mobs[i].id,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            allay::pickup_cooldown(&loaded),
+            Some(ticks),
+            "loaded {ticks}"
+        );
+    }
+}
+
 // Added controls (after the frozen baseline above).
 fn step(game: &mut Game<'_>, ticks: u32) {
     for _ in 0..ticks {
