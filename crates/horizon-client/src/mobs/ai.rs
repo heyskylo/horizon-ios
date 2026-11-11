@@ -1979,7 +1979,7 @@ fn sun_burn_tick(m: &mut Mob, w: &MobWorld) -> bool {
         m.position.z.floor() as i32,
     );
     let br = w.brightness(x, y, z);
-    let wet = m.fluids.in_water || in_rain(m, w);
+    let wet = m.fluids.in_water || in_rain(m, w) || in_powder_snow(m, w) || m.in_powder_snow;
     br > 0.5 && m.random.next_float() * 30.0 < (br - 0.4) * 2.0 && !wet && w.can_see_sky(x, y, z)
 }
 /// Mob.serverAiStep
@@ -4923,6 +4923,86 @@ mod burn_and_rose_tests {
         let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
         register(&mut m);
         m
+    }
+
+    fn zombie(types: &crate::mobs::MobTypes) -> Mob {
+        let kind = Arc::new(types.types["minecraft:zombie"].clone());
+        let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+        register(&mut m);
+        m.no_ai = true;
+        m.random = LegacyRandom::new(3);
+        m
+    }
+
+    /// `Mob.isSunBurnTick`: `isInWaterOrRain() || isInPowderSnow || wasInPowderSnow`
+    /// is not burnable, so a zombie standing in powder snow only freezes. The
+    /// draws are the mob's own, so the answer over a run of them is fixed.
+    #[test]
+    fn powder_snow_keeps_a_zombie_from_burning_in_daylight() {
+        let ran = crate::mobs::world::with_built_test_world(
+            &[],
+            build_with("minecraft:powder_snow"),
+            |w, types| {
+                let mut day = w.clone();
+                day.monsters_burn = true;
+                let mut m = zombie(types);
+                let burns = |m: &mut Mob| (0..500).any(|_| sun_burn_tick(m, &day));
+                assert!(!burns(&mut m), "in the powder snow at (0, 64, 0)");
+                // The same mob out of it, in plain daylight: the same draws burn it.
+                m.position = Vec3::new(3.5, 64.0, 3.5);
+                assert!(!m.in_powder_snow);
+                assert!(burns(&mut m), "in plain daylight");
+                // Having been in the powder snow last tick (`wasInPowderSnow`).
+                m.in_powder_snow = true;
+                assert!(!burns(&mut m), "was in the powder snow");
+                // It waits that one tick before the sun reaches it.
+                m.in_powder_snow = false;
+                assert!(burns(&mut m), "the tick after it stepped out");
+            },
+        );
+        let _ = ran;
+    }
+
+    /// `PowderSnowBlock.entityInside`: a mob that is already burning destroys
+    /// the powder snow (`mobGriefing`) and is put out, once, and then no longer
+    /// catches fire there in daylight.
+    #[test]
+    fn a_burning_zombie_in_powder_snow_breaks_the_block_and_is_put_out() {
+        let ran = crate::mobs::world::with_built_test_world(
+            &[],
+            build_with("minecraft:powder_snow"),
+            |w, types| {
+                let mut day = w.clone();
+                day.monsters_burn = true;
+                let mut m = zombie(types);
+                m.ignite_for_ticks(100);
+                assert!(m.is_on_fire());
+                let (mut lr, mut events) = (LegacyRandom::new(7), Vec::new());
+                assert!(tick(&mut m, &day, &mut lr, &mut events));
+                let broken: Vec<([i32; 3], bool)> = events
+                    .iter()
+                    .filter_map(|e| match e {
+                        MobEvent::BreakBlock { pos, drop } => Some((*pos, *drop)),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(broken, vec![([0, 64, 0], false)], "the powder snow breaks");
+                assert_eq!(m.fire_ticks, 0, "and puts the zombie out");
+                events.clear();
+                for _ in 0..200 {
+                    tick(&mut m, &day, &mut lr, &mut events);
+                }
+                assert!(!m.removed, "the zombie stays");
+                assert_eq!(m.fire_ticks, 0, "no sun burn while it stands in it");
+                assert!(
+                    !events
+                        .iter()
+                        .any(|e| matches!(e, MobEvent::BreakBlock { .. })),
+                    "nothing left to destroy"
+                );
+            },
+        );
+        let _ = ran;
     }
 
     /// `WitherRoseBlock.entityInside` tests the world difficulty and
