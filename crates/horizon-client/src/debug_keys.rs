@@ -137,6 +137,15 @@ pub struct DebugKeys {
 }
 
 impl DebugKeys {
+    /// Window focus lost, or input reset: clear held modifier state.
+    pub fn reset(&mut self) {
+        self.modifier_down = false;
+        self.used_debug_key_as_modifier = false;
+        if self.crash_key_time > 0 {
+            self.crash_key_time = -1;
+        }
+    }
+
     /// `keyPress` once the open screen (if any) did not take the key. `key`
     /// is the physical key's name (`key.keyboard.f3`); `crash_key_down`
     /// whether the crash mapping's key is held (`InputConstants.isKeyDown`).
@@ -486,5 +495,19 @@ mod tests {
         assert!(press(&mut k, &mut h, &b, "key.keyboard.g", 1));
         press(&mut k, &mut h, &b, "key.keyboard.k", 2);
         assert_eq!(h.actions, [(DebugAction::ShowChunkBorders, false)]);
+    }
+
+    #[test]
+    fn reset_on_focus_loss_clears_held_modifier_and_avoids_spurious_shortcuts() {
+        let (mut k, mut h, b) = (DebugKeys::default(), Host::default(), KeyBinds::default());
+        press(&mut k, &mut h, &b, F3, 0);
+        assert!(k.modifier_down);
+        // Window loses focus while F3 was down (e.g. desktop shortcut Ctrl+F3)
+        k.reset();
+        assert!(!k.modifier_down);
+        assert!(!k.used_debug_key_as_modifier);
+        // User refocuses and presses 'b': it should NOT trigger ShowHitboxes
+        assert!(press(&mut k, &mut h, &b, "key.keyboard.b", 1));
+        assert!(h.actions.is_empty());
     }
 }

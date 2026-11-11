@@ -2,6 +2,7 @@
 //! chunk-generation spawning (`NaturalSpawner`), mob events (attacks,
 //! breeding, conversions, drops), projectiles, player interactions
 //! (feeding, shearing, milking, spawn eggs, throwing) and rendering.
+mod bred_draws;
 mod mob_geometry;
 mod projectile_world;
 mod pufferfish_player;
@@ -122,6 +123,8 @@ pub(super) struct Creatures {
     /// what the passes after the loop do for a mob's `aiStep`, goals or brain
     /// (pickups, item searches) is for these alone.
     pub ticked: horizon_client::fast_hash::FxHashSet<u32>,
+    /// While the mob loop's own events are handled (`catch_up_countdowns`).
+    pub deferred_hits: bool,
     /// The wandering trader spawner's clock.
     pub trader: super::wandering_trader::Spawner,
     /// When each player last put a parrot on a shoulder (`timeEntitySatOnShoulder`).
@@ -1145,8 +1148,8 @@ impl Game<'_> {
     /// `DistanceManager.inEntityTickingRange` in an entity-ticking chunk
     /// (block coordinates), from every player's tickets (`update_chunk_tickets`).
     pub(super) fn entity_ticking_area(&self) -> impl Fn(i32, i32) -> bool + use<> {
-        self.tickets
-            .entity_ticking_area(&self.world.chunks, self.remote.is_none())
+        let levels = self.tickets.levels();
+        move |x, z| levels.entity_ticking_at(x, z)
     }
     /// The entity phase of `tick_creatures`: every mob's tick, deaths, and the
     /// projectiles and effects that follow from them.
@@ -1165,6 +1168,9 @@ impl Game<'_> {
             self.died.insert(m.id);
             self.mob_died(&m);
         }
+        // A `last_hurt_by_mob` read from a save names its attacker once that
+        // entity is here, before the mobs' `baseTick`s.
+        self.resolve_last_hurt_by_refs();
         // Their victims have been looted and mourned: no charged creeper is
         // waiting any more.
         self.combat.charged_exploders.clear();
@@ -1609,7 +1615,9 @@ impl Game<'_> {
             let bounds = m.bounds();
             self.effects_on_death(&names, bounds, false, Some(m.id), Some(&mut m.random));
         }
+        self.creatures.deferred_hits = true;
         let event_result = self.handle_mob_events_reusable(&mut events);
+        self.creatures.deferred_hits = false;
         self.creatures.event_buf = events;
         event_result?;
         self.lan_guest_mob_events(guest_events);
@@ -2123,18 +2131,6 @@ impl Game<'_> {
         }
     }
     /// `Mob.doHurtTarget` and the other melee callers of post-attack effects.
-    fn mob_attacks_mob(&mut self, target: u32, amount: f32, source: Damage) -> bool {
-        let hurt = self.mob_hits_mob(target, amount, source);
-        if hurt {
-            self.mob_post_attack(
-                target,
-                source.attacker,
-                None,
-                Some(damage_type(source.kind, false)),
-            );
-        }
-        hurt
-    }
     /// Melee or ranged damage to another mob; whether the hit landed.
     pub(super) fn mob_hits_mob(&mut self, target: u32, amount: f32, mut source: Damage) -> bool {
         if source.attacker_species.is_none()
@@ -2145,12 +2141,19 @@ impl Game<'_> {
         let mut killed = false;
         let mut hurt = false;
         let mut infested = Vec::new();
+        let catch_up = self.catch_up_countdowns(source.attacker, target);
         let aim = self.attacker_aim(source.attacker);
         // So `living_knockback_v2` sees who hit and what they hold.
         let _attacker = self.knockback_scope_for(source.attacker);
         if let Some(t) = self.mobs.iter_mut().find(|m| m.id == target) {
+            let previous_invulnerable = t.invulnerable;
             let hit = t.damage_aimed(amount, source, aim);
             hurt = hit;
+            if hit && catch_up && t.invulnerable > previous_invulnerable {
+                // `LivingEntity.baseTick`'s countdowns, run after the hit in vanilla.
+                t.hurt_time = (t.hurt_time - 1).max(0);
+                t.invulnerable = (t.invulnerable - 1).max(0);
+            }
             if hit {
                 killed = !t.alive();
                 // The hurt or death sound the mob raised.
@@ -2221,22 +2224,6 @@ impl Game<'_> {
             Some(who) => self.last_hurt_by_player.insert(victim, who),
             None => self.last_hurt_by_player.remove(&victim),
         };
-    }
-    /// The player in the world with `uuid` (`EntityReference.getPlayer`), as
-    /// `last_hurt_by_player` keeps them: None for the player in place, else the
-    /// guest's connection.
-    fn player_with_uuid(&self, uuid: [i32; 4]) -> Option<Option<u32>> {
-        if self.player.is_some()
-            && horizon_client::mobs::tame::owned_by(Some(uuid), self.acting_uuid())
-        {
-            return Some(self.lan_acting);
-        }
-        let uuid = horizon_client::lan::playerdata::ints_uuid(uuid);
-        self.lan
-            .iter()
-            .flat_map(|h| h.hub.guests.iter())
-            .find(|g| g.placed && g.uuid == uuid)
-            .map(|g| Some(g.conn))
     }
     /// `LivingEntity.dropFromGiftLootTable`: the gift table from its random
     /// sequence with the mob as `this` (a chicken's egg depends on its
@@ -3059,7 +3046,7 @@ impl Game<'_> {
                         // `CrossbowItem.createProjectile`: a rocket, from 0.15 under the eyes.
                         let mut at = arrow.position;
                         at.y -= f64::from(0.15f32) - 0.1;
-                        self.launch_angled_rocket(at, arrow.velocity, &ammo, arrow.owner);
+                        self.launch_angled_rocket(at, &ammo, arrow.owner, |_| arrow.velocity);
                     } else {
                         Self::arrow_from_ammo(&ammo, &mut arrow);
                         self.launch_mob_projectile(arrow);
@@ -3869,18 +3856,18 @@ impl Game<'_> {
             q.extra.in_love = 0;
         }
         let q = self.mobs.iter().find(|m| m.id == partner).cloned();
-        // Animal.finalizeSpawnChildFromBreeding: entity event 18 for the parent.
-        self.mob_event_particles(parent, 18);
+        // Animal.finalizeSpawnChildFromBreeding's heart burst, not a turtle's.
+        if p.species() != Species::Turtle {
+            self.mob_event_particles(parent, 18);
+        }
         // Sniffer.spawnChildFromBreeding: an egg instead of a baby.
         if p.species() == Species::Sniffer {
             self.lay_sniffer_egg(&p);
             return;
         }
-        // TurtleBreedGoal.breed: the goal gave the mother her egg; only the
-        // experience is left, and only with mob loot on.
+        // TurtleBreedGoal.breed and Frog.spawnChildFromBreeding: only experience.
         if matches!(p.species(), Species::Turtle | Species::Frog) {
-            // One `new ExperienceOrb` of 1 to 7 from the mother's random (not
-            // split up as `ExperienceOrb.award` does).
+            // One `new ExperienceOrb` of 1 to 7 from the mother's random.
             if self.ui.rules.bool("mob_drops")
                 && let Some(m) = self.mobs.iter_mut().find(|m| m.id == parent)
             {
@@ -3889,9 +3876,7 @@ impl Game<'_> {
             }
             return;
         }
-        // (Mooshroom draws its own coin in getOffspringVariant.)
-        let coin = p.species() != Species::Mooshroom
-            && self.world.random.next_int_bound(2).unwrap_or(0) == 0;
+        let coin = self.bred_coat_coin(parent, p.species());
         // Axolotl.getBreedOffspring: useRareVariant (one in 1200) makes it blue,
         // else either parent's variant. The draws come from the mother's random.
         let axolotl = if p.species() == Species::Axolotl {
@@ -3943,7 +3928,7 @@ impl Game<'_> {
             // No Mob.finalizeSpawn either: no follow range bonus, right-handed.
             spawning::bred_offspring(child);
             // getBreedOffspring creates the baby without finalizeSpawn: it keeps
-            // the default (`classic`) sound variant.
+            // the default (`classic`) sound variant (a wolf picks its own below).
             child.extra.sound_variant = None;
             // Fox.getBreedOffspring runs no finalizeSpawn: nothing in the
             // baby fox's mouth.
@@ -4058,6 +4043,7 @@ impl Game<'_> {
                         c.extra.color = mixed;
                     }
                 }
+                self.pick_bred_wolf_voice(parent, id);
                 self.breeding_orb(parent, [p.position.x, p.position.y, p.position.z]);
                 return;
             }
@@ -4546,6 +4532,7 @@ impl Game<'_> {
         // The impacts the mods may cancel (`native_projectile_impact`), on a server.
         let hear = self.native_hears_impacts();
         let mut impacts: Vec<Impact> = Vec::new();
+        let mut vehicle_winds = self.vehicle_winds();
         {
             let targets = self.projectile_targets();
             let breezes: Vec<u32> = self
@@ -4653,6 +4640,7 @@ impl Game<'_> {
                 };
                 // The projectile as it was, to fly on if a mod cancels its impact.
                 let before = (hear && !p.stuck).then(|| p.clone());
+                let wind_before = vehicle_winds.before(p);
                 let mob_shot = !matches!(p.owner, Some(Who::Player));
                 // A player's arrows, snowballs and eggs meet every player; a
                 // guest's flies from that guest (Projectile.getOwner), not
@@ -4787,6 +4775,7 @@ impl Game<'_> {
                     keep_flags[i] = false;
                     continue;
                 }
+                vehicle_winds.met(wind_before, hit);
                 if hit != Hit::None {
                     if let Some(before) = before {
                         impacts.push(Impact {
@@ -4859,6 +4848,9 @@ impl Game<'_> {
         }
         self.creatures.projectiles.append(&mut projectiles);
         for (p, hit) in hits {
+            let Some((p, hit)) = self.broken_vehicle_retick(p, hit, &mut vehicle_winds) else {
+                continue;
+            };
             // A player's arrow on another player lands as the victim's hurt.
             if let Some(victim) = self.projectile_pvp_victim(&p, hit) {
                 self.projectile_hits_player(&p, hit, victim)?;
@@ -4972,17 +4964,6 @@ impl Game<'_> {
             &mut self.world.random,
             8.0,
         )
-    }
-    /// A projectile's hurt of `amount` on the boat or minecart `id`
-    /// (`VehicleEntity.hurtServer`): even 0 shakes it (`Snowball`, `ThrownEgg`,
-    /// `ThrownEnderpearl` `.onHitEntity`), 5 from a small fireball destroys it.
-    fn hurt_vehicle(&mut self, p: &Projectile, id: u32, amount: f32) {
-        let creative = p.owner == Some(Who::Player) && self.creative;
-        if let Some(i) = self.boats.iter().position(|b| b.id == id) {
-            self.hurt_boat(i, amount, creative);
-        } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
-            self.hurt_cart(i, amount, creative, false);
-        }
     }
     /// `BellBlock.onProjectileHit`: a projectile that strikes the bell proper
     /// rings it, and a player's shot counts as the player's ring.
@@ -5168,19 +5149,16 @@ impl Game<'_> {
             ArrowEvent::ShootEvent | ArrowEvent::Drop => {}
         }
     }
-    /// `Level.isRainingAt` for arrows.
+    /// The boats, minecarts and primed TNT a projectile can strike
+    /// (`VehicleEntity.isPickable`, `PrimedTnt.isPickable`).
+    pub(super) fn pickable_object_targets(&self) -> Vec<(Who, Aabb)> {
+        let boats = self.boats.iter().map(|b| (Who::Mob(b.id), b.bounds()));
+        let carts = self.carts.iter().map(|c| (Who::Mob(c.id), c.bounds()));
+        let tnts = self.tnts.iter().map(|t| (Who::Mob(t.id), t.bounds()));
+        boats.chain(carts).chain(tnts).collect()
+    }
     /// What a projectile can hit: the mobs, the player, the dragon's parts and
     /// the End crystals (under reserved ids, game/dragon.rs).
-    /// The boats and minecarts a projectile can strike.
-    pub(super) fn vehicle_targets(&self) -> Vec<(Who, Aabb)> {
-        let mut targets: Vec<(Who, Aabb)> = self
-            .boats
-            .iter()
-            .map(|b| (Who::Mob(b.id), b.bounds()))
-            .collect();
-        targets.extend(self.carts.iter().map(|c| (Who::Mob(c.id), c.bounds())));
-        targets
-    }
     pub(super) fn projectile_targets(&self) -> Vec<(Who, Aabb)> {
         let mut targets: Vec<(Who, Aabb)> = self
             .mobs
@@ -5198,9 +5176,9 @@ impl Game<'_> {
                 .into_iter()
                 .map(|(id, b)| (Who::Mob(id), b)),
         );
-        // Boats and minecarts are pickable for every projectile
-        // (`VehicleEntity.isPickable`), so every kind shares this one list.
-        targets.extend(self.vehicle_targets());
+        // Boats, minecarts and primed TNT are pickable for every projectile,
+        // so every kind shares this one list.
+        targets.extend(self.pickable_object_targets());
         targets
     }
     pub(super) fn arrow_rain(&self) -> impl Fn(BlockPos) -> bool + '_ {

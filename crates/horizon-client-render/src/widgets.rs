@@ -14,6 +14,8 @@ pub enum Cursor {
     Arrow,
     PointingHand,
     NotAllowed,
+    /// `CursorTypes.RESIZE_NS`: a scroller held vertically (`MerchantScreen`).
+    ResizeNs,
 }
 
 thread_local! {
