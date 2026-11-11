@@ -351,18 +351,17 @@ impl Relay {
                         self.state.connections.fetch_sub(1, Ordering::Relaxed);
                         continue;
                     }
-                    let state = self.state.clone();
-                    let spawned =
+                    // Given back when the thread ends, a panic included, or with the closure
+                    // when the thread can't start.
+                    let slot = ConnSlot(self.state.clone());
+                    let _ =
                         std::thread::Builder::new()
                             .name("relay-conn".into())
                             .spawn(move || {
                                 let _ = stream.set_nonblocking(false);
-                                let _ = handle(&state, stream, peer);
-                                state.connections.fetch_sub(1, Ordering::Relaxed);
+                                let _ = handle(&slot.0, stream, peer);
+                                drop(slot);
                             });
-                    if spawned.is_err() {
-                        self.state.connections.fetch_sub(1, Ordering::Relaxed);
-                    }
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                     std::thread::sleep(Duration::from_millis(10));
@@ -428,6 +427,23 @@ impl Drop for OpenSlot<'_> {
     fn drop(&mut self) {
         locked(&self.0.limiter).close_connection(self.1);
     }
+}
+
+/// One of `max_connections`, given back when dropped.
+struct ConnSlot(Arc<State>);
+impl Drop for ConnSlot {
+    fn drop(&mut self) {
+        self.0.connections.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// A host's attach token against the one given: every byte compared, whatever differs first.
+fn same_token(a: &str, b: &str) -> bool {
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+            == 0
 }
 
 fn handle(state: &Arc<State>, mut stream: TcpStream, peer: SocketAddr) -> io::Result<()> {
@@ -787,7 +803,7 @@ fn attach(
                 inner
                     .hosts
                     .get(&p.nameplate)
-                    .is_some_and(|h| h.token == token)
+                    .is_some_and(|h| same_token(&h.token, token))
             })
             .map(|p| p.attach.clone())
     };
