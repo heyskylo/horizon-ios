@@ -13,18 +13,12 @@ mod fx;
 
 use super::Game;
 use horizon_client::fast_hash::FxHashMap;
-use horizon_client::mesher::Vertex;
-use horizon_client::mobs::anim::Poses;
-use horizon_client::mobs::{Mob, Part, Polygon};
-use horizon_cosmetics::follow::Follow;
 use horizon_cosmetics::prefs::{self, Others};
-use horizon_cosmetics::trail::{Budget, Emitter};
 use horizon_cosmetics::{Item, Slot};
 use horizon_hooks::players::{
-    Badge, CameraOverride, CameraView, Frame, Gear, Kind, Mark, NameDecoration, PlayerModel,
-    PlayerModels, SpriteStore, Sprites,
+    Badge, Bone, CameraOverride, CameraView, Frame, Gear, Kind, Look, Mark, Mesh, NameDecoration,
+    Pass, PlayerDraw, PlayerModel, PlayerModels, Quad, SpriteStore, Sprites,
 };
-use std::cell::{Cell, RefCell};
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -32,46 +26,10 @@ use std::time::{Duration, Instant};
 /// Horizon's mark before a Horizon player's name, over their name tag and in the player list.
 const MARK: Mark = &horizon_cosmetics::mark::MARK;
 
-/// An item as the renderer takes it.
-struct Baked {
-    item: Arc<Item>,
-    /// A model per bone it rides (a shirt's sleeves are on the arms).
-    models: Vec<(horizon_cosmetics::Bone, Arc<Part>)>,
-    /// Its texture's sprite (a 64×64 skin slot of the atlas).
-    location: String,
-    /// The frame it was last marked drawn in (its slot is kept).
-    marked: Cell<u32>,
-}
-
-impl Baked {
-    fn new(item: &Arc<Item>, frame: u32) -> Self {
-        Self {
-            item: item.clone(),
-            models: item
-                .roots()
-                .map(|(bone, root)| (bone, Arc::new(part(root))))
-                .collect(),
-            location: format!("cosmetics/{:x}", Arc::as_ptr(item) as usize),
-            marked: Cell::new(frame.wrapping_sub(1)),
-        }
-    }
-}
-
 #[derive(Default)]
 pub(super) struct Cosmetics {
-    /// The hooks' client (`Seat`), taken once it started.
-    client: Option<Arc<horizon_cosmetics::Cosmetics>>,
-    /// By the item's address; each entry holds its item, so the address isn't reused.
-    baked: RefCell<FxHashMap<usize, Baked>>,
-    /// Items drawn whose texture isn't in the atlas yet.
-    uploads: RefCell<Vec<Arc<Item>>>,
-    frame: Cell<u32>,
-    /// Kept between players so a frame of avatars allocates none: the wearer's body, an item.
-    poses: RefCell<(Poses, Poses)>,
     /// Item files from a folder (`HORIZON_COSMETICS_LOCAL`): mannequins wear them too.
     local: bool,
-    /// Companions, trails and auras.
-    fx: RefCell<Fx>,
     /// Emotes: those the wheel offers and the one playing (`cosmetics/emotes.rs`).
     emotes: emotes::Emotes,
     /// The emote wheel (`cosmetics/emote_wheel.rs`).
@@ -128,49 +86,6 @@ fn load_owned_emotes(
         |id| horizon_client::auth::join_server(&session, id).map_err(|e| format!("{e:?}")),
         |path| horizon_cosmetics::Transport::get(&service, path),
     )
-}
-
-/// The key of the player's own model in `Fx`'s maps (others go by entity id).
-const OWN: u32 = u32::MAX;
-/// Full light, for what glows.
-const FULL_LIGHT: u32 = 240 | 240 << 8;
-
-/// What companions and trails keep between frames, per wearer (marked with the frame they were
-/// last drawn in; the others are dropped), and the frame's trails and auras, drawn after the
-/// players (`cosmetics_fx_geometry`).
-#[derive(Default)]
-struct Fx {
-    companions: FxHashMap<u32, (Follow, u32)>,
-    trails: FxHashMap<u32, (Emitter, u32)>,
-    budget: Budget,
-    clock: Option<(Instant, Instant)>,
-    /// Ticks since the first frame, and the last frame's length in seconds.
-    now: f64,
-    dt: f32,
-    /// Trails and auras: see-through.
-    clear: Vec<Vertex>,
-}
-
-impl Fx {
-    /// A new frame: the clock moves on and what no frame drew since the last one goes.
-    fn frame(&mut self, frame: u32) {
-        let now = Instant::now();
-        let (start, last) = self.clock.get_or_insert((now, now));
-        self.dt = now.duration_since(*last).as_secs_f32().min(0.25);
-        self.now = now.duration_since(*start).as_secs_f64() * 20.0;
-        *last = now;
-        let seen = |mark: u32| frame.wrapping_sub(mark) <= 1;
-        self.companions.retain(|_, (_, mark)| seen(*mark));
-        let budget = &mut self.budget;
-        self.trails.retain(|_, (e, mark)| {
-            let keep = seen(*mark);
-            if !keep {
-                e.clear(budget);
-            }
-            keep
-        });
-        self.clear.clear();
-    }
 }
 
 /// Whether the signed-in account owns a cosmetic: the answer kept from the last run first
@@ -334,15 +249,11 @@ impl Cosmetics {
 /// choice, or by owning none). Hidden, the service is never asked about them.
 fn worn_of(
     client: &horizon_cosmetics::Cosmetics,
-    extras: &horizon_client::extras::Extras,
+    said: &Said,
     own: bool,
     uuid: impl FnOnce() -> Option<u128>,
 ) -> Option<horizon_cosmetics::Worn> {
-    let shown = if own {
-        extras.cosmetics_mine
-    } else {
-        extras.effective_others() != Others::Hidden
-    };
+    let shown = if own { said.mine } else { !said.others_hidden };
     if !shown {
         return None;
     }
@@ -350,9 +261,11 @@ fn worn_of(
 }
 
 /// The UUID the service knows the player's own model by. On a server, the profile it gave
-/// (`profile`). In single player the window's own server (`solo`) names the player by their
-/// offline profile, which the service doesn't know: the signed-in account's (`account`) then, only
-/// with *Cosmetics in single player* on (`shown`); off, nothing is asked or drawn.
+/// (`profile`), but an offline-mode server's is `nameUUIDFromBytes` of the name (version 3), which
+/// the service doesn't know: the signed-in account's (`account`) then, as an online server's would
+/// be (#12820). Only the own model: another player's name can be anyone's there. In single player
+/// the window's own server (`solo`) names the player by their offline profile too: the account's
+/// then, only with *Cosmetics in single player* on (`shown`); off, nothing is asked or drawn.
 fn own_uuid(
     profile: Option<u128>,
     solo: bool,
@@ -360,6 +273,7 @@ fn own_uuid(
     account: impl FnOnce() -> Option<u128>,
 ) -> Option<u128> {
     match solo {
+        false if profile.is_some_and(|p| (p >> 76) & 0xf == 3) => account().or(profile),
         false => profile,
         true if shown && profile.is_some() => account(),
         true => None,
@@ -368,24 +282,6 @@ fn own_uuid(
 
 /// How often a looping emote is said again (the service keeps one a minute).
 const LOOP_AGAIN: Duration = Duration::from_secs(30);
-
-/// The game's model of an item's part.
-fn part(p: &horizon_cosmetics::Part) -> Part {
-    Part {
-        name: p.name.clone(),
-        pose: p.pose,
-        polygons: p
-            .faces
-            .iter()
-            .map(|f| Polygon {
-                normal: f.normal,
-                vertices: f.vertices,
-                cull_back: false,
-            })
-            .collect(),
-        children: p.children.iter().map(part).collect(),
-    }
-}
 
 /// The texture in the top-left corner of a skin slot's 64×64 RGBA.
 fn slot_image(item: &Item) -> Vec<u8> {
@@ -463,12 +359,45 @@ struct Seat {
     models: Vec<PlayerModel>,
     /// The world is the window's own single-player one (`Frame::solo`).
     solo: bool,
-    /// Name tag badges' sprites, by the item's address: their id (never reused) and the item,
-    /// held so the address isn't reused while it is there.
-    sprites: FxHashMap<usize, (u64, Arc<Item>)>,
+    /// The items the hooks show, by the item's address.
+    items: FxHashMap<usize, Kept>,
     last_sprite: u64,
     /// Sprites drawing missed, put in the atlas next frame.
     wanted: Vec<u64>,
+    /// Companions, trails and auras (`cosmetics/fx.rs`).
+    fx: fx::Fx,
+}
+
+/// An item the hooks show: its sprite's id (never reused) and a mesh per bone it rides, held
+/// with the item so its address isn't reused while it is here.
+struct Kept {
+    sprite: u64,
+    item: Arc<Item>,
+    meshes: Vec<(Bone, Arc<Mesh>)>,
+}
+
+/// The hooks' model of an item's part.
+fn mesh(p: &horizon_cosmetics::Part) -> Mesh {
+    let quads = p.faces.iter().map(|f| Quad::new(f.normal, f.vertices));
+    Mesh::new(
+        p.name.clone(),
+        p.pose,
+        quads.collect(),
+        p.children.iter().map(mesh).collect(),
+    )
+}
+
+/// The hooks' name of a bone.
+fn bone(b: horizon_cosmetics::Bone) -> Bone {
+    use horizon_cosmetics::Bone as B;
+    match b {
+        B::Head => Bone::Head,
+        B::Body => Bone::Body,
+        B::LeftArm => Bone::LeftArm,
+        B::RightArm => Bone::RightArm,
+        B::LeftLeg => Bone::LeftLeg,
+        B::RightLeg => Bone::RightLeg,
+    }
 }
 
 /// What the game tells the hooks before each call, until the settings move here (spec #14091
@@ -483,6 +412,8 @@ struct Said {
     others_hidden: bool,
     /// Horizon's mark by Horizon players' names.
     marks: bool,
+    /// Other players' trails and auras are hidden.
+    hide_fx: bool,
     /// Cosmetics in single player: the signed-in account's on the player's own model.
     solo: bool,
     /// My emote pulled the camera back: when it started (the own model's age).
@@ -491,6 +422,19 @@ struct Said {
     playing: Option<(String, bool)>,
     /// A folder's first emote, which mannequins play.
     first: Option<Arc<Item>>,
+}
+
+impl Said {
+    /// What the game's settings say.
+    fn settings(&mut self, extras: &horizon_client::extras::Extras) {
+        self.mine = extras.cosmetics_mine;
+        self.listed = extras.horizon_listed;
+        self.others_shown = extras.effective_others() == Others::Shown;
+        self.others_hidden = extras.effective_others() == Others::Hidden;
+        self.marks = extras.horizon_marks;
+        self.hide_fx = extras.cosmetics_hide_fx;
+        self.solo = extras.cosmetics_solo;
+    }
 }
 
 /// One [`Seat`] per splitscreen player.
@@ -515,6 +459,7 @@ impl horizon_hooks::Hooks for Hooks {
         service(|s| {
             s.solo = frame.solo;
             s.frame();
+            s.fx.frame();
             s.put_sprites(sprites);
         });
     }
@@ -539,6 +484,15 @@ impl horizon_hooks::Hooks for Hooks {
     }
 
     /// An emote pulls the camera back: it eases out over the emote's first quarter second.
+    fn player_layers(&self, model: &PlayerModel, draw: &mut dyn PlayerDraw) {
+        service(|s| s.player_layers(model, draw));
+    }
+
+    /// The player's own companion in first person.
+    fn first_person(&self, own: &PlayerModel, draw: &mut dyn PlayerDraw) {
+        service(|s| s.first_person(own, draw));
+    }
+
     fn camera(&self, own: &CameraView) -> Option<CameraOverride> {
         let start = service(|s| s.said.pull)?;
         let t = ((own.age - start) / 5.0).clamp(0.0, 1.0);
@@ -664,14 +618,7 @@ impl Seat {
         if !(styles || said.marks) {
             return None;
         }
-        let uuid = match m.kind {
-            Kind::Own => own_uuid(m.uuid, self.solo, said.solo, || {
-                horizon_client::auth::current().map(|s| s.uuid)
-            }),
-            Kind::Mannequin if self.local => Some(u128::from(m.id)),
-            Kind::Player => m.uuid,
-            _ => None,
-        }?;
+        let uuid = self.uuid_of(m)?;
         let mut frame = self.client.as_ref()?.frame();
         let mark = (said.marks && frame.horizon(uuid)).then_some(MARK);
         let worn = if styles { frame.worn(uuid) } else { None };
@@ -687,42 +634,152 @@ impl Seat {
         Some(NameDecoration::new(mark, badge, top))
     }
 
-    /// The name tag style in `worn`: its badge's place in the atlas and its line's colour. None
-    /// until the badge is in the atlas (it is put there next frame).
-    fn badge(&mut self, worn: &horizon_cosmetics::Worn, sprites: &dyn Sprites) -> Option<Badge> {
-        let item = worn.iter().find(|i| i.slot == Slot::NameTag)?;
-        let [r, g, b] = item.tag?.line;
+    /// The UUID the service knows `m` by: a player's, or a mannequin's id with local items.
+    fn uuid_of(&self, m: &PlayerModel) -> Option<u128> {
+        match m.kind {
+            Kind::Own => own_uuid(m.uuid, self.solo, self.said.solo, || {
+                horizon_client::auth::current().map(|s| s.uuid)
+            }),
+            Kind::Mannequin if self.local => Some(u128::from(m.id)),
+            Kind::Player => m.uuid,
+            _ => None,
+        }
+    }
+
+    /// `item` as the hooks show it, kept from its first sight.
+    fn kept(&mut self, item: &Arc<Item>) -> &Kept {
         let next = self.last_sprite + 1;
-        let (id, _) = *self
-            .sprites
+        let kept = self
+            .items
             .entry(Arc::as_ptr(item) as usize)
-            .or_insert_with(|| (next, item.clone()));
-        self.last_sprite = self.last_sprite.max(id);
-        let Some([u0, v0, u1, v1]) = sprites.get(id) else {
+            .or_insert_with(|| Kept {
+                sprite: next,
+                item: item.clone(),
+                meshes: item
+                    .roots()
+                    .map(|(b, root)| (bone(b), Arc::new(mesh(root))))
+                    .collect(),
+            });
+        self.last_sprite = self.last_sprite.max(kept.sprite);
+        kept
+    }
+
+    /// Where `item`'s texture is in the atlas (`get` reads the crate's sprites): the top left
+    /// corner of its slot. None until it is there (it is put there next frame).
+    fn uv(&mut self, item: &Arc<Item>, get: impl Fn(u64) -> Option<[f32; 4]>) -> Option<[f32; 4]> {
+        let id = self.kept(item).sprite;
+        let Some([u0, v0, u1, v1]) = get(id) else {
             if !self.wanted.contains(&id) {
                 self.wanted.push(id);
             }
             return None;
         };
-        // The mark sits in the slot's top left corner.
-        let u1 = u0 + (u1 - u0) * item.texture.width as f32 / 64.0;
-        let v1 = v0 + (v1 - v0) * item.texture.height as f32 / 64.0;
-        Some(Badge::new(
-            [u0, v0, u1, v1],
-            u32::from_be_bytes([0, r, g, b]),
-        ))
+        let (w, h) = (
+            item.texture.width as f32 / 64.0,
+            item.texture.height as f32 / 64.0,
+        );
+        Some([u0, v0, u0 + (u1 - u0) * w, v0 + (v1 - v0) * h])
     }
 
-    /// Puts the sprites drawing missed in the atlas; forgets those of items no one wears.
+    /// The name tag style in `worn`: its badge and its line's colour. None until the badge is in
+    /// the atlas.
+    fn badge(&mut self, worn: &horizon_cosmetics::Worn, sprites: &dyn Sprites) -> Option<Badge> {
+        let item = worn.iter().find(|i| i.slot == Slot::NameTag)?;
+        let [r, g, b] = item.tag?.line;
+        let uv = self.uv(item, |id| sprites.get(id))?;
+        Some(Badge::new(uv, u32::from_be_bytes([0, r, g, b])))
+    }
+
+    /// Puts the sprites drawing missed in the atlas; forgets the items no one wears.
     fn put_sprites(&mut self, store: &mut dyn SpriteStore) {
         for id in self.wanted.drain(..) {
-            let item = self.sprites.values().find(|(i, _)| *i == id);
-            if let Some((_, item)) = item.filter(|_| !store.has(id)) {
-                store.put(id, slot_image(item));
+            let kept = self.items.values().find(|k| k.sprite == id);
+            if let Some(kept) = kept.filter(|_| !store.has(id)) {
+                store.put(id, slot_image(&kept.item));
             }
         }
-        self.sprites
-            .retain(|_, (_, item)| Arc::strong_count(item) > 1);
+        self.items.retain(|_, k| Arc::strong_count(&k.item) > 1);
+    }
+
+    /// The cosmetics `m` wears, on its bones and around it in the world (companions, trails,
+    /// auras: `cosmetics/fx.rs`), and an emote's props.
+    fn player_layers(&mut self, m: &PlayerModel, draw: &mut dyn PlayerDraw) {
+        if m.invisible {
+            return;
+        }
+        let said = &self.said;
+        let own = m.kind == Kind::Own;
+        // "Name tags only": other players' styles beside their names, nothing on their bodies.
+        let bodies = own || said.others_shown;
+        let ticks = draw.ticks();
+        // An emote's props: its time and weight while it plays.
+        let emote = emotes::pose_playing(draw.body_pose()).and_then(|p| {
+            let (t, w) = p.at(ticks)?;
+            (p.item.vertices > 0).then(|| (p.item.clone(), t, w))
+        });
+        let client = self.client.as_ref().filter(|_| bodies);
+        let worn = client.and_then(|c| worn_of(c, &self.said, own, || self.uuid_of(m)));
+        // Items on one bone (a back item, a shoulder pet and a shirt ride the body) share its
+        // matrix: the head, the body and the two arms at most.
+        let mut bones: [Option<(Bone, [[f32; 4]; 4])>; 4] = [None; 4];
+        let worn_items = worn.iter().flat_map(|w| w.iter()).map(|i| (i, None));
+        let emote_items = emote.iter().map(|(i, t, w)| (i, Some((*t, *w))));
+        for (item, emoting) in worn_items.chain(emote_items) {
+            // On no bone, around the model in the world.
+            if let (Slot::Companion | Slot::Trail | Slot::Aura, None) = (item.slot, emoting) {
+                if draw.pass() == Pass::World {
+                    self.fx(m, item, draw);
+                }
+                continue;
+            }
+            // Covered by gear, or drawn by no bone (a name tag style).
+            if emoting.is_none() && covered(m.gear, item.slot) {
+                continue;
+            }
+            let Some(uv) = self.uv(item, |id| draw.sprite(id)) else {
+                continue;
+            };
+            for i in 0..self.kept(item).meshes.len() {
+                let (bone_of, mesh) = self.kept(item).meshes[i].clone();
+                let known = bones.iter().flatten().find(|(b, _)| *b == bone_of);
+                let matrix = match known {
+                    Some(&(_, matrix)) => matrix,
+                    None => {
+                        let Some(matrix) = draw.bone(bone_of) else {
+                            continue;
+                        };
+                        if let Some(free) = bones.iter_mut().find(|b| b.is_none()) {
+                            *free = Some((bone_of, matrix));
+                        }
+                        matrix
+                    }
+                };
+                draw.draw(&mesh, matrix, Look::new(uv), &mut |p| {
+                    item.animate(ticks, |name, pose| *p.pose(name) = pose);
+                    if let (Some((t, w)), Some(e)) = (emoting, &item.emote) {
+                        e.pose_props(t, |n| item.rest(n), |n, pose| *p.pose(n) = pose);
+                        // Props grow in and shrink out with the emote's blend.
+                        let root = p.pose(&mesh.name);
+                        for s in &mut root[6..9] {
+                            *s *= w;
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    /// The window's own companion while its body is out of view.
+    fn first_person(&mut self, m: &PlayerModel, draw: &mut dyn PlayerDraw) {
+        let Some(client) = self.client.as_ref().filter(|_| !m.invisible) else {
+            return;
+        };
+        let Some(worn) = worn_of(client, &self.said, true, || self.uuid_of(m)) else {
+            return;
+        };
+        if let Some(item) = worn.iter().find(|i| i.slot == Slot::Companion) {
+            self.fx(m, item, draw);
+        }
     }
 
     /// Once a tick: names the Horizon players in view to the emote feed and plays what it says
@@ -824,12 +881,7 @@ impl Game<'_> {
         let pull = self.cosmetics.emotes.pull();
         service(|s| {
             let said = &mut s.said;
-            said.mine = extras.cosmetics_mine;
-            said.listed = extras.horizon_listed;
-            said.others_shown = extras.effective_others() == Others::Shown;
-            said.others_hidden = extras.effective_others() == Others::Hidden;
-            said.marks = extras.horizon_marks;
-            said.solo = extras.cosmetics_solo;
+            said.settings(extras);
             said.pull = pull;
             if said.playing.as_ref().map(|(id, l)| (id.as_str(), *l)) != playing {
                 said.playing = playing.map(|(id, l)| (id.to_owned(), l));
@@ -840,36 +892,16 @@ impl Game<'_> {
         });
     }
 
-    /// Once a frame, after the hooks: takes the service's client for drawing and puts the
-    /// textures the last frame wanted into the atlas.
+    /// Once a frame, after the hooks: what the game reads of them (the settings' owner flag,
+    /// whether items come from a folder).
     pub(super) fn cosmetics_frame(&mut self) {
         if !enabled() {
             return;
         }
-        let c = &mut self.cosmetics;
-        let owns = service(|s| {
-            if c.client.is_none() {
-                c.client = s.client.clone();
-                c.local = s.local;
-            }
-            s.owner.owns
-        });
+        let (owns, local) = service(|s| (s.owner.owns, s.local));
         // Read every frame: the settings button shows it, and it is never saved.
         self.settings.extras.cosmetics_owner = owns;
-        c.frame.set(c.frame.get().wrapping_add(1));
-        c.fx.get_mut().frame(c.frame.get());
-        let uploads = std::mem::take(&mut *c.uploads.borrow_mut());
-        for item in uploads {
-            let location = format!("cosmetics/{:x}", Arc::as_ptr(&item) as usize);
-            if !self.gui.atlas.sprites.contains_key(&location) {
-                self.store_skin(location, slot_image(&item));
-            }
-        }
-        // Items no player wears any more.
-        self.cosmetics
-            .baked
-            .borrow_mut()
-            .retain(|_, b| Arc::strong_count(&b.item) > 1);
+        self.cosmetics.local = local;
     }
 
     /// Asks the service which emotes the account owns, for the wheel: when it opens, at most
@@ -894,210 +926,6 @@ impl Game<'_> {
                 let _ = tx.send(load_owned_emotes(&kept));
             })
             .ok();
-    }
-
-    /// What `m` wears, if cosmetics are shown for it: `own` for the player's own model.
-    fn worn(&self, m: &Mob, own: bool) -> Option<horizon_cosmetics::Worn> {
-        let client = self.cosmetics.client.as_ref()?;
-        worn_of(client, &self.settings.extras, own, || {
-            self.cosmetics_uuid(m, own)
-        })
-    }
-
-    /// The UUID the service knows `m` by: a player's, or a mannequin's id with local items.
-    fn cosmetics_uuid(&self, m: &Mob, own: bool) -> Option<u128> {
-        if own {
-            own_uuid(
-                self.remote.as_ref().map(|r| r.profile()),
-                self.integrated.is_some(),
-                self.settings.extras.cosmetics_solo,
-                || horizon_client::auth::current().map(|s| s.uuid),
-            )
-        } else if &*m.kind.id == "minecraft:player" {
-            self.remote_player_uuid(m.id)
-        } else if self.cosmetics.local && &*m.kind.id == "minecraft:mannequin" {
-            Some(u128::from(m.id))
-        } else {
-            None
-        }
-    }
-
-    /// The cosmetics `m` wears, on its bones. `gpu`: posed on the GPU (the mob pass's skin
-    /// frame, begun); the bounds of what went there come back, for culling. Else the vertices
-    /// go to `out`. `camera`: where the world view's camera is; None in a picture of the player
-    /// (the inventory), which shows no companion, trail or aura.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn cosmetics_geometry(
-        &self,
-        m: &Mob,
-        own: bool,
-        base: glam::Mat4,
-        camera: Option<glam::DVec3>,
-        alpha: f32,
-        light: u32,
-        gpu: bool,
-        out: &mut Vec<horizon_client::mesher::Vertex>,
-    ) -> Option<(glam::Vec3, glam::Vec3)> {
-        use horizon_client::mobs::{anim, render};
-        let worn = self.worn(m, own);
-        // An emote's props: its time and weight while it plays.
-        let ticks = m.age as f32 + alpha;
-        let emote = emotes::playing(m).and_then(|p| {
-            let (t, w) = p.at(ticks)?;
-            (p.item.vertices > 0).then_some((&p.item, t, w))
-        });
-        if worn.is_none() && emote.is_none() || horizon_client::mobs::trader::is_invisible(m) {
-            return None;
-        }
-        // The avatar's body, posed as it is drawn.
-        let (key, _) = render::body(m);
-        let body = m.kind.layer(&key).unwrap_or(&m.kind.model);
-        let mut scratch = self.cosmetics.poses.borrow_mut();
-        let (body_poses, poses) = &mut *scratch;
-        body_poses.reset(body);
-        let data = self.res.mob_data();
-        anim::setup(m, &anim::state(m, alpha), body_poses, &data.animations);
-        let mut bounds = None;
-        // Items on one bone (a back item, a shoulder pet and a shirt ride the body) share its
-        // matrix: the head, the body and the two arms at most.
-        let mut bones: [Option<(horizon_cosmetics::Bone, glam::Mat4)>; 4] = [None; 4];
-        // "Name tags only": other players' styles beside their names, nothing on their bodies.
-        let bodies = own || self.settings.extras.effective_others() == Others::Shown;
-        let worn_items = worn.iter().flat_map(|w| w.iter()).map(|i| (i, None));
-        let emote_items = emote.map(|(i, t, w)| (i, Some((t, w))));
-        for (item, emoting) in worn_items.chain(emote_items) {
-            if emoting.is_none() && !bodies {
-                continue;
-            }
-            if let (Some(camera), Slot::Companion | Slot::Trail | Slot::Aura) = (camera, item.slot)
-            {
-                // The player's own in first person: only its companion, drawn after the drain
-                // of the first-person model (`cosmetics_fx_geometry`).
-                if !(own && !self.own_body_in_view()) {
-                    let at = fx::Wearer {
-                        m,
-                        own,
-                        key: if own { OWN } else { m.id },
-                        base,
-                        camera,
-                        alpha,
-                        light,
-                    };
-                    bounds = self.cosmetics_fx(&at, item, gpu, bounds, poses, out);
-                }
-                continue;
-            }
-            if emoting.is_none() && covered(super::player_hooks::gear(m), item.slot) {
-                continue;
-            }
-            let Some((models, uv)) = self.cosmetics_baked(item) else {
-                continue;
-            };
-            for (bone_of, model) in &models {
-                let known = bones.iter().flatten().find(|(b, _)| b == bone_of);
-                let bone = match known {
-                    Some(&(_, matrix)) => matrix,
-                    None => {
-                        let Some(matrix) =
-                            render::part_matrix(body, base, body_poses, bone_of.part(), 0.0)
-                        else {
-                            continue;
-                        };
-                        if let Some(free) = bones.iter_mut().find(|b| b.is_none()) {
-                            *free = Some((*bone_of, matrix));
-                        }
-                        matrix
-                    }
-                };
-                poses.reset(model);
-                item.animate(ticks, |name, pose| *poses.get(name) = pose);
-                if let (Some((t, w)), Some(e)) = (emoting, &item.emote) {
-                    e.pose_props(t, |n| item.rest(n), |n, pose| *poses.get(n) = pose);
-                    // Props grow in and shrink out with the emote's blend.
-                    let root = poses.get(&model.name);
-                    for s in &mut root[6..9] {
-                        *s *= w;
-                    }
-                }
-                bounds = self.cosmetics_model(model, bone, poses, uv, light, gpu, bounds, out);
-            }
-        }
-        bounds
-    }
-
-    /// An item's models and its texture's corners in the atlas, once its texture is there (it is
-    /// asked for meanwhile).
-    #[allow(clippy::type_complexity)]
-    fn cosmetics_baked(
-        &self,
-        item: &Arc<Item>,
-    ) -> Option<(Vec<(horizon_cosmetics::Bone, Arc<Part>)>, [f32; 4])> {
-        let frame = self.cosmetics.frame.get();
-        let mut baked = self.cosmetics.baked.borrow_mut();
-        let b = baked
-            .entry(Arc::as_ptr(item) as usize)
-            .or_insert_with(|| Baked::new(item, frame));
-        let Some(rect) = self.gui.atlas.sprites.get(&b.location) else {
-            self.cosmetics.uploads.borrow_mut().push(item.clone());
-            return None;
-        };
-        if b.marked.replace(frame) != frame {
-            self.skin_downloads.borrow_mut().drawn(&b.location);
-        }
-        // The texture fills the top-left of its 64×64 slot.
-        let (w, h) = (
-            item.texture.width as f32 / 64.0,
-            item.texture.height as f32 / 64.0,
-        );
-        let uv = [
-            rect.u0,
-            rect.v0,
-            rect.u0 + (rect.u1 - rect.u0) * w,
-            rect.v0 + (rect.v1 - rect.v0) * h,
-        ];
-        Some((b.models.clone(), uv))
-    }
-
-    /// One model at `matrix`, posed by `poses`: on the GPU's skin path when `gpu` (the bounds
-    /// grow to hold it), else its vertices go to `out`.
-    #[allow(clippy::too_many_arguments)]
-    fn cosmetics_model(
-        &self,
-        model: &Arc<Part>,
-        matrix: glam::Mat4,
-        poses: &horizon_client::mobs::anim::Poses,
-        uv: [f32; 4],
-        light: u32,
-        gpu: bool,
-        bounds: Option<(glam::Vec3, glam::Vec3)>,
-        out: &mut Vec<Vertex>,
-    ) -> Option<(glam::Vec3, glam::Vec3)> {
-        if gpu {
-            let mut models = self.skin_models.borrow_mut();
-            let mut frame = self.skin_frame.borrow_mut();
-            let mut skin = horizon_client::mobs::skin::Skin::new(&mut models, &mut frame);
-            skin.bounds = bounds;
-            let paint = horizon_client::mobs::skin::Paint {
-                uv,
-                scroll: 0.0,
-                color: 0xFFFF_FFFF,
-                light,
-                overlay: 0,
-            };
-            if skin.draw(model, matrix, poses, paint) {
-                return skin.bounds;
-            }
-        }
-        horizon_client::mobs::render_model(
-            model,
-            matrix,
-            &|p: &Part| poses.pose(p),
-            uv,
-            light,
-            0,
-            out,
-        );
-        bounds
     }
 }
 
@@ -1165,6 +993,13 @@ mod tests {
 
     const OTHER: u128 = 0x1234;
 
+    /// What `extras` tell the hooks.
+    fn said_of(extras: &Extras) -> Said {
+        let mut said = Said::default();
+        said.settings(extras);
+        said
+    }
+
     /// What another player wears as `extras` shows it, drawn frame after frame for up to
     /// `patience` (the service answers on its own thread), and what was asked of the service.
     fn other_player(
@@ -1182,7 +1017,7 @@ mod tests {
         let client = horizon_cosmetics::Cosmetics::new(service.clone(), None);
         let deadline = Instant::now() + patience;
         let worn = loop {
-            let worn = worn_of(&client, extras, false, || Some(OTHER));
+            let worn = worn_of(&client, &said_of(extras), false, || Some(OTHER));
             if worn.is_some() || Instant::now() >= deadline {
                 break worn;
             }
@@ -1229,6 +1064,37 @@ mod tests {
     }
 
     #[test]
+    fn an_offline_servers_profile_asks_by_my_account_and_an_online_one_by_its_own() {
+        const ACCOUNT: u128 = 0x1f2e_3d4c_5b6a_4978_8695_a4b3_c2d1_e0ff;
+        let offline = horizon_protocol::crypto::offline_uuid("Steve");
+        let online = 0x069a_79f4_44e9_4726_a5be_fca9_0e38_aaf5;
+        let signed_in = || Some(ACCOUNT);
+        // An offline-mode server's profile: the service knows the account, so the account's.
+        assert_eq!(
+            own_uuid(Some(offline), false, false, signed_in),
+            Some(ACCOUNT)
+        );
+        // An online server's profile is the account's own already: kept as it is.
+        assert_eq!(
+            own_uuid(Some(online), false, false, signed_in),
+            Some(online)
+        );
+        // Signed out: the profile, as before.
+        assert_eq!(
+            own_uuid(Some(offline), false, false, || None),
+            Some(offline)
+        );
+        // No profile yet: nothing to ask by.
+        assert_eq!(own_uuid(None, false, false, signed_in), None);
+        // Single player still follows its own setting.
+        assert_eq!(own_uuid(Some(offline), true, false, signed_in), None);
+        assert_eq!(
+            own_uuid(Some(offline), true, true, signed_in),
+            Some(ACCOUNT)
+        );
+    }
+
+    #[test]
     fn single_player_shows_my_cosmetics_only_with_its_setting_and_asks_by_my_account() {
         // The window's own server names the player by their offline profile.
         const OFFLINE: u128 = 0x0ff1;
@@ -1243,7 +1109,7 @@ mod tests {
             let uuid = || own_uuid(Some(OFFLINE), solo, extras.cosmetics_solo, || Some(ACCOUNT));
             let deadline = Instant::now() + patience;
             let worn = loop {
-                let worn = worn_of(&client, &extras, true, uuid);
+                let worn = worn_of(&client, &said_of(&extras), true, uuid);
                 if worn.is_some() || Instant::now() >= deadline {
                     break worn;
                 }
@@ -1397,5 +1263,174 @@ mod tests {
         view.0.push(model(3, Kind::Mannequin, None));
         service.tick(&mut view);
         assert!(view.0[3].1.is_none());
+    }
+
+    /// A player model as `player_layers` draws on it: one bone, the sprites it is given; logs
+    /// each draw (mesh, matrix, uv, its root's scale once posed).
+    #[derive(Default)]
+    struct Canvas {
+        pose: Option<Arc<dyn BodyPose>>,
+        sprite: Option<[f32; 4]>,
+        drawn: Vec<(String, [[f32; 4]; 4], [f32; 4], [f32; 3])>,
+        /// The model's matrix (`LEFT_ARM` if None) and how it moves.
+        base: Option<glam::Mat4>,
+        motion: horizon_hooks::players::Motion,
+        /// Each draw's look: see-through alpha and light.
+        looks: Vec<(Option<f32>, horizon_hooks::players::Light)>,
+    }
+
+    const LEFT_ARM: [[f32; 4]; 4] = [[2.0, 0.0, 0.0, 0.0]; 4];
+
+    impl PlayerDraw for Canvas {
+        fn pass(&self) -> horizon_hooks::players::Pass {
+            horizon_hooks::players::Pass::World
+        }
+        fn ticks(&self) -> f32 {
+            102.0
+        }
+        fn base(&self) -> [[f32; 4]; 4] {
+            self.base.map_or(LEFT_ARM, |b| b.to_cols_array_2d())
+        }
+        fn motion(&self) -> horizon_hooks::players::Motion {
+            self.motion
+        }
+        fn view(&self) -> horizon_hooks::players::View {
+            Default::default()
+        }
+        fn particles(
+            &mut self,
+            _: [f32; 4],
+            _: &[horizon_hooks::players::Particle],
+            _: horizon_hooks::players::Light,
+        ) {
+        }
+        fn bone(&mut self, bone: Bone) -> Option<[[f32; 4]; 4]> {
+            (bone == Bone::LeftArm).then_some(LEFT_ARM)
+        }
+        fn body_pose(&self) -> Option<&Arc<dyn BodyPose>> {
+            self.pose.as_ref()
+        }
+        fn sprite(&self, _: u64) -> Option<[f32; 4]> {
+            self.sprite
+        }
+        fn draw(
+            &mut self,
+            mesh: &Arc<Mesh>,
+            matrix: [[f32; 4]; 4],
+            look: Look,
+            pose: &mut dyn FnMut(&mut dyn horizon_hooks::players::PartPoses),
+        ) {
+            struct Rest(std::collections::HashMap<String, [f32; 9]>);
+            impl horizon_hooks::players::PartPoses for Rest {
+                fn pose(&mut self, name: &str) -> &mut [f32; 9] {
+                    self.0.entry(name.to_owned()).or_insert([0.0; 9])
+                }
+            }
+            let mut rest = Rest([(mesh.name.clone(), mesh.pose)].into());
+            pose(&mut rest);
+            let root = rest.0[&mesh.name];
+            self.looks.push((look.see_through, look.light));
+            self.drawn.push((
+                mesh.name.clone(),
+                matrix,
+                look.uv,
+                [root[6], root[7], root[8]],
+            ));
+        }
+    }
+
+    #[test]
+    fn an_emotes_prop_goes_on_its_bone_once_its_texture_is_in_scaled_by_the_blend() {
+        let pop = CROWN
+            .replace(
+                r#""slot": "head", "bone": "head""#,
+                r#""slot": "emote", "bone": "left_arm""#,
+            )
+            .replace(
+                r#""uv": [0, 0]}]}]}"#,
+                r#""uv": [0, 0]}]}],
+                "emote": {"length": 40, "blend": 4, "tracks": [
+                  {"part": "right_arm", "keys": [{"t": 0}, {"t": 40}]}]}}"#,
+            );
+        let item = Arc::new(Item::parse(pop.as_bytes()).unwrap());
+        let playing = horizon_cosmetics::Playing {
+            item: item.clone(),
+            start: 100.0,
+            stop: None,
+        };
+        let (_, weight) = playing.at(102.0).unwrap();
+        assert!(weight > 0.0 && weight < 1.0, "{weight}");
+        let player = PlayerModel::new(9, Kind::Player, Some(5), 102, false);
+        let mut view = View(vec![(player, None)]);
+        emotes::set_model_playing(&mut view, 9, Some(playing));
+        let mut canvas = Canvas {
+            pose: view.0[0].1.clone(),
+            ..Canvas::default()
+        };
+        // Others' cosmetics hidden, no service: the player's own emote still shows.
+        let mut seat = Seat {
+            said: Said {
+                others_hidden: true,
+                ..Said::default()
+            },
+            ..Seat::default()
+        };
+        // Its texture not in the atlas yet: nothing drawn, the sprite asked for.
+        seat.player_layers(&player, &mut canvas);
+        assert!(canvas.drawn.is_empty());
+        assert_eq!(seat.wanted.len(), 1);
+        canvas.sprite = Some([0.0, 0.0, 0.5, 0.5]);
+        seat.player_layers(&player, &mut canvas);
+        // A 16×16 texture: the slot's top left quarter of it.
+        let quarter = 0.5 * 16.0 / 64.0;
+        assert_eq!(canvas.drawn.len(), 1);
+        let (_, matrix, uv, scale) = &canvas.drawn[0];
+        assert_eq!((matrix, uv), (&LEFT_ARM, &[0.0, 0.0, quarter, quarter]));
+        for s in scale {
+            assert!((s - weight).abs() < 1e-6, "{scale:?} by {weight}");
+        }
+    }
+
+    #[test]
+    fn an_aura_goes_see_through_at_the_feet_unless_swimming_far_or_hidden() {
+        use horizon_hooks::players::{Light, Motion};
+        let ring = CROWN
+            .replace(r#""slot": "head", "bone": "head""#, r#""slot": "aura""#)
+            // At the feet: an aura reaches at most 6 pixels above them.
+            .replace(r#""attach": {"offset": [0, -18, 0]},"#, "")
+            .replace(
+                r#""uv": [0, 0]}]}]}"#,
+                r#""uv": [0, 0]}]}], "aura": {"at": "feet", "alpha": 0.5}}"#,
+            );
+        let ring = Arc::new(Item::parse(ring.as_bytes()).unwrap());
+        let at = glam::Vec3::new(3.0, 0.0, 4.0);
+        let mut canvas = Canvas {
+            sprite: Some([0.0, 0.0, 0.5, 0.5]),
+            base: Some(glam::Mat4::from_translation(at)),
+            ..Canvas::default()
+        };
+        let other = PlayerModel::new(9, Kind::Player, Some(5), 102, false);
+        let own = PlayerModel::new(1, Kind::Own, None, 102, false);
+        let mut seat = Seat::default();
+        seat.fx(&other, &ring, &mut canvas);
+        // Half see-through, lit as the wearer, 24 pixels under the neck.
+        assert_eq!(canvas.looks, [(Some(0.5), Light::Model)]);
+        let feet = glam::Mat4::from_cols_array_2d(&canvas.drawn[0].1).w_axis;
+        assert_eq!(feet.truncate(), at + glam::Vec3::new(0.0, 1.5, 0.0));
+        // Swimming, it would tip over with the body: none.
+        canvas.motion = Motion::default().poses(false, false, false, true);
+        seat.fx(&other, &ring, &mut canvas);
+        canvas.motion = Motion::default();
+        // Past 48 blocks: none.
+        canvas.base = Some(glam::Mat4::from_translation(glam::Vec3::X * 49.0));
+        seat.fx(&other, &ring, &mut canvas);
+        assert_eq!(canvas.looks.len(), 1);
+        // Others' trails and auras hidden: theirs go, the player's own stays.
+        canvas.base = Some(glam::Mat4::from_translation(at));
+        seat.said.hide_fx = true;
+        seat.fx(&other, &ring, &mut canvas);
+        assert_eq!(canvas.looks.len(), 1);
+        seat.fx(&own, &ring, &mut canvas);
+        assert_eq!(canvas.looks.len(), 2);
     }
 }

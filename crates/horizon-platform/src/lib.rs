@@ -50,11 +50,14 @@ pub mod hooks {
     /// [`Hooks::tick`] get, the pose a crate lays over a player's body, what goes by their names,
     /// the crate's sprites, the camera, and what a crate draws on them.
     pub use horizon_hooks::players::{
-        BODY_PARTS, Badge, BodyPose, Bone, CameraOverride, CameraView, Frame, Gear, Kind, Mark,
-        Mesh, NameDecoration, PartPoses, Pass, PlayerDraw, PlayerModel, PlayerModels, Quad,
-        SpriteStore, Sprites,
+        BODY_PARTS, Badge, BodyPose, Bone, CameraOverride, CameraView, Frame, Gear, Kind, Light,
+        Look, Mark, Mesh, Motion, NameDecoration, PartPoses, Particle, Pass, PlayerDraw,
+        PlayerModel, PlayerModels, Quad, SpriteStore, Sprites, View,
     };
-    pub use horizon_hooks::{Hooks, Started, TooLate, register, seat, tunnel};
+    pub use horizon_hooks::{
+        Activity, Client, Dimension, GameMode, Hooks, Play, Started, TooLate, register, seat,
+        tunnel,
+    };
 }
 
 /// The settings store (`horizon_hooks::settings`): a crate's own `key:value` lines in the game
@@ -66,6 +69,12 @@ pub mod settings {
 /// Settings pages a crate adds to the options screens (docs/layers.md, "Platform registries").
 pub mod pages {
     pub use horizon_hooks::pages::{Act, Label, Page, Place, Row, register};
+}
+
+/// The lang files with a crate's text, loaded with the game's own (docs/layers.md, "Platform
+/// registries").
+pub mod lang {
+    pub use horizon_hooks::lang::{Files, register};
 }
 
 /// Drawing on the HUD (docs/layers.md, "Platform registries").
