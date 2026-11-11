@@ -314,6 +314,12 @@ pub trait ProjectileWorld {
     /// `Entity.isInWater` as `updateFluidInteraction` sets it: some water
     /// block's surface reaches the bottom of the box (deflated by 0.001).
     fn in_water(&self, bounds: Aabb) -> bool;
+    /// `velocity` after the currents of the water and the lava the box
+    /// touches (`EntityFluidInteraction.applyCurrentTo`): a projectile is
+    /// pushed by fluids like any entity (`Entity.isPushedByFluid`).
+    fn pushed_by_currents(&self, _bounds: Aabb, velocity: Vec3) -> Vec3 {
+        velocity
+    }
     fn targets(&self) -> &[(Who, Aabb)];
     /// Server-only mod-block contacts along the completed movement.
     fn block_contacts(&self, _entity: i32, _kind: &str, _from: Vec3, _to: Vec3, _bounds: Aabb) {}
@@ -1548,8 +1554,10 @@ impl Projectile {
         if !self.is_fireball() && !self.turns_with_update_rotation() {
             self.update_rotation();
         }
-        // Entity.baseTick's updateFluidInteraction, after the move.
+        // Entity.baseTick's updateFluidInteraction, after the move: the fluids
+        // it touches now, and their currents push it.
         self.touching_water = w.in_water(self.bounds());
+        self.velocity = w.pushed_by_currents(self.bounds(), self.velocity);
         let alive =
             self.position.y > -128.0 && self.age < if self.is_fireball() { 1200 } else { 6000 };
         (alive, Hit::None)

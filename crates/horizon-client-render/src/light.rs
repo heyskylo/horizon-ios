@@ -22,6 +22,7 @@ use crate::{
 use horizon_core::geometry::{Direction, ShapeOp, VoxelShape};
 use horizon_world::registry::{BlockRegistry, BlockStateId};
 use std::{
+    cell::RefCell,
     collections::{HashMap, VecDeque},
     path::Path,
     sync::Arc,
@@ -362,6 +363,48 @@ fn give_scratch(scratch: LightScratch) {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if pool.len() < kept_scratch() {
         pool.push(scratch);
+    }
+}
+
+thread_local! {
+    static RELIGHT_SCRATCH: RefCell<RelightScratch> = RefCell::new(RelightScratch::new());
+}
+
+struct RelightScratch {
+    decrease: VecDeque<(Pos, u8)>,
+    cleared: Vec<Pos>,
+    increase: VecDeque<Pos>,
+    sources: FxHashMap<(i32, i32), i32>,
+}
+
+impl RelightScratch {
+    fn new() -> Self {
+        Self {
+            decrease: VecDeque::new(),
+            cleared: Vec::new(),
+            increase: VecDeque::new(),
+            sources: FxHashMap::default(),
+        }
+    }
+
+    fn clear(&mut self) {
+        const MAX_CAPACITY: usize = 16_384;
+        self.decrease.clear();
+        if self.decrease.capacity() > MAX_CAPACITY {
+            self.decrease.shrink_to(MAX_CAPACITY);
+        }
+        self.cleared.clear();
+        if self.cleared.capacity() > MAX_CAPACITY {
+            self.cleared.shrink_to(MAX_CAPACITY);
+        }
+        self.increase.clear();
+        if self.increase.capacity() > MAX_CAPACITY {
+            self.increase.shrink_to(MAX_CAPACITY);
+        }
+        self.sources.clear();
+        if self.sources.capacity() > MAX_CAPACITY {
+            self.sources.shrink_to(MAX_CAPACITY);
+        }
     }
 }
 
@@ -880,12 +923,12 @@ impl<'w> Region<'w> {
         Self {
             layout: world.layout(),
             world,
-            slots: Vec::new(),
+            slots: Vec::with_capacity(16),
             index: FxHashMap::default(),
             last: ((i32::MIN, 0, 0), NONE),
         }
     }
-    #[inline]
+    #[inline(always)]
     fn slot(&mut self, x: i32, y: i32, z: i32) -> Option<usize> {
         let s = self.layout.section_index(y)?;
         let key = (x >> 4, s as i32, z >> 4);
@@ -1142,10 +1185,25 @@ pub fn relight(
     force: bool,
     changed: &mut LightChanges,
 ) {
-    let mut region = Region::new(world);
-    changed.keyed(region.layout);
-    relight_region(&mut region, tables, sky_light, positions, force, changed);
-    region.finish();
+    changed.keyed(world.layout());
+    if positions.is_empty() {
+        return;
+    }
+    RELIGHT_SCRATCH.with_borrow_mut(|scratch| {
+        scratch.clear();
+        let mut region = Region::new(world);
+        relight_region(
+            &mut region,
+            tables,
+            sky_light,
+            positions,
+            force,
+            scratch,
+            changed,
+        );
+        region.finish();
+        scratch.clear();
+    });
 }
 /// The columns `changed` touched that border a loaded column not lit yet
 /// (`unlit`). `relight` reads and writes only lit columns, so an edit's
@@ -1170,10 +1228,11 @@ fn relight_region(
     sky_light: bool,
     positions: &[Pos],
     force: bool,
+    scratch: &mut RelightScratch,
     changed: &mut LightChanges,
 ) {
     crate::spans::time("lt_block", || {
-        relight_layer(world, tables, false, positions.to_vec(), force, changed)
+        relight_layer(world, tables, false, positions, force, scratch, changed)
     });
     if sky_light {
         let (min_y, max_y) = (world.layout.min_y(), world.layout.max_y());
@@ -1201,7 +1260,7 @@ fn relight_region(
             }
         });
         crate::spans::time("lt_sky", || {
-            relight_layer(world, tables, true, seeds, force, changed)
+            relight_layer(world, tables, true, &seeds, force, scratch, changed)
         });
     }
 }
@@ -1209,14 +1268,30 @@ fn relight_layer(
     world: &mut Region,
     tables: &LightTables,
     sky: bool,
-    seeds: Vec<Pos>,
+    seeds: &[Pos],
     force: bool,
+    scratch: &mut RelightScratch,
     changed: &mut LightChanges,
 ) {
-    let mut decrease: VecDeque<(Pos, u8)> = VecDeque::new();
-    let mut cleared: Vec<Pos> = Vec::new();
-    let mut increase: VecDeque<Pos> = VecDeque::new();
-    for p in seeds {
+    scratch.decrease.clear();
+    scratch.cleared.clear();
+    scratch.increase.clear();
+    scratch.sources.clear();
+
+    if seeds.len() > scratch.decrease.capacity() {
+        scratch.decrease.reserve(seeds.len());
+    }
+    if seeds.len() > scratch.cleared.capacity() {
+        scratch.cleared.reserve(seeds.len());
+    }
+    if seeds.len() > scratch.increase.capacity() {
+        scratch.increase.reserve(seeds.len());
+    }
+
+    let decrease = &mut scratch.decrease;
+    let cleared = &mut scratch.cleared;
+    let increase = &mut scratch.increase;
+    for &p in seeds {
         let Some(old) = level(world, sky, p) else {
             continue;
         };
@@ -1267,13 +1342,22 @@ fn relight_layer(
         }
     }
     // Sources inside the cleared area light up again.
-    let mut sources: FxHashMap<(i32, i32), i32> = FxHashMap::default();
+    let sources = &mut scratch.sources;
+    let mut last_xz = (i32::MIN, i32::MIN);
+    let mut last_lowest = 0;
     crate::spans::time("lt_sources", || {
-        for p in cleared {
+        for &p in cleared.iter() {
             let seed = if sky {
-                let lowest = *sources
-                    .entry((p.0, p.2))
-                    .or_insert_with(|| lowest_sky_source(world, tables, p.0, p.2));
+                let lowest = if (p.0, p.2) == last_xz {
+                    last_lowest
+                } else {
+                    let lowest = *sources
+                        .entry((p.0, p.2))
+                        .or_insert_with(|| lowest_sky_source(world, tables, p.0, p.2));
+                    last_xz = (p.0, p.2);
+                    last_lowest = lowest;
+                    lowest
+                };
                 if p.1 >= lowest { 15 } else { 0 }
             } else {
                 world
@@ -2119,9 +2203,39 @@ pub(crate) mod tests {
             relight(&mut w, &t, true, &positions, false, &mut changed);
         }
         println!(
-            "relight_bench: {:?}, {} sections",
-            start.elapsed(),
-            changed.sections().count()
+            "relight_bench (large batch: 400 rounds x 32 blocks): {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn relight_single_block_bench() {
+        let mut w: FxHashMap<_, _> = world(|_| {}).into_iter().collect();
+        let t = tables();
+        let mut rng = 0x2545_f491_u32;
+        let mut next = |n: i32| {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            (rng % n as u32) as i32
+        };
+        let start = std::time::Instant::now();
+        let mut changed = LightChanges::default();
+        for round in 0..2000 {
+            let state = [TORCH, SLAB, AIR][round % 3];
+            let pos = (next(32) - 8, next(12), next(32) - 8);
+            Arc::make_mut(w.get_mut(&(pos.0 >> 4, pos.2 >> 4)).unwrap()).set(
+                pos.0 & 15,
+                pos.1,
+                pos.2 & 15,
+                state,
+            );
+            relight(&mut w, &t, true, &[pos], false, &mut changed);
+        }
+        println!(
+            "relight_single_block_bench (single block: 2000 rounds): {:?}",
+            start.elapsed()
         );
     }
 
