@@ -183,6 +183,53 @@ def group_setup():
     ]
 
 
+# The opt-out from group_cleanup(): groups that go on with the entities the group before them left, so no
+# cleanup runs before them. The wolf anger clock diagnostic reads the anger_written_* actors of
+# 'wolf anger live writes' (--wolf-anger-clock-diagnostic) and removes them itself.
+CONTINUES_PREVIOUS = frozenset({'wolf anger clock diagnostic'})
+
+
+# Where group_cleanup() looks, per dimension: from this height up, where the groups work (y 100 and up) and
+# no generated entity is. Below are the world's own: mineshaft chest minecarts, mobs, falling gravel and
+# items the terrain drops, which each engine loads at its own times. The Nether's terrain ends at its roof
+# (y 127); the End's pillars and their crystals stay under y 110.
+CLEANUP_FLOOR = {'overworld': 100, 'the_nether': 128, 'the_end': 128}
+
+
+def group_cleanup():
+    """Removes the entities the last group left alive, right after it, the same way in both engines.
+
+    The groups share one world: an entity a group leaves is still there for later groups' unbounded
+    selectors. The bell group's persistent zombie burned in daylight and died at a random tick in each
+    engine, so whether the entities group's PersistenceRequired check still saw it was chance.
+
+    Only the groups' own entities: above CLEANUP_FLOOR. A killed cube mob splits when its body goes 20
+    ticks later, inside the next group, unless it has the smallest size first. What a death still drops
+    with mob_drops and entity_drops off (setup) comes at once, an allay's inventory or a chest minecart's
+    contents; the second kill removes it. Blocks, forced chunks and rules are the groups' own business
+    (tests/test_command_fixture_state.py).
+    """
+    ops = []
+    for level, floor in CLEANUP_FLOOR.items():
+        # Each entity tests its own height: a volume selector as wide as the world is slow in vanilla, which
+        # walks every chunk column in its x range.
+        own = (f'at @s if dimension minecraft:{level} positioned ~-1 {floor} ~-1 '
+               'if entity @s[dx=2,dy=4096,dz=2] run')
+        # The End's own dragon (EndDragonFight spawns it when the level loads) is no group's but flies above the
+        # floor at times: vanilla killed it there and Horizon, which had none up there, didn't.
+        kept = 'type=!player,type=!minecraft:ender_dragon' if level == 'the_end' else 'type=!player'
+        # Horizon finds an @s of another level only from that level ('in').
+        ops += setup(*[f'/execute in minecraft:{level} as @e[type=minecraft:{kind}] {own} '
+                       'data merge entity @s {Size:0}' for kind in ('slime', 'magma_cube', 'sulfur_cube')],
+                     *[f'/execute in minecraft:{level} as @e[{kept}] {own} kill @s'] * 2)
+    return ops
+
+
+# A killed cube mob bigger than size 1 splits when its body goes, 20 ticks later: a group that kills its own
+# cubes last shrinks them first, or the pieces appear in the next group, where group_cleanup() can't reach the
+# dying bodies (selectors skip them).
+SHRINK_SULFUR_CUBES = '/execute as {} run data merge entity @s {{Size:0}}'
+
 def allay_pocket_inventory():
     """The one-slot pocket stores full stacks independently of the held filter."""
     stone = '{id:"minecraft:stone",count:2}'
@@ -2109,6 +2156,12 @@ def bird_flap_sensors():
             ops += setup('/setblock 9 200 10 sculk_sensor strict')
             ops += [{'op': 'tick', 'n': 2}]
             ops += [cmd('/execute if block 9 200 10 sculk_sensor[sculk_sensor_phase=inactive,power=0]')]
+            # A bird's own random decides when it flaps: seed it here, not from the last sync before this group
+            # (item honey bounce's), which every group in between can move. Entity ids far above those the
+            # world's loaded entities have: Horizon keeps an entity's UUID and tags by its id.
+            case = len([op for op in ops if op['op'] == 'sync_randoms'])
+            ops += [{'op': 'sync_randoms', 'uniquifier': 19870 + case, 'entity_id': 1987000 + 1000 * case,
+                     'level_seed': 1987}]
             ops += setup(f'/summon {species} 6.5 205 10.5 '
                          f'{{Tags:["flap_bird"],NoAI:{no_ai}b,Silent:1b,NoGravity:1b,'
                          'Motion:[0d,-1d,0d],attributes:['
@@ -5161,7 +5214,8 @@ def sulfur_cube_loaded_health():
             cmd(f'/data get entity {selector[:-1]},limit=1] Size', expect_result=1),
             cmd(f'/data get entity {selector[:-1]},limit=1] Health 100', expect_result=800),
         ])
-    lines.extend(setup('/kill @e[type=sulfur_cube]', '/forceload remove 0 0 31 31'))
+    lines.extend(setup(SHRINK_SULFUR_CUBES.format('@e[type=sulfur_cube]'), '/kill @e[type=sulfur_cube]',
+                       '/forceload remove 0 0 31 31'))
     return lines
 
 
@@ -5191,7 +5245,8 @@ def sulfur_cube_size_ticks():
                 cmd(f'/data get entity {uuid} Size', expect_result=size),
                 cmd(f'/data get entity {uuid} Health 100', expect_result=health),
             ])
-    lines.extend(setup('/kill @e[type=sulfur_cube]', '/forceload remove 0 0 31 31'))
+    lines.extend(setup(SHRINK_SULFUR_CUBES.format('@e[type=sulfur_cube]'), '/kill @e[type=sulfur_cube]',
+                       '/forceload remove 0 0 31 31'))
     return lines
 
 
@@ -5363,7 +5418,8 @@ def sulfur_cube_fuse_ticks(immediate_power=False):
     for n in (9, 10):
         ops.append(cmd(f'/execute if entity {target(n)}', expect_result=1))
         ops.append(cmd(f'/data get entity {target(n)} fuse'))
-    return ops + setup('/kill @e[tag=sulfur_fuse]', '/forceload remove 0 0 79 15')
+    return ops + setup(SHRINK_SULFUR_CUBES.format('@e[tag=sulfur_fuse,type=sulfur_cube]'),
+                       '/kill @e[tag=sulfur_fuse]', '/forceload remove 0 0 79 15')
 
 
 
@@ -5631,7 +5687,8 @@ def sulfur_cube_mob_contact():
                        expect_result=1))
         ops.append(cmd(f'/data get entity {uuid(n + 10)} Health',
                        expect_result=9 if n == 1 else 10))
-    return ops + setup('/kill @e[tag=sulfur_contact]', '/forceload remove 0 0 15 15')
+    return ops + setup(SHRINK_SULFUR_CUBES.format('@e[tag=sulfur_contact,type=sulfur_cube]'),
+                       '/kill @e[tag=sulfur_contact]', '/forceload remove 0 0 15 15')
 
 
 
@@ -7000,19 +7057,33 @@ def beacon_levels_load():
 def zombie_villager_summoned_data():
     """#13198: `ZombieVillager.defineSynchedData` picks a random profession in the constructor and
     leaves `villagerDataFinalized` false; `readAdditionalSaveData` sets it only for a save with
-    `VillagerDataFinalized` or `VillagerData`. `/summon` with NBT does not finalize the mob."""
+    `VillagerDataFinalized` or `VillagerData`. `/summon` with NBT does not finalize the mob.
+
+    The random profession (`VILLAGER_PROFESSION.getRandom(this.random)`, `none` 1 time in 15) comes
+    from `Entity.random`, which is `RandomSource.create()`: two vanilla runs disagree on it. Check the
+    first two professions' registry domain instead; the third subject's saved data stays exact."""
     x0, y0, z0 = 3776, 260, 3648
     ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
            cmd('/tick freeze', False)]
     subjects = ['NoAI:1b', 'NoAI:1b,VillagerDataFinalized:1b',
                 'NoAI:1b,VillagerData:{type:"minecraft:taiga",profession:"minecraft:cleric",level:2}']
+    # VillagerProfession's 26.3 built-in registry, including none and nitwit.
+    professions = ('none', 'armorer', 'butcher', 'cartographer', 'cleric', 'farmer', 'fisherman',
+                   'fletcher', 'leatherworker', 'librarian', 'mason', 'nitwit', 'shepherd',
+                   'toolsmith', 'weaponsmith')
     for n, fields in enumerate(subjects, 1):
         uuid = f'000033ce-0000-0000-0000-{n:04x}00000001'
         ops.append(cmd(f'/summon zombie_villager {x0 + 3 * n}.5 {y0} {z0 + 4}.5 {{UUID:[I;13262,0,{n},1],{fields}}}',
                        expect_result=1))
         ops.append(cmd(f'/data get entity {uuid} VillagerDataFinalized'))
-        ops.append(cmd(f'/execute if data entity {uuid} VillagerData{{profession:"minecraft:none"}}'))
-        if n == 3:
+        if n < 3:
+            # Every valid draw stops with the same empty feedback and callbacks. Invalid or
+            # missing data reaches /data get, whose feedback/callback must differ, without masking.
+            conditions = ''.join(f' unless data entity {uuid} VillagerData{{profession:"minecraft:{p}"}}'
+                                 for p in professions)
+            ops.append(cmd(f'/execute{conditions} run data get entity {uuid} VillagerData.profession'))
+        else:
+            ops.append(cmd(f'/execute if data entity {uuid} VillagerData{{profession:"minecraft:none"}}'))
             ops.append(cmd(f'/data get entity {uuid} VillagerData'))
     return ops + setup('/tick unfreeze', f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
                        f'/forceload remove {x0} {z0}')

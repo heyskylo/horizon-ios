@@ -32,6 +32,7 @@ pub(super) fn build_renderer(
     prepared: Option<horizon_client::gfx::PreparedTextures>,
     api: horizon_client::graphics::GraphicsApi,
     translucent_batching: bool,
+    vsync: bool,
     // HDR and Smooth Gradients pick the frame, with what the window's display reported to the
     // renderer before (`display`, `Renderer::new`).
     settings: &horizon_client::graphics::Graphics,
@@ -79,6 +80,10 @@ pub(super) fn build_renderer(
         shader_pack.frame(),
         display,
     ))?;
+    // The loading renderer may have been built before the saved graphics settings were
+    // adopted. Configure the world swapchain before its first gameplay frame instead of
+    // waiting for `Game::apply_settings` after the handoff.
+    renderer.set_present_mode(vsync, settings.present_mode);
     renderer.hud.sprite_animations = atlas
         .sprite_animations
         .iter()
