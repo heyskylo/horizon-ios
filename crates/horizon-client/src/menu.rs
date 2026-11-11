@@ -3509,6 +3509,21 @@ pub(crate) mod tests {
         test(&env, &mut menu);
     }
 
+    /// `CrafterBlockEntity.fillStackedContents`: a crafter's 3x3 slots are
+    /// part of the recipe book's craftable contents.
+    #[test]
+    fn a_crafters_grid_counts_for_the_recipe_book() {
+        with_menu(Kind::CrafterBlock, |env, menu| {
+            menu.containers[MAIN][0] = Some(ItemStack::new("minecraft:oak_planks", 4));
+            let stacked = menu.stacked_contents(env);
+            let planks = crate::crafting::Ingredient::of(vec!["minecraft:oak_planks".to_owned()]);
+            assert!(
+                stacked.can_craft(&[&planks]),
+                "the crafter's own grid stacks"
+            );
+        });
+    }
+
     /// `BrewingStandMenu.FuelSlot` and `quickMoveStack` use the same component.
     #[test]
     fn brewing_fuel_slot_and_quick_move_use_stack_components() {
@@ -3908,6 +3923,7 @@ pub(crate) mod tests {
                 ingredient: |_, _, _| {},
                 ingredient_test: |_, _, _, _| {},
                 log_line: |_, _, _, _| {},
+                living_death_message: |_, _, _| {},
                 handshake: |_, _, _, _, _| {},
             });
         assert!(installed.is_ok());
