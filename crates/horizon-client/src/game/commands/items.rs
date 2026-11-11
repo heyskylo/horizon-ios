@@ -535,6 +535,15 @@ impl Game<'_> {
         let Some(stack) = stack.filter(|s| &*s.item != "minecraft:air" && s.count > 0) else {
             return true;
         };
+        // SulfurCube.getEquipmentSlotForItem: a swallowable item is a body item.
+        if let Slot::Mob(id, "body") = s
+            && self.mobs.iter().find(|m| m.id == *id).is_some_and(|m| {
+                m.species() == horizon_client::mobs::Species::SulfurCube
+                    && horizon_client::mobs::sulfur_cube::swallowable(m, &stack.item)
+            })
+        {
+            return true;
+        }
         self.items()
             .get(&stack.item)
             .is_some_and(|info| info.equip_slot.as_deref() == Some(name))
@@ -1415,6 +1424,13 @@ impl Game<'_> {
             }
             let h = self.owner_holder(o);
             tracker.track(&h, changed);
+            // EntityItemAccessor: a player whose slots changed gets
+            // `containerMenu.broadcastChanges` at once, so InventoryChangeTrigger
+            // (and its announcement) comes before the command's message.
+            if changed > 0 && matches!(o, Owner::Entity(Target::Player)) && self.player.is_some() {
+                self.check_inventory_trigger();
+                self.cmds.broadcast_announced = self.adv.announced.len();
+            }
         }
         if selected == 0 {
             return Err(
@@ -1576,35 +1592,147 @@ fn merge_compound(into: &mut Tag, from: &Tag) {
     }
 }
 /// `ListOperation.apply` (`mode`: replace_all, replace_section, insert,
-/// append) with a 256-entry limit.
+/// append) with a 256-entry limit (`SetLoreFunction`'s). An append, insert or section
+/// replacement that cannot be done, an offset past the end or a result over the limit, gives
+/// the old list back unchanged, as vanilla does (it logs an error). `replace_all` is the new
+/// list as it is in vanilla, whose `ItemLore` then refuses more than 256 lines; here it is cut.
 fn list_operation(m: &serde_json::Value, old: Vec<Tag>, new: Vec<Tag>) -> Vec<Tag> {
+    const LIMIT: usize = 256;
     let offset = m["offset"].as_u64().unwrap_or(0) as usize;
-    let mut out = match m["mode"].as_str().unwrap_or("") {
-        "replace_all" => new,
+    match m["mode"].as_str().unwrap_or("") {
+        "replace_all" => {
+            let mut out = new;
+            out.truncate(LIMIT);
+            out
+        }
         "insert" => {
-            let at = offset.min(old.len());
-            let mut out = old[..at].to_vec();
+            if offset > old.len() || old.len() + new.len() > LIMIT {
+                return old;
+            }
+            let mut out = old[..offset].to_vec();
             out.extend(new);
-            out.extend_from_slice(&old[at..]);
+            out.extend_from_slice(&old[offset..]);
             out
         }
         "replace_section" => {
-            let at = offset.min(old.len());
+            if offset > old.len() {
+                return old;
+            }
             let size = m["size"].as_u64().map_or(new.len(), |s| s as usize);
-            let mut out = old[..at].to_vec();
+            let mut out = old[..offset].to_vec();
             out.extend(new);
-            let end = (at + size).min(old.len());
-            out.extend_from_slice(&old[end..]);
+            let end = offset.saturating_add(size);
+            if end < old.len() {
+                out.extend_from_slice(&old[end..]);
+            }
+            if out.len() > LIMIT {
+                return old;
+            }
             out
         }
         _ => {
+            if old.len() + new.len() > LIMIT {
+                return old;
+            }
             let mut out = old;
             out.extend(new);
             out
         }
-    };
-    out.truncate(256);
-    out
+    }
+}
+
+/// `ListOperation.Append/Insert/ReplaceSection.apply` with `/item modify`'s lore limit of 256
+/// (`SetLoreFunction` passes 256): an operation that cannot be done logs an error in vanilla and
+/// gives the old list back unchanged. The expected lists are worked out from the vanilla bytecode
+/// (see the pull request), not from the code under test.
+#[cfg(test)]
+mod list_operation_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn ints(range: std::ops::Range<i32>) -> Vec<Tag> {
+        range.map(Tag::Int).collect()
+    }
+
+    #[test]
+    fn an_append_that_would_pass_256_entries_changes_nothing() {
+        let old = ints(0..250);
+        let m = json!({"mode": "append"});
+        // 250 + 7 = 257 is over the limit: the old list, whole.
+        assert_eq!(list_operation(&m, old.clone(), ints(1000..1007)), old);
+        // 250 + 6 = 256 is exactly the limit: all of it.
+        let mut full = old.clone();
+        full.extend(ints(1000..1006));
+        assert_eq!(list_operation(&m, old, ints(1000..1006)), full);
+    }
+
+    #[test]
+    fn an_insert_past_the_end_or_over_the_limit_changes_nothing() {
+        let old = ints(0..3);
+        let at = |offset| json!({"mode": "insert", "offset": offset});
+        // Offset 4 is past the end of three entries.
+        assert_eq!(list_operation(&at(4), old.clone(), ints(9..10)), old);
+        // Offset 3 is the end: an insert there is an append.
+        assert_eq!(
+            list_operation(&at(3), old.clone(), ints(9..11)),
+            [0, 1, 2, 9, 10].map(Tag::Int)
+        );
+        // Offset 1 in the middle.
+        assert_eq!(
+            list_operation(&at(1), old, ints(9..11)),
+            [0, 9, 10, 1, 2].map(Tag::Int)
+        );
+        // 255 + 2 = 257 is over the limit, at any offset.
+        let big = ints(0..255);
+        assert_eq!(list_operation(&at(0), big.clone(), ints(9..11)), big);
+    }
+
+    #[test]
+    fn a_section_replaced_past_the_end_or_over_the_limit_changes_nothing() {
+        let old = ints(0..4);
+        let section = |offset, size: Option<u64>| {
+            let mut m = json!({"mode": "replace_section", "offset": offset});
+            if let Some(size) = size {
+                m["size"] = json!(size);
+            }
+            m
+        };
+        // Offset 5 is past the end of four entries.
+        assert_eq!(
+            list_operation(&section(5, None), old.clone(), ints(9..10)),
+            old
+        );
+        // Offset 4 is the end: nothing to replace, the new entries go after.
+        assert_eq!(
+            list_operation(&section(4, None), old.clone(), ints(9..10)),
+            [0, 1, 2, 3, 9].map(Tag::Int)
+        );
+        // Entries 1 and 2 (size 2) become one entry.
+        assert_eq!(
+            list_operation(&section(1, Some(2)), old.clone(), ints(9..10)),
+            [0, 9, 3].map(Tag::Int)
+        );
+        // No size: as many entries as the new ones.
+        assert_eq!(
+            list_operation(&section(0, None), ints(0..3), ints(7..9)),
+            [7, 8, 2].map(Tag::Int)
+        );
+        // 256 entries, one replaced by two: 257 is over the limit.
+        let full = ints(0..256);
+        assert_eq!(
+            list_operation(&section(0, Some(1)), full.clone(), ints(9..11)),
+            full
+        );
+    }
+
+    #[test]
+    fn replacing_everything_gives_the_new_list() {
+        let m = json!({"mode": "replace_all"});
+        assert_eq!(
+            list_operation(&m, ints(0..3), ints(7..9)),
+            [7, 8].map(Tag::Int)
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1977,6 +2105,31 @@ mod mob_equipment_command_tests {
                 assert!(game.run_command(&format!("item replace entity {uuid} saddle with air")));
                 assert!(game.slot_get(&Slot::Mob(id, "saddle")).is_none());
             }
+        });
+    }
+    /// `SulfurCube.getEquipmentSlotForItem`: a `#sulfur_cube_swallowable`
+    /// item is a body item, so the body's `SlotAccess` takes it (#12038).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_sulfur_cubes_body_takes_a_swallowable_block() {
+        with_game(|game| {
+            assert!(game.run_command("summon sulfur_cube 4.5 200 4.5 {NoAI:1b,Tags:[\"cube\"]}"));
+            let body = |game: &Game<'_>| {
+                let m = game
+                    .mobs
+                    .iter()
+                    .find(|m| m.kind.id == "minecraft:sulfur_cube");
+                m.and_then(|m| m.extra.body.clone())
+            };
+            let replace = "item replace entity @e[tag=cube,limit=1] armor.body with";
+            assert!(game.run_command(&format!("{replace} white_wool")));
+            assert_eq!(body(game).as_deref(), Some("minecraft:white_wool"));
+            // An item outside the tag stays out, and the body stays on.
+            assert!(!game.run_command(&format!("{replace} diamond")));
+            assert_eq!(body(game).as_deref(), Some("minecraft:white_wool"));
+            // An empty stack always fits: the body comes off.
+            assert!(game.run_command(&format!("{replace} air")));
+            assert_eq!(body(game), None);
         });
     }
     #[test]

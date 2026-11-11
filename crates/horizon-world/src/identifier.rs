@@ -32,7 +32,8 @@ fn hash(s: &str) -> i32 {
 }
 impl Identifier {
     pub fn from_parts(namespace: &str, path: &str) -> Result<Self, IdentifierError> {
-        if !namespace.bytes().all(valid) {
+        // `Identifier.isValidNamespace` refuses `..` as a namespace, though its characters are valid.
+        if namespace == ".." || !namespace.bytes().all(valid) {
             return Err(IdentifierError::Namespace);
         }
         if !path.bytes().all(|c| valid(c) || c == b'/') {
@@ -99,5 +100,47 @@ impl JavaKey for Identifier {
     }
     fn tie_break(&self, other: &Self) -> std::cmp::Ordering {
         self.cmp(other)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Identifier.isValidNamespace` rejects the namespace `..` and nothing else that has valid
+    /// characters: `.`, `...` and `a.b` stay valid, and `..` stays valid as a path.
+    #[test]
+    fn only_the_namespace_dot_dot_is_refused() {
+        assert_eq!(
+            Identifier::from_parts("..", "x"),
+            Err(IdentifierError::Namespace)
+        );
+        assert_eq!(Identifier::parse("..:x"), Err(IdentifierError::Namespace));
+        assert_eq!(Identifier::parse_namespaced("..:x"), None);
+        for namespace in [".", "...", "a.b", "..a", "a..", "minecraft"] {
+            let id = Identifier::from_parts(namespace, "x").expect(namespace);
+            assert_eq!(id.to_string(), format!("{namespace}:x"));
+        }
+        assert_eq!(
+            Identifier::from_parts("a", "..").map(|id| id.to_string()),
+            Ok("a:..".to_owned())
+        );
+    }
+
+    /// A character outside `[a-z0-9_.-]` is refused in the namespace; `/` only in the path.
+    #[test]
+    fn invalid_characters_are_still_refused() {
+        assert_eq!(
+            Identifier::from_parts("A", "x"),
+            Err(IdentifierError::Namespace)
+        );
+        assert_eq!(
+            Identifier::from_parts("a/b", "x"),
+            Err(IdentifierError::Namespace)
+        );
+        assert_eq!(
+            Identifier::from_parts("a", "x y"),
+            Err(IdentifierError::Path)
+        );
+        assert!(Identifier::from_parts("a", "x/y").is_ok());
     }
 }

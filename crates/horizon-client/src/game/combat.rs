@@ -608,7 +608,13 @@ impl Game<'_> {
         if !host && !guest {
             return;
         }
-        let message = self.mob_death_message(m, killer);
+        let mut built = Some(self.mob_death_message(m, killer));
+        let kind = super::native_hooks::mob_kind(m);
+        horizon_client::living_death::native_living_death_message(m.id, &kind, &mut built);
+        // A native mod may have changed the message, or set it to None to tell the owner nothing.
+        let Some(message) = built else {
+            return;
+        };
         if host {
             self.system_message(message);
         } else if let Some(lan) = &self.lan {
@@ -729,6 +735,54 @@ fn mob_name(m: &Mob) -> Text {
 /// (#11339).
 fn damage_taken_award(amount: f32) -> Option<i32> {
     (amount < 3.402_823_5e37).then(|| horizon_core::jmath::round_f32(amount * 10.0))
+}
+
+/// Hits one mob's tick deals another, handled after the mob loop.
+impl Game<'_> {
+    /// A melee hit on another mob, then `postAttack`; whether it landed.
+    pub(super) fn mob_attacks_mob(
+        &mut self,
+        target: u32,
+        amount: f32,
+        source: horizon_client::mobs::Damage,
+    ) -> bool {
+        let hurt = self.mob_hits_mob(target, amount, source);
+        if hurt {
+            self.mob_post_attack(
+                target,
+                source.attacker,
+                None,
+                Some(super::creatures::damage_type(source.kind, false)),
+            );
+        }
+        hurt
+    }
+    /// Whether a hit from a mob's tick on `target`, handled after the mob
+    /// loop, comes after a tick of the target that vanilla runs after the hit:
+    /// `ServerLevel.tick` ticks entities in list order and the attacker deals
+    /// the hit in its own tick, so a target later in the list counts its
+    /// `HurtTime` and invulnerability down once more that tick. PARTIAL: the
+    /// rest of that tick (its movement, its own goals) still ran before the hit.
+    /// The caller compensates only newly reset timers: a stronger hit during
+    /// cooldown leaves timers that already counted down this tick unchanged.
+    pub(super) fn catch_up_countdowns(
+        &self,
+        attacker: Option<horizon_client::mobs::Who>,
+        target: u32,
+    ) -> bool {
+        let Some(horizon_client::mobs::Who::Mob(attacker)) = attacker else {
+            return false;
+        };
+        let ticked = &self.creatures.ticked;
+        if !self.creatures.deferred_hits || !ticked.contains(&attacker) || !ticked.contains(&target)
+        {
+            return false;
+        }
+        // The mobs added during the tick come first in `self.mobs`; the
+        // ticked ones keep their tick order after them.
+        let at = |id: u32| self.mobs.iter().position(|m| m.id == id);
+        matches!((at(attacker), at(target)), (Some(a), Some(t)) if a < t)
+    }
 }
 
 #[cfg(test)]

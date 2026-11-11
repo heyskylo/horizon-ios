@@ -9,7 +9,7 @@ ClientPacketListener.handleTickingState	port	crates/horizon-client/src/game/remo
 ClientPacketListener.handleTickingStep	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	TickingStep arm: frozen ticks to run
 ClientPacketListener.handleMoveEntity	port	crates/horizon-client/src/game/remote.rs::Game::move_entity	relative move and rotation from the Pos, PosRot and Rot packets
 ClientPacketListener.handleMinecartAlongTrack	port	crates/horizon-client/src/game/remote.rs::Game::remote_move_minecart	the server's steps join the cart's own queue while it runs NewMinecartBehavior
-ClientPacketListener.handleRemoveEntities	port	crates/horizon-client/src/game/remote.rs::Game::remove_entity	gap: minor: a removed vehicle carrying the player is not remembered for a later teleport
+ClientPacketListener.handleRemoveEntities	port	crates/horizon-client/src/game/remote_removal.rs::Game::remove_entity	gap: minor: a removed vehicle carrying the player is not remembered for a later teleport
 ClientPacketListener.setValuesFromPositionPacket	port	crates/horizon-client/src/game/remote.rs::Game::remote_teleport	gap: minor: the entity case (TeleportEntity) is in the handle_packet arm, not here
 ClientPacketListener.handleRotatePlayer	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	PlayerRotation arm; gap: minor: no ServerboundMovePlayerPacket.Rot reply is sent
 ClientPacketListener.handleChunkBlocksUpdate	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	SectionBlocksUpdate arm: each change through the block update
@@ -18,7 +18,7 @@ ClientPacketListener.enableChunkLight	inline	crates/horizon-client-render/src/st
 ClientPacketListener.handleForgetLevelChunk	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	ForgetLevelChunk arm: Streaming::forget, block entities and renderer columns dropped
 ClientPacketListener.queueLightRemoval	inline	crates/horizon-client-render/src/streaming.rs::Streaming::forget_columns	gap: minor: the column's light state is dropped with the column (lit removed); no per-section light clearing
 ClientPacketListener.handleBlockUpdate	port	crates/horizon-client/src/game/remote.rs::Game::server_block	
-ClientPacketListener.handleConfigurationStart	port	crates/horizon-client/src/game/remote.rs::Game::poll_remote	the Reconfiguring arm flushes the held-back chat, acknowledges it, closes dialogs and drops the level, keeping the chat; gap: player: no reconfiguring screen is drawn
+ClientPacketListener.handleConfigurationStart	port	crates/horizon-client/src/game/remote_poll.rs::Game::poll_remote	the Reconfiguring arm flushes the held-back chat, acknowledges it, closes dialogs and drops the level, keeping the chat; gap: player: no reconfiguring screen is drawn
 ClientPacketListener.handleSystemChat	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	SystemChat arm: overlay to the action bar, otherwise the chat
 ClientPacketListener.handlePlayerChat	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	PlayerChat arm: the global index (a mismatch disconnects), an unknown sender and the sender's validator; gap: minor: markMessageAsProcessed (no last-seen tracker is kept)
 ClientPacketListener.handleDisguisedChat	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	DisguisedChat arm
