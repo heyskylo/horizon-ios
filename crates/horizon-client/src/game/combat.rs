@@ -8,9 +8,12 @@ use super::commands;
 #[cfg(test)]
 #[path = "revenge_home_tests.rs"]
 mod revenge_home_tests;
+#[cfg(test)]
+#[path = "zombie_ignite_tests.rs"]
+mod zombie_ignite_tests;
 use horizon_client::{
     health::HealthEvent,
-    mobs::{Mob, Species},
+    mobs::{Mob, Species, Who},
     motion::MotionEvent,
     particles::{ParticleOptions, ParticleType},
     text::Text,
@@ -121,6 +124,11 @@ pub(super) struct CombatTracker {
     /// it the attacker is the mob nearest to where the hit came from, which
     /// walks every mob.
     pub(super) melee_mob: Option<u32>,
+    /// The attack event handled last hurt its target (`doHurtTarget` returned
+    /// true). The events of one blow read it: `Zombie.doHurtTarget` burns only
+    /// once `super.doHurtTarget` did (`MobEvent::ZombieIgnite` follows the
+    /// attack it rides).
+    pub(super) hit_landed: bool,
     /// A firework rocket's burst is hurting the player now: the rocket is
     /// the direct entity (`rocket_hurt_player`).
     pub(super) rocket_hit: bool,
@@ -225,6 +233,29 @@ impl CombatTracker {
     }
 }
 impl Game<'_> {
+    /// `Entity.igniteForSeconds`: `seconds * 20` ticks of fire, scaled by the
+    /// target's burning-time attribute.
+    pub(super) fn ignite_entity(
+        &mut self,
+        target: Who,
+        seconds: i32,
+    ) -> horizon_client::Result<()> {
+        match target {
+            Who::Player => {
+                if !self.creative
+                    && let Some(p) = self.player.as_mut()
+                {
+                    p.ignite_for_ticks(seconds * 20)?;
+                }
+            }
+            Who::Mob(id) => {
+                if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+                    m.ignite_for_ticks(seconds * 20);
+                }
+            }
+        }
+        Ok(())
+    }
     /// `LivingEntity.makeDrownParticles`: eight bubbles around the entity,
     /// moving with it.
     pub(super) fn drown_particles(&mut self, at: [f64; 3], velocity: [f64; 3]) {

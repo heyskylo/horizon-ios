@@ -570,7 +570,10 @@ A on a focused text field (A in pointer mode clicks into it) opens the
 language, at the bottom of the screen (at the top when the field is in the
 lower half, as chat is). D-pad or stick to move, A types, X deletes, Y is a
 space, LT is Shift (twice: caps lock), RB switches to symbols and accents,
-Menu is Enter, B closes it. It opens by itself when the pad opens chat or a
+Menu is the Done key, B closes it. A field of many lines (a book's page, a sign) has a New Line key beside
+Done, which is Enter there. Over chat, RT is Tab: it fills in the selected command suggestion, and again
+the next one (`CommandSuggestions`); the right stick pushed up or down picks the suggestion before or after
+(the arrow keys), so the suggestions are reached without closing the keyboard. It opens by itself when the pad opens chat or a
 sign, but not over the chat a sleeper gets (the game opens that one): there
 it waits for A on the chat box. It types into chat (local and server), signs, books being written, the title screens' fields,
 every options page's fields (searches, the packs', the language list's,
@@ -580,12 +583,14 @@ edit screens, Player Social's search and Debug Options' search. The one exceptio
 own screen (`Screen::Mod`), which takes its input through the screen hooks: the keyboard types nothing
 there.
 
-Enter (Menu, or the keyboard's Done key) closes the keyboard, and on the way:
+Done (Menu, or the keyboard's Done key) closes the keyboard, and on the way:
 
-- reaches the field as the key would in chat (it sends), on signs and books, on command blocks (their
-  Done) and game master blocks, on the options pages and on the title's fields;
-- does nothing more on the searches, the anvil, the LAN screen and a dialog's one-line input;
-- on a dialog's input of many lines is a new line, and the keyboard stays.
+- is Enter in chat (it sends), on command blocks (their Done) and game master blocks, on the options pages
+  and on the title's fields;
+- on a book and quill's page and on a sign is the screen's own Done: the book saves and closes, the sign
+  closes with its text. It never makes a new line there: that's the New Line key, and the keyboard stays;
+- does nothing more on the searches, the anvil, the LAN screen and a dialog's inputs (New Line makes a
+  dialog's line).
 
 
 On a Steam Deck under Steam (`SteamDeck=1`), A asks Steam for its own

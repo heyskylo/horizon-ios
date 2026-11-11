@@ -37,7 +37,9 @@ jobs:
           persist-credentials: false
           # Keeps .local/ (parity state, probe builds, oracle results) and target/ between runs.
           clean: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 2026-11
+        with:
+          toolchain: stable
       - name: Tools from the runner
         run: bash tools/ci/runner-env.sh
       - name: Vanilla data, and resources prepared by this preparer

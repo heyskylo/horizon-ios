@@ -206,4 +206,29 @@ mod saved_attribute_modifier_tests {
             assert!(!text.contains("minecraft:baby"), "{extra}: {text}");
         }
     }
+
+    /// `readAdditionalSaveData` stores `AbsorptionAmount` through
+    /// `internalSetAbsorptionAmount`, which does not clamp (only
+    /// `setAbsorptionAmount` does), and `addAdditionalSaveData` writes it back
+    /// as it is: a negative amount, or one above `max_absorption` (0 without
+    /// the Absorption effect), survives a load and a save.
+    #[test]
+    fn absorption_amount_loads_and_saves_unclamped() {
+        for (saved, expected) in [
+            ("", 0.0_f32),
+            ("AbsorptionAmount:-1.0f,", -1.0),
+            ("AbsorptionAmount:0.0f,", 0.0),
+            ("AbsorptionAmount:3.5f,", 3.5),
+            ("AbsorptionAmount:1.0E30f,", 1.0e30),
+        ] {
+            let m = load("[]", saved);
+            assert_eq!(m.absorption, expected, "{saved}");
+            let out = mob_to_nbt(&m, [1, 0, 0, 1], None, None, |_| None);
+            assert_eq!(
+                out.get("AbsorptionAmount"),
+                Some(&Tag::Float(expected.to_bits())),
+                "{saved}"
+            );
+        }
+    }
 }
