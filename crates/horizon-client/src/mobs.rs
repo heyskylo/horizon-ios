@@ -48,6 +48,7 @@ pub mod golem;
 pub mod guardian;
 pub mod happy_ghast;
 pub mod hostile;
+mod hurt_by;
 pub mod illager;
 pub mod illusioner;
 pub mod item_break;
@@ -59,6 +60,10 @@ pub mod llama;
 pub mod model_layers;
 pub mod monster_brain;
 pub mod nautilus;
+pub mod neutral_anger;
+pub use neutral_anger::{
+    adopt_anger_end, anger_left, persistent_anger, resume_anger, settle_anger_end,
+};
 pub mod nav;
 pub mod nether;
 pub mod panda;
@@ -108,7 +113,7 @@ pub mod wither;
 #[cfg(test)]
 mod invisible_follow_tests;
 mod world;
-pub use world::{TargetInfo, visual_clip};
+pub use world::{TargetInfo, single_player_pos, visual_clip};
 pub mod dragon_contacts;
 pub mod zombie_villager;
 
@@ -1075,14 +1080,6 @@ pub struct Attrs {
 }
 /// `minecraft:wolf_armor`'s maximum damage.
 pub const WOLF_ARMOR_DURABILITY: i32 = 64;
-/// `NeutralMob.readPersistentAngerSaveData`: the anger runs until its end
-/// time, so a mob that is loaded again is angry for what is left of it.
-pub fn anger_left(anger_end: i64, game_time: i64) -> i32 {
-    if anger_end <= 0 {
-        return 0;
-    }
-    (anger_end - game_time).clamp(0, i64::from(i32::MAX)) as i32
-}
 
 /// Species-specific persistent state (variants, colours, taming, ageing...).
 #[derive(Clone, Debug, Default)]
@@ -1192,6 +1189,8 @@ pub struct Extra {
     /// anger ends at, -1 when the mob is calm. The save keeps it, so the
     /// anger goes on while the chunk is unloaded.
     pub anger_end: i64,
+    /// Countdown and age when `anger_end` was last settled (`neutral_anger`).
+    pub anger_stamp: Option<(i32, u32)>,
     /// `NeutralMob.getPersistentAngerTarget`: the entity the mob is angry
     /// at, which the save keeps with it.
     pub angry_at: Option<Who>,
@@ -1440,31 +1439,6 @@ impl Extra {
     }
 }
 
-/// `DeathProtection.TOTEM_EFFECTS`: clear, then regeneration II, absorption II
-/// and fire resistance.
-fn totem_death_effects() -> Vec<crate::items::ConsumeEffect> {
-    use crate::items::{ConsumeEffect, ConsumeEffectSpec};
-    let spec = |id: &str, duration, amplifier| ConsumeEffectSpec {
-        id: id.to_owned(),
-        duration,
-        amplifier,
-        ambient: false,
-        show_particles: true,
-        show_icon: true,
-    };
-    vec![
-        ConsumeEffect::ClearAllEffects,
-        ConsumeEffect::ApplyEffects {
-            effects: vec![
-                spec("minecraft:regeneration", 900, 1),
-                spec("minecraft:absorption", 100, 1),
-                spec("minecraft:fire_resistance", 800, 0),
-            ],
-            probability: 1.0,
-        },
-    ]
-}
-
 /// How far the boxes of a set of mobs reach from their positions: the widest reach sideways, below
 /// and above among them, worked out from each mob's real box ([`Mob::bounds`]: a shulker's grows
 /// toward its open lid, sideways or below its position). A box query over many mobs (a vehicle's,
@@ -1650,9 +1624,9 @@ pub struct Mob {
     /// `PlayerSkin.cape`: a player's cape texture, once every download of
     /// its skin is ready.
     pub cape: Option<String>,
-    /// A Horizon emote this player plays (docs/cosmetics.md), timed on `age`: it poses the bones
-    /// after the vanilla animation (`anim::setup`). Visual only.
-    pub emote: Option<horizon_cosmetics::Playing>,
+    /// A pose laid over this player's body after the vanilla animation (`anim::setup`), timed on
+    /// `age`: a Horizon emote (docs/cosmetics.md), given by the game. Visual only.
+    pub emote: Option<Arc<dyn anim::BodyPose>>,
     /// A mannequin's `DATA_PROFILE` (ResolvableProfile): the profile's
     /// `textures` property resolves to `skin` like a player's.
     pub profile: Option<horizon_protocol::entity_data::Profile>,
@@ -2089,14 +2063,14 @@ pub enum MobEvent {
     StabDismount {
         target: Who,
     },
-    /// `LivingEntity.knockback(power, x, z, source)`: pushed away from the
-    /// direction.
+    /// `LivingEntity.knockback(power, x, z, source)`; a ram's blocked again first (`RamTarget.tick`).
     Knockback {
         target: Who,
         power: f64,
         x: f64,
         z: f64,
         source: Damage,
+        apply_blocking: Option<f32>,
     },
     /// Set another mob's attack target (HurtByTargetGoal alerts).
     SetTarget {
@@ -2606,6 +2580,9 @@ pub struct Seen {
     pub hurt_by: Option<(Who, i32)>,
     /// `Entity.isInvisible`: the flag, or the invisibility effect.
     pub invisible: bool,
+    /// `PathfinderMob.isPanicking`: a running panic goal or the brain's
+    /// `IS_PANICKING` memory.
+    pub panicking: bool,
     /// A raider in an active raid.
     pub active_raid: bool,
     /// A copper golem's `openedChestPos` (`ContainerUser.hasContainerOpen`).
@@ -2616,8 +2593,6 @@ pub struct Seen {
     pub vehicle: Option<u32>,
     /// `LivingEntity.getHitbox`: the box, cut below the seat when riding.
     pub hitbox: Aabb,
-    /// A villager's reputation of the player (`getPlayerReputation`).
-    pub player_rep: i32,
     /// `isPushable` and pushed by others (`Entity.push(Entity)` moves it).
     pub pushable: bool,
     /// A sleeping villager, wandering trader or fox vetoes its own `push(Entity)`.
@@ -3282,14 +3257,12 @@ pub fn entity_random(id: u32, position: Vec3) -> LegacyRandom {
     let _ = random.next_int();
     random
 }
-/// The own random (`Entity.random`) of a living entity the server makes, as
-/// `LivingEntity.<init>` leaves it: its first two draws made the UUID
-/// (`Mth.createInsecureUUID`), returned here, and the next one the yaw, which
-/// every spawn path then replaces. Constructor draws of the kind come after.
+/// The own random (`Entity.random`) of a living entity the server makes, after
+/// the UUID's two draws (`Mth.createInsecureUUID`), which are returned here.
+/// `Mob::with_random` makes the `defineSynchedData` draws and the yaw next.
 pub fn living_random() -> (LegacyRandom, [i32; 4]) {
     let mut random = crate::random_source::entity();
     let uuid = crate::save::insecure_uuid(&mut random);
-    let _yaw = random.next_float();
     (random, uuid)
 }
 impl Mob {
@@ -3419,6 +3392,9 @@ impl Mob {
         if mob.species() == Species::Salmon {
             mob.extra.variant = 1;
         }
+        // `Entity.<init>`'s order: `defineSynchedData`, then the yaw.
+        zombie_villager::constructor_draws(&mut mob);
+        neutral_anger::init(&mut mob);
         // `Creeper.explosionRadius = 3` until a save or a command sets it.
         mob.extra.explosion_radius = 3;
         // The PathNavigation constructor: the base follow range.
@@ -3430,7 +3406,7 @@ impl Mob {
     /// something off its pickup cooldown, a sulfur cube with no block.
     pub fn can_pick_up_loot(&self) -> bool {
         match self.species() {
-            Species::Allay => self.extra.main_hand.is_some() && self.extra.ints[3] <= 0,
+            Species::Allay => allay::can_pick_up_loot(self),
             Species::SulfurCube => !sulfur_cube::has_body(self),
             _ => self.extra.pick_up_loot,
         }
@@ -3857,8 +3833,7 @@ impl Mob {
         self.last_damage = Some((source, i64::from(self.age)));
         self.last_direct = None;
         if let Some(who) = source.attacker {
-            self.ai.last_hurt_by = Some(who);
-            self.ai.last_hurt_by_time = self.age as i32;
+            self.ai.hurt_by(who, self.age as i32);
             if who == Who::Player {
                 self.ai.last_hurt_by_player = 100;
             }
@@ -4113,7 +4088,7 @@ impl Mob {
         // LivingEntity.tick: CombatTracker.recheckStatus.
         let alive = self.alive();
         self.combat.recheck(alive, self.age);
-        ai::tick(self, w, level_random, events)
+        neutral_anger::around_tick(self, w.game_time, |m| ai::tick(m, w, level_random, events))
     }
     /// The section the mob is in, noted when it changes (`EntitySection` lists).
     fn track_section(&mut self) {
@@ -4281,7 +4256,7 @@ impl Mob {
         let (main, off) = match self.extra.hand_protection.clone() {
             Some(h) => (h.main, h.off),
             None => {
-                let totem = || Some(totem_death_effects());
+                let totem = || Some(living::totem_death_effects());
                 (
                     (self.extra.main_hand.as_deref() == Some(TOTEM))
                         .then(totem)

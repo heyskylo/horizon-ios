@@ -1,7 +1,10 @@
 //! Saving and loading the game state that lives outside chunk blocks:
 //! entities (`entities/*.mca`, per chunk like vanilla's `EntityStorage`) and
 //! scheduled block/fluid ticks (chunk `block_ticks`/`fluid_ticks`).
+#[cfg(test)]
+mod anger_tests;
 mod display;
+mod hurt_by_refs;
 
 use super::{FallingBlock, Game};
 use horizon_client::{
@@ -1103,7 +1106,7 @@ impl Game<'_> {
         // end time, and the mob is angry at the target again, through
         // `Mob.setTarget` -> `asValidTarget`: a player the golem cannot attack
         // (`IronGolem.canAttack`) comes back as no target.
-        m.extra.anger = horizon_client::mobs::anger_left(m.extra.anger_end, self.world.game_time);
+        horizon_client::mobs::adopt_anger_end(&mut m, self.world.game_time);
         if m.extra.anger > 0 && m.extra.angry_at.is_some() {
             m.ai.target = (!m.built_by_player()).then_some(horizon_client::mobs::Who::Player);
         }
@@ -1553,13 +1556,11 @@ impl Game<'_> {
         }
         // `NeutralMob.addPersistentAngerSaveData`: the anger ends at an
         // absolute game time, so it goes on while the chunk is unloaded, and
-        // the target is the entity the mob is angry at.
+        // the target is the entity the mob is angry at (`settle_anger_end`).
         let anger = self.mobs[i].extra.anger;
-        // A loaded NoAI Enderman owns an absolute NeutralMob timestamp;
-        // its skipped AI does not decrement the derived gameplay counter.
-        if !(self.mobs[i].species() == horizon_client::mobs::Species::Enderman
-            && self.mobs[i].no_ai)
-        {
+        if horizon_client::mobs::persistent_anger(self.mobs[i].species()) {
+            horizon_client::mobs::settle_anger_end(&mut self.mobs[i], self.world.game_time);
+        } else {
             self.mobs[i].extra.anger_end = if anger > 0 {
                 self.world.game_time + i64::from(anger)
             } else {
@@ -1613,42 +1614,6 @@ impl Game<'_> {
         self.write_leash(&mut tag, i);
         self.put_mob_passengers(&mut tag, id);
         tag
-    }
-    /// `LivingEntity.addAdditionalSaveData`'s `last_hurt_by_mob` and
-    /// `ticks_since_last_hurt_by_mob`, a PARTIAL projection at save time: both
-    /// from `ai.last_hurt_by` while the attacker is a living mob in the level
-    /// with a registered UUID and at most 100 ticks have passed (`baseTick`
-    /// drops the record after that, or once the attacker is dead). Otherwise
-    /// both keys go, a copy read from loaded data included. A player attacker
-    /// is not written. This is not `baseTick`'s cleanup itself, the AI's
-    /// record, `#no_anger`, or reading the keys back.
-    pub(super) fn put_last_hurt_by_mob(&self, m: &horizon_client::mobs::Mob, tag: &mut Tag) {
-        let Tag::Compound(c) = tag else { return };
-        let since = i64::from(m.age) - i64::from(m.ai.last_hurt_by_time);
-        let reference = match m.ai.last_hurt_by {
-            Some(horizon_client::mobs::Who::Mob(attacker))
-                if (0..=100).contains(&since)
-                    && self.mobs.iter().any(|a| a.id == attacker && a.alive()) =>
-            {
-                self.persist.uuid_of(attacker)
-            }
-            _ => None,
-        };
-        match reference {
-            Some(uuid) => {
-                c.insert("last_hurt_by_mob".into(), Tag::IntArray(uuid.to_vec()));
-                c.insert(
-                    "ticks_since_last_hurt_by_mob".into(),
-                    Tag::Int(since as i32),
-                );
-            }
-            None => {
-                c.remove(&horizon_world::nbt::JavaString::from("last_hurt_by_mob"));
-                c.remove(&horizon_world::nbt::JavaString::from(
-                    "ticks_since_last_hurt_by_mob",
-                ));
-            }
-        }
     }
     /// Forget an entity that left the world (its UUID and loaded compound).
     pub(super) fn forget_entity(&mut self, id: u32) {
@@ -5220,7 +5185,7 @@ mod h262_enderman_absolute_anger_tests {
     use crate::game::{Audio, Options, Progress, Settings, load_resources};
     use horizon_client::{chunk::Chunk, motion::PlayerMotion};
     use horizon_core::{geometry::Vec3, position::ChunkPos, random::LegacyRandom};
-    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
+    pub(super) fn with_game(test: impl FnOnce(&mut Game<'_>)) {
         let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
         let loaded = load_resources(
@@ -5456,7 +5421,7 @@ mod h262_enderman_absolute_anger_tests {
             game.world.game_time += 1;
             assert_eq!(
                 game.mob_tree_nbt(i).get("anger_end_time"),
-                Some(&Tag::Long(151))
+                Some(&Tag::Long(150)) // an absolute end (#13076)
             );
         });
     }

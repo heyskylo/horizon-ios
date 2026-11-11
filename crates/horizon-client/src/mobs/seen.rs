@@ -3,11 +3,11 @@
 use super::*;
 
 impl Mob {
-    /// What other mobs see of this one this tick (`player`: the player's
-    /// UUID, which villagers' reputation is keyed by). Inline: the game's
-    /// snapshot of every mob writes each one in its slot, not through a copy.
+    /// What other mobs see of this one this tick (`_player` is unused: it keyed the villager
+    /// reputation that nothing read). Inline: the game's snapshot of every mob writes each one in
+    /// its slot, not through a copy.
     #[inline]
-    pub fn seen(&self, player: Option<[i32; 4]>) -> Seen {
+    pub fn seen(&self, _player: Option<[i32; 4]>) -> Seen {
         let m = self;
         let villager = m.species() == Species::Villager;
         Seen {
@@ -53,14 +53,11 @@ impl Mob {
                     .effects
                     .iter()
                     .any(|e| e.0 == "minecraft:invisibility"),
+            panicking: m.ai.panicking,
             active_raid: raider::has_active_raid(m),
             opened_chest: m.extra.opened_chest,
             passenger: m.extra.mount.is_some(),
             vehicle: m.extra.mount,
-            player_rep: match (villager, player) {
-                (true, Some(uuid)) => villager::ext(m).map_or(0, |e| e.gossips.reputation(uuid)),
-                _ => 0,
-            },
             pushable: m.pushable(),
             sleeping: villager::sleeping(m)
                 || (m.species() == Species::Fox && fox::flag(m, fox::SLEEPING)),

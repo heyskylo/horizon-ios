@@ -3108,18 +3108,8 @@ impl Game<'_> {
         if hurts {
             self.note_dragon_attacker("minecraft:mob_attack");
         }
-        let (health, rules) = (&self.health_resources, self.world.health_rules);
-        let id = health.damage.id("minecraft:mob_attack");
-        let mut canceled = false;
-        if let Some(p) = self.player.as_mut() {
-            push_seen_with_hurt(p, push, |p| {
-                if let Some(id) = id.filter(|_| hurts)
-                    && let Ok(o) = p.hurt_blocking(health, rules, id, 5.0, None)
-                {
-                    canceled = o.canceled;
-                }
-            });
-        }
+        let id = self.health_resources.damage.id("minecraft:mob_attack");
+        let canceled = self.push_seen_with_equipment_hurt(push, id.filter(|_| hurts), 5.0);
         self.combat.forget_noted(canceled);
         if !sitting
             && !hurt_lately
@@ -3682,9 +3672,9 @@ impl Dragon {
         let mut d = Self::new(position, yaw, seed);
         d.velocity = velocity;
         // Vanilla getFloatOr/getIntOr accept any numeric tag type.
-        if let Some(h) = nbt_value::float(tag.get("Health")) {
-            d.health = h as f32;
-        }
+        d.health = nbt_value::float(tag.get("Health")).map_or(d.health, |h| h as f32);
+        d.sitting_damage =
+            nbt_value::float(tag.get("sitting_damage_received")).unwrap_or(0.0) as f32;
         if let Some(p) = nbt_value::number(tag.get("DragonPhase")) {
             d.phase = Phase::from_id(p as i32);
         }
@@ -4805,74 +4795,8 @@ impl Game<'_> {
     }
 }
 
-/// The dying model's colour, `ARGB.white(1 - deathTime / 200)`: `Mth.floor` of the alpha
-/// shifted as a Java int, so past 200 it wraps as vanilla's does.
-fn dissolve_color(death: f32) -> u32 {
-    let alpha = ((1.0 - death / 200.0) * 255.0).floor() as i32;
-    (alpha << 24) as u32 | 0x00FF_FFFF
-}
-/// `DissolveMaskSampler` at the vertex's `UV0`: the same place in the mask's sprite as in the
-/// skin's, as the dissolve overlay reads it from `glint_uv` (entity.wgsl).
-fn dissolve_mask(quads: &mut [Vertex], skin: [f32; 4], mask: [f32; 4]) {
-    for v in quads {
-        let u = (v.uv[0] - skin[0]) / (skin[2] - skin[0]);
-        let w = (v.uv[1] - skin[1]) / (skin[3] - skin[1]);
-        v.glint_uv = [
-            mask[0] + (mask[2] - mask[0]) * u,
-            mask[1] + (mask[3] - mask[1]) * w,
-        ];
-    }
-}
-/// `submitRays`: the death rays from a fixed seed, fading in white to magenta.
-fn dragon_rays(base: glam::Mat4, t: f32, white: horizon_client::hud::Rect, out: &mut Vec<Vertex>) {
-    // Vanilla's dragonRays has no texture. Sample inside the white sprite:
-    // its border can round into transparent neighbours during interpolation.
-    let uv = [(white.u0 + white.u1) / 2.0, (white.v0 + white.v1) / 2.0];
-    let over = if t > 0.8 {
-        ((t - 0.8) / 0.2).min(1.0)
-    } else {
-        0.0
-    };
-    let inner = (((1.0 - over) * 255.0) as u32) << 24 | 0x00FF_FFFF;
-    let outer = 0x00FF_00FF;
-    let mut random = LegacyRandom::new(432);
-    let mut m = base;
-    let count = ((t + t * t) / 2.0 * 60.0).floor() as i32;
-    let half_sqrt3 = 3f32.sqrt() / 2.0;
-    let tau = std::f32::consts::TAU;
-    for _ in 0..count {
-        let mut f = || random.next_float() * tau;
-        let q1 = glam::Quat::from_rotation_x(f())
-            * glam::Quat::from_rotation_y(f())
-            * glam::Quat::from_rotation_z(f());
-        let (a, b, c) = (f(), f(), f());
-        let q2 = glam::Quat::from_rotation_x(a)
-            * glam::Quat::from_rotation_y(b)
-            * glam::Quat::from_rotation_z(c + t * std::f32::consts::FRAC_PI_2);
-        m *= glam::Mat4::from_quat(q1 * q2);
-        let length = random.next_float() * 20.0 + 5.0 + over * 10.0;
-        let width = random.next_float() * 2.0 + 1.0 + over * 2.0;
-        let o = glam::Vec3::ZERO;
-        let left = glam::Vec3::new(-half_sqrt3 * width, length, -0.5 * width);
-        let right = glam::Vec3::new(half_sqrt3 * width, length, -0.5 * width);
-        let bottom = glam::Vec3::new(0.0, length, width);
-        for (p1, p2) in [(left, right), (right, bottom), (bottom, left)] {
-            // A triangle as a quad with its last corner repeated.
-            for (p, c) in [(o, inner), (p1, outer), (p2, outer), (p2, outer)] {
-                out.push(Vertex {
-                    normal: [0; 4],
-                    pos: m.transform_point3(p).to_array(),
-                    uv,
-                    layer: horizon_client::gfx::DRAGON_RAYS_OVERLAY,
-                    color: c,
-                    light: 0,
-
-                    glint_uv: [0.0, 0.0],
-                });
-            }
-        }
-    }
-}
+mod death_render;
+use death_render::{dissolve_color, dissolve_mask, dragon_rays};
 
 /// `Entity.push` on the server's copy of a player, then `hurt`. A player's
 /// own client hears of its velocity only when a hurt marks it
@@ -4881,6 +4805,7 @@ fn dragon_rays(base: glam::Mat4, t: f32, white: horizon_client::hud::Rect, out: 
 /// reaches the players tracking them, not them. So the push moves the player
 /// only together with a hurt that lands outside the hurt cooldown, and is
 /// dropped otherwise.
+#[cfg(test)]
 fn push_seen_with_hurt(
     p: &mut horizon_client::motion::PlayerMotion,
     push: Vec3,
@@ -5156,6 +5081,25 @@ mod tests {
         let mut d = Dragon::new(Vec3::new(0.0, 70.0, 0.0), 0.0, 1);
         d.phase = phase;
         d
+    }
+
+    /// `EnderDragon.readAdditionalSaveData` reads `sitting_damage_received`
+    /// (`getFloatOr`, 0 when absent); the writer already saved it. Horizon
+    /// only wrote it, so a perched dragon that took a quarter of its health
+    /// but was saved before taking off came back with the damage forgotten.
+    #[test]
+    fn a_perched_dragons_damage_survives_the_chunk_save() {
+        let mut d = dragon(Phase::Flaming { ticks: 0 });
+        d.sitting_damage = 12.5;
+        let tag = d.to_nbt([1, 2, 3, 4], None);
+        let back = Dragon::from_nbt(&tag, 0).unwrap();
+        assert_eq!(back.sitting_damage, 12.5);
+        // No key at all reads as no damage accumulated.
+        let mut bare = tag.clone();
+        if let horizon_world::nbt::Tag::Compound(fields) = &mut bare {
+            fields.remove(&"sitting_damage_received".into());
+        }
+        assert_eq!(Dragon::from_nbt(&bare, 0).unwrap().sitting_damage, 0.0);
     }
     fn flying() -> Phase {
         Phase::Holding {
