@@ -2148,8 +2148,6 @@ impl Game<'_> {
             hurt = hit;
             if hit && catch_up && t.invulnerable > previous_invulnerable {
                 // `LivingEntity.baseTick`'s countdowns, run after the hit in vanilla.
-                // A stronger hit during cooldown does not reset either timer;
-                // those timers have already counted down for this tick.
                 t.hurt_time = (t.hurt_time - 1).max(0);
                 t.invulnerable = (t.invulnerable - 1).max(0);
             }

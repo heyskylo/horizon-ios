@@ -763,6 +763,8 @@ impl Game<'_> {
     /// the hit in its own tick, so a target later in the list counts its
     /// `HurtTime` and invulnerability down once more that tick. PARTIAL: the
     /// rest of that tick (its movement, its own goals) still ran before the hit.
+    /// The caller compensates only newly reset timers: a stronger hit during
+    /// cooldown leaves timers that already counted down this tick unchanged.
     pub(super) fn catch_up_countdowns(
         &self,
         attacker: Option<horizon_client::mobs::Who>,
