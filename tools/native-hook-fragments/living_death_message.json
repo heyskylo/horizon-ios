@@ -1,0 +1,16 @@
+{
+  "hooks": [
+    {
+      "name": "living_death_message",
+      "target": "horizon_client_lib::living_death::native_living_death_message",
+      "side": "server",
+      "mod_api": {
+        "contract": "collect",
+        "out": "message"
+      }
+    }
+  ],
+  "rust_summary": "a tamed mob's death message to its owner, as a mod may change or silence it (`native_living_death_message`).",
+  "doc_summary": "`native_living_death_message(entity, kind, message)` is asked for the death message a tamed mob sends its owner (`TamableAnimal.die`), once the message is built and only when it would be sent (owner online, `show_death_messages` on). `message` holds the text: replace it, or set it to `None` to tell the owner nothing. Every mod is asked in order. Server and host. Bundles need \"hooks\": @API:living_death_message@.",
+  "comments": ["crates/horizon-client/src/living_death.rs"]
+}

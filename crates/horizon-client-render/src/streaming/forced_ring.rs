@@ -92,6 +92,7 @@ mod tests {
             forced,
             mod_forced: &NO_CHUNKS,
             cover: None,
+            forced_cover: None,
             band: None,
         };
         let forced: HashSet<(i32, i32)> = [(256, 256)].into();
@@ -170,6 +171,7 @@ mod tests {
                 forced,
                 mod_forced: &NO_CHUNKS,
                 cover: None,
+                forced_cover: None,
                 band: None,
             };
             // (255, 254) lies nearer the origin than (258, 256), the

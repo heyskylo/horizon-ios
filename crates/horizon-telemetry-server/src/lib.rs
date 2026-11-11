@@ -461,11 +461,15 @@ impl App {
     /// a step) and writes it down as this minute's. False when there is no official server or it
     /// didn't answer: that minute stays empty.
     pub fn record_official(&self) -> rusqlite::Result<bool> {
+        const MAX_OFFICIAL_PLAYERS: u64 = 1_000_000;
         let Some(address) = &self.config.official_server else {
             return Ok(false);
         };
         let unix = unix_now();
         match horizon_telemetry::server_status::players(address, Duration::from_secs(5)) {
+            // No real server has more; a larger number is a bad answer, not a count (it would wrap
+            // negative as i64 or overflow the history's SUM).
+            Ok(players) if players.online > MAX_OFFICIAL_PLAYERS => Ok(false),
             Ok(players) => {
                 let sample = history::Sample {
                     playing: players.online,

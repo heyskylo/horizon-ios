@@ -2414,7 +2414,7 @@ impl Game<'_> {
             .as_ref()
             .is_none_or(|r| r.dimension.has_skylight);
         self.streaming.sky_light = has_sky;
-        self.streaming.nether_shading = self.dim == Dim::Nether;
+        self.streaming.nether_shading = self.nether_lighting();
         // The seed in SpawnInfo is already the hashed one the client's BiomeManager holds.
         self.streaming.biome_zoom = horizon_core::biome::BiomeZoom::new(spawn.seed);
         let player = self.player.as_ref();
@@ -6960,7 +6960,7 @@ impl Game<'_> {
         }
         let game_time = self.world.game_time;
         // `AbstractPiglin.isConverting`: the dimension is not piglin safe.
-        let nether = self.dim == super::Dim::Nether;
+        let nether = !self.dimension_type().piglins_zombify;
         // What a wither's side heads can look at, by network entity id: the
         // mobs and the player (position and eye height).
         let wither_targets: Vec<(i32, [f64; 3], f64)> = if self
@@ -7242,15 +7242,15 @@ impl Game<'_> {
             } else if m.alive() {
                 m.body_rotation_tick();
             }
-            // Squid.aiStep follows LivingEntity's interpolation and head turn.
+            // Squid.aiStep; WalkAnimationState.update from the horizontal distance.
             horizon_client::mobs::aquatic::squid_client_step(m, &mut mob_fx);
-            // WalkAnimationState.update from the horizontal distance moved.
-            let (dx, dz) = (m.position.x - m.previous.x, m.position.z - m.previous.z);
-            let (target, factor) = if horizon_client::mobs::camel::is_camel(m.species()) {
-                // Camel.updateWalkAnimation.
-                horizon_client::mobs::camel::walk_target(m, (dx * dx + dz * dz).sqrt() as f32)
+            let d = (m.position.x - m.previous.x).hypot(m.position.z - m.previous.z) as f32;
+            let (target, factor) = if m.species() == horizon_client::mobs::Species::Frog {
+                (horizon_client::mobs::frog::walk_target(m, d), 0.4)
+            } else if horizon_client::mobs::camel::is_camel(m.species()) {
+                horizon_client::mobs::camel::walk_target(m, d)
             } else {
-                ((((dx * dx + dz * dz).sqrt() * 4.0) as f32).min(1.0), 0.4)
+                ((d * 4.0).min(1.0), 0.4)
             };
             m.limb_speed += (target - m.limb_speed) * factor;
             m.limb_position += m.limb_speed;
@@ -11199,7 +11199,7 @@ pub(super) fn item_has_use(info: &horizon_client::items::ItemInfo) -> bool {
     let id = info.id.trim_start_matches("minecraft:");
     id.ends_with("_spear")
         || info.consumable.is_some()
-        || info.equip_slot.is_some()
+        || (info.equip_slot.is_some() && info.swappable)
         || info.blocks_attacks.is_some()
         || horizon_client::items::bucket_contents(&info.id).is_some()
         || id.ends_with("_boat")
@@ -11463,8 +11463,7 @@ impl Remote {
     pub(super) fn listed_player_count(&self) -> usize {
         self.listed.len()
     }
-    /// Players in the server's player list, this one included (for Discord).
-    #[cfg(feature = "discord")]
+    /// Players in the server's player list, this one included (for the activity hooks).
     pub(super) fn player_count(&self) -> usize {
         self.players.len()
     }
@@ -13480,6 +13479,9 @@ mod tests {
                 let rod = items.get(rod).unwrap();
                 assert!(!super::use_ends_click(rod, gliding), "{}", rod.id);
             }
+            // A carved pumpkin has an equip_slot (head) but is not swappable, so it has no Item.use.
+            let pumpkin = items.get("minecraft:carved_pumpkin").unwrap();
+            assert!(!super::use_ends_click(pumpkin, gliding));
         }
     }
 
