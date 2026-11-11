@@ -331,7 +331,14 @@ impl RenderEntityBounds for Mob {
             self.species(),
             Species::Guardian | Species::ElderGuardian | Species::Phantom
         ) {
-            let radius = width.max(height) * 2.5 + 3.0;
+            // The model's root scales its appendages too (the elder guardian
+            // uses 2.35), so the margin must grow along with the model.
+            let root_scale = self.kind.model.pose[6..]
+                .iter()
+                .copied()
+                .map(f32::abs)
+                .fold(1.0, f32::max);
+            let radius = width.max(height) * 2.5 + 3.0 * f64::from(root_scale * self.model_scale());
             return Aabb::of_size(at, Vec3::new(radius * 2.0, radius * 2.0, radius * 2.0));
         }
 
