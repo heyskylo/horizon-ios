@@ -124,6 +124,7 @@ impl Game<'_> {
                 || level.facts.is_air(below)
                 || &*support.name == "minecraft:bedrock"
                 || !support.full_collision
+                || !b.can_survive(level, ticks, at, state)
                 || occupants.iter().any(|bounds| bounds.intersects(area))
             {
                 return None;
