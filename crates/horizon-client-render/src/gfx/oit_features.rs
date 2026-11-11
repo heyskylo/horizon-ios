@@ -69,7 +69,7 @@ impl Features {
         let border_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon improved transparency world border"),
             source: wgpu::ShaderSource::Wgsl(
-                (include_str!("../border.wgsl").to_owned()
+                (super::border_shader()
                     + include_str!("../oit.wgsl")
                     + include_str!("../oit_border.wgsl"))
                 .into(),

@@ -7,6 +7,7 @@ pub mod boot_paint;
 pub mod heap_census;
 pub mod jobs;
 pub mod process_memory;
+pub mod stack_dump;
 
 use std::sync::{
     OnceLock,

@@ -117,7 +117,7 @@ use crate::{blocks::BlockFacts, mesher::Vertex, world::World};
 pub use data::MobData;
 use horizon_core::{
     geometry::{Aabb, Vec3},
-    random::{LegacyRandom, RandomSource},
+    random::{EntityRandom, LegacyRandom, RandomSource},
 };
 use horizon_world::block_collision::BlockCollisionRegistry;
 use serde_json::Value;
@@ -1116,9 +1116,7 @@ pub struct Extra {
     pub age: i32,
     /// `AgeLocked` (tadpoles fed a slime ball... and ageable mobs).
     pub age_locked: bool,
-    /// `AgeableMob.ageLockParticleTimer` (a tadpole's too): the ticks of
-    /// growth particles left after a golden dandelion, and the cooldown
-    /// before the next one can be used. Not saved.
+    /// `AgeableMob.ageLockParticleTimer`: growth particles left, and the cooldown. Not saved.
     pub age_lock_particle_timer: i32,
     /// AgeableMob.forcedAge: the age fed food added, restored as the age
     /// when it reaches 0 (`ForcedAge`).
@@ -1132,8 +1130,7 @@ pub struct Extra {
     /// Secondary variant (horse markings, tropical fish pattern colours, panda hidden gene).
     pub variant2: u8,
     pub variant3: u8,
-    /// `MushroomCow.stewEffects`: what a brown one took from a flower, given
-    /// back in its next bowl of stew. `None` is vanilla's null.
+    /// `MushroomCow.stewEffects`: what a brown one took from a flower, for its next stew.
     pub stew_effects: Option<Vec<(Arc<str>, i32)>>,
     /// Dye colour id (sheep wool, collars).
     pub color: u8,
@@ -1167,7 +1164,10 @@ pub struct Extra {
     /// Loaded signed values are independent of the gameplay modification cap.
     pub equine_temper: i32,
     pub tame: bool,
+    /// `TamableAnimal.isOrderedToSit` (the saved order), and in `sitting_pose`
+    /// `isInSittingPose` (bit 1 of `DATA_FLAGS_ID`, which only a sit goal writes).
     pub sitting: bool,
+    pub sitting_pose: bool,
     /// `Parrot.partyParrot` and `jukebox`: the playing jukebox it dances to.
     pub party_jukebox: Option<[i32; 3]>,
     /// The owner's UUID: a tamed animal's, or the reference a vex was loaded with.
@@ -1370,8 +1370,9 @@ pub struct Extra {
     pub attributes: Option<Box<finalize::Attributes>>,
     /// Brain memories `finalizeSpawn` sets: (memory, value, ticks to expiry).
     pub memories: Vec<(&'static str, i64, i64)>,
-    /// A camel's `LAST_POSE_CHANGE_TICK`.
+    /// A camel's `LAST_POSE_CHANGE_TICK`, and its game time minus age at the last tick.
     pub pose_change_tick: i64,
+    pub pose_epoch: Option<i64>,
     /// Whether a camel sits (`egg_time` is then the age it sat down at).
     pub camel_sitting: bool,
     /// `Entity.DATA_POSE` as a mob of a server has it (`sync::pose_id`).
@@ -1544,7 +1545,7 @@ pub struct Mob {
     pub name_visible: bool,
     /// `Entity.DATA_SHARED_FLAGS_ID` bit 0x20: the model is hidden.
     pub invisible: bool,
-    pub random: LegacyRandom,
+    pub random: EntityRandom,
     pub ai: Box<ai::Ai>,
     pub extra: Extra,
     pub fluids: living::Fluids,
@@ -2073,10 +2074,10 @@ pub enum MobEvent {
         mob: u32,
         target: Who,
     },
-    /// `HoglinAi.broadcastAttackTarget` to one visible adult hoglin: its
-    /// `setAttackTargetIfCloserThanCurrent` (`piglin::receive_attack_target`).
+    /// `HoglinAi.broadcastAttackTarget` from hoglin `from` to `mob` (`Game::hoglin_attack_target`).
     HoglinAttackTarget {
         mob: u32,
+        from: u32,
         target: Who,
     },
     /// `StartHuntingHoglin` for a nearby adult piglin: it takes the hoglin as
@@ -2301,11 +2302,10 @@ pub enum MobEvent {
         ticks: i32,
         amplifier: i32,
     },
-    /// Set an entity on fire.
-    Ignite {
-        target: Who,
-        seconds: i32,
-    },
+    /// Set an entity on fire for so many seconds.
+    Ignite(Who, i32),
+    /// `Zombie.doHurtTarget`'s burn: lit only if the attack event before it hurt.
+    ZombieIgnite(Who, i32),
     /// Two animals bred: the game spawns the baby and resets the partner.
     Breed {
         parent: u32,
@@ -2587,8 +2587,6 @@ pub struct Seen {
     pub vehicle: Option<u32>,
     /// `LivingEntity.getHitbox`: the box, cut below the seat when riding.
     pub hitbox: Aabb,
-    /// A villager's reputation of the player (`getPlayerReputation`).
-    pub player_rep: i32,
     /// `isPushable` and pushed by others (`Entity.push(Entity)` moves it).
     pub pushable: bool,
     /// A sleeping villager, wandering trader or fox vetoes its own `push(Entity)`.
@@ -2771,11 +2769,11 @@ impl Mob {
         self.ticks_frozen >= crate::motion::PlayerMotion::TICKS_REQUIRED_TO_FREEZE
     }
 
-    /// What other mobs see of this one this tick (`player`: the player's
-    /// UUID, which villagers' reputation is keyed by). Inline: the game's
-    /// snapshot of every mob writes each one in its slot, not through a copy.
+    /// What other mobs see of this one this tick (`_player` is unused: it keyed the villager
+    /// reputation that nothing read). Inline: the game's snapshot of every mob writes each one in
+    /// its slot, not through a copy.
     #[inline]
-    pub fn seen(&self, player: Option<[i32; 4]>) -> Seen {
+    pub fn seen(&self, _player: Option<[i32; 4]>) -> Seen {
         let m = self;
         let villager = m.species() == Species::Villager;
         Seen {
@@ -2821,10 +2819,6 @@ impl Mob {
             opened_chest: m.extra.opened_chest,
             passenger: m.extra.mount.is_some(),
             vehicle: m.extra.mount,
-            player_rep: match (villager, player) {
-                (true, Some(uuid)) => villager::ext(m).map_or(0, |e| e.gossips.reputation(uuid)),
-                _ => 0,
-            },
             pushable: m.pushable(),
             sleeping: villager::sleeping(m)
                 || (m.species() == Species::Fox && fox::flag(m, fox::SLEEPING)),
@@ -2840,7 +2834,7 @@ impl Mob {
                 m.extra.vector[0],
                 m.attrs.speed,
             ],
-            sitting: m.extra.sitting,
+            sitting: m.extra.sitting_pose,
             silent: m.silent,
             lying: m.species() == Species::Cat && (m.extra.flag || m.extra.relax_one),
             ridden: m.rider.is_some() || m.extra.rider.is_some() || m.extra.mount.is_some(),
@@ -3332,22 +3326,22 @@ pub fn infested_silverfish(random: &mut LegacyRandom, look: [f64; 3]) -> Vec<Vec
 }
 /// `Entity.random` of a client's copy of entity `id` first seen at `position`: vanilla's is its
 /// own (`RandomSource.create()`), drawn on by nothing else; this one is seeded from the two.
-pub fn entity_random(id: u32, position: Vec3) -> LegacyRandom {
+pub fn entity_random(id: u32, position: Vec3) -> EntityRandom {
     let mut random = LegacyRandom::new(
         i64::from(id).wrapping_mul(0x5DEE_CE66D)
             ^ (position.x.to_bits() as i64)
             ^ (position.z.to_bits() as i64).rotate_left(17),
     );
     let _ = random.next_int();
-    random
+    EntityRandom::own(random)
 }
 /// The own random (`Entity.random`) of a living entity the server makes, after
 /// the UUID's two draws (`Mth.createInsecureUUID`), which are returned here.
 /// `Mob::with_random` makes the `defineSynchedData` draws and the yaw next.
-pub fn living_random() -> (LegacyRandom, [i32; 4]) {
+pub fn living_random() -> (EntityRandom, [i32; 4]) {
     let mut random = crate::random_source::entity();
     let uuid = crate::save::insecure_uuid(&mut random);
-    (random, uuid)
+    (EntityRandom::own(random), uuid)
 }
 impl Mob {
     pub fn new(id: u32, kind: Arc<MobType>, position: Vec3, yaw: f32) -> Self {
@@ -3360,7 +3354,7 @@ impl Mob {
         kind: Arc<MobType>,
         position: Vec3,
         yaw: f32,
-        random: LegacyRandom,
+        random: EntityRandom,
     ) -> Self {
         let mut mob = Self {
             join: Default::default(),
@@ -4170,8 +4164,7 @@ impl Mob {
     ) -> bool {
         self.track_section();
         // LivingEntity.tick: CombatTracker.recheckStatus.
-        let alive = self.alive();
-        self.combat.recheck(alive, self.age);
+        self.combat.recheck(self.alive(), self.age);
         neutral_anger::around_tick(self, w.game_time, |m| ai::tick(m, w, level_random, events))
     }
     /// The section the mob is in, noted when it changes (`EntitySection` lists).
