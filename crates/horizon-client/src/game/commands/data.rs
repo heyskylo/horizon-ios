@@ -553,6 +553,7 @@ impl Game<'_> {
                 b.no_gravity = entity_nbt::flag(&tag, "NoGravity");
                 b.on_ground = entity_nbt::flag(&tag, "OnGround");
                 b.fire_ticks = crate::game::boats::saved_fire(&tag);
+                b.ticks_frozen = crate::game::boats::saved_ticks_frozen(&tag);
                 if b.chest {
                     b.items = save::decode_items(tag.get("Items"), crate::game::boats::CHEST_SLOTS);
                 }
