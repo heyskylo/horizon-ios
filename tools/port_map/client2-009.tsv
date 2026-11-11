@@ -150,5 +150,6 @@ AbstractWidget.mouseReleased	port	crates/horizon-client-render/src/ui.rs::Scroll
 AbstractWidget.mouseDragged	port	crates/horizon-client-render/src/ui.rs::Scroll::drag	gap: minor: only scroll drag; widget onDrag is per screen
 AbstractWidget.nextFocusPath	port	crates/horizon-client/src/game/key_focus.rs::act	focus navigation is per screen: act and gamepad::focus_step_rect answer nextFocusPath for the arrows, tab_step for Tab
 AbstractWidget.isMouseOver	port	crates/horizon-client-render/src/screen_draw.rs::inside	gap: minor: isActive is checked by the caller
+AbstractWidget.WithInactiveMessage.defaultInactiveMessage	port	crates/horizon-client-render/src/screen_draw.rs::button	an inactive button's label is styled -6250336 (0xFFA0A0A0), as mergeStyles does
 AbstractWidget.narrationPriority	skip:other		narration only
 AbstractWidget.defaultButtonNarrationText	skip:other		narration only
