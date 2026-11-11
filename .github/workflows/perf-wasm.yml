@@ -1,8 +1,8 @@
 name: perf-wasm
-# The site consumes this reader bundle from sunrise-org/horizon-site.
+# The site consumes this reader bundle from horizon-rust/horizon-site.
 on:
   push:
-    branches: [perf-platform, main]
+    branches: [main]
     paths:
       - 'crates/horizon-perf/**'
       - 'crates/horizon-perf-format/**'

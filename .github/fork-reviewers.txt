@@ -1,2 +1,0 @@
-# This fork's trusted reviewers for `/unclaim @login` and no claim limit (tools/fork/claim.py); the owner is the FORK_OWNER_ID variable.
-# One per line: `<numeric GitHub ID> <login>`; get the ID with `gh api users/<login> --jq .id`.

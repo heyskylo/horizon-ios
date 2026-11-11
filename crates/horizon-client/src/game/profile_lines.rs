@@ -394,13 +394,13 @@ mod tests {
 
     #[test]
     fn a_shared_profile_is_one_line_with_an_underlined_link_and_copy() {
-        let url = "https://playsunrise.net/perf/c/55bwef5st6";
+        let url = "https://playhorizon.dev/perf/c/55bwef5st6";
         let line = chat(english(|| shared(url)));
         assert_eq!(
             line.plain(),
-            "[H] Shared: playsunrise.net/perf/c/55bwef5st6 [Copy]"
+            "[H] Shared: playhorizon.dev/perf/c/55bwef5st6 [Copy]"
         );
-        let link = span(&line, "playsunrise.net/perf/c/55bwef5st6");
+        let link = span(&line, "playhorizon.dev/perf/c/55bwef5st6");
         assert_eq!(link.style.color, Some(WHITE));
         assert_eq!(link.style.underlined, Some(true));
         assert_eq!(link.style.click, Some(ClickEvent::OpenUrl(url.into())));

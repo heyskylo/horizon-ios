@@ -133,7 +133,7 @@ class FakeServer:
 
 
 SAVED_LINE = ('[10:02:11] [Server thread/INFO]: Horizon: Saved reports/profile-20261108-100211Z.hzperf. '
-              'Open it at https://horizon-perf.umceko.com/perf (the file stays on your computer)')
+              'Open it at https://playhorizon.dev/perf (the file stays on your computer)')
 
 
 class ServerBenchProfileTests(unittest.TestCase):

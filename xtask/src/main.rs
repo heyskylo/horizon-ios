@@ -18,7 +18,7 @@
 //! and `horizon.icns`. `docs/media/brand/README.md` lists what goes where.
 //!
 //! `perf-wasm`: builds `crates/horizon-perf` for `wasm32-unknown-unknown` with the `wasm` feature
-//! and writes `target/perf-wasm/{horizon_perf.wasm,horizon_perf.js}`, which sunrise-org/horizon-site imports into
+//! and writes `target/perf-wasm/{horizon_perf.wasm,horizon_perf.js}`, which horizon-rust/horizon-site imports into
 //! its static assets (docs/perf-platform.md §7.1).
 
 mod mod_api;

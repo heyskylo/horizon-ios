@@ -73,7 +73,9 @@ pub const ACTIONS: [(&str, DebugAction); 20] = [
     ),
 ];
 
-/// Horizon's own debug keys: fixed, so they never enter the options table that vanilla parity compares.
+/// Horizon's own debug keys: fixed, so they never enter the options table that
+/// vanilla parity compares (`MAPPINGS`). Off until the AI Agent page enables
+/// them; `Game` decides that in `debug_action`.
 const HORIZON_ACTIONS: [(&str, DebugAction); 2] = [
     ("key.keyboard.r", DebugAction::RecordSession),
     ("key.keyboard.e", DebugAction::ExportRepro),
