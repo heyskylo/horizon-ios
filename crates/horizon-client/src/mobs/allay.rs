@@ -22,7 +22,7 @@ pub mod interaction;
 // Allay state: `main_hand` the held filter; `State::inventory` the fetched stack,
 // `tame` a liked player, `point` the wanted item (set by the game),
 // `State::noteblock` the liked note block with `ints[2]` its cooldown,
-// `State::pickup_cooldown` the pickup cooldown, `flag` dancing with `ints[4]` the dance clock,
+// `pickup_cooldown` the pickup cooldown, `flag` dancing with `ints[4]` the dance clock,
 // `egg_time` the duplication cooldown. AnimState slots: holding (0),
 // spinning (1).
 /// `ITEM_PICKUP_COOLDOWN_TICKS`. `CountDownCooldownTicks` counts it down while it is above 0 and
