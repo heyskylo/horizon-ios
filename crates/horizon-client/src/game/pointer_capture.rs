@@ -26,7 +26,7 @@ impl Game<'_> {
         let pointer = self.captured || self.agent_pointer;
         let grabbed = pointer
             && self.screen == Screen::Playing
-            && (self.player.is_some() || self.studio.freecam.active);
+            && (self.player.is_some() || self.studio.flying());
         let active = self.focused || self.agent_pointer;
         if let Some((xo, yo)) = self
             .mouse
@@ -49,7 +49,14 @@ impl Game<'_> {
             && !self.is_published()
             && !self.has_split_players()
             && self.title.is_none()
-            && (self.screen.is_pause_screen() || self.book.is_some() || self.win_screen_pauses())
+            && top_screen_pauses(
+                // A dialog (and its warning or waiting screen) is the
+                // screen Minecraft set, over whatever was open.
+                self.dialog_open().then(|| self.dialogs.pauses_world()),
+                self.book.as_ref().map(|book| book.pauses_world()),
+                self.screen.is_pause_screen(),
+                self.win_screen_pauses(),
+            )
     }
     /// A screen open over gameplay while `screen` stays `Playing`: a book or
     /// lectern, a sign, a server dialog, the code of conduct, a link or
@@ -75,10 +82,7 @@ impl Game<'_> {
             .is_some_and(|t| t.elapsed() > Duration::from_millis(500))
             && self.control.is_none()
             && self.screen == Screen::Playing
-            && !studio_suppresses_focus_pause(
-                self.studio.replay.is_some(),
-                self.studio.freecam.active,
-            )
+            && !studio_suppresses_focus_pause(self.replay.playing(), self.studio.flying())
             && self.player.is_some()
             && !self.options.no_pause
             && self.settings.file.bool("pauseOnLostFocus")
@@ -335,6 +339,7 @@ impl Game<'_> {
                 Cursor::Arrow => winit::window::CursorIcon::Default,
                 Cursor::PointingHand => winit::window::CursorIcon::Pointer,
                 Cursor::NotAllowed => winit::window::CursorIcon::NotAllowed,
+                Cursor::ResizeNs => winit::window::CursorIcon::NsResize,
             });
         }
         self.cursor_icon = effective;
@@ -353,7 +358,7 @@ impl Game<'_> {
     /// click. A screen that is open keeps it free, as releasing the pointer
     /// for that screen did: it is the screen, not the focus, that shows it.
     pub(super) fn regrab_on_refocus(&mut self) {
-        if self.studio.replay.is_some() || self.studio.freecam.active {
+        if self.studio_up() {
             self.regrab_on_refocus = false;
             self.studio.rmb_down = false;
             self.capture(false);
@@ -365,14 +370,45 @@ impl Game<'_> {
     }
 }
 
+/// Which of the things over gameplay decides `Minecraft.pause`: a dialog is
+/// its own `DialogScreen` (Minecraft set it over whatever was open) and
+/// comes first, then a book, else `Gui.screen`; the win screen's poem rides
+/// with its screen. `None` means that kind of screen is not open.
+fn top_screen_pauses(dialog: Option<bool>, book: Option<bool>, screen: bool, win: bool) -> bool {
+    dialog.or(book).unwrap_or(screen || win)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::studio_suppresses_focus_pause;
+    use super::{studio_suppresses_focus_pause, top_screen_pauses};
 
     #[test]
     fn studio_replay_and_freecam_never_pause_on_focus_loss() {
         assert!(studio_suppresses_focus_pause(true, false));
         assert!(studio_suppresses_focus_pause(false, true));
         assert!(!studio_suppresses_focus_pause(false, false));
+    }
+
+    /// `Minecraft.pause` asks the screen Minecraft set, and each of a dialog,
+    /// a book and the win screen is a screen of its own that replaces what
+    /// was open: the dialog's `pause`, the book's `BookViewScreen`/
+    /// `LecternScreen`, and `WinScreen`'s `!poem` decide, not the screen
+    /// underneath.
+    #[test]
+    fn the_screen_on_top_decides_whether_the_world_pauses() {
+        // Nothing replaces the screen: its own isPauseScreen answer, with
+        // the win screen's poem rule when it is the win screen.
+        assert!(top_screen_pauses(None, None, true, false));
+        assert!(top_screen_pauses(None, None, false, true));
+        assert!(!top_screen_pauses(None, None, false, false));
+        // A dialog over a pause screen: its own pause answers.
+        assert!(!top_screen_pauses(Some(false), None, true, false));
+        assert!(top_screen_pauses(Some(true), None, false, false));
+        // A lectern's book over a pause screen does not pause; a book in
+        // hand does.
+        assert!(!top_screen_pauses(None, Some(false), true, false));
+        assert!(top_screen_pauses(None, Some(true), false, false));
+        // A dialog opens over the book.
+        assert!(!top_screen_pauses(Some(false), Some(true), false, false));
     }
 }

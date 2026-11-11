@@ -2216,6 +2216,67 @@ pub fn hoglin_anim(m: &Mob, s: &State, p: &mut Poses) {
     p.xrot("left_hind_leg", pos.mcos() * 1.2 * sp);
 }
 
+/// `Brain.Packed`: the guarded-block live ANGRY_AT entry. The existing
+/// anger counter supplies its remaining long TTL, not an absolute timestamp.
+pub fn write_guarded_anger(m: &Mob, map: &mut horizon_world::nbt::Compound) {
+    use horizon_world::nbt::{Compound, Tag};
+    let Some(actor) = m.extra.piglin.guarded_angry_at else {
+        return;
+    };
+    let brain = map
+        .entry("Brain".into())
+        .or_insert_with(|| Tag::Compound(Compound::new()));
+    if !matches!(brain, Tag::Compound(_)) {
+        *brain = Tag::Compound(Compound::new());
+    }
+    let Tag::Compound(brain) = brain else { return };
+    let memories = brain
+        .entry("memories".into())
+        .or_insert_with(|| Tag::Compound(Compound::new()));
+    if !matches!(memories, Tag::Compound(_)) {
+        *memories = Tag::Compound(Compound::new());
+    }
+    let Tag::Compound(memories) = memories else {
+        return;
+    };
+    if let Some(uuid) = actor.filter(|_| m.extra.anger > 0) {
+        // ExpirableValue.codec: the UUID value and optional remaining Long TTL.
+        memories.insert(
+            "minecraft:angry_at".into(),
+            Tag::compound([
+                ("value", Tag::IntArray(uuid.to_vec())),
+                ("ttl", Tag::Long(i64::from(m.extra.anger))),
+            ]),
+        );
+    } else {
+        memories.remove(&"minecraft:angry_at".into());
+    }
+}
+
+/// `Piglin.readAdditionalSaveData` through `Brain.Packed`: the guarded-block
+/// `ANGRY_AT` entry is an entity UUID with the ticks left as its TTL. Vanilla
+/// reads the memory with the brain, and an expired one no longer angers the
+/// piglin; the counter is what Horizon's goals ask.
+pub fn read_guarded_anger(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
+    use horizon_world::nbt::Tag;
+    let memory = tag
+        .get("Brain")
+        .and_then(|b| b.get("memories"))
+        .and_then(|b| b.get("minecraft:angry_at"));
+    let Some(memory) = memory else { return };
+    let Some(uuid) = crate::save::uuid_from_tag(memory.get("value")) else {
+        return;
+    };
+    // The TTL is a long: one past the counter's range holds as long as it can.
+    let ttl = match memory.get("ttl") {
+        Some(Tag::Long(v)) => (*v).clamp(0, i64::from(i32::MAX)) as i32,
+        Some(t) => crate::nbt_path::int_value(t).unwrap_or(i32::MAX),
+        None => i32::MAX,
+    };
+    m.extra.anger = ttl.max(0);
+    m.extra.piglin.guarded_angry_at = Some(Some(uuid));
+}
+
 #[cfg(test)]
 mod brute_sound_tests {
     use super::*;
@@ -2754,9 +2815,9 @@ mod hoglin_pacified_feeding_tests {
         assert!(feed_animal(&mut baby, &mut level, None).is_some());
         assert_eq!(baby.extra.age, -24000 + 120 * 20, "a tenth of the growth");
     }
-    /// `Hoglin.canFallInLove` (Hoglin.java:322) is
+    /// `Hoglin.canFallInLove` is
     /// `!HoglinAi.isPacified(this) && super.canFallInLove()`, so
-    /// `Animal.mobInteract` (Animal.java:144) refuses the crimson fungus of an
+    /// `Animal.mobInteract` refuses the crimson fungus of an
     /// adult pacified by a nearby repellent: no food used, no love, no baby.
     /// The baby's branch asks `canAgeUp`, not `canFallInLove`, so a pacified
     /// baby still grows up, and no other species reads the hoglin's memory.

@@ -198,3 +198,5 @@ new pushes, we add it again.
 
 [Discord](https://discord.gg/playhorizon) for questions and ideas, [issues](https://github.com/horizon-rust/horizon/issues)
 for bugs. To take something on, `/claim` its issue ([above](#claim-before-you-start)).
+
+How Horizon is run, and how people join the Team or lead a group: [GOVERNANCE.md](GOVERNANCE.md).

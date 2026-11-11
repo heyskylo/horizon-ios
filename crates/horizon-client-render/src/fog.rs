@@ -233,6 +233,8 @@ pub struct FogInputs<'a> {
     pub night_vision: f32,
     /// The packs' `environment` fog settings (Polytone's).
     pub environment: crate::pack_palette::Environment,
+    /// The packs' fluid modifiers' fog.
+    pub fluid_fog: crate::pack_palette::FluidFogs,
 }
 
 /// `FogRenderer.setupFog` + `computeFogColor`.
@@ -397,6 +399,24 @@ pub fn setup_fog(tables: &FogTables, state: &FogState, input: &FogInputs) -> Fog
             }
         }
     }
+    // A pack's fluid modifier over its fluid's fog, after everything else (wiki "Custom Colors").
+    let fluid = match input.fog_type {
+        FogType::Lava => input.fluid_fog.lava,
+        FogType::Water if input.blindness.is_none() && input.darkness.is_none() => {
+            input.fluid_fog.water
+        }
+        _ => None,
+    };
+    if let Some(f) = fluid {
+        if let Some(rgb) = f.color {
+            let [r, g, b] = self::rgb(rgb);
+            fog.color = [r, g, b, 1.0];
+        }
+        let end = fog.environmental_end * f.radius;
+        let start = end - (end - fog.environmental_start * f.radius) * f.fade;
+        (fog.environmental_start, fog.environmental_end) = (start, end);
+        (fog.sky_end, fog.cloud_end) = (end, end);
+    }
     let span = (rd / 10.0).clamp(4.0, 64.0);
     fog.render_distance_start = rd - span;
     fog.render_distance_end = rd;
@@ -495,6 +515,7 @@ mod tests {
             full_water_vision: false,
             night_vision: 0.0,
             environment: Default::default(),
+            fluid_fog: Default::default(),
         }
     }
     #[test]
@@ -610,6 +631,38 @@ mod tests {
         assert_eq!(washed[2], 1.0);
         let kept = setup_fog(&tables, &state, &input).color;
         assert_eq!(&kept[..3], &[0.1, 0.2, 0.4]);
+    }
+    #[test]
+    fn a_fluid_modifier_scales_and_colours_its_fog_last() {
+        let sky = Sky {
+            fog_start: 10.0,
+            fog_end: 96.0,
+            ..Sky::default()
+        };
+        let tables = FogTables {
+            water_fog_end: vec![1.0],
+        };
+        let mut input = inputs(&sky);
+        input.fog_type = FogType::Lava;
+        input.fire_resistance = true;
+        let vanilla = setup_fog(&tables, &FogState::default(), &input);
+        assert_eq!(
+            (vanilla.environmental_start, vanilla.environmental_end),
+            (0.0, 5.0)
+        );
+        input.fluid_fog.lava = Some(crate::pack_palette::FluidFog {
+            color: Some(0x00FF00),
+            radius: 2.0,
+            fade: 0.5,
+        });
+        let fog = setup_fog(&tables, &FogState::default(), &input);
+        assert_eq!(fog.color, [0.0, 1.0, 0.0, 1.0]);
+        // The end doubles; half the fade from 0 to 10 starts it at 5.
+        assert_eq!(
+            (fog.environmental_start, fog.environmental_end),
+            (5.0, 10.0)
+        );
+        assert_eq!((fog.sky_end, fog.cloud_end), (10.0, 10.0));
     }
     fn inputs_with<'a>(
         input: &FogInputs<'a>,

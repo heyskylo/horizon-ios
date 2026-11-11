@@ -11,8 +11,9 @@ no difference: the mark lives in a file the game and the launcher never read.
 | | Files | Keys | Read by |
 |---|---|---|---|
 | Game | `crates/horizon-client/assets/horizon/lang/<code>.json` (`fr_fr`, `de_de`...) | `horizon.options.foo` style; `en_us.json` is the reference | `crates/horizon-client-core/src/lang.rs` (`Text::tr`, `lang::get`); a missing key falls back to English |
+| A crate's own text | `crates/<name>/assets/lang/<code>.json`, the same shape | the crate's own keys, never one of the engine's | the same, once the crate registers them ([layers.md](layers.md#lang-files-horizon_platformlang)) |
 | Launcher | `launcher/lang/<code>.json` (`fr`, `de`, `pt-br`...) | the English sentence itself | `launcher/src/i18n.rs` (`tr("…")`, `trf("… {arg} …")`) |
-| Review record | `tools/lang_review/game/<code>.json`, `tools/lang_review/launcher/<code>.json` | the same keys, with the text a person checked | `tools/lang_coverage.py` only |
+| Review record | `tools/lang_review/game/<code>.json`, `tools/lang_review/<crate name>/<code>.json`, `tools/lang_review/launcher/<code>.json` | the same keys, with the text a person checked | `tools/lang_coverage.py` only |
 
 An entry is **reviewed** when the review record holds its key with exactly its present text. Anything else is
 unreviewed: an entry the record does not hold, and one whose text changed since a person checked it (so a later

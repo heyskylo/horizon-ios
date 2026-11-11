@@ -368,6 +368,57 @@ pub struct PackScreen {
     browser_search: TextField,
     /// The browser's search box has the keyboard.
     browser_focus: bool,
+    /// Which atlas slot holds which icon, kept from one frame to the next
+    /// ([`PackScreen::bind_icons`]).
+    icon_slots: std::cell::RefCell<IconSlots>,
+}
+
+/// The atlas's pack icon slots and the icon each holds. The atlas keeps what is
+/// written into a slot, so an icon is sent once, when it takes a slot, and not
+/// again every frame it is drawn.
+#[derive(Clone, Debug, Default)]
+struct IconSlots {
+    /// The atlas the pixels went into ([`HudAtlas::revision`]); a new atlas holds none of them.
+    revision: u64,
+    /// Frames bound so far: an icon drawn in this one keeps its slot.
+    frame: u64,
+    /// Least recently drawn first: the icon's texture key, its slot, its pixels, and the
+    /// frame it was last drawn in.
+    held: Vec<(String, usize, Arc<[u8]>, u64)>,
+}
+
+impl IconSlots {
+    /// Starts a frame on `atlas`; an atlas that is not the one the slots were filled in empties them.
+    fn begin(&mut self, atlas: &HudAtlas) {
+        if self.revision != atlas.revision {
+            self.held.clear();
+            self.revision = atlas.revision;
+        }
+        self.frame += 1;
+    }
+
+    /// The slot for the icon drawn under `texture`, and whether its pixels have to be sent. A new
+    /// icon takes a free slot, else the slot of the icon drawn longest ago; none when every slot
+    /// holds an icon drawn in this frame, and that icon keeps `unknown_pack`.
+    fn slot_for(&mut self, texture: &str, icon: &Arc<[u8]>) -> Option<(usize, bool)> {
+        if let Some(at) = self.held.iter().position(|h| h.0 == texture) {
+            let mut kept = self.held.remove(at);
+            let same = Arc::ptr_eq(&kept.2, icon);
+            kept.2 = icon.clone();
+            kept.3 = self.frame;
+            let slot = kept.1;
+            self.held.push(kept);
+            return Some((slot, !same));
+        }
+        let slot = match (0..PACK_ICON_SLOTS).find(|i| !self.held.iter().any(|h| h.1 == *i)) {
+            Some(free) => free,
+            None if self.held.first().is_some_and(|h| h.3 < self.frame) => self.held.remove(0).1,
+            None => return None,
+        };
+        self.held
+            .push((texture.to_owned(), slot, icon.clone(), self.frame));
+        Some((slot, true))
+    }
 }
 
 fn tr(key: &str) -> Text {
@@ -459,6 +510,7 @@ impl PackScreen {
                 field
             },
             browser_focus: false,
+            icon_slots: Default::default(),
             changed: false,
         };
         s.reposition(m);
@@ -931,10 +983,13 @@ impl PackScreen {
         self.model.commit()
     }
     /// Points the icon blits of `draws` at the atlas's pack icon slots and
-    /// writes the icons into them, one slot per icon drawn (vanilla registers a
-    /// texture per pack). Icons past the last slot keep `unknown_pack`.
+    /// writes the icons into them (vanilla registers a texture per pack). An
+    /// icon keeps its slot from one frame to the next and is sent when it takes
+    /// the slot, not every frame; the slot of the icon drawn longest ago is
+    /// taken first. Icons past the last slot in one frame keep `unknown_pack`.
     pub fn bind_icons(&self, draws: &mut [Draw], atlas: &HudAtlas, patches: &mut Vec<Patch>) {
-        let mut slots = 0..PACK_ICON_SLOTS;
+        let mut slots = self.icon_slots.borrow_mut();
+        slots.begin(atlas);
         for draw in draws {
             let Draw::Blit { texture, .. } = draw else {
                 continue;
@@ -942,20 +997,23 @@ impl PackScreen {
             let Some(icon) = self.icons.get(texture.as_str()) else {
                 continue;
             };
-            let Some(slot) = slots.next() else {
-                return;
+            let Some((slot, send)) = slots.slot_for(texture, icon) else {
+                continue;
             };
             let sprite = format!("horizon/pack-icon{slot}");
             let Some(rect) = atlas.sprites.get(&sprite) else {
+                slots.held.pop();
                 return;
             };
-            patches.push(Patch {
-                x: (rect.u0 * atlas.width as f32).round() as u32,
-                y: (rect.v0 * atlas.height as f32).round() as u32,
-                width: PACK_ICON_SIZE,
-                height: PACK_ICON_SIZE,
-                rgba: icon.to_vec(),
-            });
+            if send {
+                patches.push(Patch {
+                    x: (rect.u0 * atlas.width as f32).round() as u32,
+                    y: (rect.v0 * atlas.height as f32).round() as u32,
+                    width: PACK_ICON_SIZE,
+                    height: PACK_ICON_SIZE,
+                    rgba: icon.to_vec(),
+                });
+            }
             *texture = sprite;
         }
     }
@@ -1618,6 +1676,12 @@ impl PackScreen {
                         let hover = hovered == Some(i)
                             && d::inside(mouse, bx, by, OPTIONS_SIZE, OPTIONS_SIZE);
                         Self::draw_options_button(out, bx, by, hover);
+                        // A control for a pad's crosshair to glide onto and its D-pad to hop to,
+                        // while the list shows it whole.
+                        let mark = crate::widgets::targets_mark();
+                        let size = OPTIONS_SIZE as f32;
+                        crate::widgets::target([bx as f32, by as f32, size, size]);
+                        crate::widgets::clip_targets(mark, l.y as f32, l.bottom() as f32);
                         if hover {
                             tooltip = Some(tr("horizon.pack.optionsInfo"));
                         }
@@ -1745,9 +1809,14 @@ mod icon_tests {
             .unwrap();
         assert_eq!(id, "file/Configurable");
         let (cx, cy) = (bx + OPTIONS_SIZE / 2, by + OPTIONS_SIZE / 2);
-        // Hovered, it explains itself.
+        // Hovered, it explains itself; a pad's crosshair reaches it as a control.
         let draws = screen.draw(&m, (cx, cy), 0, 0);
         assert!(draws.iter().any(|d| matches!(d, Draw::Tooltip { .. })));
+        crate::widgets::end_frame(crate::widgets::generation() + 1);
+        let size = OPTIONS_SIZE as f32;
+        let button = [bx as f32, by as f32, size, size];
+        let targets = crate::widgets::last_targets();
+        assert!(targets.iter().any(|t| t.rect == button), "{targets:?}");
         assert_eq!(
             screen.click(&m, cx as f64, cy as f64),
             Action::Options("file/Configurable".into())
@@ -2068,5 +2137,179 @@ mod footer_label_tests {
             assert!(scrolling.contains(&code), "{code} not in {scrolling:?}");
         }
         assert_eq!(lang::code(), before, "the global language was left alone");
+    }
+}
+
+#[cfg(test)]
+mod icon_slot_tests {
+    use super::*;
+
+    fn atlas() -> HudAtlas {
+        HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap()
+    }
+
+    /// `count` packs with an icon each, the pixels of icon `i` all `i`.
+    fn packs(count: usize) -> Vec<PackInfo> {
+        let side = PACK_ICON_SIZE as usize;
+        (0..count)
+            .map(|i| PackInfo {
+                id: format!("file/pack{i:03}"),
+                title: Text::literal(format!("pack{i:03}")),
+                description: Text::literal(""),
+                description_style: Style::default(),
+                source: Source::BuiltIn,
+                compat: Compat::Compatible,
+                icon: Some(vec![i as u8; side * side * 4].into()),
+                required: false,
+                position: Position::Top,
+                fixed: false,
+            })
+            .collect()
+    }
+
+    /// One frame as `options_ui` draws it: the calls, then the icons bound. The icons drawn
+    /// (their texture keys before binding), the textures after, and the patches sent.
+    fn frame(screen: &PackScreen, atlas: &HudAtlas) -> (Vec<String>, Vec<String>, Vec<Patch>) {
+        let m = Measure(&atlas.font);
+        let mut draws = screen.draw(&m, (0, 0), 0, 0);
+        let drawn: Vec<String> = draws
+            .iter()
+            .filter_map(|d| match d {
+                Draw::Blit { texture, .. } if screen.icons.contains_key(texture) => {
+                    Some(texture.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        let mut patches = Vec::new();
+        screen.bind_icons(&mut draws, atlas, &mut patches);
+        let bound = draws
+            .iter()
+            .filter_map(|d| match d {
+                Draw::Blit { texture, .. } if texture.contains("pack-icon") => {
+                    Some(texture.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        (drawn, bound, patches)
+    }
+
+    /// Only the available list has packs: one row of 36 for each of `count` icons fits in a
+    /// window `height` high.
+    fn screen(m: &Measure, count: usize, height: i32) -> PackScreen {
+        PackScreen::new(
+            m,
+            tr("resourcePack.title"),
+            480,
+            height,
+            false,
+            packs(count),
+            &[],
+        )
+    }
+
+    /// Every frame sent every drawn icon again (a 128 by 128 RGBA copy each) into the same
+    /// atlas, which keeps what it is given: an icon is sent when it takes a slot, once.
+    #[test]
+    fn an_icon_is_sent_once_and_not_every_frame() {
+        let atlas = atlas();
+        let screen = screen(&Measure(&atlas.font), 5, 400);
+        let (drawn, bound, patches) = frame(&screen, &atlas);
+        assert_eq!((drawn.len(), bound.len(), patches.len()), (5, 5, 5));
+        for again in 0..3 {
+            let (_, rebound, resent) = frame(&screen, &atlas);
+            assert_eq!(rebound, bound, "frame {again}");
+            assert_eq!(resent.len(), 0, "frame {again}");
+        }
+    }
+
+    /// More icons drawn in one frame than there are slots: the first 64 get one, the rest keep
+    /// `unknown_pack`, and the next frame does not move them or send anything.
+    #[test]
+    fn past_the_slots_in_one_frame_the_rest_keep_unknown_pack() {
+        let atlas = atlas();
+        let screen = screen(&Measure(&atlas.font), PACK_ICON_SLOTS + 6, 4000);
+        let (drawn, bound, patches) = frame(&screen, &atlas);
+        assert_eq!(
+            drawn.len(),
+            PACK_ICON_SLOTS + 6,
+            "the window shows every row"
+        );
+        assert_eq!(
+            (bound.len(), patches.len()),
+            (PACK_ICON_SLOTS, PACK_ICON_SLOTS)
+        );
+        let (_, rebound, resent) = frame(&screen, &atlas);
+        assert_eq!((rebound, resent.len()), (bound, 0));
+    }
+
+    /// Scrolling through more packs than slots: every icon drawn gets a slot, each one is sent
+    /// once on the way down, and a frame that draws what the last one drew sends nothing.
+    #[test]
+    fn scrolling_sends_only_the_icons_that_come_into_view() {
+        let atlas = atlas();
+        let m = Measure(&atlas.font);
+        let mut screen = screen(&m, 70, 330);
+        let mut seen = std::collections::HashSet::new();
+        let mut sent = 0;
+        // 150 wheel steps of 18 are more than the 2520 high list.
+        for step in 0..150 {
+            let (drawn, bound, patches) = frame(&screen, &atlas);
+            assert_eq!(bound.len(), drawn.len(), "step {step}: none falls back");
+            let new = drawn.iter().filter(|t| seen.insert((*t).clone())).count();
+            assert_eq!(patches.len(), new, "step {step}");
+            sent += patches.len();
+            assert_eq!(frame(&screen, &atlas).2.len(), 0, "step {step}: same view");
+            screen.scroll(100.0, 200.0, -1.0);
+        }
+        assert_eq!((seen.len(), sent), (70, 70));
+    }
+
+    /// The slot of the icon drawn longest ago is the one taken, and the icon that left it is
+    /// sent again when it comes back.
+    #[test]
+    fn the_icon_drawn_longest_ago_gives_up_its_slot() {
+        let icons: Vec<Arc<[u8]>> = packs(PACK_ICON_SLOTS + 1)
+            .into_iter()
+            .map(|p| p.icon.unwrap())
+            .collect();
+        let mut slots = IconSlots::default();
+        let key = |i: usize| format!("k{i}");
+        slots.begin(&atlas());
+        for i in 0..PACK_ICON_SLOTS {
+            assert_eq!(slots.slot_for(&key(i), &icons[i]), Some((i, true)));
+        }
+        // The next frame draws icon 0 first, then a new one: slot 1, the oldest left, is taken.
+        slots.frame += 1;
+        assert_eq!(slots.slot_for(&key(0), &icons[0]), Some((0, false)));
+        assert_eq!(
+            slots.slot_for("new", &icons[PACK_ICON_SLOTS]),
+            Some((1, true))
+        );
+        // Icon 1 comes back: it is sent again, into the slot of the next oldest.
+        assert_eq!(slots.slot_for(&key(1), &icons[1]), Some((2, true)));
+    }
+
+    /// New pixels under the same key take the same slot and are sent; a new atlas holds none
+    /// of the icons, so all are sent again.
+    #[test]
+    fn changed_pixels_and_a_new_atlas_send_again() {
+        let atlas = atlas();
+        let mut screen = screen(&Measure(&atlas.font), 3, 400);
+        let (_, bound, patches) = frame(&screen, &atlas);
+        assert_eq!(patches.len(), 3);
+        let key = icon_texture("file/pack001");
+        screen
+            .icons
+            .insert(key, vec![200; patches[1].rgba.len()].into());
+        let (_, rebound, resent) = frame(&screen, &atlas);
+        assert_eq!(rebound, bound);
+        assert_eq!(resent.len(), 1);
+        assert_eq!((resent[0].x, resent[0].y), (patches[1].x, patches[1].y));
+        assert_eq!(resent[0].rgba[0], 200);
+        let other = self::atlas();
+        assert_ne!(other.revision, atlas.revision);
+        assert_eq!(frame(&screen, &other).2.len(), 3);
     }
 }
