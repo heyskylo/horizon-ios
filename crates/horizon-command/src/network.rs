@@ -113,16 +113,33 @@ fn provider(id: &str) -> Option<Suggests> {
     }
 }
 
+/// The longest registry id kept, and how many distinct ones: a game knows a few hundred
+/// registries, with ids far shorter.
+const MAX_NAME: usize = 256;
+const MAX_NAMES: usize = 1024;
+
 /// A registry name kept for the life of the game (argument types hold
-/// `&'static str`): each distinct name is stored once.
+/// `&'static str`): each distinct name is stored once. The names come from the server's command
+/// tree, so a server sending trees of new 32 KiB names packet after packet leaked memory until
+/// the client ran out: a name too long, not a resource location, or past [`MAX_NAMES`] is kept
+/// as "" instead (no suggestions for that argument), where vanilla's tree frees its keys anyway.
 fn intern(name: &str) -> &'static str {
     static NAMES: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
     let mut names = NAMES
         .get_or_init(Default::default)
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    intern_in(&mut names, name)
+}
+fn intern_in(names: &mut HashSet<&'static str>, name: &str) -> &'static str {
     if let Some(&n) = names.get(name) {
         return n;
+    }
+    let resource_location = name
+        .bytes()
+        .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' | b'.' | b'/' | b':'));
+    if name.len() > MAX_NAME || !resource_location || names.len() >= MAX_NAMES {
+        return "";
     }
     let n: &'static str = Box::leak(name.to_owned().into_boxed_str());
     names.insert(n);
@@ -280,6 +297,28 @@ pub fn argument_type(id: i32, props: &[u8]) -> ArgType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_servers_registry_names_are_kept_within_bounds() {
+        // A set of its own: the game's is shared with every other test.
+        let mut names = HashSet::new();
+        let item = intern_in(&mut names, "minecraft:item");
+        assert_eq!(item, "minecraft:item");
+        assert!(std::ptr::eq(item, intern_in(&mut names, "minecraft:item")));
+        // Too long, or not a resource location: not kept.
+        assert_eq!(intern_in(&mut names, &"a".repeat(32767)), "");
+        assert_eq!(intern_in(&mut names, "Not A Registry"), "");
+        // However many distinct names a server sends, the set stops growing.
+        for i in 0..2 * MAX_NAMES {
+            intern_in(&mut names, &format!("evil:registry_{i}"));
+        }
+        assert_eq!(names.len(), MAX_NAMES);
+        assert_eq!(intern_in(&mut names, "evil:one_more_after_the_cap"), "");
+        assert!(
+            std::ptr::eq(item, intern_in(&mut names, "minecraft:item")),
+            "kept names stay"
+        );
+    }
     use horizon_protocol::{
         buf::{Codec, Reader, Writer},
         packets::play::CommandNode,

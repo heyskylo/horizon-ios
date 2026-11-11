@@ -1,41 +1,67 @@
 //! The screen of a game started without its prepared files: the game build
-//! run by hand (the release's game zip) instead of through the launcher. It
-//! says where to get the launcher, and quits. Drawn in Horizon's design
-//! language with the bundled fonts: none of Minecraft's files are there.
+//! run by hand instead of through a launcher. It says where to get them, and
+//! quits. Drawn in Horizon's design language with the bundled fonts: none of
+//! Minecraft's files are there.
+//!
+//! The page it sends the player to comes from a hook (`horizon_hooks::Hooks::get_the_game`,
+//! Horizon's launcher in the official executable). With none, it says how to prepare the files
+//! and has only Quit.
+use crate::lang;
 use crate::ui_theme::{self, Face, Ui, color};
+use horizon_hooks::GetTheGame;
 
-/// The launcher's download page.
-pub const DOWNLOAD_URL: &str = "https://playhorizon.dev";
-
-const TITLE: &str = "Start Horizon from the launcher";
-const PARAGRAPHS: [&str; 3] = [
-    "This is the game the Horizon launcher installs and starts. On its own it has none of \
-     Minecraft's files, so it can't start.",
-    "Horizon needs your own copy of Minecraft: Java Edition. The launcher signs you in and \
-     prepares the game files from it.",
-    "Download the launcher at playhorizon.dev, then press Play there.",
-];
 const COLUMN: f32 = 560.0;
 const BUTTON_GAP: f32 = 12.0;
 
 /// What a click on the screen does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
-    /// Open the launcher's download page.
-    Download,
+    /// Open the hook's page.
+    Open(&'static str),
     Quit,
 }
 
 pub struct NoResources {
+    title: String,
+    paragraphs: Vec<String>,
+    /// The buttons' labels and actions, the hook's first.
+    buttons: Vec<(String, Action)>,
     /// Where the prepared files were looked for, for whoever starts the game by hand on purpose.
     looked_in: String,
 }
 
 impl NoResources {
-    pub fn new(looked_in: &std::path::Path) -> Self {
+    /// The screen in the current language, with `get`'s page when a hook answered
+    /// (`horizon_hooks::engine::get_the_game`).
+    pub fn new(looked_in: &std::path::Path, get: Option<GetTheGame>) -> Self {
         let shown = std::path::absolute(looked_in).unwrap_or_else(|_| looked_in.to_path_buf());
+        let quit = (lang::get("horizon.no_resources.quit"), Action::Quit);
+        let (title, paragraphs, buttons) = match get {
+            Some(get) => {
+                let site = get
+                    .address
+                    .split_once("://")
+                    .map_or(get.address, |(_, s)| s);
+                (
+                    lang::get(get.title),
+                    get.paragraphs
+                        .iter()
+                        .map(|p| lang::tr(p, &[&site]))
+                        .collect(),
+                    vec![(lang::get(get.button), Action::Open(get.address)), quit],
+                )
+            }
+            None => (
+                lang::get("horizon.no_resources.title"),
+                vec![lang::get("horizon.no_resources.prepare")],
+                vec![quit],
+            ),
+        };
         Self {
-            looked_in: format!("No prepared game files in {}", shown.display()),
+            title,
+            paragraphs,
+            buttons,
+            looked_in: lang::tr("horizon.no_resources.looked_in", &[&shown.display()]),
         }
     }
 
@@ -44,7 +70,8 @@ impl NoResources {
     fn layout(&self, ui: &Ui) -> Layout {
         let width = COLUMN.min(ui.w - 64.0).max(160.0);
         let x = ((ui.w - width) / 2.0).round();
-        let lines: Vec<Vec<String>> = PARAGRAPHS
+        let lines: Vec<Vec<String>> = self
+            .paragraphs
             .iter()
             .map(|p| wrap(ui, Face::Regular, body(), p, width))
             .collect();
@@ -55,14 +82,11 @@ impl NoResources {
         let buttons_y = y + TITLE_LINE + 16.0 + text_h + 28.0;
         let mut buttons = Vec::new();
         let mut bx = x;
-        for (label, action) in [
-            ("Download the launcher", Action::Download),
-            ("Quit", Action::Quit),
-        ] {
+        for (label, action) in &self.buttons {
             let w = (ui.measure(Face::Medium, button_text(), label) + 40.0).round();
             buttons.push(Button {
-                label,
-                action,
+                label: label.clone(),
+                action: *action,
                 x: bx,
                 y: buttons_y,
                 w,
@@ -89,7 +113,7 @@ impl NoResources {
             layout.x,
             y,
             color::text(),
-            TITLE,
+            &self.title,
         );
         y += TITLE_LINE + 16.0;
         for paragraph in &layout.lines {
@@ -110,8 +134,8 @@ impl NoResources {
         for button in &layout.buttons {
             let hovered = button.contains(ui.cursor);
             let (plate, ink) = match (button.action, hovered) {
-                (Action::Download, false) => (color::accent(), color::on_accent()),
-                (Action::Download, true) => {
+                (Action::Open(_), false) => (color::accent(), color::on_accent()),
+                (Action::Open(_), true) => {
                     (color::with_alpha(color::accent(), 0.85), color::on_accent())
                 }
                 (Action::Quit, false) => (color::raised(), color::text()),
@@ -119,7 +143,7 @@ impl NoResources {
             };
             let h = control();
             ui.rounded(button.x, button.y, button.w, h, h / 2.0, plate);
-            let lw = ui.measure(Face::Medium, button_text(), button.label);
+            let lw = ui.measure(Face::Medium, button_text(), &button.label);
             let lx = button.x + ((button.w - lw) / 2.0).round();
             ui.text_line(
                 Face::Medium,
@@ -128,7 +152,7 @@ impl NoResources {
                 lx,
                 button.y,
                 ink,
-                button.label,
+                &button.label,
             );
         }
         let small_y = layout.buttons[0].y + control() + 20.0;
@@ -191,7 +215,7 @@ struct Layout {
 }
 
 struct Button {
-    label: &'static str,
+    label: String,
     action: Action,
     x: f32,
     y: f32,
@@ -242,11 +266,68 @@ mod tests {
         f(&mut ui)
     }
 
+    /// A hook's answer, with the game's own Horizon strings and another page.
+    const GET: GetTheGame = GetTheGame {
+        address: "https://example.org/get",
+        title: "horizon.get_the_game.title",
+        paragraphs: &[
+            "horizon.get_the_game.about",
+            "horizon.get_the_game.minecraft",
+            "horizon.get_the_game.download",
+        ],
+        button: "horizon.get_the_game.button",
+    };
+
+    /// The screen in English, every key it asks for there.
+    fn screen(get: Option<GetTheGame>) -> NoResources {
+        let (screen, missed) = lang::scoped(lang::Language::load(&[], "en_us"), || {
+            NoResources::new(std::path::Path::new(".local/horizon-client/26.3"), get)
+        });
+        assert_eq!(missed, Vec::<String>::new());
+        screen
+    }
+
+    #[test]
+    fn without_a_hook_it_names_no_site_and_opens_no_page() {
+        let screen = screen(None);
+        let all = [&screen.title, &screen.looked_in]
+            .into_iter()
+            .chain(&screen.paragraphs)
+            .chain(screen.buttons.iter().map(|(label, _)| label));
+        for text in all {
+            assert!(!text.to_lowercase().contains("playhorizon"), "{text}");
+            assert!(!text.contains("launcher"), "{text}");
+        }
+        assert!(screen.paragraphs[0].contains("horizon-prepare --prepare"));
+        assert_eq!(
+            screen.buttons,
+            [("Quit".to_owned(), Action::Quit)],
+            "only Quit"
+        );
+    }
+
+    #[test]
+    fn a_hook_gives_the_text_and_the_page() {
+        let screen = screen(Some(GET));
+        assert_eq!(screen.title, "Start Horizon from the launcher");
+        assert_eq!(
+            screen.paragraphs[2],
+            "Download the launcher at example.org/get, then press Play there."
+        );
+        assert_eq!(
+            screen.buttons[0],
+            (
+                "Download the launcher".to_owned(),
+                Action::Open("https://example.org/get")
+            )
+        );
+    }
+
     #[test]
     fn the_buttons_are_where_they_are_drawn() {
-        let screen = NoResources::new(std::path::Path::new(".local/horizon-client/26.3"));
+        let screen = screen(Some(GET));
         for size in [[1280, 720], [800, 600], [2560, 1440]] {
-            let (download, quit, density) = with_ui(size, (0.0, 0.0), |ui| {
+            let (open, quit, density) = with_ui(size, (0.0, 0.0), |ui| {
                 let layout = screen.layout(ui);
                 let center = |b: &Button| (b.x + b.w / 2.0, b.y + control() / 2.0);
                 (
@@ -257,8 +338,8 @@ mod tests {
             });
             let at = |p: (f32, f32)| (p.0 * density, p.1 * density);
             assert_eq!(
-                with_ui(size, at(download), |ui| screen.click(ui)),
-                Some(Action::Download),
+                with_ui(size, at(open), |ui| screen.click(ui)),
+                Some(Action::Open(GET.address)),
                 "{size:?}"
             );
             assert_eq!(
@@ -280,14 +361,15 @@ mod tests {
 
     #[test]
     fn text_wraps_within_the_column_and_keeps_every_word() {
+        let screen = screen(Some(GET));
         with_ui([1280, 720], (0.0, 0.0), |ui| {
-            for paragraph in PARAGRAPHS {
+            for paragraph in &screen.paragraphs {
                 let lines = wrap(ui, Face::Regular, body(), paragraph, 300.0);
                 assert!(lines.len() > 1, "{paragraph}");
                 for line in &lines {
                     assert!(ui.measure(Face::Regular, body(), line) <= 300.0, "{line}");
                 }
-                assert_eq!(lines.join(" "), paragraph);
+                assert_eq!(&lines.join(" "), paragraph);
             }
         });
     }

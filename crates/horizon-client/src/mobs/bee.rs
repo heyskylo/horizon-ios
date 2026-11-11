@@ -203,6 +203,7 @@ pub fn angry(m: &Mob, w: &MobWorld) -> bool {
 /// `NeutralMob.stopBeingAngry`.
 pub fn stop_being_angry(m: &mut Mob) {
     m.ai.last_hurt_by = None;
+    m.ai.last_hurt_by_ref = None;
     m.ai.last_hurt_by_time = m.age as i32;
     m.ai.target = None;
     let b = st(m);
