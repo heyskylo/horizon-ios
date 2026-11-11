@@ -1949,7 +1949,14 @@ impl Game<'_> {
         // Projectile.onHit calls onHitBlock first, then the potion's
         // affectEntitiesAround; both read the stack's `potion_contents`.
         if let Some((cell, face)) = hit {
-            self.potion_hit_block(stack, cell, face);
+            // `AbstractThrownPotion.douseFire` passes `getOwner()` to the
+            // campfire's `douse`, which is where the game event's source is.
+            let who = if owner.player {
+                Some(Who::Player)
+            } else {
+                owner.attacker.map(Who::Mob)
+            };
+            self.potion_hit_block(stack, cell, face, who);
         }
         self.affect_entities_around(stack, at, owner.player);
         let lingering = &*stack.item == "minecraft:lingering_potion";

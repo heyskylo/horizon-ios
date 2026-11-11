@@ -504,9 +504,7 @@ def main():
         # Generated scripts (tools/parity_fuzz.py): the common setup, then the file's [name, ops] groups only.
         groups = [('setup', corpus_module.group_setup()),
                   *[(name, ops) for name, ops in json.loads(args.groups_file.read_text(encoding='utf-8'))]]
-    script = []
-    for _, lines in groups:
-        script.extend(op for op in lines if not (args.unsynced_randoms and op['op'] == 'sync_randoms'))
+    script = assemble(groups, args.unsynced_randoms)
     # docs/parity-workflow.md "Randoms that repeat": both engines' unseeded randoms repeat for a script that syncs them.
     synced = any(op['op'] == 'sync_randoms' for op in script)
     script_path = build / 'script.jsonl'
@@ -715,6 +713,16 @@ def main():
     if mismatches and not args.allow_gaps:
         sys.exit(f'{len(mismatches)} command execution mismatches; see {build}')
     print(f'Command execution parity report: {report_path}')
+
+
+def assemble(groups, unsynced_randoms=False):
+    """The script: the groups in order, with corpus_module.group_cleanup() between two groups."""
+    script = []
+    for index, (name, lines) in enumerate(groups):
+        if index and groups[index - 1][0] != 'setup' and name not in corpus_module.CONTINUES_PREVIOUS:
+            script.extend(corpus_module.group_cleanup())
+        script.extend(op for op in lines if not (unsynced_randoms and op['op'] == 'sync_randoms'))
+    return script
 
 
 def require_anger_reference(op, record):

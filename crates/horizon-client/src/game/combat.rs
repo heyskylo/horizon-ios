@@ -392,14 +392,10 @@ impl Game<'_> {
                 .get(self.world.block(c.x, c.y, c.z))
                 .name
                 .clone();
-            Some(match &*name {
-                "minecraft:ladder" => "ladder",
-                "minecraft:vine" => "vines",
-                "minecraft:weeping_vines" | "minecraft:weeping_vines_plant" => "weeping_vines",
-                "minecraft:twisting_vines" | "minecraft:twisting_vines_plant" => "twisting_vines",
-                "minecraft:scaffolding" => "scaffolding",
-                _ => "other_climbable",
-            })
+            let trapdoor = (self.res.items().block_tags)
+                .get("minecraft:trapdoors")
+                .is_some_and(|tag| tag.contains(&*name));
+            Some(fall_location_of(&name, trapdoor))
         } else {
             let f = self.res.facts().get(self.world.block(
                 p.position.x.floor() as i32,
@@ -735,6 +731,94 @@ fn mob_name(m: &Mob) -> Text {
 /// (#11339).
 fn damage_taken_award(amount: f32) -> Option<i32> {
     (amount < 3.402_823_5e37).then(|| horizon_core::jmath::round_f32(amount * 10.0))
+}
+
+/// `FallLocation.blockToFallLocation`: what a climbable block stands for in a fall's death message.
+/// `trapdoor` is whether the block is in `#minecraft:trapdoors`, which counts as a ladder.
+fn fall_location_of(name: &str, trapdoor: bool) -> &'static str {
+    match name {
+        _ if trapdoor => "ladder",
+        "minecraft:ladder" => "ladder",
+        "minecraft:vine" => "vines",
+        "minecraft:weeping_vines" | "minecraft:weeping_vines_plant" => "weeping_vines",
+        "minecraft:twisting_vines" | "minecraft:twisting_vines_plant" => "twisting_vines",
+        "minecraft:scaffolding" => "scaffolding",
+        _ => "other_climbable",
+    }
+}
+
+#[cfg(test)]
+mod fall_location_tests {
+    use super::fall_location_of;
+
+    /// The branches of `blockToFallLocation`: a ladder or a block of `#minecraft:trapdoors` is
+    /// `ladder`, then vine, the weeping and twisting vines (heads and plants), scaffolding, and any
+    /// other climbable (cave vines, here) is `other_climbable`.
+    #[test]
+    fn a_trapdoor_counts_as_a_ladder_and_the_other_climbables_keep_their_own_place() {
+        for (name, trapdoor, want) in [
+            ("minecraft:ladder", false, "ladder"),
+            ("minecraft:oak_trapdoor", true, "ladder"),
+            ("minecraft:iron_trapdoor", true, "ladder"),
+            ("minecraft:vine", false, "vines"),
+            ("minecraft:weeping_vines", false, "weeping_vines"),
+            ("minecraft:weeping_vines_plant", false, "weeping_vines"),
+            ("minecraft:twisting_vines", false, "twisting_vines"),
+            ("minecraft:twisting_vines_plant", false, "twisting_vines"),
+            ("minecraft:scaffolding", false, "scaffolding"),
+            ("minecraft:cave_vines", false, "other_climbable"),
+        ] {
+            assert_eq!(fall_location_of(name, trapdoor), want, "{name}");
+        }
+    }
+}
+
+/// Hits one mob's tick deals another, handled after the mob loop.
+impl Game<'_> {
+    /// A melee hit on another mob, then `postAttack`; whether it landed.
+    pub(super) fn mob_attacks_mob(
+        &mut self,
+        target: u32,
+        amount: f32,
+        source: horizon_client::mobs::Damage,
+    ) -> bool {
+        let hurt = self.mob_hits_mob(target, amount, source);
+        if hurt {
+            self.mob_post_attack(
+                target,
+                source.attacker,
+                None,
+                Some(super::creatures::damage_type(source.kind, false)),
+            );
+        }
+        hurt
+    }
+    /// Whether a hit from a mob's tick on `target`, handled after the mob
+    /// loop, comes after a tick of the target that vanilla runs after the hit:
+    /// `ServerLevel.tick` ticks entities in list order and the attacker deals
+    /// the hit in its own tick, so a target later in the list counts its
+    /// `HurtTime` and invulnerability down once more that tick. PARTIAL: the
+    /// rest of that tick (its movement, its own goals) still ran before the hit.
+    /// The caller compensates only newly reset timers: a stronger hit during
+    /// cooldown leaves timers that already counted down this tick unchanged.
+    pub(super) fn catch_up_countdowns(
+        &self,
+        attacker: Option<horizon_client::mobs::Who>,
+        target: u32,
+    ) -> bool {
+        let Some(horizon_client::mobs::Who::Mob(attacker)) = attacker else {
+            return false;
+        };
+        let ticked = &self.creatures.ticked;
+        if !self.creatures.deferred_hits || !ticked.contains(&attacker) || !ticked.contains(&target)
+        {
+            return false;
+        }
+        // The mobs added during the tick come first in `self.mobs`; the
+        // ticked ones keep their tick order after them.
+        let at = |id: u32| self.mobs.iter().position(|m| m.id == id);
+        matches!((at(attacker), at(target)), (Some(a), Some(t)) if a < t)
+    }
 }
 
 #[cfg(test)]
