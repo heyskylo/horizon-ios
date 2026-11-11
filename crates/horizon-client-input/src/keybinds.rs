@@ -356,6 +356,12 @@ impl KeyBinds {
     pub fn is_default(&self, name: &str) -> bool {
         self.get(name) == Self::default_of(name)
     }
+    /// `KeyBindsScreen.extractRenderState`: Reset All is active only while a
+    /// mapping differs from its default (`KeyMapping.isDefault`, the bound key
+    /// against `defaultKey`).
+    pub fn changed_from_defaults(&self) -> bool {
+        self.keys.keys().any(|name| !self.is_default(name))
+    }
     pub fn set(&mut self, name: &str, key: &str) {
         if let Some((n, _, _)) = all_mappings().find(|m| m.0 == name) {
             self.keys.insert(n, key.to_owned());
@@ -645,6 +651,7 @@ mod tests {
         assert_eq!(k.translate_all(KeyCode::Digit9), [Ok(KeyCode::Digit9)]);
         assert_eq!(k.translate_all(KeyCode::F3), [Ok(KeyCode::F3)]);
     }
+
     #[test]
     fn display_names() {
         assert_eq!(display_name("key.keyboard.w").plain(), "W");
