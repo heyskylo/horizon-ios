@@ -169,7 +169,8 @@ pub struct Hdr {
     hand_mark: wgpu::RenderPipeline,
     params: wgpu::Buffer,
     /// The same pass drawing HDR10 for a screenshot (`capture`), with its own parameters,
-    /// so it can differ from the swapchain's in one frame.
+    /// so it can differ from the swapchain's in one frame, and without the swapchain's dither:
+    /// a screenshot keeps the exact codes.
     capture_pipeline: wgpu::RenderPipeline,
     capture_params: wgpu::Buffer,
     pub output: Output,
@@ -185,13 +186,13 @@ pub struct Hdr {
     /// The display's black level, in nits: shadows are lifted onto it (`hdr.wgsl`).
     pub black: f32,
     pub tiers: [Tier; 4],
-    /// The HUD and menus' brightness, as a share of paper white (0.25..=1).
+    /// The HUD and menus' brightness, as a share of paper white: above 1 brighter than it.
     pub ui: f32,
     /// Which pixels of a light source shine (`Masks`).
     pub masks: Masks,
     /// HDR lighting, whether Horizon lifts this frame's world: off under a Horizon shader pack
     /// that draws, while a `shaders/` pack's post or material stage runs (the pack's own),
-    /// with HDR Lighting (`look`) off, and with `HORIZON_HDR_LIGHTING=0`, to compare.
+    /// and with HDR Lighting (`look`) off.
     pub lighting: bool,
     /// The HDR Lighting setting: off, nothing in the world is lifted, light sources and the
     /// sun included, so the picture is SDR's on the HDR canvas.
@@ -286,8 +287,9 @@ impl Hdr {
                 entries: &entries,
             })
         };
-        // One full-screen pass of hdr.wgsl's `entry` into `format`, reading `layout`.
-        let pass = |label, layout: &wgpu::BindGroupLayout, entry, format| {
+        // One full-screen pass of hdr.wgsl's `entry` into `format`, reading `layout`; `dither`
+        // for the last pass into the HDR10 swapchain (`pq_dither`).
+        let pass = |label, layout: &wgpu::BindGroupLayout, entry, format, dither: bool| {
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some(label),
                 bind_group_layouts: &[Some(layout)],
@@ -308,7 +310,10 @@ impl Hdr {
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
                     entry_point: Some(entry),
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &[("pq_dither", f64::from(u8::from(dither)))],
+                        ..Default::default()
+                    },
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
                         blend: None,
@@ -321,7 +326,8 @@ impl Hdr {
         };
         let layout_bindings: &[u32] = if coverage { &[0, 3, 4, 5] } else { &[0, 1, 3] };
         let display = layout("Horizon HDR bindings", layout_bindings, true);
-        let pipeline_for = |format| pass("Horizon HDR", &display, entry_point, format);
+        let pipeline_for =
+            |format, dither| pass("Horizon HDR", &display, entry_point, format, dither);
         let params = || {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Horizon HDR parameters"),
@@ -333,7 +339,7 @@ impl Hdr {
         let layered = coverage.then(|| {
             let with = |label, textures: &[u32], params, entry, format| {
                 let layout = layout(label, textures, params);
-                let pipeline = pass(label, &layout, entry, format);
+                let pipeline = pass(label, &layout, entry, format, false);
                 (layout, pipeline)
             };
             let hud = super::hud_coverage::HUD_FORMAT;
@@ -395,8 +401,8 @@ impl Hdr {
         );
         Self {
             logo: logo_mask(device, queue),
-            pipeline: pipeline_for(output.format()),
-            capture_pipeline: pipeline_for(Output::Pq.format()),
+            pipeline: pipeline_for(output.format(), output == Output::Pq),
+            capture_pipeline: pipeline_for(Output::Pq.format(), false),
             layout: display,
             clear_alpha,
             hand_mark,
@@ -416,6 +422,26 @@ impl Hdr {
             lighting: true,
             look: true,
             calibration: None,
+        }
+    }
+
+    /// The same HDR output presenting `output` instead (`output_apply`): the same frame and
+    /// HUD layer, and the player's tuning as it is (HDR Lighting, the world's lighting, the UI
+    /// brightness, the masks and tiers, the debug view, calibration and the luminance). Its
+    /// targets are made again on the next frame.
+    pub fn retargeted(&self, device: &wgpu::Device, queue: &wgpu::Queue, output: Output) -> Self {
+        Self {
+            debug: self.debug,
+            paper_white: self.paper_white,
+            peak: self.peak,
+            black: self.black,
+            tiers: self.tiers,
+            ui: self.ui,
+            masks: self.masks,
+            lighting: self.lighting,
+            look: self.look,
+            calibration: self.calibration,
+            ..Self::new(device, queue, self.format, output, self.layered.is_some())
         }
     }
 
@@ -936,7 +962,7 @@ impl Hdr {
             f32::from(u8::from(pq)),
         ]);
         params[5] = self.black.clamp(0.0, paper);
-        params[6] = self.ui.clamp(0.25, 1.0);
+        params[6] = self.ui;
         params[7] = if self.lighting {
             scene_gain(self.peak, self.paper_white)
         } else {
@@ -981,12 +1007,14 @@ impl Hdr {
     }
 }
 
-/// Horizon's icon (horizon-theme) as a 1-bit mask: its white strokes, one colour with hard
-/// edges, are the logo; everything else is not.
+/// The windows' icon (`window::set_icon_png`: Horizon's in the official game) as a 1-bit mask:
+/// its white strokes, one colour with hard edges, are the logo; everything else is not. No icon
+/// given: an empty mask.
 fn logo_mask(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
     use wgpu::util::DeviceExt;
-    let (w, h, rgba) =
-        crate::hud::decode_bytes(horizon_theme::ICON_PNG).unwrap_or((1, 1, vec![0; 4]));
+    let (w, h, rgba) = horizon_client_input::window::icon_png()
+        .and_then(|png| crate::hud::decode_bytes(png).ok())
+        .unwrap_or((1, 1, vec![0; 4]));
     let mask: Vec<u8> = rgba
         .as_chunks::<4>()
         .0
@@ -1541,6 +1569,93 @@ struct ReferenceParams { peak: f32, scene: f32, world: f32, debug: f32, share: v
         assert!(r == 1.0 && near(g, 0.5) && near(b, 0.2), "{r} {g} {b}");
     }
 
+    /// HDR output switched from HDR10 to scRGB and back (`output_apply`): the player's tuning
+    /// stays, each swapchain gets the same light in its own encoding, and the HDR10 capture
+    /// and the HDR10 picture after the switch back are the ones before it.
+    #[test]
+    fn a_switched_encoding_keeps_the_tuning_and_shows_the_same_light() {
+        let Some((device, queue)) = gpu() else {
+            eprintln!("HDR encoding switch GPU skipped: no adapter");
+            return;
+        };
+        let mut hdr = Hdr::with_debug(&device, &queue, F::Rgba16Float, Output::Pq, true, None);
+        (hdr.paper_white, hdr.peak, hdr.black) = (250.0, 800.0, 0.0);
+        (hdr.ui, hdr.look, hdr.lighting) = (0.5, false, false);
+        hdr.masks.parts = 0.4;
+        hdr.tiers[1].share = 0.7;
+        hdr.debug = true;
+        hdr.calibration = Some(super::Calibration {
+            step: 2,
+            nits: 700.0,
+            band: 0.6,
+        });
+        let tuning = |h: &Hdr| {
+            (
+                [h.paper_white, h.peak, h.black, h.ui],
+                (h.look, h.lighting, h.debug, h.layered.is_some(), h.format),
+                (h.masks, h.tiers, h.calibration),
+            )
+        };
+        let switched = hdr.retargeted(&device, &queue, Output::ScRgb);
+        assert_eq!(switched.output, Output::ScRgb);
+        assert_eq!(tuning(&switched), tuning(&hdr));
+        hdr.calibration = None;
+        hdr.debug = false;
+        // The swapchain's first texel (`capture`: the HDR10 screenshot's) for light 2 times
+        // paper white, grey, as the layered frame stores it.
+        let shot = |hdr: &mut Hdr, capture: bool| {
+            let frame = hdr.frame(&device, [1, 1]);
+            let mut encoder = device.create_command_encoder(&Default::default());
+            let g = 2f64.powf(1.0 / 2.2);
+            fill(&mut encoder, &frame, [g, g, g, 1.0]);
+            hdr.begin(&queue, true);
+            hdr.keep_world(&mut encoder, None);
+            super::super::hud_coverage::clear(&mut encoder, &hdr.coverage_view().unwrap());
+            let target = if capture {
+                hdr.capture(&device, &queue, &mut encoder, true).unwrap()
+            } else {
+                device.create_texture(&wgpu::TextureDescriptor {
+                    label: None,
+                    size: frame.size(),
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: hdr.output.format(),
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                })
+            };
+            if !capture {
+                hdr.present(&queue, &mut encoder, &target, true, None);
+            }
+            texel(&device, &queue, encoder, &target)
+        };
+        // BT.2100's PQ EOTF: a 10-bit code's nits.
+        let pq_nits = |code: f32| {
+            let (m1, m2) = (2610.0 / 16384.0, 2523.0 / 4096.0 * 128.0);
+            let (c1, c2, c3) = (3424.0 / 4096.0, 2413.0 / 128.0, 2392.0 / 128.0);
+            let p = (code / 1023.0f32).powf(1.0 / m2);
+            ((p - c1).max(0.0) / (c2 - c3 * p)).powf(1.0 / m1) * 10000.0
+        };
+        let pq = shot(&mut hdr, false);
+        let pq_capture = shot(&mut hdr, true);
+        let mut scrgb = hdr.retargeted(&device, &queue, Output::ScRgb);
+        let linear = shot(&mut scrgb, false);
+        assert_eq!(shot(&mut scrgb, true), pq_capture);
+        // Two times paper white in both: 500 nits, as HDR10's code and as scRGB's 80-nit units.
+        let near = |got: f32| (got - 500.0).abs() <= 0.015 * 500.0;
+        assert!(
+            near(pq_nits(pq[0])) && pq[..3].iter().all(|&c| c == pq[0]),
+            "{pq:?}"
+        );
+        assert!(near(linear[0] * 80.0), "{linear:?}");
+        let mut back = scrgb.retargeted(&device, &queue, Output::Pq);
+        assert_eq!(
+            (shot(&mut back, false), shot(&mut back, true)),
+            (pq, pq_capture)
+        );
+    }
+
     /// ITU-R BT.2390's black level lift on grey light, in HDR10 and in scRGB, against values
     /// worked out apart from the shader, in f64 from SMPTE ST 2084: E3 = E2 + b (1 - E2)^4 on
     /// the PQ signal, for a source from 0 to the peak and b the black level's share of it.
@@ -1600,19 +1715,32 @@ struct ReferenceParams { peak: f32, scene: f32, world: f32, debug: f32, share: v
                     super::super::hud_coverage::clear(&mut encoder, &hdr.coverage_view().unwrap());
                     hdr.begin(&queue, true);
                     hdr.present(&queue, &mut encoder, &target, true, None);
-                    let got = texel(&device, &queue, encoder, &target);
-                    for c in &got[..3] {
-                        let c = f64::from(*c);
-                        let ok = match output {
-                            // 10-bit codes, a step either way for rounding.
-                            Output::Pq => (c - 1023.0 * pq(want)).abs() <= 1.0,
-                            // 80 nits a unit, in half floats.
-                            Output::ScRgb => (c * 80.0 - want).abs() <= 2e-3 * want + 1e-4,
+                    // HDR10's exact codes are a screenshot's copy: the swapchain's own get a
+                    // code of dither either way.
+                    let exact = (output == Output::Pq)
+                        .then(|| hdr.capture(&device, &queue, &mut encoder, true).unwrap());
+                    let presented = texel(&device, &queue, encoder, &target);
+                    let exact = exact.map(|copy| {
+                        let encoder = device.create_command_encoder(&Default::default());
+                        texel(&device, &queue, encoder, &copy)
+                    });
+                    for (got, codes) in [(Some(presented), 2.0), (exact, 1.0)] {
+                        let Some(got) = got else {
+                            continue;
                         };
-                        assert!(
-                            ok,
-                            "{output:?} black {black}, light {light}: {got:?}, not {want} nits"
-                        );
+                        for c in &got[..3] {
+                            let c = f64::from(*c);
+                            let ok = match output {
+                                // 10-bit codes, a step either way for rounding.
+                                Output::Pq => (c - 1023.0 * pq(want)).abs() <= codes,
+                                // 80 nits a unit, in half floats.
+                                Output::ScRgb => (c * 80.0 - want).abs() <= 2e-3 * want + 1e-4,
+                            };
+                            assert!(
+                                ok,
+                                "{output:?} black {black}, light {light}: {got:?}, not {want} nits"
+                            );
+                        }
                     }
                 }
             }
@@ -1799,9 +1927,11 @@ struct ReferenceParams { peak: f32, scene: f32, world: f32, debug: f32, share: v
             // Covered: the HUD as drawn, at UI Brightness.
             (2.0, 0.3, 1.0, 1.0, 0.3),
             (2.0, 0.3, 1.0, 0.5, 0.3 * 0.5f32.powf(1.0 / 2.2)),
+            // UI Brightness above paper white: brighter than drawn.
+            (2.0, 0.3, 1.0, 2.0, 0.3 * 2f32.powf(1.0 / 2.2)),
             // Added over the world (the text highlight), which it doesn't hide.
             (0.6, 0.8, 0.0, 1.0, 0.8),
-            // At or below white, at 100%: the HUD's picture as drawn.
+            // At or below white, at paper white: the HUD's picture as drawn.
             (0.7, 0.45, 0.5, 1.0, 0.45),
         ] {
             hdr.ui = ui;
@@ -1818,6 +1948,50 @@ struct ReferenceParams { peak: f32, scene: f32, world: f32, debug: f32, share: v
                 (got[0] - want).abs() < 0.01 && got[3] == 1.0,
                 "{world} {hud} {coverage} {ui}: {got:?}"
             );
+        }
+    }
+
+    /// On the frame without the HUD's layer, the HUD at UI Brightness reaches its nits, and
+    /// above the peak stops there, as on the layered frame.
+    #[test]
+    fn the_hud_at_ui_brightness_stops_at_the_peak() {
+        let Some((device, queue)) = gpu() else {
+            return;
+        };
+        let mut hdr = Hdr::with_debug(&device, &queue, F::Rgba8Unorm, Output::ScRgb, false, None);
+        (hdr.paper_white, hdr.peak) = (200.0, 300.0);
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: Output::ScRgb.format(),
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        // UI Brightness (a share of paper white) and the white HUD's nits.
+        for (ui, want) in [(0.5, 100.0), (1.25, 250.0), (2.0, 300.0)] {
+            hdr.ui = ui;
+            let frame = hdr.frame(&device, [1, 1]);
+            let mut encoder = device.create_command_encoder(&Default::default());
+            fill(&mut encoder, &frame, [0.2, 0.2, 0.2, 1.0]);
+            hdr.keep_world(&mut encoder, None);
+            // Opaque white HUD over the world: alpha 1 is full coverage.
+            fill(&mut encoder, &frame, [1.0; 4]);
+            hdr.begin(&queue, true);
+            hdr.present(&queue, &mut encoder, &target, true, None);
+            let got = texel(&device, &queue, encoder, &target);
+            for c in &got[..3] {
+                assert!(
+                    (c * 80.0 - want).abs() < 0.5,
+                    "UI {ui}: {got:?}, not {want} nits"
+                );
+            }
         }
     }
 
@@ -1923,3 +2097,7 @@ mod lighting_tests {
 #[cfg(test)]
 #[path = "hdr_written_tests.rs"]
 mod written_tests;
+
+#[cfg(test)]
+#[path = "hdr_dither_tests.rs"]
+mod dither_tests;

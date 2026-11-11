@@ -255,8 +255,8 @@ pub struct UiState {
     /// What this frame's HUD shows that Horizon's overlays keep clear of (`Game::hud_room`),
     /// set by `hud_layers` before anything draws.
     pub room: horizon_client::hud_kit::room::Room,
-    /// Path of an F2 screenshot waiting for its frame.
-    pub screenshot_message: Option<std::path::PathBuf>,
+    /// F2 screenshots not written yet: each reports in chat once its PNG is.
+    pub screenshot_messages: Vec<std::path::PathBuf>,
     /// The options screens.
     pub options: horizon_client::options_ui::OptionsUi,
     /// The prepared resources before resource packs are layered on.
@@ -1982,15 +1982,17 @@ impl Game<'_> {
         if std::fs::create_dir_all(&dir).is_err() {
             return None;
         }
-        let name = screenshot_name(&dir);
+        // A screenshot still being written has no file yet: its name is taken all the same.
+        let name = screenshot_name(&dir, &self.ui.screenshot_messages);
         let renderer = self.renderer.as_mut()?;
         let path = dir.join(name);
         renderer.screenshot = Some(horizon_client::gfx::ScreenshotRequest {
             path: path.clone(),
             size: None,
             scaled: true,
+            background: true,
         });
-        self.ui.screenshot_message = Some(path.clone());
+        self.ui.screenshot_messages.push(path.clone());
         Some(path)
     }
     /// `Minecraft.handleGlobalKeyPress`'s screenshot branch: the
@@ -2014,12 +2016,23 @@ impl Game<'_> {
         self.take_screenshot();
         true
     }
-    /// After a frame: report a finished F2 screenshot in chat.
-    pub(super) fn finish_screenshot(&mut self, result: &std::result::Result<[u32; 2], String>) {
-        let Some(path) = self.ui.screenshot_message.take() else {
+    /// A screenshot written on its thread: F2's reports in chat. Any other was the world
+    /// icon's (`tick_world_icon`): a failure tries again a second later, as
+    /// `tryTakeScreenshotIfNeeded` does.
+    pub(super) fn finish_screenshot(&mut self, saved: horizon_client::gfx::SavedScreenshot) {
+        let Some(at) = self
+            .ui
+            .screenshot_messages
+            .iter()
+            .position(|p| *p == saved.path)
+        else {
+            if let Err(error) = saved.result {
+                log::warn!("Horizon: couldn't save the world icon: {error}");
+            }
             return;
         };
-        let message = match result {
+        let path = self.ui.screenshot_messages.remove(at);
+        let message = match &saved.result {
             Ok(_) => {
                 log::info!("Saved screenshot to {}", path.display());
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -2055,7 +2068,7 @@ fn chat_box_text(text: &str) -> String {
         .filter(|&ch| ch >= ' ' && ch != '\u{7f}' && ch != '§')
         .collect()
 }
-pub fn screenshot_name(dir: &std::path::Path) -> String {
+pub fn screenshot_name(dir: &std::path::Path, pending: &[std::path::PathBuf]) -> String {
     // Util.getFilenameFormattedDateTime: the local date and time.
     let base = chrono::Local::now().format("%Y-%m-%d_%H.%M.%S").to_string();
     let mut n = 1;
@@ -2065,7 +2078,8 @@ pub fn screenshot_name(dir: &std::path::Path) -> String {
         } else {
             format!("{base}_{n}.png")
         };
-        if !dir.join(&name).exists() {
+        let path = dir.join(&name);
+        if !path.exists() && !pending.contains(&path) {
             return name;
         }
         n += 1;
@@ -2105,6 +2119,25 @@ mod tests {
         assert!(should_discard_draft(ChatExit::Intentional, false));
         assert!(!should_discard_draft(ChatExit::Intentional, true));
         assert!(should_discard_draft(ChatExit::Done, true));
+    }
+
+    /// `Screenshot.getFile` picks the first free name of the second; an F2
+    /// screenshot still being written on its thread has no file yet, so a
+    /// second press in the same second takes the next name, not the same one.
+    #[test]
+    fn a_screenshot_being_written_keeps_its_name() {
+        let dir = std::env::temp_dir().join(format!("horizon-shots-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = screenshot_name(&dir, &[]);
+        let second = screenshot_name(&dir, &[dir.join(&first)]);
+        assert_ne!(first, second);
+        // Unless the clock turned to the next second in between.
+        let same_second = second.starts_with(first.trim_end_matches(".png"));
+        assert!(
+            !same_second || second == first.replace(".png", "_2.png"),
+            "{second}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -2661,7 +2694,7 @@ mod damage_type_registry_tests {
         let pack = dir.join("datapacks/model");
         let types = pack.join("data/example/damage_type");
         std::fs::create_dir_all(&types).unwrap();
-        std::fs::write(pack.join("pack.mcmeta"), "{}").unwrap();
+        std::fs::write(pack.join("pack.mcmeta"), r#"{"pack":{"description":""}}"#).unwrap();
         std::fs::write(
             types.join("test.json"),
             r#"{"message_id":"example.test","scaling":"never","exhaustion":0.0}"#,

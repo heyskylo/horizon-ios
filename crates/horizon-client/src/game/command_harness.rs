@@ -274,6 +274,8 @@ impl Game<'_> {
                     let command = op["cmd"].as_str().unwrap_or("");
                     self.chat_capture = Some(Vec::new());
                     self.cmds.results = Some(Vec::new());
+                    let earlier = self.adv.announced.len();
+                    self.cmds.broadcast_announced = earlier;
                     self.harness_owner(|g| {
                         let previous = g.command_source;
                         if op["source"].as_str() == Some("console") {
@@ -290,7 +292,24 @@ impl Game<'_> {
                         g.command_source = previous;
                         Ok(())
                     })?;
-                    let messages = self.chat_capture.take().unwrap_or_default();
+                    // What the command's own `broadcastChanges` earned is announced
+                    // before its feedback, as a guest's command sends it
+                    // (`announce_guest_advancements`); the rest is left for the tick.
+                    let earned: Vec<_> = {
+                        let len = self.adv.announced.len();
+                        let end = self.cmds.broadcast_announced.clamp(earlier.min(len), len);
+                        self.adv.announced.drain(earlier.min(len)..end).collect()
+                    };
+                    if let Some(host) = self.lan.as_mut() {
+                        for text in &earned {
+                            host.hub
+                                .system_message(horizon_client::lan::data::component_nbt(
+                                    &text.component(),
+                                ));
+                        }
+                    }
+                    let mut messages = earned;
+                    messages.extend(self.chat_capture.take().unwrap_or_default());
                     let results = self.cmds.results.take().unwrap_or_default();
                     if op["record"].as_bool() != Some(false) || op["trace"].as_bool() == Some(true)
                     {
@@ -723,6 +742,44 @@ impl Game<'_> {
                                     location: [0.0; 3],
                                     secondary: false,
                                 },
+                            ),
+                        );
+                        g.lan = Some(host);
+                        Ok(())
+                    })?;
+                }
+                "player_command" => {
+                    // The owner's real ServerboundPlayerCommandPacket, through the
+                    // server's own handler (START_RIDING_JUMP is action 3).
+                    let action = match op["action"].as_str() {
+                        Some("start_riding_jump") => 3,
+                        Some("stop_riding_jump") => 4,
+                        _ => return Err("player command: unknown action".into()),
+                    };
+                    let data = op["data"].as_i64().ok_or("player command: missing data")? as i32;
+                    let owner = self
+                        .serving
+                        .as_ref()
+                        .ok_or("command harness: no server")?
+                        .owner;
+                    self.in_owner_level(|g| -> Result<()> {
+                        let (conn, id) = g
+                            .lan
+                            .as_ref()
+                            .and_then(|h| {
+                                h.hub
+                                    .guests
+                                    .iter()
+                                    .find(|p| p.uuid == owner && p.placed)
+                                    .map(|p| (p.conn, p.entity_id))
+                            })
+                            .ok_or("player command: owner not connected")?;
+                        let mut host = g.lan.take().ok_or("player command: no hub")?;
+                        g.lan_guest_packet(
+                            &mut host,
+                            conn,
+                            horizon_protocol::packets::play::Serverbound::PlayerCommand(
+                                horizon_protocol::packets::play::PlayerCommand { id, action, data },
                             ),
                         );
                         g.lan = Some(host);

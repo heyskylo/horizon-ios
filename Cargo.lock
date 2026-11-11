@@ -1418,6 +1418,7 @@ dependencies = [
 name = "horizon-chat-filter"
 version = "0.1.0"
 dependencies = [
+ "horizon-server-files",
  "serde",
  "serde_json",
  "toml",
@@ -1450,6 +1451,7 @@ dependencies = [
  "horizon-dualsense",
  "horizon-friends",
  "horizon-hdr",
+ "horizon-hooks",
  "horizon-items",
  "horizon-mod-api-gen",
  "horizon-mods",
@@ -1500,7 +1502,6 @@ version = "0.1.0"
 dependencies = [
  "arboard",
  "horizon-client-core",
- "horizon-dualsense",
  "horizon-theme",
  "png",
  "winit",
@@ -1528,10 +1529,8 @@ dependencies = [
  "horizon-client-render",
  "horizon-command",
  "horizon-core",
- "horizon-cosmetics",
- "horizon-dualsense",
- "horizon-friends",
  "horizon-hdr",
+ "horizon-hooks",
  "horizon-items",
  "horizon-mcp",
  "horizon-mods",
@@ -1587,8 +1586,8 @@ dependencies = [
  "horizon-core",
  "horizon-cosmetics",
  "horizon-hdr",
+ "horizon-hooks",
  "horizon-items",
- "horizon-mod-api-gen",
  "horizon-narrator",
  "horizon-optifine",
  "horizon-polytone",
@@ -1652,6 +1651,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-discord"
+version = "0.1.0"
+dependencies = [
+ "horizon-platform",
+ "log",
+ "serde_json",
+]
+
+[[package]]
 name = "horizon-dualsense"
 version = "0.1.0"
 dependencies = [
@@ -1668,12 +1676,22 @@ dependencies = [
  "getrandom 0.3.4",
  "hkdf",
  "horizon-addresses",
+ "horizon-platform",
  "if-addrs",
  "serde",
  "serde_json",
  "sha2",
  "socket2 0.6.5",
  "spake2",
+]
+
+[[package]]
+name = "horizon-game"
+version = "0.1.0"
+dependencies = [
+ "horizon-client",
+ "horizon-mods",
+ "horizon-threads",
 ]
 
 [[package]]
@@ -1686,6 +1704,19 @@ dependencies = [
  "wayland-protocols",
  "wgpu",
 ]
+
+[[package]]
+name = "horizon-heartbeat"
+version = "0.1.0"
+dependencies = [
+ "horizon-platform",
+ "horizon-telemetry",
+ "log",
+]
+
+[[package]]
+name = "horizon-hooks"
+version = "0.1.0"
 
 [[package]]
 name = "horizon-items"
@@ -1768,6 +1799,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-official"
+version = "0.1.0"
+dependencies = [
+ "horizon-discord",
+ "horizon-friends",
+ "horizon-game",
+ "horizon-heartbeat",
+ "horizon-official-servers",
+ "horizon-platform",
+ "log",
+ "winresource",
+]
+
+[[package]]
+name = "horizon-official-servers"
+version = "0.1.0"
+dependencies = [
+ "horizon-addresses",
+ "horizon-platform",
+ "log",
+]
+
+[[package]]
 name = "horizon-optifine"
 version = "0.1.0"
 dependencies = [
@@ -1781,7 +1835,13 @@ dependencies = [
 name = "horizon-platform"
 version = "0.1.0"
 dependencies = [
+ "horizon-core",
+ "horizon-hooks",
+ "horizon-prepare",
+ "horizon-protocol",
+ "horizon-server-files",
  "horizon-system",
+ "horizon-world",
 ]
 
 [[package]]
@@ -1863,11 +1923,9 @@ dependencies = [
  "horizon-anticheat",
  "horizon-bench",
  "horizon-chat-filter",
- "horizon-core",
  "horizon-mcp",
+ "horizon-platform",
  "horizon-release-sign",
- "horizon-server-files",
- "horizon-world",
  "libc",
  "p12-keystore",
  "png",
@@ -1889,6 +1947,7 @@ name = "horizon-server-files"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "getrandom 0.3.4",
  "horizon-core",
  "horizon-protocol",
  "horizon-world",

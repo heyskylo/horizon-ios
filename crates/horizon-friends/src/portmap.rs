@@ -599,6 +599,12 @@ impl Igd {
             let Some(control) = tag(block, "controlURL") else {
                 continue;
             };
+            // The device's text goes into a request line and a header: no line breaks, spaces or
+            // other control characters in it.
+            let clean = |s: &str| !s.chars().any(|c| c.is_control() || c == ' ');
+            if !clean(control) || !clean(service) || !clean(&base) {
+                continue;
+            }
             let control = if control.starts_with("http://") {
                 control.to_owned()
             } else {

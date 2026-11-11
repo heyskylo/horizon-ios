@@ -9,7 +9,7 @@ use crate::{
     engine,
     management::{self, Failure, INTERNAL_ERROR, invalid_params},
 };
-use horizon_server_files::properties::{ServerProperties, SystemEntropy};
+use horizon_platform::server_files::properties::{ServerProperties, SystemEntropy};
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -428,8 +428,14 @@ fn operator(value: &Value) -> Result<Value, Failure> {
 fn component(message: &Value) -> Option<Value> {
     if let Some(key) = message["translatable"].as_str() {
         let mut c = json!({ "translate": key });
+        // Vanilla's Message takes its parameters as strings: plain text here too, never a
+        // selector, score or nbt component that tellraw would resolve with the console's rights.
         if let Some(with) = message["translatableParams"].as_array() {
-            c["with"] = Value::Array(with.clone());
+            c["with"] = Value::Array(
+                with.iter()
+                    .map(|p| json!({ "text": p.as_str().unwrap_or_default() }))
+                    .collect(),
+            );
         }
         return Some(c);
     }
@@ -1007,8 +1013,8 @@ impl Game<'_> {
     /// `ServerStateService.status`.
     fn status(&self) -> Value {
         let version = json!({
-            "name": horizon_core::version::VERSION_ID,
-            "protocol": horizon_core::version::PROTOCOL_VERSION,
+            "name": horizon_platform::version::VERSION_ID,
+            "protocol": horizon_platform::version::PROTOCOL_VERSION,
         });
         let players = if self.running() {
             self.online().ok()
@@ -1089,17 +1095,18 @@ impl Game<'_> {
 struct Lists<'a>(&'a Path);
 
 impl Lists<'_> {
-    fn load<E: horizon_server_files::user_lists::Entry>(
+    fn load<E: horizon_platform::server_files::user_lists::Entry>(
         &self,
         file: &str,
-    ) -> horizon_server_files::user_lists::UserList<E> {
-        let mut list = horizon_server_files::user_lists::UserList::new(self.0.join(file));
+    ) -> horizon_platform::server_files::user_lists::UserList<E> {
+        let mut list = horizon_platform::server_files::user_lists::UserList::new(self.0.join(file));
         let _ = list.load();
         list
     }
 
     fn allowlist(&self) -> Value {
-        let list: horizon_server_files::user_lists::WhiteList = self.load("whitelist.json");
+        let list: horizon_platform::server_files::user_lists::WhiteList =
+            self.load("whitelist.json");
         list.entries()
             .iter()
             .map(|e| json!({ "id": uuid(e.user.id), "name": e.user.name }))
@@ -1107,7 +1114,7 @@ impl Lists<'_> {
     }
 
     fn operators(&self) -> Value {
-        let list: horizon_server_files::user_lists::OpList = self.load("ops.json");
+        let list: horizon_platform::server_files::user_lists::OpList = self.load("ops.json");
         list.entries()
             .iter()
             .map(|e| {
@@ -1121,7 +1128,8 @@ impl Lists<'_> {
     }
 
     fn bans(&self) -> Value {
-        let list: horizon_server_files::user_lists::BanList = self.load("banned-players.json");
+        let list: horizon_platform::server_files::user_lists::BanList =
+            self.load("banned-players.json");
         list.entries()
             .iter()
             .map(|b| {
@@ -1132,7 +1140,8 @@ impl Lists<'_> {
     }
 
     fn ip_bans(&self) -> Value {
-        let list: horizon_server_files::user_lists::IpBanList = self.load("banned-ips.json");
+        let list: horizon_platform::server_files::user_lists::IpBanList =
+            self.load("banned-ips.json");
         list.entries()
             .iter()
             .map(|b| ban(("ip", json!(b.user)), &b.reason, &b.source, b.expires))
@@ -1220,6 +1229,19 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn translatable_parameters_are_plain_text() {
+        let message = json!({
+            "translatable": "chat.type.announcement",
+            "translatableParams": ["Server", {"selector": "@e"}, 3],
+        });
+        assert_eq!(
+            component(&message).unwrap(),
+            json!({"translate": "chat.type.announcement",
+                "with": [{"text": "Server"}, {"text": ""}, {"text": ""}]})
+        );
+    }
 
     fn shared() -> std::sync::Arc<Shared> {
         let dir = std::env::temp_dir().join(format!(

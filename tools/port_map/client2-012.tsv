@@ -1,4 +1,5 @@
 ContainerEventHandler.getChildAt	port	crates/horizon-client-render/src/pack_screen.rs::PackScreen::button_at	gap: minor: says whether a button is under the pointer; list rows are hit-tested in PackScreen::click
+ContainerEventHandler.mouseClicked	port	crates/horizon-client/src/game/social.rs::Game::social_click	the children in order: each screen routes its own clicks, and the social screen's search box takes the click before its tabs, buttons and Done (social_screen::click_kind)
 ContainerEventHandler.mouseReleased	port	crates/horizon-client-render/src/pack_screen.rs::PackScreen::release	gap: minor: only clears list scrollbar holds; no focused child gets the release
 ContainerEventHandler.mouseDragged	port	crates/horizon-client-render/src/pack_screen.rs::PackScreen::drag	drags a held list scrollbar
 ContainerEventHandler.mouseScrolled	port	crates/horizon-client-render/src/pack_screen.rs::PackScreen::scroll	list under the pointer scrolls 18 px per notch
