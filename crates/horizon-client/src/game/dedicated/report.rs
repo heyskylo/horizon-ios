@@ -265,7 +265,7 @@ impl Game<'_> {
                         }
                     }
                 }
-                Asked::Stop => self.finish_perf_capture(state, StopReason::Normal),
+                Asked::Stop(reason) => self.finish_perf_capture(state, reason),
             }
         }
     }

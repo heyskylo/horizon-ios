@@ -141,6 +141,24 @@ def check_horizon(bins, resources, scratch, out):
         if not (folder / timed['path']).exists():
             raise Failed('the timed capture left no file')
 
+        ctl('profile', 'server', 'start')
+        ctl('disconnect')
+        deadline = time.time() + 30
+        while not any(f'{PLAYER} left; their server profile stops' in l for l in server.since(0)):
+            if time.time() > deadline:
+                raise Failed('the server kept the profile of a player who left')
+            time.sleep(0.5)
+        ctl('connect', f'127.0.0.1:{port}', PLAYER)
+        ctl('wait-for', 'loaded', '--timeout', 300)
+        again = ctl('profile', 'server', 'start', '--seconds', 2)
+        deadline = time.time() + 60
+        while ctl('profile', 'status')['capturing']:
+            if time.time() > deadline:
+                raise Failed('the capture after a reconnect never finished')
+            time.sleep(0.5)
+        if not (folder / again['path']).exists():
+            raise Failed('the capture after a reconnect left no file')
+
         codes, marks = client_capture(bins, ctl, work, 3)
         if codes or marks != ['server_started']:
             raise Failed(f'a bare capture at level 4 holds warnings {codes} and marks {marks}')
@@ -154,7 +172,7 @@ def check_horizon(bins, resources, scratch, out):
         if codes != ['WARNING_CODE_SERVER_DENIED'] or marks:
             raise Failed(f'a bare capture refused by the server holds warnings {codes} and marks {marks}')
         files = sorted(p.name for p in reports.glob('profile-*.hzperf'))
-        if len(files) != 3:
+        if len(files) != 5:
             raise Failed(f'the server holds {files}')
         print(f'horizon: the server kept {files}')
     finally:

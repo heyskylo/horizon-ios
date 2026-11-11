@@ -18,6 +18,8 @@ use std::time::Instant;
 pub(in crate::game) struct Requester {
     conn: u32,
     name: String,
+    /// Their connection ended: the capture stops and its file stays on the server.
+    left: bool,
 }
 
 /// A request that passed the checks and waits for the tick loop that owns the capture state.
@@ -27,7 +29,7 @@ pub(in crate::game) enum Asked {
         name: String,
         wanted: Wanted,
     },
-    Stop,
+    Stop(StopReason),
 }
 
 /// What a guest has asked of this server, for the tick loop.
@@ -104,7 +106,7 @@ impl Game<'_> {
             }
             Verdict::Accept => served.asked.push(match request {
                 Request::Start(wanted) => Asked::Start { conn, name, wanted },
-                Request::Stop => Asked::Stop,
+                Request::Stop => Asked::Stop(StopReason::Normal),
             }),
         }
     }
@@ -116,8 +118,22 @@ impl Game<'_> {
         }
     }
 
+    /// What guests asked since the last tick, and a stop when the guest whose capture runs has left.
     pub(in crate::game) fn take_perf_asked(&mut self) -> Vec<Asked> {
-        std::mem::take(&mut self.profile.served.asked)
+        let served = &mut self.profile.served;
+        let mut asked = std::mem::take(&mut served.asked);
+        if let Some(r) = served.requester.as_mut()
+            && !r.left
+            && self
+                .lan
+                .as_ref()
+                .is_some_and(|h| h.hub.guest(r.conn).is_none())
+        {
+            r.left = true;
+            log::info!("Horizon: {} left; their server profile stops", r.name);
+            asked.push(Asked::Stop(StopReason::Disconnected));
+        }
+        asked
     }
 
     /// The capture `name` asked for runs, in the file at `path`.
@@ -133,7 +149,11 @@ impl Game<'_> {
             window(wanted),
             if wanted.samples { "on" } else { "off" }
         );
-        self.profile.served.requester = Some(Requester { conn, name });
+        self.profile.served.requester = Some(Requester {
+            conn,
+            name,
+            left: false,
+        });
         self.perf_reply(
             conn,
             &Reply::Started {
@@ -152,9 +172,15 @@ impl Game<'_> {
     /// Server captures whose files are done: the guest that asked is told, and the log names it.
     pub(in crate::game) fn perf_captures_done(&mut self, done: Vec<Done>) {
         for done in done {
-            let Some(Requester { conn, name }) = self.profile.served.requester.take() else {
+            let Some(Requester { conn, name, left }) = self.profile.served.requester.take() else {
                 continue;
             };
+            if left {
+                if let Done::Saved { path, .. } = &done {
+                    log::info!("Horizon: {name}'s server profile saved to {path}");
+                }
+                continue;
+            }
             match done {
                 Done::Saved {
                     path,
@@ -247,7 +273,7 @@ impl Game<'_> {
                         }
                     }
                 }
-                Asked::Stop => self.stop_server_capture(StopReason::Normal, None),
+                Asked::Stop(reason) => self.stop_server_capture(reason, None),
             }
         }
     }
