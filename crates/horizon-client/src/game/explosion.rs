@@ -1140,9 +1140,9 @@ impl Game<'_> {
             self.spawn_infestation(pos);
         }
         // Its dropExperience is whether the blast's indirect source is a
-        // player (a primed TNT's owner): ores, sculk and spawners sample their
-        // experience then, and pop it while blocks drop.
-        if !is_tnt && self.combat.blast_owner.is_some() {
+        // player (a primed TNT's owner, not a mob's): ores, sculk and spawners
+        // sample their experience then, and pop it while blocks drop.
+        if !is_tnt && self.combat.blast_owner_player {
             let xp = self.block_experience(&name);
             if xp > 0 && self.ui.rules.bool("block_drops") {
                 self.spawn_orbs(pos.map(|v| f64::from(v) + 0.5), xp);
@@ -1195,9 +1195,12 @@ impl Game<'_> {
             let rot = r.next_double() * f64::from(std::f32::consts::TAU);
             let fuse = r.next_int_bound(20).unwrap_or(0) + 10;
             // TntBlock.wasExploded hands the new TNT the blast's indirect
-            // source, so a chain reaction keeps the player who started it.
+            // source, so a chain reaction keeps the player or mob who started it.
             let (owner, guest) = match &self.combat.blast_owner {
-                Some(_) => (Some(Who::Player), self.combat.blast_guest),
+                Some(_) if self.combat.blast_owner_player => {
+                    (Some(Who::Player), self.combat.blast_guest)
+                }
+                Some((id, _)) => (Some(Who::Mob(*id)), None),
                 None => (None, None),
             };
             self.add_primed_tnt(
