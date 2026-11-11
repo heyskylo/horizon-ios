@@ -5,7 +5,7 @@
 //! The pack's GLSL (26.3's `#include` or the older `#moj_import`, with explicit locations or
 //! without) is written again as the Vulkan-flavoured GLSL 450 naga reads:
 //! - GLSL vanilla's GL compiler takes and naga doesn't is rewritten first ([`glsl_fixups`]: a
-//!   helper taking the `sampler2D` it reads);
+//!   helper taking the `sampler2D` it reads, an array sized by its initializer only);
 //! - includes are inlined, each file once (as `GlslPreprocessor` imported them), from `include`;
 //! - vanilla's uniform blocks get the bindings of [`BLOCKS`], and each of [`SAMPLERS`] is split
 //!   into a texture and a sampler object, combined again where the sampler is named;

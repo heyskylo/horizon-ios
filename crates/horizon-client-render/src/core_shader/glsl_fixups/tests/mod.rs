@@ -244,3 +244,48 @@ fn thousands_of_calls_are_left_as_they_were() {
         fixups(&few)
     );
 }
+
+#[test]
+fn unsized_arrays_take_their_initializers_size() {
+    let text = "const float[] w = float[](0.25, 0.5, 0.25);\n\
+        const vec2 offsets[] = vec2[](vec2(1.0, 0.0), vec2(0.0, 1.0));\n\
+        float k[] = float[4](1.0, 2.0, 3.0, 4.0);\n\
+        bool same = a == b;\n";
+    let out = size_unsized_arrays(text);
+    assert!(
+        out.contains("const float[3] w = float[3](0.25, 0.5, 0.25);"),
+        "{out}"
+    );
+    assert!(
+        out.contains("const vec2 offsets[2] = vec2[2](vec2(1.0, 0.0), vec2(0.0, 1.0));"),
+        "{out}"
+    );
+    assert!(
+        out.contains("float k[4] = float[4](1.0, 2.0, 3.0, 4.0);"),
+        "{out}"
+    );
+    assert!(out.contains("bool same = a == b;"));
+}
+
+#[test]
+fn a_wide_character_after_a_sized_array_never_panics() {
+    // Ten values make the size two digits, which moves the `=` two bytes right: the scan
+    // went on from where it used to be, inside the `é`.
+    let text = "float w[]\u{e9}= float[](0.,1.,2.,3.,4.,5.,6.,7.,8.,9.);\n";
+    assert_eq!(
+        size_unsized_arrays(text),
+        "float w[10]\u{e9}= float[10](0.,1.,2.,3.,4.,5.,6.,7.,8.,9.);\n"
+    );
+}
+
+/// #9386 end to end: naga refuses an array sized by its initializer only.
+#[test]
+fn an_array_sized_by_its_initializer_translates() {
+    let fsh = "#version 330\nuniform sampler2D Sampler0;\nin vec2 texCoord0;\nout vec4 fragColor;\n\
+        const float[] weights = float[](0.25, 0.5, 0.25);\n\
+        void main() {\n    vec4 sum = vec4(0.0);\n\
+            for (int i = 0; i < 3; i++) {\n        sum += texture(Sampler0, texCoord0 + float(i) * 0.01) * weights[i];\n    }\n\
+            fragColor = sum;\n}\n";
+    let program = translate(fsh);
+    assert!(program.is_ok(), "{:?}", program.err());
+}

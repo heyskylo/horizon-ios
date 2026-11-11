@@ -1,6 +1,9 @@
 //! GLSL that vanilla's GL compiler takes and naga's front end doesn't (#9386), rewritten into
-//! what both take: a function with `sampler2D` parameters is copied once per set of samplers its
-//! callers pass (all of them a shader's global samplers), the copy reading those samplers by name.
+//! what both take:
+//! - a function with `sampler2D` parameters is copied once per set of samplers its callers pass
+//!   (all of them a shader's global samplers), the copy reading those samplers by name;
+//! - an unsized array (`const float[] w = float[](...)`, `float w[] = ...`) takes the size its
+//!   initializer gives.
 
 /// The longest shader rewritten (vanilla's, includes expanded, are a few KiB).
 const MAX_LEN: usize = 64 * 1024;
@@ -14,7 +17,7 @@ pub(super) fn fixups(text: &str) -> String {
     if text.len() > MAX_LEN {
         return text.to_owned();
     }
-    specialize_sampler_params(text)
+    size_unsized_arrays(&specialize_sampler_params(text))
 }
 
 fn is_ident(c: char) -> bool {
@@ -509,6 +512,91 @@ fn specialize_sampler_params(original: &str) -> String {
     }
     // One that couldn't be followed: the shader as written, never half rewritten.
     original.to_owned()
+}
+
+/// Each array declared without a size that an initializer sizes: `T[] name = T[](a, b)` and
+/// `T name[] = T[](a, b)` (or `T[2](...)`) are written with the size.
+fn size_unsized_arrays(text: &str) -> String {
+    let mut text = text.to_owned();
+    let mut closing = closings(&text);
+    // Each array sized reads the text's brackets again: a few hundred are plenty.
+    let mut left = 256;
+    let mut from = 0;
+    while let Some(found) = text[from..].find('=') {
+        let eq = from + found;
+        from = eq + 1;
+        // `==`, `<=`, `>=`, `!=`, `+=` ... are no initializers.
+        let prev = text[..eq].chars().next_back();
+        let next = text[eq + 1..].chars().next();
+        if matches!(
+            prev,
+            Some('=' | '<' | '>' | '!' | '+' | '-' | '*' | '/' | '%' | '&' | '|' | '^')
+        ) || next == Some('=')
+        {
+            continue;
+        }
+        // The constructor: `T [ n? ] (`.
+        let rest = &text[eq + 1..];
+        let ty_start = eq + 1 + (rest.len() - rest.trim_start().len());
+        let ty_len = text[ty_start..]
+            .chars()
+            .take_while(|c| is_ident(*c))
+            .count();
+        if ty_len == 0 {
+            continue;
+        }
+        let after_ty = &text[ty_start + ty_len..];
+        let bracket = ty_start + ty_len + (after_ty.len() - after_ty.trim_start().len());
+        if !text[bracket..].starts_with('[') {
+            continue;
+        }
+        let Some(bracket_end) = closing[bracket] else {
+            continue;
+        };
+        let after_bracket = &text[bracket_end + 1..];
+        let paren = bracket_end + 1 + (after_bracket.len() - after_bracket.trim_start().len());
+        if !text[paren..].starts_with('(') {
+            continue;
+        }
+        let Some(paren_end) = closing[paren] else {
+            continue;
+        };
+        // The declarator: `name []` or `T [] name`, between the statement's start and `=`.
+        // (Looked for on the line, at most 256 bytes back, so a long line stays linear.)
+        let mut back = eq.saturating_sub(256);
+        while !text.is_char_boundary(back) {
+            back += 1;
+        }
+        let statement_start = text[back..eq]
+            .rfind([';', '{', '}', '\n'])
+            .map_or(back, |i| back + i + 1);
+        let declarator = &text[statement_start..eq];
+        let Some(empty) = declarator.rfind('[') else {
+            continue;
+        };
+        let inside = &declarator[empty + 1..];
+        let Some(close) = inside.find(']') else {
+            continue;
+        };
+        if !inside[..close].trim().is_empty() {
+            continue;
+        }
+        let size = split_top(&text[paren + 1..paren_end]).len().to_string();
+        // Sized in the constructor too, where it isn't.
+        if text[bracket + 1..bracket_end].trim().is_empty() {
+            text.replace_range(bracket + 1..bracket_end, &size);
+        }
+        let at = statement_start + empty + 1;
+        text.replace_range(at..at + close, &size);
+        // The declarator is before `=`, so `=` moved by what its size changed.
+        from = eq + 1 + size.len() - close;
+        closing = closings(&text);
+        left -= 1;
+        if left == 0 {
+            break;
+        }
+    }
+    text
 }
 
 #[cfg(test)]
