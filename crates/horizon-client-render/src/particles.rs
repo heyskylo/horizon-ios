@@ -31,7 +31,10 @@ mod native;
 pub mod polytone;
 mod polytone_gpu;
 mod polytone_model;
+mod simple;
+mod spawn;
 pub use native::{ParticleController, ParticleUpdate};
+use simple::{PARALLEL_MIN, parallel_threads, sprite_from_age_in, tick_simple};
 
 /// `ParticleOptions` with the parameters of the option classes used here.
 #[derive(Clone, Debug)]
@@ -523,6 +526,8 @@ pub struct Particle {
     no_render: bool,
     /// Ticked once when created (`CritParticle` constructor).
     pre_tick: bool,
+    /// A Polytone particle with physics, which joins only where its box is clear of blocks.
+    spawn_check: bool,
     /// `Particle.random`: the particle's own generator (`RandomSource.create()`).
     random: LegacyRandom,
     controller: Option<Box<dyn native::Controller>>,
@@ -892,6 +897,7 @@ impl Particle {
             behaviour: Behaviour::Base,
             no_render: false,
             pre_tick: false,
+            spawn_check: false,
             frame_ticks: 0,
             random: LegacyRandom::new(0),
             controller: None,
@@ -1222,8 +1228,9 @@ pub struct ParticleLevel<'a> {
     pub collision: &'a BlockCollisionRegistry<'a>,
     /// Local player feet position and vertical velocity (`PlayerCloudParticle`).
     pub player: Option<([f64; 3], f64)>,
+    pub cached_chunk: std::cell::Cell<Option<((i32, i32), Option<&'a crate::chunk::Chunk>)>>,
 }
-impl ParticleLevel<'_> {
+impl<'a> ParticleLevel<'a> {
     fn collide(&self, bb: Aabb, d: [f64; 3]) -> [f64; 3] {
         let mut scene = SceneCollisions {
             world: self.world,
@@ -1231,9 +1238,6 @@ impl ParticleLevel<'_> {
             subject: None,
         };
         let movement = Vec3::new(d[0], d[1], d[2]);
-        // `Entity.collideBoundingBox(null, ...)`: no entity shapes, no border. Where no
-        // block of the swept box's cells can collide, it finds no shape and the
-        // movement stands, as the resolution below would return it.
         if scene.cells_without_collision(bb.expand_towards(movement)) {
             return d;
         }
@@ -1249,38 +1253,46 @@ impl ParticleLevel<'_> {
             p[2].floor() as i32,
         ]
     }
+    #[inline]
+    pub fn block(&self, x: i32, y: i32, z: i32) -> horizon_world::registry::BlockStateId {
+        let (cx, cz) = (x >> 4, z >> 4);
+        let chunk = match self.cached_chunk.get() {
+            Some(((ccx, ccz), c)) if ccx == cx && ccz == cz => c,
+            _ => {
+                let c = self.world.chunks.get(&(cx, cz)).map(|c| c.as_ref());
+                self.cached_chunk.set(Some(((cx, cz), c)));
+                c
+            }
+        };
+        chunk.map_or(self.world.air, |c| c.block(x & 15, y, z & 15))
+    }
     /// The fluid at a block and `FluidState.getHeight`.
     fn fluid(&self, b: [i32; 3]) -> (Fluid, f64) {
-        let s = self.facts.get(self.world.block(b[0], b[1], b[2]));
+        let s = self.facts.get(self.block(b[0], b[1], b[2]));
         if s.fluid == Fluid::None {
             return (Fluid::None, 0.0);
         }
-        let above = self.facts.get(self.world.block(b[0], b[1] + 1, b[2]));
-        let height = if above.fluid == s.fluid {
+        let above = self.facts.get(self.block(b[0], b[1] + 1, b[2]));
+        let h = if above.fluid == s.fluid {
             1.0
         } else {
             f64::from(s.fluid_level) / 9.0
         };
-        (s.fluid, height)
+        (s.fluid, h)
     }
     /// The fluid at a block and whether it is a source (`FluidState.isSource`).
     pub(crate) fn fluid_source(&self, b: [i32; 3]) -> (Fluid, bool) {
-        let s = self.facts.get(self.world.block(b[0], b[1], b[2]));
+        let s = self.facts.get(self.block(b[0], b[1], b[2]));
         (s.fluid, s.fluid_level == 8 && !s.fluid_falling)
     }
     /// `getCollisionShape(...).max(Y, x, z)` for cached shapes.
     fn collision_top(&self, b: [i32; 3], fx: f64, fz: f64) -> f64 {
-        let state = self.world.block(b[0], b[1], b[2]);
+        let state = self.block(b[0], b[1], b[2]);
         match self.collision.cached_shapes().cached_shape(state) {
             Ok(Some(shape)) if !shape.is_empty() => shape.max_at(Axis::Y, fx, fz),
             Ok(Some(_)) => 0.0,
-            _ => {
-                if self.facts.get(state).full_collision {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
+            _ if self.facts.get(state).full_collision => 1.0,
+            _ => 0.0,
         }
     }
 }
@@ -1318,6 +1330,9 @@ pub struct ParticleEngine {
     /// A native mod's sprite sets, by namespaced particle name.
     mod_sets: HashMap<String, (u32, Option<ModBehaviour>)>,
     set_sprites: Vec<Vec<u32>>,
+    /// How many live particles it takes to tick them on several threads (`tick_all`), and how many threads.
+    parallel_min: usize,
+    parallel_threads: usize,
     /// Resource packs' Polytone custom particle types (#11486).
     polytone: Option<std::sync::Arc<polytone::Registry>>,
     /// Vanilla particle types a pack replaces with a custom one of the same id
@@ -1520,6 +1535,8 @@ impl ParticleEngine {
             sets: HashMap::new(),
             mod_sets: HashMap::new(),
             set_sprites: Vec::new(),
+            parallel_min: PARALLEL_MIN,
+            parallel_threads: parallel_threads(),
             polytone: None,
             polytone_overrides: HashMap::new(),
             polytone_gpu: Vec::new(),
@@ -1744,28 +1761,6 @@ impl ParticleEngine {
         particle.behaviour = Behaviour::Controlled { translucent };
         particle.controller = Some(Box::new(controller));
         Some(particle)
-    }
-    /// Sets (or clears) the resource packs' Polytone custom particle types.
-    pub fn set_polytone(&mut self, registry: Option<std::sync::Arc<polytone::Registry>>) {
-        let registry = registry.filter(|r| !r.is_empty());
-        let same = match (&self.polytone, &registry) {
-            (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
-            (None, None) => true,
-            _ => false,
-        };
-        if !same {
-            self.polytone_gpu.clear();
-            self.polytone_overrides = registry
-                .iter()
-                .flat_map(|r| {
-                    ParticleType::ALL.iter().filter_map(|&ty| {
-                        let id = format!("minecraft:{}", ty.name());
-                        r.get(&id).is_some().then_some((ty, id))
-                    })
-                })
-                .collect();
-        }
-        self.polytone = registry;
     }
     /// The quads the last render blends additively (`RenderPipelines` additive, src alpha and
     /// one), for the frame's additive pass.
@@ -2020,73 +2015,6 @@ impl ParticleEngine {
             (eye[0] - pos[0]).powi(2) + (eye[1] - pos[1]).powi(2) + (eye[2] - pos[2]).powi(2) <= 9.0
         })
     }
-    /// `ClientPacketListener.handleParticleEvent` for `ServerLevel.sendParticles`.
-    pub fn send_particles(
-        &mut self,
-        options: &ParticleOptions,
-        at: [f64; 3],
-        spread: [f64; 3],
-        speed: f64,
-        count: u32,
-    ) {
-        if count == 0 {
-            let v = [speed * spread[0], speed * spread[1], speed * spread[2]];
-            self.add(options, at, v);
-            return;
-        }
-        for _ in 0..count {
-            let r = &mut self.random;
-            let p = [
-                at[0] + r.next_gaussian() * spread[0],
-                at[1] + r.next_gaussian() * spread[1],
-                at[2] + r.next_gaussian() * spread[2],
-            ];
-            let v = [
-                r.next_gaussian() * speed,
-                r.next_gaussian() * speed,
-                r.next_gaussian() * speed,
-            ];
-            self.add(options, p, v);
-        }
-    }
-    /// `ParticleEngine.createParticle`: always spawned, but `ParticleEngine.add`
-    /// drops a spore blossom air particle once `ParticleLimit.SPORE_BLOSSOM` is full.
-    pub fn create(&mut self, options: &ParticleOptions, p: [f64; 3], v: [f64; 3]) {
-        if let Some(requests) = &mut self.created_requests {
-            requests.push((options.clone(), p, v));
-            return;
-        }
-        let seed = self.seeds.next_long();
-        if let Some(mut particle) = self.make(options, p, v, seed) {
-            *self.made.entry(options.ty.name()).or_default() += 1;
-            // Resource packs' Polytone particle modifiers (#11486), once as it spawns.
-            if let Some(registry) = &self.polytone
-                && registry.modifies_particles()
-            {
-                let id = match &options.mod_particle {
-                    Some(name) => name.clone(),
-                    None => format!("minecraft:{}", options.ty.name()),
-                };
-                polytone::modify(registry, &id, options.source.as_deref(), &mut particle);
-            }
-            // The provider has drawn, so rejecting here keeps vanilla's RNG order.
-            // shortcut: counts live plus queued particles by scanning instead of
-            // vanilla's counted map; use a counter if spore spawning shows in profiles.
-            if particle.ty == ParticleType::SporeBlossomAir
-                && self.particles.len() + self.pending.len() >= SPORE_BLOSSOM_LIMIT
-                && self
-                    .particles
-                    .iter()
-                    .chain(self.pending.iter())
-                    .filter(|q| q.ty == ParticleType::SporeBlossomAir)
-                    .count()
-                    >= SPORE_BLOSSOM_LIMIT
-            {
-                return;
-            }
-            self.pending.push(particle);
-        }
-    }
     /// How many particles of each type were made so far.
     pub fn made(&self) -> &std::collections::BTreeMap<&'static str, u64> {
         &self.made
@@ -2181,23 +2109,7 @@ impl ParticleEngine {
     }
     /// `SingleQuadParticle.setSpriteFromAge`.
     fn sprite_from_age(&self, p: &mut Particle) {
-        if p.removed {
-            return;
-        }
-        if let Some(set) = p.set {
-            // A sprite set's index can outlive the reload that rebuilt them.
-            let Some(sprites) = self.set_sprites.get(set as usize) else {
-                return;
-            };
-            let lifetime = p.lifetime.max(1);
-            let index = if p.frame_ticks > 0 {
-                (p.age.max(0) as i64 / i64::from(p.frame_ticks)) % sprites.len() as i64
-            } else {
-                (p.age.max(0) as i64 * (sprites.len() as i64 - 1) / i64::from(lifetime))
-                    .clamp(0, sprites.len() as i64 - 1)
-            };
-            p.sprite = Sprite::Index(sprites[index as usize]);
-        }
+        sprite_from_age_in(&self.set_sprites, p);
     }
     #[allow(clippy::too_many_lines)]
     /// `ParticleProvider.createParticle`: provider draws use the engine's
@@ -3690,13 +3602,14 @@ impl ParticleEngine {
         self.sprite_from_age(&mut q);
         q
     }
-    /// ClientLevel.createFireworks: a Starter (or poofs without explosions).
+    /// ClientLevel.createFireworks: a Starter (or poofs without explosions) with `playSound`.
     pub fn fireworks(
         &mut self,
         at: [f64; 3],
         v: [f64; 3],
         explosions: Vec<FireworkExplosion>,
         camera: [f64; 3],
+        play_sound: bool,
     ) {
         if explosions.is_empty() {
             for _ in 0..self.random.next_int_bound(3).unwrap_or(0) + 2 {
@@ -3720,17 +3633,17 @@ impl ParticleEngine {
             life: 0,
             lifetime,
             twinkle_delay: twinkle,
-            far,
+            sound: play_sound.then_some(far),
         });
     }
     fn tick_starters(&mut self) {
         for mut s in std::mem::take(&mut self.starters) {
-            if s.life == 0 {
+            if s.life == 0 && s.sound.is_some() {
                 let large = s.explosions.len() >= 3
                     || s.explosions
                         .iter()
                         .any(|e| e.shape == FireworkShape::LargeBall);
-                let sound = match (large, s.far) {
+                let sound = match (large, s.sound == Some(true)) {
                     (true, true) => "minecraft:entity.firework_rocket.large_blast_far",
                     (true, false) => "minecraft:entity.firework_rocket.large_blast",
                     (false, true) => "minecraft:entity.firework_rocket.blast_far",
@@ -3773,16 +3686,13 @@ impl ParticleEngine {
                     (c & 255) as f32 / 255.0,
                     ((c >> 24) & 255) as f32 / 255.0,
                 ];
-                self.create(
-                    &ParticleOptions::colored(ParticleType::Flash, rgba),
-                    s.at,
-                    [0.0; 3],
-                );
+                let flash = ParticleOptions::colored(ParticleType::Flash, rgba);
+                self.create(&flash, s.at, [0.0; 3]);
             }
             s.life += 1;
             if s.life > s.lifetime {
-                if s.twinkle_delay {
-                    let sound = if s.far {
+                if s.twinkle_delay && s.sound.is_some() {
+                    let sound = if s.sound == Some(true) {
                         "minecraft:entity.firework_rocket.twinkle_far"
                     } else {
                         "minecraft:entity.firework_rocket.twinkle"
@@ -3907,9 +3817,7 @@ impl ParticleEngine {
         self.emitters = emitters;
         let mut particles = std::mem::take(&mut self.particles);
         self.spawned_in_tick = Some(Vec::new());
-        for p in &mut particles {
-            self.tick_particle(p, level);
-        }
+        self.tick_all(&mut particles, level);
         particles.retain(|p| !p.removed);
         self.particles = particles;
         for (options, pos, velocity) in self.spawned_in_tick.take().unwrap_or_default() {
@@ -3917,6 +3825,9 @@ impl ParticleEngine {
         }
         let pending = std::mem::take(&mut self.pending);
         for mut p in pending {
+            if !self.polytone_joins(&p, level) {
+                continue;
+            }
             if p.pre_tick {
                 p.pre_tick = false;
                 self.tick_particle(&mut p, level);
@@ -4014,7 +3925,15 @@ impl ParticleEngine {
     #[allow(clippy::too_many_lines)]
     fn tick_particle(&mut self, p: &mut Particle, level: &ParticleLevel) {
         match p.behaviour {
-            Behaviour::Base => p.base_tick(level),
+            Behaviour::Base
+            | Behaviour::Mod { .. }
+            | Behaviour::Animated
+            | Behaviour::Snowflake
+            | Behaviour::Crit
+            | Behaviour::Spark { .. } => {
+                let simple = tick_simple(&self.set_sprites, p, level);
+                self.finish_simple(p, simple);
+            }
             Behaviour::Controlled { .. } => {
                 if let Some(mut controller) = p.controller.take() {
                     let update = controller.tick(p, level);
@@ -4033,40 +3952,15 @@ impl ParticleEngine {
                     p.remove();
                 }
             }
-            Behaviour::Mod { size, alpha } => {
-                p.base_tick(level);
-                p.size = mod_curve(size, p.age, p.lifetime);
-                p.rgba[3] = mod_curve(alpha, p.age, p.lifetime);
-                self.sprite_from_age(p);
-            }
-            Behaviour::Animated => {
-                p.base_tick(level);
-                self.sprite_from_age(p);
-            }
-            Behaviour::Snowflake => {
-                p.base_tick(level);
-                self.sprite_from_age(p);
-                p.velocity[0] *= f64::from(0.95f32);
-                p.velocity[1] *= f64::from(0.9f32);
-                p.velocity[2] *= f64::from(0.95f32);
-            }
             Behaviour::Lava => {
                 p.base_tick(level);
-                if !p.removed {
-                    let odds = p.age as f32 / p.lifetime as f32;
-                    if p.random.next_float() > odds {
-                        self.add(
-                            &ParticleOptions::simple(ParticleType::Smoke),
-                            p.position,
-                            p.velocity,
-                        );
-                    }
+                if !p.removed && p.random.next_float() > p.age as f32 / p.lifetime as f32 {
+                    self.add(
+                        &ParticleOptions::simple(ParticleType::Smoke),
+                        p.position,
+                        p.velocity,
+                    );
                 }
-            }
-            Behaviour::Crit => {
-                p.base_tick(level);
-                p.rgba[1] *= 0.96;
-                p.rgba[2] *= 0.9;
             }
             Behaviour::Drip {
                 fluid,
@@ -4144,9 +4038,7 @@ impl ParticleEngine {
                     *c *= f64::from(0.98f32);
                 }
                 if p.on_ground {
-                    if p.random.next_float() < 0.5 {
-                        p.removed = true;
-                    }
+                    p.removed |= p.random.next_float() < 0.5;
                     p.velocity[0] *= f64::from(0.7f32);
                     p.velocity[2] *= f64::from(0.7f32);
                 }
@@ -4186,13 +4078,10 @@ impl ParticleEngine {
             } => {
                 p.base_tick(level);
                 let (fluid, source) = level.fluid_source(ParticleLevel::block_at(p.position));
-                if !(p.removed || (fluid == Fluid::Water && source)) {
-                    p.removed = true;
-                }
-                if !p.removed && p.position[1] >= y_end {
-                    p.removed = true;
-                }
-                if !p.removed && p.position[1] <= y_prev {
+                if !(fluid == Fluid::Water && source)
+                    || p.position[1] >= y_end
+                    || p.position[1] <= y_prev
+                {
                     p.removed = true;
                 }
                 // randomHorizontalWiggling, then a second, horizontal move.
@@ -4216,9 +4105,8 @@ impl ParticleEngine {
                 p.base_tick(level);
                 self.sprite_from_age(p);
                 if p.age as f32 > fade_start {
-                    let frames_since_fade_out_start = p.age as f32 - fade_start;
                     p.rgba[3] =
-                        (p.lifetime as f32 - frames_since_fade_out_start) / p.lifetime as f32;
+                        (p.lifetime as f32 - (p.age as f32 - fade_start)) / p.lifetime as f32;
                 }
             }
             Behaviour::NoxiousGasCloud => {
@@ -4544,27 +4432,6 @@ impl ParticleEngine {
                     }
                 }
             }
-            Behaviour::Spark {
-                fade,
-                trail,
-                twinkle,
-            } => {
-                p.base_tick(level);
-                self.sprite_from_age(p);
-                if p.age > p.lifetime / 2 {
-                    p.rgba[3] = 1.0 - (p.age as f32 - (p.lifetime / 2) as f32) / p.lifetime as f32;
-                    if let Some(f) = fade {
-                        for i in 0..3 {
-                            p.rgba[i] += (f[i] - p.rgba[i]) * 0.2;
-                        }
-                    }
-                }
-                if trail && p.age < p.lifetime / 2 && (p.age + p.lifetime) % 2 == 0 {
-                    let mut child = self.spark(p.position, [0.0; 3], p.rgba, fade, false, twinkle);
-                    child.age = child.lifetime / 2;
-                    self.pending.push(child);
-                }
-            }
             Behaviour::Spell { original_alpha } => {
                 p.base_tick(level);
                 self.sprite_from_age(p);
@@ -4682,7 +4549,7 @@ impl ParticleEngine {
                     self.sprite_from_age(p);
                     half(p);
                     let b = ParticleLevel::block_at(p.position);
-                    if level.facts.is_air(level.world.block(b[0], b[1], b[2])) {
+                    if level.facts.is_air(level.block(b[0], b[1], b[2])) {
                         p.velocity[1] -= f64::from(0.0074f32);
                     }
                 }
@@ -4690,7 +4557,7 @@ impl ParticleEngine {
             Behaviour::Firefly => {
                 p.base_tick(level);
                 let b = ParticleLevel::block_at(p.position);
-                if !level.facts.is_air(level.world.block(b[0], b[1], b[2])) {
+                if !level.facts.is_air(level.block(b[0], b[1], b[2])) {
                     p.removed = true;
                 } else {
                     p.rgba[3] = fade_amount(p.lifetime_progress(p.age as f32), 0.3, 0.5);
@@ -5154,11 +5021,12 @@ fn hdr_tier(ty: ParticleType) -> u8 {
 }
 /// `Particle.LifetimeAlpha.currentAlphaForAge`.
 fn lifetime_alpha(a: [f32; 4], age: i32, lifetime: i32, partial: f32) -> f32 {
-    if (a[0] - a[1]).abs() < 1.0e-5 {
-        return a[0];
-    }
     let t = ((age as f32 + partial) / lifetime as f32 - a[2]) / (a[3] - a[2]);
-    a[0] + (a[1] - a[0]) * t.clamp(0.0, 1.0)
+    if (a[0] - a[1]).abs() < 1.0e-5 {
+        a[0]
+    } else {
+        a[0] + (a[1] - a[0]) * t.clamp(0.0, 1.0)
+    }
 }
 
 struct Starter {
@@ -5168,7 +5036,9 @@ struct Starter {
     life: i32,
     lifetime: i32,
     twinkle_delay: bool,
-    far: bool,
+    /// `FireworkParticles.Starter.playSound`, with `isFarAwayFromCamera` when
+    /// it plays: `None` for a silent rocket.
+    sound: Option<bool>,
 }
 const STAR: [[f64; 2]; 6] = [
     [0.0, 1.0],
@@ -5589,6 +5459,7 @@ mod tests {
             facts: &facts,
             collision: &collision,
             player: None,
+            cached_chunk: std::cell::Cell::new(None),
         };
         let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
         engine.set_sprites.push(vec![10, 11, 12]);
@@ -5680,6 +5551,7 @@ mod tests {
             facts: &facts,
             collision: &collision,
             player: None,
+            cached_chunk: std::cell::Cell::new(None),
         };
         let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
         let mut particle = Particle::blank(ParticleType::Smoke, [0.0; 3]);

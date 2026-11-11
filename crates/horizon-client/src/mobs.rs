@@ -48,6 +48,7 @@ pub mod golem;
 pub mod guardian;
 pub mod happy_ghast;
 pub mod hostile;
+mod hurt_by;
 pub mod illager;
 pub mod illusioner;
 pub mod item_break;
@@ -59,6 +60,10 @@ pub mod llama;
 pub mod model_layers;
 pub mod monster_brain;
 pub mod nautilus;
+pub mod neutral_anger;
+pub use neutral_anger::{
+    adopt_anger_end, anger_left, persistent_anger, resume_anger, settle_anger_end,
+};
 pub mod nav;
 pub mod nether;
 pub mod panda;
@@ -104,7 +109,7 @@ pub mod warden_brain;
 pub mod witch;
 pub mod wither;
 mod world;
-pub use world::{TargetInfo, visual_clip};
+pub use world::{TargetInfo, single_player_pos, visual_clip};
 pub mod dragon_contacts;
 pub mod zombie_villager;
 
@@ -112,7 +117,7 @@ use crate::{blocks::BlockFacts, mesher::Vertex, world::World};
 pub use data::MobData;
 use horizon_core::{
     geometry::{Aabb, Vec3},
-    random::{LegacyRandom, RandomSource},
+    random::{EntityRandom, LegacyRandom, RandomSource},
 };
 use horizon_world::block_collision::BlockCollisionRegistry;
 use serde_json::Value;
@@ -1071,14 +1076,6 @@ pub struct Attrs {
 }
 /// `minecraft:wolf_armor`'s maximum damage.
 pub const WOLF_ARMOR_DURABILITY: i32 = 64;
-/// `NeutralMob.readPersistentAngerSaveData`: the anger runs until its end
-/// time, so a mob that is loaded again is angry for what is left of it.
-pub fn anger_left(anger_end: i64, game_time: i64) -> i32 {
-    if anger_end <= 0 {
-        return 0;
-    }
-    (anger_end - game_time).clamp(0, i64::from(i32::MAX)) as i32
-}
 
 /// Species-specific persistent state (variants, colours, taming, ageing...).
 #[derive(Clone, Debug, Default)]
@@ -1119,9 +1116,7 @@ pub struct Extra {
     pub age: i32,
     /// `AgeLocked` (tadpoles fed a slime ball... and ageable mobs).
     pub age_locked: bool,
-    /// `AgeableMob.ageLockParticleTimer` (a tadpole's too): the ticks of
-    /// growth particles left after a golden dandelion, and the cooldown
-    /// before the next one can be used. Not saved.
+    /// `AgeableMob.ageLockParticleTimer`: growth particles left, and the cooldown. Not saved.
     pub age_lock_particle_timer: i32,
     /// AgeableMob.forcedAge: the age fed food added, restored as the age
     /// when it reaches 0 (`ForcedAge`).
@@ -1135,8 +1130,7 @@ pub struct Extra {
     /// Secondary variant (horse markings, tropical fish pattern colours, panda hidden gene).
     pub variant2: u8,
     pub variant3: u8,
-    /// `MushroomCow.stewEffects`: what a brown one took from a flower, given
-    /// back in its next bowl of stew. `None` is vanilla's null.
+    /// `MushroomCow.stewEffects`: what a brown one took from a flower, for its next stew.
     pub stew_effects: Option<Vec<(Arc<str>, i32)>>,
     /// Dye colour id (sheep wool, collars).
     pub color: u8,
@@ -1170,7 +1164,10 @@ pub struct Extra {
     /// Loaded signed values are independent of the gameplay modification cap.
     pub equine_temper: i32,
     pub tame: bool,
+    /// `TamableAnimal.isOrderedToSit` (the saved order), and in `sitting_pose`
+    /// `isInSittingPose` (bit 1 of `DATA_FLAGS_ID`, which only a sit goal writes).
     pub sitting: bool,
+    pub sitting_pose: bool,
     /// `Parrot.partyParrot` and `jukebox`: the playing jukebox it dances to.
     pub party_jukebox: Option<[i32; 3]>,
     /// The owner's UUID: a tamed animal's, or the reference a vex was loaded with.
@@ -1188,6 +1185,8 @@ pub struct Extra {
     /// anger ends at, -1 when the mob is calm. The save keeps it, so the
     /// anger goes on while the chunk is unloaded.
     pub anger_end: i64,
+    /// Countdown and age when `anger_end` was last settled (`neutral_anger`).
+    pub anger_stamp: Option<(i32, u32)>,
     /// `NeutralMob.getPersistentAngerTarget`: the entity the mob is angry
     /// at, which the save keeps with it.
     pub angry_at: Option<Who>,
@@ -1371,8 +1370,9 @@ pub struct Extra {
     pub attributes: Option<Box<finalize::Attributes>>,
     /// Brain memories `finalizeSpawn` sets: (memory, value, ticks to expiry).
     pub memories: Vec<(&'static str, i64, i64)>,
-    /// A camel's `LAST_POSE_CHANGE_TICK`.
+    /// A camel's `LAST_POSE_CHANGE_TICK`, and its game time minus age at the last tick.
     pub pose_change_tick: i64,
+    pub pose_epoch: Option<i64>,
     /// Whether a camel sits (`egg_time` is then the age it sat down at).
     pub camel_sitting: bool,
     /// `Entity.DATA_POSE` as a mob of a server has it (`sync::pose_id`).
@@ -1434,31 +1434,6 @@ impl Extra {
         self.main_hand_stack = None;
         self.main_hand.take()
     }
-}
-
-/// `DeathProtection.TOTEM_EFFECTS`: clear, then regeneration II, absorption II
-/// and fire resistance.
-fn totem_death_effects() -> Vec<crate::items::ConsumeEffect> {
-    use crate::items::{ConsumeEffect, ConsumeEffectSpec};
-    let spec = |id: &str, duration, amplifier| ConsumeEffectSpec {
-        id: id.to_owned(),
-        duration,
-        amplifier,
-        ambient: false,
-        show_particles: true,
-        show_icon: true,
-    };
-    vec![
-        ConsumeEffect::ClearAllEffects,
-        ConsumeEffect::ApplyEffects {
-            effects: vec![
-                spec("minecraft:regeneration", 900, 1),
-                spec("minecraft:absorption", 100, 1),
-                spec("minecraft:fire_resistance", 800, 0),
-            ],
-            probability: 1.0,
-        },
-    ]
 }
 
 /// How far the boxes of a set of mobs reach from their positions: the widest reach sideways, below
@@ -1570,7 +1545,7 @@ pub struct Mob {
     pub name_visible: bool,
     /// `Entity.DATA_SHARED_FLAGS_ID` bit 0x20: the model is hidden.
     pub invisible: bool,
-    pub random: LegacyRandom,
+    pub random: EntityRandom,
     pub ai: Box<ai::Ai>,
     pub extra: Extra,
     pub fluids: living::Fluids,
@@ -1646,9 +1621,9 @@ pub struct Mob {
     /// `PlayerSkin.cape`: a player's cape texture, once every download of
     /// its skin is ready.
     pub cape: Option<String>,
-    /// A Horizon emote this player plays (docs/cosmetics.md), timed on `age`: it poses the bones
-    /// after the vanilla animation (`anim::setup`). Visual only.
-    pub emote: Option<horizon_cosmetics::Playing>,
+    /// A pose laid over this player's body after the vanilla animation (`anim::setup`), timed on
+    /// `age`: a Horizon emote (docs/cosmetics.md), given by the game. Visual only.
+    pub emote: Option<Arc<dyn anim::BodyPose>>,
     /// A mannequin's `DATA_PROFILE` (ResolvableProfile): the profile's
     /// `textures` property resolves to `skin` like a player's.
     pub profile: Option<horizon_protocol::entity_data::Profile>,
@@ -2085,24 +2060,24 @@ pub enum MobEvent {
     StabDismount {
         target: Who,
     },
-    /// `LivingEntity.knockback(power, x, z, source)`: pushed away from the
-    /// direction.
+    /// `LivingEntity.knockback(power, x, z, source)`; a ram's blocked again first (`RamTarget.tick`).
     Knockback {
         target: Who,
         power: f64,
         x: f64,
         z: f64,
         source: Damage,
+        apply_blocking: Option<f32>,
     },
     /// Set another mob's attack target (HurtByTargetGoal alerts).
     SetTarget {
         mob: u32,
         target: Who,
     },
-    /// `HoglinAi.broadcastAttackTarget` to one visible adult hoglin: its
-    /// `setAttackTargetIfCloserThanCurrent` (`piglin::receive_attack_target`).
+    /// `HoglinAi.broadcastAttackTarget` from hoglin `from` to `mob` (`Game::hoglin_attack_target`).
     HoglinAttackTarget {
         mob: u32,
+        from: u32,
         target: Who,
     },
     /// `StartHuntingHoglin` for a nearby adult piglin: it takes the hoglin as
@@ -2327,11 +2302,10 @@ pub enum MobEvent {
         ticks: i32,
         amplifier: i32,
     },
-    /// Set an entity on fire.
-    Ignite {
-        target: Who,
-        seconds: i32,
-    },
+    /// Set an entity on fire for so many seconds.
+    Ignite(Who, i32),
+    /// `Zombie.doHurtTarget`'s burn: lit only if the attack event before it hurt.
+    ZombieIgnite(Who, i32),
     /// Two animals bred: the game spawns the baby and resets the partner.
     Breed {
         parent: u32,
@@ -2600,6 +2574,9 @@ pub struct Seen {
     pub delay: i32,
     /// `getLastHurtByMob` and its timestamp.
     pub hurt_by: Option<(Who, i32)>,
+    /// `PathfinderMob.isPanicking`: a running panic goal or the brain's
+    /// `IS_PANICKING` memory.
+    pub panicking: bool,
     /// A raider in an active raid.
     pub active_raid: bool,
     /// A copper golem's `openedChestPos` (`ContainerUser.hasContainerOpen`).
@@ -2610,8 +2587,6 @@ pub struct Seen {
     pub vehicle: Option<u32>,
     /// `LivingEntity.getHitbox`: the box, cut below the seat when riding.
     pub hitbox: Aabb,
-    /// A villager's reputation of the player (`getPlayerReputation`).
-    pub player_rep: i32,
     /// `isPushable` and pushed by others (`Entity.push(Entity)` moves it).
     pub pushable: bool,
     /// A sleeping villager, wandering trader or fox vetoes its own `push(Entity)`.
@@ -2794,11 +2769,11 @@ impl Mob {
         self.ticks_frozen >= crate::motion::PlayerMotion::TICKS_REQUIRED_TO_FREEZE
     }
 
-    /// What other mobs see of this one this tick (`player`: the player's
-    /// UUID, which villagers' reputation is keyed by). Inline: the game's
-    /// snapshot of every mob writes each one in its slot, not through a copy.
+    /// What other mobs see of this one this tick (`_player` is unused: it keyed the villager
+    /// reputation that nothing read). Inline: the game's snapshot of every mob writes each one in
+    /// its slot, not through a copy.
     #[inline]
-    pub fn seen(&self, player: Option<[i32; 4]>) -> Seen {
+    pub fn seen(&self, _player: Option<[i32; 4]>) -> Seen {
         let m = self;
         let villager = m.species() == Species::Villager;
         Seen {
@@ -2839,14 +2814,11 @@ impl Mob {
             section: (m.extra.section, m.extra.section_seq),
             delay: m.extra.ints[5],
             hurt_by: m.ai.last_hurt_by.map(|w| (w, m.ai.last_hurt_by_time)),
+            panicking: m.ai.panicking,
             active_raid: raider::has_active_raid(m),
             opened_chest: m.extra.opened_chest,
             passenger: m.extra.mount.is_some(),
             vehicle: m.extra.mount,
-            player_rep: match (villager, player) {
-                (true, Some(uuid)) => villager::ext(m).map_or(0, |e| e.gossips.reputation(uuid)),
-                _ => 0,
-            },
             pushable: m.pushable(),
             sleeping: villager::sleeping(m)
                 || (m.species() == Species::Fox && fox::flag(m, fox::SLEEPING)),
@@ -2862,7 +2834,7 @@ impl Mob {
                 m.extra.vector[0],
                 m.attrs.speed,
             ],
-            sitting: m.extra.sitting,
+            sitting: m.extra.sitting_pose,
             silent: m.silent,
             lying: m.species() == Species::Cat && (m.extra.flag || m.extra.relax_one),
             ridden: m.rider.is_some() || m.extra.rider.is_some() || m.extra.mount.is_some(),
@@ -3354,24 +3326,22 @@ pub fn infested_silverfish(random: &mut LegacyRandom, look: [f64; 3]) -> Vec<Vec
 }
 /// `Entity.random` of a client's copy of entity `id` first seen at `position`: vanilla's is its
 /// own (`RandomSource.create()`), drawn on by nothing else; this one is seeded from the two.
-pub fn entity_random(id: u32, position: Vec3) -> LegacyRandom {
+pub fn entity_random(id: u32, position: Vec3) -> EntityRandom {
     let mut random = LegacyRandom::new(
         i64::from(id).wrapping_mul(0x5DEE_CE66D)
             ^ (position.x.to_bits() as i64)
             ^ (position.z.to_bits() as i64).rotate_left(17),
     );
     let _ = random.next_int();
-    random
+    EntityRandom::own(random)
 }
-/// The own random (`Entity.random`) of a living entity the server makes, as
-/// `LivingEntity.<init>` leaves it: its first two draws made the UUID
-/// (`Mth.createInsecureUUID`), returned here, and the next one the yaw, which
-/// every spawn path then replaces. Constructor draws of the kind come after.
-pub fn living_random() -> (LegacyRandom, [i32; 4]) {
+/// The own random (`Entity.random`) of a living entity the server makes, after
+/// the UUID's two draws (`Mth.createInsecureUUID`), which are returned here.
+/// `Mob::with_random` makes the `defineSynchedData` draws and the yaw next.
+pub fn living_random() -> (EntityRandom, [i32; 4]) {
     let mut random = crate::random_source::entity();
     let uuid = crate::save::insecure_uuid(&mut random);
-    let _yaw = random.next_float();
-    (random, uuid)
+    (EntityRandom::own(random), uuid)
 }
 impl Mob {
     pub fn new(id: u32, kind: Arc<MobType>, position: Vec3, yaw: f32) -> Self {
@@ -3384,7 +3354,7 @@ impl Mob {
         kind: Arc<MobType>,
         position: Vec3,
         yaw: f32,
-        random: LegacyRandom,
+        random: EntityRandom,
     ) -> Self {
         let mut mob = Self {
             join: Default::default(),
@@ -3500,6 +3470,9 @@ impl Mob {
         if mob.species() == Species::Salmon {
             mob.extra.variant = 1;
         }
+        // `Entity.<init>`'s order: `defineSynchedData`, then the yaw.
+        zombie_villager::constructor_draws(&mut mob);
+        neutral_anger::init(&mut mob);
         // `Creeper.explosionRadius = 3` until a save or a command sets it.
         mob.extra.explosion_radius = 3;
         // The PathNavigation constructor: the base follow range.
@@ -3511,7 +3484,7 @@ impl Mob {
     /// something off its pickup cooldown, a sulfur cube with no block.
     pub fn can_pick_up_loot(&self) -> bool {
         match self.species() {
-            Species::Allay => self.extra.main_hand.is_some() && self.extra.ints[3] <= 0,
+            Species::Allay => allay::can_pick_up_loot(self),
             Species::SulfurCube => !sulfur_cube::has_body(self),
             _ => self.extra.pick_up_loot,
         }
@@ -3938,8 +3911,7 @@ impl Mob {
         self.last_damage = Some((source, i64::from(self.age)));
         self.last_direct = None;
         if let Some(who) = source.attacker {
-            self.ai.last_hurt_by = Some(who);
-            self.ai.last_hurt_by_time = self.age as i32;
+            self.ai.hurt_by(who, self.age as i32);
             if who == Who::Player {
                 self.ai.last_hurt_by_player = 100;
             }
@@ -4192,9 +4164,8 @@ impl Mob {
     ) -> bool {
         self.track_section();
         // LivingEntity.tick: CombatTracker.recheckStatus.
-        let alive = self.alive();
-        self.combat.recheck(alive, self.age);
-        ai::tick(self, w, level_random, events)
+        self.combat.recheck(self.alive(), self.age);
+        neutral_anger::around_tick(self, w.game_time, |m| ai::tick(m, w, level_random, events))
     }
     /// The section the mob is in, noted when it changes (`EntitySection` lists).
     fn track_section(&mut self) {
@@ -4362,7 +4333,7 @@ impl Mob {
         let (main, off) = match self.extra.hand_protection.clone() {
             Some(h) => (h.main, h.off),
             None => {
-                let totem = || Some(totem_death_effects());
+                let totem = || Some(living::totem_death_effects());
                 (
                     (self.extra.main_hand.as_deref() == Some(TOTEM))
                         .then(totem)

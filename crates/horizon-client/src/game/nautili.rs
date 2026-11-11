@@ -102,8 +102,16 @@ impl Game<'_> {
             if food && m.health < m.attrs.max_health {
                 // feed(player, hand, stack, 2, 1).
                 let sound = nautilus::eat_sound(m);
+                // TamableAnimal.feed: heals 2 x the food's nutrition, 1 for an
+                // item with no food component.
+                let nutrition = self
+                    .res
+                    .items()
+                    .get(item)
+                    .and_then(|i| i.food.as_ref())
+                    .map(|f| f.0 as i32);
                 let m = &mut self.mobs[index];
-                m.heal(2.0);
+                m.heal(nautilus::feed_heal(nutrition));
                 self.use_nautilus_food(item);
                 self.nautilus_sound(index, sound);
                 return true;

@@ -1008,7 +1008,10 @@ impl Game<'_> {
                 p.position.z - center[2],
             ];
             let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-            self.pad_rumble(horizon_client::gamepad::Rumble::Explosion { distance, radius });
+            self.input_feedback(horizon_client::input_source::Feedback::Explosion {
+                distance,
+                radius,
+            });
         }
         // Explosion.explode: the blast is heard.
         let ctx = horizon_client::sculk::Context::default();
@@ -1127,7 +1130,8 @@ impl Game<'_> {
         }
         if let Some(entity) = self.world.block_entities.get(&key).cloned() {
             let custom = self.world.block_names.get(&key).cloned();
-            self.pending.record(pos, &entity, &name, custom);
+            self.pending
+                .record(pos, &entity, &name, custom, self.world.block_lock(key));
         } else if let Some(tag) = super::spill::saved_entity(&self.world, pos) {
             self.pending.record_saved(pos, &tag);
         }
@@ -1196,6 +1200,51 @@ impl Game<'_> {
             );
         }
         Ok(())
+    }
+
+    /// ServerExplosion: rays from a 16^3 grid lose (resistance + 0.3) * 0.3 per step.
+    /// A mob explosion (`ServerLevel.explode` with `ExplosionInteraction.MOB`:
+    /// blocks are kept without mobGriefing, else the mob_explosion_drop_decay
+    /// rule picks decay).
+    pub(super) fn explode(
+        &mut self,
+        center: [f64; 3],
+        radius: f32,
+        source: ExplosionSource,
+    ) -> Result<()> {
+        self.explode_mob(center, radius, false, source)
+    }
+
+    /// `ServerLevel.explode` with `ExplosionInteraction.MOB` and the caller's fire flag.
+    pub(super) fn explode_mob(
+        &mut self,
+        center: [f64; 3],
+        radius: f32,
+        fire: bool,
+        source: ExplosionSource,
+    ) -> Result<()> {
+        let interaction = if !self.ui.rules.bool("mob_griefing") {
+            BlockInteraction::Keep
+        } else {
+            self.destroy_type("mob_explosion_drop_decay")
+        };
+        self.server_explode_from(center, radius, interaction, fire, source)
+    }
+
+    /// `SulfurCube.tickFuse`: `ExplosionInteraction.TNT` (the
+    /// tnt_explosion_drop_decay rule) with mobGriefing, `NONE` without.
+    pub(super) fn explode_sulfur_cube(
+        &mut self,
+        center: [f64; 3],
+        radius: f32,
+        source: ExplosionSource,
+    ) -> Result<()> {
+        let interaction = if !self.ui.rules.bool("mob_griefing") {
+            BlockInteraction::Keep
+        } else {
+            self.destroy_type("tnt_explosion_drop_decay")
+        };
+        self.server_explode_from(center, radius, interaction, false, source)
     }
 }
 
@@ -1396,9 +1445,9 @@ mod tests {
         }
         let center = [8.3, 64.6, 7.9];
         for (radius, resists) in [(4.0, None), (6.0, None), (4.0, Some(([8, 64, 8], 1200.0)))] {
-            game.world.random = horizon_core::random::LegacyRandom::new(7);
+            game.world.random.set_seed(7);
             let expected = exploded_positions_stepwise(&mut game, center, radius, resists);
-            game.world.random = horizon_core::random::LegacyRandom::new(7);
+            game.world.random.set_seed(7);
             let got = game.exploded_positions(center, radius, resists);
             assert!(expected.len() > 20, "{radius}: {}", expected.len());
             assert_eq!(got, expected, "radius {radius}, {resists:?}");
@@ -1743,5 +1792,160 @@ mod tests {
                 f64::from(m.height())
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod shulker_lock_drop_tests {
+    use super::super::native_machines::tests::server_game;
+    use super::*;
+    use horizon_client::{containers::BlockEntity, save};
+    use horizon_world::nbt::Tag;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn destruction_captures_the_external_shulker_lock_before_removal() {
+        let mut game = server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(BlockPos::new(0, 0, 0).chunk())
+            .unwrap();
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        assert!(
+            game.ui.rules.bool("block_drops"),
+            "actual drop rule must be enabled"
+        );
+        game.creative = false;
+        game.selected = 0;
+        game.inventory[0] = Some(ItemStack::new("minecraft:diamond_pickaxe", 1));
+        let clock = game.world.game_time;
+        let mut missing = Vec::new();
+        for (x, z, kind, locked, route) in [
+            (3, 3, "shulker_box", true, "command"),
+            (11, 3, "shulker_box", true, "player"),
+            (3, 11, "shulker_box", true, "explosion"),
+            (11, 11, "red_shulker_box", false, "command"),
+            (7, 3, "chest", true, "command"),
+            (7, 11, "crafter", true, "command"),
+        ] {
+            let shulker = kind.ends_with("shulker_box");
+            let mut fields = Vec::new();
+            if shulker {
+                fields.push("CustomName:\"Box\"");
+                fields.push("Items:[{Slot:0b,id:\"minecraft:diamond\",count:3,components:{\"minecraft:custom_data\":{h211:1}}},{Slot:26b,id:\"minecraft:apple\",count:5}]");
+            }
+            if locked {
+                fields.push("lock:{items:\"minecraft:diamond\"}");
+            }
+            assert!(game.run_command(&format!(
+                "setblock {x} 200 {z} minecraft:{kind}{{{}}}",
+                fields.join(",")
+            )));
+            let pos = [x, 200, z];
+            let key = (x, 200, z);
+            assert_eq!(
+                &*game.res.facts().get(game.world.block(x, 199, z)).name,
+                "minecraft:stone",
+                "positive floor"
+            );
+            let actual_lock = game.world.block_lock(key).cloned();
+            assert_eq!(actual_lock.is_some(), locked, "actual external source lock");
+            if locked {
+                assert!(matches!(&actual_lock,Some(Tag::Compound(c)) if !c.is_empty()));
+            }
+            let entity = game
+                .world
+                .block_entities
+                .get(&key)
+                .expect("actual command-created source");
+            assert!(
+                save::encode_block_entity(key, entity, &format!("minecraft:{kind}"))
+                    .get("lock")
+                    .is_none(),
+                "external lock must not be invented in modeled serializer"
+            );
+            if shulker {
+                let BlockEntity::Chest(slots) = entity else {
+                    panic!("modeled shulker inventory missing");
+                };
+                assert_eq!(slots[0].as_ref().unwrap().count, 3);
+                assert_eq!(slots[26].as_ref().unwrap().count, 5);
+                assert_eq!(
+                    game.world.block_names.get(&key),
+                    Some(&Tag::String("Box".into()))
+                );
+            }
+            let start = game.dropped.len();
+            match route {
+                "command" => {
+                    assert!(game.run_command(&format!("setblock {x} 200 {z} air destroy")))
+                }
+                "player" => game.break_block(pos).unwrap(),
+                "explosion" => game
+                    .server_explode(
+                        pos.map(|v| f64::from(v) + 0.5),
+                        2.0,
+                        BlockInteraction::Destroy,
+                        false,
+                    )
+                    .unwrap(),
+                _ => unreachable!(),
+            }
+            game.flush_spill();
+            assert!(
+                game.res.facts().is_air(game.world.block(x, 200, z)),
+                "actual destruction occurred: {route}"
+            );
+            assert!(!game.world.block_entities.contains_key(&key));
+            assert!(
+                game.world.block_lock(key).is_none(),
+                "actual external source was removed"
+            );
+            let item_id = format!("minecraft:{kind}");
+            let drops: Vec<_> = game.dropped[start..]
+                .iter()
+                .filter(|d| *d.stack.item == item_id)
+                .collect();
+            assert_eq!(drops.len(), 1, "actual one-item drop: {kind}/{route}");
+            let stack = &drops[0].stack;
+            assert_eq!(stack.count, 1);
+            let data = stack.data();
+            let dropped_lock = data.and_then(|d| d.other("minecraft:lock"));
+            if shulker {
+                let data = data.expect("actual shulker components");
+                assert_eq!(data.custom_name, Some(Tag::String("Box".into())));
+                let slots = &data.container;
+                assert_eq!(slots.len(), 2);
+                let diamond = &slots.iter().find(|(slot, _)| *slot == 0).unwrap().1;
+                assert_eq!((&*diamond.item, diamond.count), ("minecraft:diamond", 3));
+                assert_eq!(
+                    diamond
+                        .data()
+                        .and_then(|d| d.other("minecraft:custom_data"))
+                        .and_then(|t| t.get("h211")),
+                    Some(&Tag::Int(1))
+                );
+                assert_eq!(
+                    slots.iter().find(|(slot, _)| *slot == 26).unwrap().1.count,
+                    5
+                );
+            }
+            if shulker && locked {
+                if dropped_lock != actual_lock.as_ref() {
+                    missing.push((route, dropped_lock.cloned(), actual_lock));
+                }
+            } else {
+                assert!(
+                    dropped_lock.is_none(),
+                    "non-shulker/unlocked policy unchanged"
+                );
+            }
+            assert_eq!(game.world.game_time, clock, "zero observation ticks");
+        }
+        assert!(
+            missing.is_empty(),
+            "actual external lock lost at destruction capture sites: {missing:?}"
+        );
     }
 }

@@ -24,6 +24,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -240,6 +241,8 @@ def main():
         if reason or now - last_sign < RESUME_AFTER:
             if paused is not True:
                 paused = True
+                # The runner's folder may not exist yet on a fresh machine.
+                STATE.parent.mkdir(parents=True, exist_ok=True)
                 STATE.write_text((reason or "starting") + "\n")
                 throttle(True)
                 # Parity workers other machines started here (tools/parity_hosts.json): they stop, and those
@@ -263,4 +266,8 @@ def main():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        # The watcher takes no arguments: the service runs it with none. It used to start
+        # watching (and crash on a missing folder) whatever it was given.
+        sys.exit(__doc__.strip() + '\nUsage: python3 tools/ci/runner_pause.py')
     main()

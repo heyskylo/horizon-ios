@@ -294,8 +294,7 @@ fn drowned_throw(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
     if let Some(a) = p.arrow.as_mut() {
         a.set_item(&trident);
     }
-    p.shoot(
-        &mut crate::random_source::entity(),
+    p.shoot_own(
         [xd, yd + dist * f64::from(0.2_f32), zd],
         1.6,
         ranged_attack_uncertainty(cx.w.difficulty.id),
@@ -509,8 +508,10 @@ fn zombified_piglin_step(m: &mut Mob, cx: &mut Cx) {
             }
         }
         if m.extra.anger == 0 {
+            // `stopBeingAngry`.
             m.ai.target = None;
             m.extra.angry_at = None;
+            m.extra.anger_end = -1;
             m.extra.flag2 = false;
         }
     } else {
@@ -639,7 +640,7 @@ pub fn custom_server_ai_step(m: &mut Mob, cx: &mut Cx) {
         } else if m.fluids.eye_in_water {
             m.extra.counter += 1;
             if m.extra.counter >= 600 {
-                m.extra.counter2 = 300;
+                m.extra.counter2 = 301;
             }
         } else {
             m.extra.counter = -1;
@@ -893,8 +894,6 @@ pub fn perform_ranged_attack(m: &mut Mob, who: Who, cx: &mut Cx, power: f32) {
     let dist = (xd * xd + zd * zd).sqrt();
     // AbstractArrow.setBaseDamageFromMob: power * 2 + triangle(difficulty * 0.11, 0.57425).
     let id = i32::from(cx.w.difficulty.id);
-    let mut arrow_random = crate::random_source::entity();
-    let base = f64::from(power) * 2.0 + arrow_random.triangle(f64::from(id) * 0.11, 0.574_25);
     let effect = match m.species() {
         Species::Stray => Some(("minecraft:slowness", 600)),
         Species::Bogged => Some(("minecraft:poison", 100)),
@@ -903,17 +902,20 @@ pub fn perform_ranged_attack(m: &mut Mob, who: Who, cx: &mut Cx, power: f32) {
     };
     let mut p = Projectile::new(
         ProjectileKind::Arrow {
-            base_damage: base,
+            base_damage: 0.0,
             critical: false,
             effect,
         },
         start,
         Some(Who::Mob(m.id)),
     );
+    // From the arrow's own random, after its UUID.
+    if let (ProjectileKind::Arrow { base_damage, .. }, Some(a)) = (&mut p.kind, p.arrow.as_mut()) {
+        *base_damage = f64::from(power) * 2.0 + a.random.triangle(f64::from(id) * 0.11, 0.574_25);
+    }
     p.set_bonus(super::gear::arrow_bonus(m));
     ignite_for_wither_skeleton(m, &mut p);
-    p.shoot(
-        &mut arrow_random,
+    p.shoot_own(
         [xd, yd + dist * f64::from(0.2_f32), zd],
         1.6,
         (14 - id * 4) as f32,
@@ -1272,7 +1274,9 @@ impl Goal for AttackTurtleEgg {
                     count: 1,
                 });
             }
-            // The break sound's pitch draws from the level random.
+            // `playBreakSound`: volume 0.7, pitch 0.9 + the level random's
+            // float * 0.2.
+            let pitch = 0.9 + cx.lr.next_float() * 0.2;
             cx.events.push(MobEvent::Sound(
                 "entity.turtle.egg_break",
                 [
@@ -1281,7 +1285,7 @@ impl Goal for AttackTurtleEgg {
                     f64::from(eat[2]) + 0.5,
                 ],
                 0.7,
-                1.0,
+                pitch,
             ));
         }
         self.since_reached += 1;
@@ -1502,6 +1506,75 @@ mod go_to_water_tests {
 }
 
 #[cfg(test)]
+mod turtle_egg_tests {
+    use super::*;
+    use crate::mobs::world::with_built_test_world;
+    use std::sync::Arc;
+
+    /// The pitch of the `entity.turtle.egg_break` sound the goal plays on the
+    /// tick it breaks the egg, and the level random's next draw afterwards,
+    /// with the level random seeded `level_seed`. `None` without the extracted
+    /// data.
+    fn break_tick(level_seed: i64) -> Option<(f32, f32)> {
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            world
+                .chunks
+                .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+            let egg = registry.default_state("minecraft:turtle_egg").unwrap();
+            world.set(0, 63, 0, egg).unwrap();
+        };
+        let mut out = None;
+        let ran = with_built_test_world(&[], build, |w, types| {
+            let kind = Arc::new(types.types["minecraft:zombie"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            let mut goal = AttackTurtleEgg::default();
+            goal.base.block = [0, 63, 0];
+            goal.base.reached = true;
+            // Past `RemoveBlockGoal`'s sixty ticks: the egg goes this tick.
+            goal.since_reached = 61;
+            let mut lr = horizon_core::random::LegacyRandom::new(level_seed);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w,
+                lr: &mut lr,
+                events: &mut events,
+            };
+            goal.tick(&mut m, &mut cx);
+            out = events
+                .iter()
+                .find_map(|e| match e {
+                    MobEvent::Sound("entity.turtle.egg_break", _, volume, pitch) => {
+                        assert_eq!(*volume, 0.7);
+                        Some(*pitch)
+                    }
+                    _ => None,
+                })
+                .map(|pitch| (pitch, lr.next_float()));
+        });
+        ran.then_some(out).flatten()
+    }
+
+    /// `Zombie.ZombieAttackTurtleEggGoal.playBreakSound`:
+    /// `0.9F + level.getRandom().nextFloat() * 0.2F`. One draw of the level's
+    /// random, not the mob's, so the pitch varies with the level seed over
+    /// 0.9-1.1 rather than a fixed 1.0.
+    #[test]
+    fn the_egg_break_pitch_draws_from_the_level_random() {
+        // java.util.Random(seed)'s first nextFloat, from an independent
+        // implementation: 0.7306990027427673 for 7, 0.0978928804397583 for
+        // 4096, so the pitches are 0.9 + f * 0.2 in f32.
+        let Some((pitch, next)) = break_tick(7) else {
+            return;
+        };
+        assert_eq!(pitch, 1.046_139_7);
+        // Exactly one draw: the seed's second float is what comes next.
+        assert_eq!(next, 0.638_537_65);
+        assert_eq!(break_tick(4096), Some((0.919_578_55, 0.875_477_85)));
+    }
+}
+
+#[cfg(test)]
 mod wither_arrow_tests {
     use super::*;
     use crate::mobs::world::{test_player, with_test_world};
@@ -1674,5 +1747,49 @@ mod trident_continue_tests {
             Some((true, false)),
             "a trident attack starts for a drowned holding one and stops when it is gone"
         );
+    }
+
+    #[test]
+    fn drowned_and_husk_conversion_starts_at_301_ticks_and_converts_on_tick_301() {
+        let ran = with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:zombie"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            m.fluids.eye_in_water = true;
+            m.extra.counter = 599;
+
+            let mut lr = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w,
+                lr: &mut lr,
+                events: &mut events,
+            };
+
+            // Tick 600 of being in water starts conversion with counter2 = 301.
+            custom_server_ai_step(&mut m, &mut cx);
+            assert_eq!(m.extra.counter, 600);
+            assert_eq!(m.extra.counter2, 301);
+
+            // Conversion ticks down across 300 ticks without firing.
+            for i in (2..=301).rev() {
+                assert_eq!(m.extra.counter2, i);
+                cx.events.clear();
+                custom_server_ai_step(&mut m, &mut cx);
+                assert!(cx.events.is_empty(), "tick {i} should not convert yet");
+            }
+            assert_eq!(m.extra.counter2, 1);
+
+            // On the 301st tick of conversion, counter2 reaches 0 and converts.
+            cx.events.clear();
+            custom_server_ai_step(&mut m, &mut cx);
+            assert_eq!(m.extra.counter2, 0);
+            assert!(
+                cx.events
+                    .iter()
+                    .any(|e| matches!(e, MobEvent::Convert { .. })),
+                "conversion should trigger on tick 301"
+            );
+        });
+        let _ = ran;
     }
 }

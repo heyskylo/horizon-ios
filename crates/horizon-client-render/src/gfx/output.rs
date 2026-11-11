@@ -77,6 +77,9 @@ impl DisplayReading {
 pub struct FrameRequest {
     /// A shader API 0.2 pack is picked under `HORIZON_HDR_FRAME=float`: its frame is float.
     pub linear_pack: bool,
+    /// That pack's `[frame] blend` is `"linear"`: its frame holds linear light where it is
+    /// float (`linear_blend`).
+    pub linear_blend: bool,
     /// Under `HORIZON_HDR_FRAME=float`, with no pack available or a 0.2 one: the frame is
     /// the layered float one wherever HDR output goes.
     pub hdr_float: bool,
@@ -89,6 +92,8 @@ pub struct FrameConfiguration {
     pub(crate) overlay_format: wgpu::TextureFormat,
     /// The layered float HDR frame: an 8-bit HUD target and an R8 coverage target beside it.
     pub(crate) hud_layer: bool,
+    /// The frame holds linear light, not vanilla's gamma (`linear_blend::stores_linear`).
+    pub(crate) linear_light: bool,
 }
 
 /// The display a 0.2 pack's `Frame` describes (docs/api/shaders-reference-0.2.md).
@@ -142,8 +147,11 @@ pub struct EffectiveOutput {
     /// Paper white, peak and black level in nits, as HDR output's last pass and its
     /// metadata take them, while it is on.
     pub(crate) nits: [f32; 3],
-    /// The HUD and menus' brightness, as a share of paper white.
+    /// The HUD and menus' brightness, as a share of paper white: their nits over its.
     pub(crate) ui_brightness: f32,
+    /// The running shader pack lights the world itself: Horizon lifts none of it, so HDR
+    /// Lighting has nothing to switch (`with_pack`).
+    pub(crate) pack_lights: bool,
 }
 impl Default for EffectiveOutput {
     fn default() -> Self {
@@ -163,10 +171,26 @@ impl EffectiveOutput {
             format: wgpu::TextureFormat::Bgra8Unorm,
             overlay_format: wgpu::TextureFormat::Bgra8Unorm,
             hud_layer: false,
+            linear_light: false,
         },
         nits: [203.0, 1000.0, 0.0],
         ui_brightness: 1.0,
+        pack_lights: false,
     };
+    /// This output under the running shader pack: a `shaders/` one (`shaders`), or one of
+    /// Horizon's own of API `native`. Under a 0.1 pack on the 8- or 16-bit frame the last pass
+    /// still lifts the light sources and the sun its marks hold (`lifts_world` in
+    /// `Renderer::render`); under the rest Horizon lifts nothing.
+    pub(crate) fn with_pack(self, shaders: bool, native: Option<horizon_shader_api::Api>) -> Self {
+        let pack_lights = shaders
+            || native.is_some_and(|api| {
+                api != horizon_shader_api::Api::V0_1 || self.frame.format == super::LINEAR_FRAME
+            });
+        Self {
+            pack_lights,
+            ..self
+        }
+    }
     /// Whether the destination offers HDR output.
     pub fn hdr_offered(&self) -> bool {
         self.offered.is_some()
@@ -241,6 +265,7 @@ pub(crate) fn resolve_frame(
         format,
         overlay_format: super::overlay_format(format, hud_layer, swapchain),
         hud_layer,
+        linear_light: super::linear_blend::stores_linear(request.linear_blend, format),
     }
 }
 
@@ -271,8 +296,26 @@ pub(crate) fn resolve_output(
             settings.peak_nits(reading.luminance) as f32,
             settings.black_level_nits(),
         ],
-        ui_brightness: settings.hdr_ui_brightness as f32 / 100.0,
+        ui_brightness: settings.ui_nits(reading.luminance) as f32
+            / settings.paper_white_nits(reading.luminance) as f32,
+        pack_lights: false,
     }
+}
+
+/// Whether HDR output lifts the world's light-source marks above paper white. Not on the title
+/// screen or the float frame, and not under a pack that lights its world itself: a 0.2 pack is
+/// shown at paper white, and a `shaders/` pack's `final` pass leaves its own alpha in the
+/// frame, which isn't marks (HDR lighting is off under it too).
+pub(crate) fn lifts_world(
+    title: bool,
+    float_frame: bool,
+    shaders_pack: bool,
+    native_api: Option<horizon_shader_api::Api>,
+) -> bool {
+    !title
+        && !float_frame
+        && !shaders_pack
+        && native_api.is_none_or(|api| api == horizon_shader_api::Api::V0_1)
 }
 
 #[cfg(test)]
@@ -299,6 +342,7 @@ pub(crate) mod tests {
                 luminance: Some(Reported {
                     paper_white: 400,
                     peak: 1000,
+                    peak_guessed: false,
                 }),
                 hdr: system,
             },
@@ -316,6 +360,29 @@ pub(crate) mod tests {
         resolve_output(settings, caps, reading, frame, true)
     }
 
+    /// HDR output lifts light-source marks only on the 8/16-bit frame's world with no pack or
+    /// a 0.1 pack: a `shaders/` pack's alpha isn't marks, and a 0.2 pack is shown at paper white.
+    #[test]
+    fn only_horizons_own_gamma_world_is_lifted() {
+        use horizon_shader_api::Api::{V0_1, V0_2};
+        // (title, float frame, `shaders/` pack, Horizon pack) -> lifts
+        let cases = [
+            ((false, false, false, None), true),
+            ((false, false, false, Some(V0_1)), true),
+            ((false, false, true, None), false),
+            ((false, false, false, Some(V0_2)), false),
+            ((false, true, false, None), false),
+            ((true, false, false, None), false),
+        ];
+        for ((title, float, shaders, api), lifts) in cases {
+            assert_eq!(
+                lifts_world(title, float, shaders, api),
+                lifts,
+                "title {title}, float {float}, shaders/ pack {shaders}, pack {api:?}"
+            );
+        }
+    }
+
     /// Every mode against every offer, system report, pack and device: HDR output only where
     /// the mode asks for it and the destination offers it, and the frame each combination
     /// draws in, as `Renderer::new` picked it before the snapshot.
@@ -323,10 +390,12 @@ pub(crate) mod tests {
     fn the_resolver_picks_one_output_and_frame_for_each_combination() {
         let no_pack = FrameRequest {
             linear_pack: false,
+            linear_blend: false,
             hdr_float: true,
         };
         let pack_0_2 = FrameRequest {
             linear_pack: true,
+            linear_blend: false,
             hdr_float: true,
         };
         // A 0.1 pack, or none without the float switch; a refused, missing or disabled
@@ -439,6 +508,7 @@ pub(crate) mod tests {
             };
             let request = FrameRequest {
                 linear_pack: false,
+                linear_blend: false,
                 hdr_float: true,
             };
             let on = |driver: Option<&str>| {
@@ -566,6 +636,39 @@ pub(crate) mod tests {
         );
     }
 
+    /// UI Brightness reaches HDR output as its nits over paper white's: 1 on Auto, whatever
+    /// paper white is; a value set by hand holds its nits, Paper White on Auto or set by hand.
+    #[test]
+    fn ui_brightness_is_its_nits_over_paper_whites() {
+        let (caps, reading) = window(Some(Output::Pq), Some(true));
+        let share = |paper_white, ui_nits, reading| {
+            let settings = Graphics {
+                hdr: HdrMode::On,
+                hdr_paper_white: paper_white,
+                hdr_ui_nits: ui_nits,
+                ..Graphics::default()
+            };
+            let frame = resolve_frame(
+                &settings,
+                FrameRequest::default(),
+                caps,
+                reading,
+                Bgra8Unorm,
+            );
+            resolve_output(&settings, caps, reading, frame, true).ui_brightness
+        };
+        // Auto: the report's 400 nits, 203 without one, or the player's 250.
+        let unreported = DisplayReading::default();
+        for (paper_white, reading) in [(0, reading), (0, unreported), (250, reading)] {
+            assert_eq!(share(paper_white, 0, reading), 1.0);
+        }
+        assert_eq!(share(0, 100, reading), 0.25);
+        assert_eq!(share(0, 480, reading), 1.2);
+        assert_eq!(share(0, 406, unreported), 2.0);
+        assert_eq!(share(250, 100, reading), 0.4);
+        assert_eq!(share(250, 480, reading), 1.92);
+    }
+
     /// Two renderers' states, a window's and an offscreen one's, made and changed in turn:
     /// neither's offer or report shows in the other's snapshot, and the offscreen one
     /// stopping its watch (HDR Off) leaves the window's report alone.
@@ -616,6 +719,7 @@ pub(crate) mod tests {
         window_reading.luminance = Some(Reported {
             paper_white: 300,
             peak: 800,
+            peak_guessed: false,
         });
         assert_eq!(window_output(window_reading).nits[..2], [300.0, 800.0]);
         assert_eq!(
@@ -647,6 +751,7 @@ pub(crate) mod tests {
         };
         let no_pack = FrameRequest {
             linear_pack: false,
+            linear_blend: false,
             hdr_float: true,
         };
         let (caps, reading) = window(Some(Output::Pq), Some(true));

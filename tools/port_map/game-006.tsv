@@ -30,6 +30,7 @@ LinearInterpolationHandler.create	inline	crates/horizon-client/src/game/remote.r
 LinearInterpolationHandler.startInterpolating	inline	crates/horizon-client/src/game/remote.rs::Game::move_entity	target kept as Lerp with steps 3
 LinearInterpolationHandler.doInterpolate	inline	crates/horizon-client/src/game/remote.rs::Game::tick_remote_entities	gap: minor: position eased by 1/steps; a boat's or minecart's yaw is set at once, not eased
 LivingEntity.<init>	port	crates/horizon-client/src/mobs.rs::Mob::new	box, health, random yaw
+LivingEntity.canBreatheUnderwater	port	crates/horizon-client/src/mobs/ai/air.rs::can_breathe_under_water	the can_breathe_under_water tag, then the baby happy ghast and the sulfur cube with a block in its body
 LivingEntity.canBeAffected	port	crates/horizon-client/src/mobs.rs::Mob::can_be_affected	the three tags (immune_to_infested, immune_to_oozing, ignores_poison_and_regen which is #minecraft:undead) then the class overrides below; asked by addEffect before anything is stored
 LivingEntity.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	gap: player: arrow count (12) and stinger count (13) are never kept or sent, so arrows and bee stingers do not stay stuck in a body
 LivingEntity.hasLandedInLiquid	port	crates/horizon-world/src/living_fall.rs::ImpulseContext::landed_in_liquid	water or lava with getDeltaMovement().y below 9.9999997E-6, from the guest move loop; the grace time still defers it
@@ -62,7 +63,7 @@ LivingEntity.dropFromShearingLootTable	port	crates/horizon-client/src/game/creat
 LivingEntity.getFallDamageSound	inline	crates/horizon-client/src/mobs/landing.rs::MobLanding::living_fall_sound	a monster gets entity.hostile.big_fall and entity.hostile.small_fall, anything else the generic pair; a player's comes from landing.rs
 LivingEntity.getHitbox	missing		minor: a rider's hitbox is not cut at its seat height; spear and melee tests use the full box
 LivingEntity.postPiercingAttack	port	crates/horizon-client/src/game/enchant_effects.rs::Game::post_piercing_attack	Lunge's dash after a jab
-LivingEntity.trapdoorUsableAsLadder	port	crates/horizon-world/src/climbing.rs::on_climbable	gap: minor: the player only; a mob's ai.rs::on_climbable checks the climbable tag at its feet, no open trapdoor over a ladder
+LivingEntity.trapdoorUsableAsLadder	port	crates/horizon-world/src/climbing.rs::on_climbable	the climbable tag, or an open trapdoor directly over a ladder with the same facing: `climbing::on_climbable` for the player and `Mob::on_climbable` for mobs
 LivingEntity.isAlive	port	crates/horizon-client/src/mobs.rs::Mob::alive	not removed and health above zero
 LivingEntity.setIgnoreFallDamageFromCurrentImpulse	port	crates/horizon-world/src/living_fall.rs::ImpulseContext::set_ignore_fall_damage	40 ticks of grace
 LivingEntity.getDamageAfterArmorAbsorb	inline	crates/horizon-client/src/mobs.rs::Mob::damage_with	the player's armor wear is health.rs hurt_armor; the mob path also scales armor effectiveness (breach)
@@ -70,9 +71,9 @@ LivingEntity.getKillCredit	port	crates/horizon-client/src/game/creatures.rs::Gam
 LivingEntity.getTicksSinceLastKineticHitFeedback	port	crates/horizon-client/src/game/spear.rs::Game::kinetic_hit_ticks	
 LivingEntity.swapHandItems	inline	crates/horizon-client/src/game/remote.rs::Game::handle_packet	entity event 55 swaps another player's hands; the arm is in `handle_packet`
 LivingEntity.getAttackRangeWith	inline	crates/horizon-client/src/game.rs::Game::reach	gap: minor: only the spear's range is item specific (spear.rs REACH); other items use the default reach
-LivingEntity.getActiveItem	inline	crates/horizon-client/src/game.rs::Game::held	the selected slot; the item in use is the `using` slot
-LivingEntity.getItemInHand	inline	crates/horizon-client/src/game.rs::Game::held	main hand; the off hand is the `offhand` field
-LivingEntity.setItemInHand	inline	crates/horizon-client/src/game.rs::Game::held_mut	main hand cell
+LivingEntity.getActiveItem	inline	crates/horizon-client/src/game/held_items.rs::Game::held	the selected slot; the item in use is the `using` slot
+LivingEntity.getItemInHand	inline	crates/horizon-client/src/game/held_items.rs::Game::held	main hand; the off hand is the `offhand` field
+LivingEntity.setItemInHand	inline	crates/horizon-client/src/game/held_items.rs::Game::held_mut	main hand cell
 LivingEntity.getArmorCoverPercentage	port	crates/horizon-client/src/game/creatures.rs::Game::player_view	armor_cover is worn pieces over 4; a LAN guest's is 0
 LivingEntity.shouldTravelInFluid	inline	crates/horizon-client/src/mobs/living.rs::Mob::travel	in liquid, affected by fluids and not standing on a fluid it walks on (lava walkers)
 LivingEntity.isInShallowFluid	inline	crates/horizon-client/src/mobs/living.rs::Mob::travel_in_fluid	lava depth against fluid_jump_threshold

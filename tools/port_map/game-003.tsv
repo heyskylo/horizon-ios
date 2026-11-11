@@ -1,7 +1,7 @@
 ServerPlayerGameMode.changeGameModeForPlayer	port	crates/horizon-client/src/game/commands.rs::Game::set_game_mode	same-mode check, mode switch, abilities; a LAN guest goes through Hub::set_game_mode which also broadcasts PlayerInfo UPDATE_GAME_MODE
 ServerPlayerGameMode.setGameModeForPlayer	port	crates/horizon-client/src/game/game_mode.rs::Game::set_mode	previous mode kept, GameType.updatePlayerAbilities applied
 ServerPlayerGameMode.isInRangeOfGround	port	crates/horizon-world/src/world_movement.rs::in_range_of_ground	the body and the block under it are free of colliders, so a game mode change to spectator stops flying when the player stands on the ground (game/game_mode.rs set_mode, lan/hub.rs); entity colliders stay out
-ServerPlayerGameMode.incrementDestroyProgress	inline	crates/horizon-client/src/game/lan_actions.rs::Game::guest_dig_feedback	gap: minor: crack stage is the client formula (progress*10 - 1), so other players' cracks on a guest's block run one stage behind the server value
+ServerPlayerGameMode.incrementDestroyProgress	port	crates/horizon-client/src/game/lan_actions.rs::Game::guest_dig_feedback	the stage is `(int)(progress * 10)` (the per-tick progress times the ticks since the START), sent only when it changes as `lastSentState` does; the old `- 1` is gone
 ServerPlayerGameMode.debugLogging	skip:debug		DEBUG_BLOCK_BREAK logging
 ServerPlayerGameMode.abortDestroyBlock	inline	crates/horizon-client/src/game/lan_actions.rs::Game::lan_guest_packet	the abort action clears the guest's crack for everyone; no separate check of a mismatched destroy position
 ServerPlayerGameMode.destroyAndAck	inline	crates/horizon-client/src/game/lan_actions.rs::Game::lan_guest_packet	the sequence ack every PlayerAction arm sends first (Hub::ack -> ClientboundBlockChangedAck in tick_level) takes a vanilla client's predicted block back, and the ABORT arm also sends the state
@@ -139,8 +139,8 @@ ServerClockManager.commandTimeMarkersForClock	inline	crates/horizon-client/src/g
 ServerClockManager.ServerClockInstance.loadFrom	port	crates/horizon-client/src/game/chat.rs::Game::load_world_state	total ticks come from level data; rate, partial tick and paused are read from world_clocks.dat
 ServerClockManager.ServerClockInstance.packState	port	crates/horizon-client/src/game/chat.rs::Game::save_world_state	
 WorldClocks.bootstrap	skip:data		clock registration
-CombatTracker.getMessageForAssistedFall	port	crates/horizon-client/src/game/combat.rs::Game::combat_death_message_for	gap: minor: the .item variants of the fell assist and finish messages are never used, a named weapon is not shown
+CombatTracker.getMessageForAssistedFall	port	crates/horizon-client/src/game/combat.rs::Game::combat_death_message_for	the assist and finish messages take the .item form with the killer's custom-named main-hand item (death_message_args)
 CombatTracker.getCombatDuration	skip:other		only feeds ClientboundPlayerCombatEndPacket, which the client ignores
-DamageSource.getLocalizedDeathMessage	port	crates/horizon-client/src/game/combat.rs::Game::combat_death_message_for	gap: minor: no .item variant when the killer holds a custom-named item
+DamageSource.getLocalizedDeathMessage	port	crates/horizon-client/src/game/combat.rs::Game::combat_death_message_for	the cause's custom-named main-hand item gives the <id>.item message with its name as the third argument (death_message_args)
 DamageSource.isCreativePlayer	port	crates/horizon-world/src/damage_source.rs::DamageSource::creative_player	
 DamageSource.is	port	crates/horizon-world/src/damage_source.rs::DamageSource::in_tag	tag form; the key form is is_type

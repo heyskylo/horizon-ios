@@ -3,6 +3,7 @@
 use super::{Game, Screen};
 use horizon_client::{
     Result,
+    hdr_calibration::WindowState,
     hud::HudBatch,
     lang,
     options_ui::{Event, Page},
@@ -123,9 +124,10 @@ impl Game<'_> {
         self.keys.clear();
         self.screen = Screen::Options;
         self.options_from_title = from_title;
-        self.options_to_game = false;
         let minecart_improvements = self.minecart_improvements();
         let mods_live = self.mods_live_now();
+        // From the title after leaving a server, the row is back before the next world ticks.
+        self.hold_fullbright();
         let ui = &mut self.ui.options;
         ui.open_at(!from_title && self.title.is_none(), page);
         ui.mods_live = mods_live;
@@ -185,10 +187,10 @@ impl Game<'_> {
         let output = self
             .renderer
             .as_ref()
-            .map_or(Default::default(), |r| *r.output());
+            .map_or(Default::default(), |r| r.output());
         ui.draw(&self.settings, output, batch, &self.gui.atlas, self.cursor);
         self.ui.options = ui;
-        self.show_calibration(batch.height);
+        self.show_calibration((batch.width, batch.height));
     }
     /// Whose controller settings these are and what this game sees (`controller_ui`): the
     /// player's badge in splitscreen with its name, and its own controller.
@@ -206,10 +208,10 @@ impl Game<'_> {
         }
     }
     /// HDR calibration's test picture to the renderer, full screen while it runs: the
-    /// window goes fullscreen for it and back after, if it wasn't already.
-    pub(super) fn show_calibration(&mut self, h: f32) {
+    /// window goes fullscreen for it and back after, as it was (maximized, say).
+    pub(super) fn show_calibration(&mut self, size: (f32, f32)) {
         let picture = (self.screen == Screen::Options)
-            .then(|| self.ui.options.calibration_picture(h))
+            .then(|| self.ui.options.calibration_picture(&self.gui.atlas, size))
             .flatten();
         if let Some(r) = self.renderer.as_mut() {
             r.set_hdr_calibration(picture.map(|(step, nits, band)| {
@@ -223,20 +225,25 @@ impl Game<'_> {
         let Some(window) = &self.window else {
             return;
         };
-        match (picture.is_some(), self.ui.options.calibration_fullscreen) {
+        match (picture.is_some(), self.ui.options.calibration_window) {
             (true, None) => {
-                let was = window.fullscreen().is_some();
-                if !was {
+                // Before entering fullscreen, which un-maximizes a window on Windows.
+                let was = WindowState::of(window.fullscreen().is_some(), window.is_maximized());
+                if was != WindowState::Fullscreen {
                     let borderless = horizon_client::window::borderless_fullscreen(window);
                     horizon_client::window::enter_fullscreen(window, borderless);
                 }
-                self.ui.options.calibration_fullscreen = Some(was);
+                self.ui.options.calibration_window = Some(was);
             }
             (false, Some(was)) => {
-                if !was {
+                let (leave_fullscreen, maximize) = was.leaving();
+                if leave_fullscreen {
                     window.set_fullscreen(None);
                 }
-                self.ui.options.calibration_fullscreen = None;
+                if maximize {
+                    window.set_maximized(true);
+                }
+                self.ui.options.calibration_window = None;
             }
             _ => {}
         }
@@ -382,22 +389,18 @@ impl Game<'_> {
                 Event::Close if self.ui.options.resource_error.is_some() => {}
                 Event::Close => {
                     self.settings.save(&Self::options_path());
-                    let to_game = std::mem::take(&mut self.options_to_game);
                     self.screen = if let Some(screen) = self.panel.recipes_settings_return.take() {
                         screen
                     } else if std::mem::take(&mut self.options_to_world_options) {
                         Screen::WorldOptions
-                    } else if self.options_from_title || to_game {
+                    } else if self.options_from_title {
                         Screen::Playing
                     } else {
                         Screen::Paused
                     };
-                    if to_game {
-                        self.capture(true);
-                    }
                     self.dragging = false;
                     // Closed from calibration (horizon-ctl, a lost window): out of it.
-                    self.show_calibration(0.0);
+                    self.show_calibration((0.0, 0.0));
                 }
                 Event::Language(code) => {
                     self.load_language(&code);
@@ -415,6 +418,15 @@ impl Game<'_> {
                     let dir = super::packs::packs_dir();
                     let _ = std::fs::create_dir_all(&dir);
                     super::packs::open_folder(&dir);
+                }
+                Event::ImportPacks(paths) => {
+                    let vanilla = self.vanilla_root();
+                    super::packs::import_resource_packs(
+                        &mut self.ui.options,
+                        &vanilla,
+                        &self.server_packs.active,
+                        &paths,
+                    );
                 }
                 // Horizon's own Add button: the screen picked a hit, the game
                 // owns the folder it lands in.
@@ -559,10 +571,10 @@ impl Game<'_> {
         {
             self.settings.horizon.save(dir);
         }
+        self.hold_fullbright();
         let s = &self.settings;
         if let Some(r) = self.renderer.as_mut() {
             r.gamma = s.gamma;
-            r.fullbright = s.extras.fullbright;
             r.improved_transparency = s.improved_transparency;
             r.set_present_mode(s.vsync, s.horizon.present_mode);
             r.animated_textures = s.horizon.animated_textures;
@@ -572,13 +584,12 @@ impl Game<'_> {
                 s.file.int("textureFiltering"),
                 s.file.int("maxAnisotropyBit"),
             );
-            r.set_world_post(
-                s.horizon.resolution_scale as f32 / 100.0,
-                s.horizon.fxaa,
-                s.horizon.taa,
-                s.horizon.upscaling.ratio(),
-                s.horizon.upscaling_sharpness as f32 / 100.0,
-            );
+            // Dynamic Resolution's scale where it is on; turned off, it starts over at the floor.
+            if !s.horizon.dynamic_resolution {
+                self.dynamic_resolution.reset();
+            }
+            let scale = super::frame_autotune::world_scale(&s.horizon, &self.dynamic_resolution);
+            super::frame_autotune::apply_world_post(r, &s.horizon, scale);
             r.set_frame_generation(
                 s.horizon.frame_generation != horizon_client::graphics::FrameGeneration::Off,
             );
@@ -636,7 +647,7 @@ impl Game<'_> {
     pub(super) fn observe_fullscreen(&mut self) {
         // HDR calibration's own fullscreen is not the player's option: it
         // goes back to what it was when the calibration ends.
-        if self.ui.options.calibration_fullscreen.is_some() {
+        if self.ui.options.calibration_window.is_some() {
             return;
         }
         let Some(w) = &self.window else { return };
@@ -739,6 +750,30 @@ impl Game<'_> {
     }
 }
 
+impl Game<'_> {
+    /// Fullbright as this window may draw it (`fullbright_held`): the renderer's flag and the
+    /// graphics screen's row. Each tick (`tick_frame_visuals`) and when settings apply, so
+    /// joining or leaving a server needs no call of its own.
+    pub(super) fn hold_fullbright(&mut self) {
+        let held = fullbright_held(
+            self.remote.as_ref().map(|r| r.save_folder.is_some()),
+            self.replay.playing(),
+        );
+        self.settings.fullbright_held = held;
+        if let Some(r) = self.renderer.as_mut() {
+            r.fullbright = self.settings.extras.fullbright && !held;
+        }
+    }
+}
+
+/// Fullbright is held off on another's server, where it would light what the server shows
+/// dark (#3823): a connection with no save of this window's own (`Remote::save_folder`), as a
+/// multiplayer server or a LAN guest has. Single player, a LAN host, a splitscreen seat in
+/// P1's world and Replay Studio keep it. `connection`: none, or whether it plays a save.
+fn fullbright_held(connection: Option<bool>, studio: bool) -> bool {
+    connection == Some(false) && !studio
+}
+
 /// The named device can be a connected pad that has not driven the game yet.
 fn detected_controller_style(
     device: Option<&horizon_client::controller_ui::Device>,
@@ -771,6 +806,23 @@ fn windowed_again(w: &winit::window::Window) {
             at.x + (screen.width.saturating_sub(small.width) / 2) as i32,
             at.y + (screen.height.saturating_sub(small.height) / 2) as i32,
         ));
+    }
+}
+
+#[cfg(test)]
+mod fullbright_tests {
+    use super::fullbright_held;
+
+    #[test]
+    fn fullbright_is_held_only_on_another_servers_world() {
+        // The title screen, with no connection.
+        assert!(!fullbright_held(None, false));
+        // Single player and a LAN host play their own save; so does a splitscreen seat in P1's.
+        assert!(!fullbright_held(Some(true), false));
+        // A multiplayer server, or another player's world opened to LAN.
+        assert!(fullbright_held(Some(false), false));
+        // Replay Studio plays a recording, not a server.
+        assert!(!fullbright_held(Some(false), true));
     }
 }
 

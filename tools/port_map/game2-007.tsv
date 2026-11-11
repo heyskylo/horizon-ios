@@ -42,8 +42,8 @@ AbstractMinecart.move	port	crates/horizon-client/src/game/minecarts.rs::Game::mo
 AbstractMinecart.applyEffectsFromBlocks	inline	crates/horizon-client/src/game/minecarts.rs::Game::cart_lava_tick	lava is applied there; gap: minor: other block effects on a cart (cobweb, berry bush) are not applied; under minecart_improvements, NewMinecartBehavior.moveAlongTrack applies block effects twice per step, and Horizon keeps the old order
 AbstractMinecart.getRedstoneDirection	port	crates/horizon-client/src/game/minecarts.rs::Game::redstone_direction	the push a powered rail gives a resting cart: away from the powered conductor. move_along_track_new calls it when the minecart_improvements feature is on; the old track behaviour is the other path
 AbstractMinecart.applyNaturalSlowdown	port	crates/horizon-client/src/game/minecarts.rs::Game::natural_slowdown	slowdown per ride state, the furnace push and water
-AbstractMinecart.readAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::from_nbt	flipped, HasTicked, DisplayState and DisplayOffset are read back; a DisplayState whose block no longer resolves is dropped (forget_unreadable_display)
-AbstractMinecart.addAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::to_nbt	flipped, HasTicked, DisplayState and DisplayOffset are written; the offset only when it is not the kind's default, the state only when set
+AbstractMinecart.readAdditionalSaveData	port	crates/horizon-client/src/game/minecarts/nbt.rs::Minecart::from_nbt	flipped, HasTicked, DisplayState and DisplayOffset are read back; a DisplayState whose block no longer resolves is dropped (forget_unreadable_display)
+AbstractMinecart.addAdditionalSaveData	port	crates/horizon-client/src/game/minecarts/nbt.rs::Minecart::to_nbt	flipped, HasTicked, DisplayState and DisplayOffset are written; the offset only when it is not the kind's default, the state only when set
 AbstractMinecart.pushOtherMinecart	port	crates/horizon-client/src/game/minecarts.rs::Game::push_from_cart	cart against cart push with the furnace case; the old-movement facing check is used
 Minecart.interact	port	crates/horizon-client/src/game/minecarts.rs::Game::interact_cart	a plain rideable cart is boarded unless sneaking or already ridden
 Minecart.activateMinecart	port	crates/horizon-client/src/game/minecarts.rs::Game::activate_cart	a powered activator rail ejects the rider and hurts a rideable cart
@@ -59,8 +59,8 @@ MinecartTNT.handleEntityEvent	port	crates/horizon-client/src/game/minecarts.rs::
 MinecartTNT.primeFuse	port	crates/horizon-client/src/game/minecarts.rs::Game::prime_cart	fuse 80, entity event 70 and the primed sound; gap: minor: no ignition source is recorded for who caused the blast
 MinecartTNT.getBlockExplosionResistance	port	crates/horizon-client/src/game/explosion.rs::Game::exploded_positions	while the cart is primed (`combat.rail_proof_blast`, set from `fuse >= 0` in `minecarts.rs`) a rail, and a block with a rail above it, has no resistance to its blast
 MinecartTNT.shouldBlockExplode	inline	crates/horizon-client/src/game/explosion.rs::Game::exploded_positions	the same ray march leaves a spared rail out of the destroyed set, so the blast goes through it
-MinecartTNT.readAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::from_nbt	fuse read back; gap: minor: explosion_power and explosion_speed_factor are not read
-MinecartTNT.addAdditionalSaveData	port	crates/horizon-client/src/game/minecarts.rs::Minecart::to_nbt	fuse written; gap: minor: explosion_power and explosion_speed_factor are not written
+MinecartTNT.readAdditionalSaveData	port	crates/horizon-client/src/game/minecarts/nbt.rs::Minecart::from_nbt	fuse read back; gap: minor: explosion_power and explosion_speed_factor are not read
+MinecartTNT.addAdditionalSaveData	port	crates/horizon-client/src/game/minecarts/nbt.rs::Minecart::to_nbt	fuse written; gap: minor: explosion_power and explosion_speed_factor are not written
 MinecartTNT.damageSourceIgnitesTnt	port	crates/horizon-client/src/game/minecarts.rs::Game::hurt_cart	the fire flag from the caller primes the cart instead of breaking it
 OldMinecartBehavior.tick	port	crates/horizon-client/src/game/minecarts.rs::Game::tick_cart	gravity, track or off-track move, activator rail, yaw from motion and the flip
 OldMinecartBehavior.getMotionDirection	inline	crates/horizon-client/src/game/minecarts.rs::Game::dismount_cart	the dismount side is the cart's facing, taken from its yaw
@@ -131,7 +131,7 @@ EnchantmentMenu.<init>	inline	crates/horizon-client/src/game/stations.rs::Game::
 EnchantmentMenu.getGoldCount	inline	crates/horizon-client/src/menu.rs::Menu::enchant_click	the lapis count is checked against the enchant cost there
 EnchantmentMenu.removed	inline	crates/horizon-client/src/game/stations.rs::Game::close_station	the inputs go back when the table closes
 EnchantmentMenu.quickMoveStack	port	crates/horizon-client/src/menu.rs::Menu::quick_move	shift-click for the enchanting slots, with lapis and the item slot
-FurnaceResultSlot.remove	port	crates/horizon-client/src/game.rs::Game::award_furnace_recipes	the furnace output's experience is awarded from the recorded recipe uses; gap: minor: no per-slot taken count
+FurnaceResultSlot.remove	port	crates/horizon-client/src/game/item_entities.rs::Game::award_furnace_recipes	the furnace output's experience is awarded from the recorded recipe uses; gap: minor: no per-slot taken count
 GrindstoneMenu.mergeItems	port	crates/horizon-client/src/stations.rs::grindstone_result	two repairable items merge into one with the summed durability
 GrindstoneMenu.mergeEnchantsFrom	inline	crates/horizon-client/src/stations.rs::grindstone_result	the second item's enchantments merge in, curses only when the target lacks them
 GrindstoneMenu.removed	inline	crates/horizon-client/src/game/stations.rs::Game::close_station	the repair inputs go back when the grindstone closes

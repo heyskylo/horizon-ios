@@ -52,7 +52,7 @@ ShaderManager.PostChainCache.getOrLoadPostChain	inline	crates/horizon-client-ren
 ShaderManager.PostChainCache.loadPostChain	port	crates/horizon-client-render/src/post_chain.rs::PostEffects::load	targets, passes and pipelines are built from the config; a pass whose GLSL does not translate falls back to `post_chain.wgsl`, and a chain that still fails is skipped
 ShaderManager.PostChainCache.close	skip:other		releases post chains; Horizon has none
 Sheets.chooseSprite	port	crates/horizon-client-render/src/block_entity_render.rs::classify	gap: minor: the Christmas chest texture is picked outside this fn (block_entity_render.rs extended_christmas)
-SkyRenderer.<init>	inline	crates/horizon-client-render/src/gfx/pack_sky.rs::PackSky::new	gap: minor: builds the disc, sunset fan, stars and void up front; sun and moon quads are built per frame in game.rs celestial_geometry
+SkyRenderer.<init>	inline	crates/horizon-client-render/src/gfx/pack_sky.rs::PackSky::new	gap: minor: builds the disc, sunset fan, stars and void up front; sun and moon quads are built per frame in game/frame_geometry.rs::celestial_geometry
 SkyRenderer.extractRenderState	port	crates/horizon-client-render/src/environment.rs::Environment::sample	gap: minor: the End flash state is read in game/end.rs (end_flash_sky)
 SkyRenderer.render	port	crates/horizon-client-render/src/gfx.rs::Renderer::draw_frame	sky pass; the frame's sky and dark-disc flags come from Game::render
 SkyRenderer.renderSkyDisc	port	crates/horizon-client-render/src/gfx/pack_sky.rs::disc	top sky disc fan, sky colour from PackSky::prepare
@@ -100,7 +100,7 @@ SubmitNodeCollection.submitTextBackground	inline	crates/horizon-client/src/game/
 SubmitNodeCollection.submitTextPart	inline	crates/horizon-client/src/game/text_displays.rs::Game::text_display_geometry	the see-through or opaque choice for a text part
 SubmitNodeCollection.submitFlame	port	crates/horizon-client/src/fire_render.rs::flames	entity fire flames
 SubmitNodeCollection.submitLeash	port	crates/horizon-client/src/game/leads.rs::Game::leash_geometry	lead rope from a leashed mob to its holder
-SubmitNodeCollection.submitModel	port	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	mob models
+SubmitNodeCollection.submitModel	port	crates/horizon-client/src/game/creatures/mob_geometry.rs::Game::mob_geometry	mob models
 SubmitNodeCollection.submitCrumblingOverlay	port	crates/horizon-client/src/game/frame_geometry.rs::Game::cracks	block break cracks (destroy_stage sprites) over a block
 SubmitNodeCollection.submitMovingBlock	port	crates/horizon-client/src/game/moving_pistons.rs::Game::moving_piston_geometry	moving piston blocks
 SubmitNodeCollection.submitBlockModel	port	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_block	gap: minor: block models driven by block entities only
