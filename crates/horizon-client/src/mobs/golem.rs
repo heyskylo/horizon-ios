@@ -531,12 +531,16 @@ pub fn iron_anim(m: &Mob, s: &State, p: &mut Poses) {
 }
 
 pub fn register_snow(m: &mut Mob) {
+    // `new WaterAvoidingRandomStrollGoal(this, 1.0, 1.0000001E-5F)`: the probability of a plain
+    // stroll is the constructor's third argument, not the default 0.001.
+    let mut stroll = Stroll::avoiding_water(1.0);
+    stroll.water_avoiding = Some(1.000_000_1e-5);
     let g = &mut m.ai.goals;
     g.add(
         1,
         super::witch::RangedAttack::new(1.25, 20, 20, 10.0, snowball_attack),
     );
-    g.add(2, Stroll::avoiding_water(1.0));
+    g.add(2, stroll);
     g.add(3, LookAtPlayer::new(6.0));
     g.add(4, RandomLookAround::default());
     m.ai.targets.add(
@@ -1138,5 +1142,36 @@ mod crack_sound_tests {
         assert_eq!(cracks(&mut m, 20.0), 1, "60 to 40 crosses 0.5");
         assert_eq!(cracks(&mut m, 10.0), 0, "40 to 30 stays at the same crack");
         assert_eq!(cracks(&mut m, 10.0), 1, "30 to 20 crosses 0.25");
+    }
+}
+
+#[cfg(test)]
+mod snow_golem_stroll_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// A snow golem of a made-up type: only its goals matter here.
+    fn snow_golem() -> Mob {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        Arc::make_mut(&mut kind).id = "minecraft:snow_golem".into();
+        Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// `SnowGolem.registerGoals` adds `new WaterAvoidingRandomStrollGoal(this, 1.0, 1.0000001E-5F)`
+    /// (the bytecode's float constant): the chance of a plain stroll instead of a land one is
+    /// that, not the two-argument constructor's default 0.001.
+    #[test]
+    fn a_snow_golem_strolls_with_the_rare_probability() {
+        let mut m = snow_golem();
+        // The made-up type brings goals of its own.
+        m.ai.goals.clear();
+        register_snow(&mut m);
+        let goals = format!("{:?}", m.ai.goals);
+        let rare = format!("water_avoiding: {:?}", Some(1.000_000_1e-5_f32));
+        let default = format!("water_avoiding: {:?}", Some(0.001_f32));
+        assert!(goals.contains(&rare), "{goals}");
+        assert!(!goals.contains(&default), "{goals}");
+        // One stroll goal, not two.
+        assert_eq!(goals.matches("water_avoiding:").count(), 1, "{goals}");
     }
 }
