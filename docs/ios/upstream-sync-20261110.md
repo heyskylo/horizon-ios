@@ -2,8 +2,10 @@
 
 This integration combines the current mobile fork at `8001edc0b45e1eb5891685e32af871e8ccddf211`,
 the saved build 98 changes at `d6625b68d9`, and upstream engine commit
-`1b27a37702116f54150048008d8b466021307e53`. The upstream side contains 2,322 commits
-since the branches diverged. The initial merge had 69 conflicted paths.
+`1b27a37702116f54150048008d8b466021307e53`, followed by the final GitHub refresh at
+`5070174aef83be9e9f6653ad8a765f4fbe4b4369` (144 more commits). In total, 2,466
+upstream commits are incorporated since the branches diverged. The initial merge had 69
+conflicted paths; the final refresh merged without textual conflicts.
 
 ## Resolution policy
 
@@ -33,6 +35,9 @@ The merge includes the full upstream engine update, rather than a selection of m
 - Package `horizon-official` on iOS, matching upstream's registered release entry point.
   Forward audio/extras features through `horizon-game` without enabling the desktop controller
   backend. The installed executable is still named `Horizon` and uses the native launcher.
+- Repair the final upstream batch's model-loader variable shadowing (a layer-name vector
+  shadowed the map that records model ownership), and adapt its new item spill fixture to the
+  mobile fork's shared motion resources.
 - Retain mobile release routing and workflows. Do not restore the superseded desktop CI/release
   workflows that the mobile fork had deliberately removed.
 
@@ -51,14 +56,17 @@ Validation runs use scratch homes and game directories, not player saves.
 - 190 input crate tests passed.
 - 38 targeted game tests passed: cosmetics state/cleanup, pause navigation, content catalogue,
   pinned mod loading and split-screen profile behavior.
+- 15 model/death-message tests passed after the final upstream refresh; one prepared-model
+  fixture remains ignored. The 16 language-coverage tool tests passed.
 - 26 renderer tests passed, with one existing ignored case: bounded downloads, cache generations,
   leases/pruning and mobile settings focus.
-- Mobile regression probes cover touch gestures, toggles, bindings, handoffs, modifiers, mouse
+- 25 mobile regression probes passed, covering touch gestures, toggles, bindings, handoffs, modifiers, mouse
   ownership, virtual cursor, keyboard focus, native editor and lifecycle behavior.
-- iOS packaging/controller tests and world-input capture tests are run against the merged source.
+- 23 iOS packaging/controller tests and 4 world-input capture tests passed against the merged source.
 - The iOS release entry point is checked for `aarch64-apple-ios` with `audio,horizon-extras` and
   no default desktop features. Host game/client-library/renderer test targets are checked too.
-- Public-tree, layer and whitespace checks are required before committing.
+- Public-tree and layer checks passed. Whitespace checks passed excluding upstream port-map TSV
+  rows whose trailing tabs represent empty final fields.
 
 These are source, compile and automated regression results. This integration does not establish
 physical-device gameplay, visual parity, Microsoft sign-in or multiplayer runtime equivalence.

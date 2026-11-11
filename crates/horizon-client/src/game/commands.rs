@@ -8,6 +8,7 @@ pub(super) use data::place_summoned;
 mod effects;
 pub(super) mod execute;
 pub(super) mod extra;
+mod item_count;
 pub(in crate::game) mod items;
 mod misc;
 mod place;
@@ -3957,6 +3958,12 @@ impl Game<'_> {
             };
             let present = components.get(&id.as_str().into());
             let result = match term[split..].chars().next() {
+                // Both count wrappers in `ItemPredicateArgument` use the live
+                // stack count and the same integer bounds matcher.
+                Some('=' | '~') if id == "minecraft:count" => {
+                    let value = horizon_world::nbt::parse_snbt(term[split + 1..].trim());
+                    value.is_ok_and(|(v, _)| item_count::matches(stack.count, &v))
+                }
                 Some('=') => {
                     let value = horizon_world::nbt::parse_snbt(term[split + 1..].trim())
                         .ok()
@@ -3970,28 +3977,11 @@ impl Game<'_> {
                     }
                 }
                 Some('~') => {
-                    // Sub-predicates: `count` and component predicates.
+                    // Component sub-predicates.
                     let value = horizon_world::nbt::parse_snbt(term[split + 1..].trim())
                         .ok()
                         .map(|(t, _)| t);
                     match (id.as_str(), value) {
-                        ("minecraft:count", Some(v)) => {
-                            let n = i64::from(stack.count);
-                            match &v {
-                                horizon_world::nbt::Tag::Compound(_) => {
-                                    let get = |k: &str| match v.get(k) {
-                                        Some(horizon_world::nbt::Tag::Int(i)) => {
-                                            Some(i64::from(*i))
-                                        }
-                                        _ => None,
-                                    };
-                                    get("min").is_none_or(|m| n >= m)
-                                        && get("max").is_none_or(|m| n <= m)
-                                }
-                                horizon_world::nbt::Tag::Int(i) => n == i64::from(*i),
-                                _ => false,
-                            }
-                        }
                         // `MinMaxBounds.Ints.matches`: DamagePredicate's damage-only
                         // Int bounds shape; effective DAMAGE presence is required.
                         // Other fields keep the entire existing predicate path.
@@ -6142,3 +6132,7 @@ mod global_selector_order_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "item_count_predicate_tests.rs"]
+mod item_count_predicate_tests;

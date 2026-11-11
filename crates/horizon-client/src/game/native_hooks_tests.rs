@@ -685,6 +685,8 @@ fn catalog_matches_hook_points() {
     let conn_hooks = free_hooks(include_str!("../lan/conn.rs"));
     // The log writer's (`horizon_client_lib::native_client_hooks`).
     let client_hooks = free_hooks(include_str!("../native_client_hooks.rs"));
+    // The tamed mobs' death messages (`horizon_client_lib::living_death`).
+    let death_hooks = free_hooks(include_str!("../living_death.rs"));
     let declared: BTreeSet<_> = section
         .lines()
         .chain(level_section.lines())
@@ -709,6 +711,7 @@ fn catalog_matches_hook_points() {
         .chain(mob_hooks.iter().copied())
         .chain(conn_hooks.iter().copied())
         .chain(client_hooks.iter().copied())
+        .chain(death_hooks.iter().copied())
         .collect();
     let mut names = BTreeSet::new();
     let mut contracts = BTreeSet::new();
@@ -755,6 +758,8 @@ fn catalog_matches_hook_points() {
             format!("horizon_client_lib::lan::conn::native_{name}")
         } else if client_hooks.contains(name) {
             format!("horizon_client_lib::native_client_hooks::native_{name}")
+        } else if death_hooks.contains(name) {
+            format!("horizon_client_lib::living_death::native_{name}")
         } else if level_hooks.contains(name) {
             format!("horizon_client::game::native_hooks::GameLevel<'_>::native_{name}")
         } else {

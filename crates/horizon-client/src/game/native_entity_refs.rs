@@ -10,6 +10,7 @@
 //! earlier client level), they return `None`.
 use super::{Dim, Game, commands::Target};
 use horizon_client::mod_api::{EntityRef, LevelRef};
+use horizon_core::geometry::Vec3;
 
 impl Game<'_> {
     /// What a handle names now, or None for a stale or foreign one.
@@ -161,6 +162,53 @@ impl Game<'_> {
             None => self.native_client_tracked(entity).map(|_| self.dim)?,
         };
         Some(LevelRef::new(entity.epoch(), dim.id()))
+    }
+    /// `LivingEntity.hasLineOfSight(target)` for a server mod, with the entities as the events name them by id:
+    /// whether `from_entity` sees `to_entity`. The ray runs from the eyes of `from_entity` to those of `to_entity`
+    /// (`Entity.getEyeY`), against `ClipContext.Block.COLLIDER` shapes with `from_entity` as the collision context
+    /// and no fluids, and it counts only when the two stand in the same level and no more than 128 blocks apart.
+    /// False also for an unknown entity, a client, and a level other than the one being ticked (the level it can
+    /// answer for). API @API:line_of_sight@.
+    pub(super) fn native_has_line_of_sight(&self, from_entity: u32, to_entity: u32) -> bool {
+        if !self.native_level_open(self.dim.id()) {
+            return false;
+        }
+        let (Some(from), Some(to)) = (
+            self.native_entity(from_entity)
+                .and_then(|e| self.native_entity_target(e)),
+            self.native_entity(to_entity)
+                .and_then(|e| self.native_entity_target(e)),
+        ) else {
+            return false;
+        };
+        let here = self.dim.id();
+        if self.target_level(from).id() != here || self.target_level(to).id() != here {
+            return false;
+        }
+        let (Some(a), Some(b)) = (self.target_position(from), self.target_position(to)) else {
+            return false;
+        };
+        let from_eye = Vec3::new(a[0], a[1] + self.target_eye_height(from), a[2]);
+        let to_eye = Vec3::new(b[0], b[1] + self.target_eye_height(to), b[2]);
+        self.mob_world_base(&[])
+            .line_of_sight_for(Some(a[1]), from_eye, to_eye)
+    }
+    /// `Level.clip` with `ClipContext.Block.COLLIDER`, no fluids and no entity (`CollisionContext.empty()`), as a
+    /// mod's own ray: true when the segment from `from` to `to` meets no block's collider (a miss). Only the level
+    /// being ticked is answered; another dimension, and a client, give false, since reaching another loaded level
+    /// needs a mutable borrow this read takes without one. API @API:line_of_sight@.
+    pub(super) fn native_clear_between(
+        &self,
+        dimension: &str,
+        from: [f64; 3],
+        to: [f64; 3],
+    ) -> bool {
+        self.native_level_open(dimension)
+            && self.mob_world_base(&[]).clear_between(
+                Vec3::new(from[0], from[1], from[2]),
+                Vec3::new(to[0], to[1], to[2]),
+                false,
+            )
     }
 }
 
@@ -497,5 +545,137 @@ mod client_tests {
         game.handle_packet(C::EntityEvent(play::EntityEvent { id: 21, event: 42 }))
             .unwrap();
         assert!(made(&game) > before, "event 42 draws the sweat");
+    }
+}
+
+/// `native_has_line_of_sight` and `native_clear_between` against real blocks and entities of a server's level.
+#[cfg(test)]
+mod line_of_sight_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, execution_role, load_resources};
+    use horizon_client::mod_api::NativeAuthority;
+    use horizon_world::nbt::Compound;
+
+    fn game() -> Game<'static> {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES")
+                .expect("set HORIZON_TEST_RESOURCES to prepared resources"),
+        );
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = execution_role::ExecutionRole::IntegratedServer;
+        options.dedicated = Some(Vec::new());
+        let res: &'static _ = Box::leak(Box::new(loaded.resources));
+        let mut game = Game::new(
+            res,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.native_lifecycle
+            .begin_open(NativeAuthority::IntegratedServer);
+        game.world.chunks.insert(
+            (0, 0),
+            std::sync::Arc::new(horizon_client::chunk::Chunk::empty(0, 0)),
+        );
+        game.block_ticks
+            .add_empty_chunk(horizon_core::position::ChunkPos::new(0, 0))
+            .unwrap();
+        game
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_collider_blocks_sight_and_a_bottom_slab_or_water_does_not() {
+        let mut game = game();
+        let dim = game.dim.id();
+        let a = game
+            .native_summon(dim, "minecraft:pig", [2.5, 200.0, 2.5], Compound::new())
+            .unwrap();
+        let b = game
+            .native_summon(dim, "minecraft:pig", [10.5, 200.0, 2.5], Compound::new())
+            .unwrap();
+        let at = |x: f64| [x, 200.8, 2.5];
+        assert!(game.native_has_line_of_sight(a, b), "open air");
+        assert!(game.native_has_line_of_sight(b, a), "sight is symmetric");
+        assert!(game.native_clear_between(dim, at(2.5), at(10.5)));
+
+        // A bottom slab's collider tops out at 200.5, under the eyes: the ray passes over it.
+        assert!(game.run_command("setblock 6 200 2 minecraft:oak_slab[type=bottom]"));
+        assert!(
+            game.native_has_line_of_sight(a, b),
+            "bottom slab under the eyes"
+        );
+
+        // Water has no collider and fluids do not count (`ClipContext.Fluid.NONE`).
+        assert!(game.run_command("fill 6 199 0 6 205 5 minecraft:water"));
+        assert!(game.native_has_line_of_sight(a, b), "water is no collider");
+
+        // Stone's collider covers the eye line: no sight, and the ray is not clear.
+        assert!(game.run_command("fill 6 199 0 6 205 5 minecraft:stone"));
+        assert!(!game.native_has_line_of_sight(a, b), "stone wall");
+        assert!(
+            !game.native_has_line_of_sight(b, a),
+            "stone wall, both ways"
+        );
+        assert!(!game.native_clear_between(dim, at(2.5), at(10.5)));
+        // A segment that stops short of the wall is clear.
+        assert!(game.native_clear_between(dim, at(2.5), at(5.5)));
+
+        // Once the wall is gone, the same pair sees each other again.
+        assert!(game.run_command("fill 6 199 0 6 205 5 minecraft:air"));
+        assert!(game.native_has_line_of_sight(a, b), "wall removed");
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn unknown_entities_and_other_levels_see_nothing() {
+        let mut game = game();
+        let dim = game.dim.id();
+        let a = game
+            .native_summon(dim, "minecraft:pig", [2.5, 200.0, 2.5], Compound::new())
+            .unwrap();
+        let b = game
+            .native_summon(dim, "minecraft:pig", [10.5, 200.0, 2.5], Compound::new())
+            .unwrap();
+        assert!(
+            !game.native_has_line_of_sight(a, u32::MAX),
+            "no such entity"
+        );
+        assert!(
+            !game.native_has_line_of_sight(a, b + 1000),
+            "no such entity"
+        );
+
+        // A pig in the Nether is in another level: no sight to it, and no ray in that level here.
+        let nether = "minecraft:the_nether";
+        let uuid = (7u128 << 96) | 0x51;
+        assert!(game.run_command(&format!(
+            "execute in {nether} run summon pig 8.5 200 8.5 {{UUID:[I;7,0,0,81],NoAI:1b}}"
+        )));
+        let (_, far, _) = game
+            .native_entity_by_uuid(uuid)
+            .expect("summoned in the Nether");
+        assert!(!game.native_has_line_of_sight(a, far));
+        assert!(!game.native_clear_between(nether, [2.5, 200.8, 2.5], [8.5, 200.8, 8.5]));
+        assert_eq!(game.dim.id(), dim, "the level in place is unchanged");
     }
 }

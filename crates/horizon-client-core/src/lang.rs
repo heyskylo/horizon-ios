@@ -74,11 +74,70 @@ pub trait ResourceSource {
         vec!["minecraft".into()]
     }
 }
+/// The bundled file a language reads, and whether it drops `ß`: a regional variant reads its
+/// language's file (Swiss German writes "ss" for "ß", as vanilla's de_ch does).
+fn bundled_code(code: &str) -> (&str, bool) {
+    match code {
+        "ko" => ("ko_kr", false),
+        "hr" => ("hr_hr", false),
+        "de_at" => ("de_de", false),
+        "de_ch" => ("de_de", true),
+        "fr_ca" | "fr_ch" => ("fr_fr", false),
+        "es_ar" | "es_cl" | "es_ec" | "es_mx" | "es_uy" | "es_ve" => ("es_es", false),
+        code => (code, false),
+    }
+}
+
+/// Lang files crates above the engine ship (`horizon_hooks::lang`), each a list of
+/// (code, JSON) pairs. The game's entry installs them once, before any language loads.
+static CRATE_FILES: std::sync::OnceLock<&'static [&'static [(&'static str, &'static str)]]> =
+    std::sync::OnceLock::new();
+
+/// Installs the crates' lang files (`horizon_hooks::lang::engine::all()`). Only the first call
+/// counts.
+pub fn install_crate_files(files: &'static [&'static [(&'static str, &'static str)]]) {
+    let _ = CRATE_FILES.set(files);
+}
+
+/// The crates' entries for language `code` (through [`bundled_code`]'s variants) that the
+/// engine's own `horizon` file for it doesn't have: on a key both have, the engine wins.
+fn read_crate_files(files: &[&[(&str, &str)]], code: &str, map: &mut HashMap<String, String>) {
+    if files.is_empty() {
+        return;
+    }
+    let (file, swiss) = bundled_code(code);
+    let mut own = HashMap::new();
+    if let Some(bytes) = Bundled.read(&format!("assets/horizon/lang/{code}.json")) {
+        read_lang_file(&bytes, &mut own);
+    }
+    for (c, json) in files.iter().flat_map(|f| f.iter()) {
+        if *c != file {
+            continue;
+        }
+        let mut theirs = HashMap::new();
+        if swiss {
+            read_lang_file(json.replace('ß', "ss").as_bytes(), &mut theirs);
+        } else {
+            read_lang_file(json.as_bytes(), &mut theirs);
+        }
+        for (key, value) in theirs {
+            if !own.contains_key(&key) {
+                map.insert(key, value);
+            }
+        }
+    }
+}
+
 /// Horizon's own strings, compiled in so they need no prepared resources.
 struct Bundled;
 impl ResourceSource for Bundled {
     fn read(&self, path: &str) -> Option<Vec<u8>> {
-        let body = match path {
+        let code = path
+            .strip_prefix("assets/horizon/lang/")?
+            .strip_suffix(".json")?;
+        let (file, swiss) = bundled_code(code);
+        let path = format!("assets/horizon/lang/{file}.json");
+        let body = match path.as_str() {
             "assets/horizon/lang/en_us.json" => {
                 include_str!("../../horizon-client/assets/horizon/lang/en_us.json")
             }
@@ -103,10 +162,10 @@ impl ResourceSource for Bundled {
             "assets/horizon/lang/tr_tr.json" => {
                 include_str!("../../horizon-client/assets/horizon/lang/tr_tr.json")
             }
-            "assets/horizon/lang/ko_kr.json" | "assets/horizon/lang/ko.json" => {
+            "assets/horizon/lang/ko_kr.json" => {
                 include_str!("../../horizon-client/assets/horizon/lang/ko_kr.json")
             }
-            "assets/horizon/lang/hr_hr.json" | "assets/horizon/lang/hr.json" => {
+            "assets/horizon/lang/hr_hr.json" => {
                 include_str!("../../horizon-client/assets/horizon/lang/hr_hr.json")
             }
             "assets/horizon/lang/pt_pt.json" => {
@@ -331,30 +390,20 @@ impl ResourceSource for Bundled {
             "assets/horizon/lang/vec_it.json" => {
                 include_str!("../../horizon-client/assets/horizon/lang/vec_it.json")
             }
-            "assets/horizon/lang/de_de.json" | "assets/horizon/lang/de_at.json" => {
+            "assets/horizon/lang/de_de.json" => {
                 include_str!("../../horizon-client/assets/horizon/lang/de_de.json")
             }
-            // Swiss German writes "ss" for "ß", as vanilla's de_ch does.
-            "assets/horizon/lang/de_ch.json" => {
-                let de = include_str!("../../horizon-client/assets/horizon/lang/de_de.json");
-                return Some(de.replace('ß', "ss").into_bytes());
-            }
-            "assets/horizon/lang/fr_fr.json"
-            | "assets/horizon/lang/fr_ca.json"
-            | "assets/horizon/lang/fr_ch.json" => {
+            "assets/horizon/lang/fr_fr.json" => {
                 include_str!("../../horizon-client/assets/horizon/lang/fr_fr.json")
             }
-            "assets/horizon/lang/es_es.json"
-            | "assets/horizon/lang/es_ar.json"
-            | "assets/horizon/lang/es_cl.json"
-            | "assets/horizon/lang/es_ec.json"
-            | "assets/horizon/lang/es_mx.json"
-            | "assets/horizon/lang/es_uy.json"
-            | "assets/horizon/lang/es_ve.json" => {
+            "assets/horizon/lang/es_es.json" => {
                 include_str!("../../horizon-client/assets/horizon/lang/es_es.json")
             }
             _ => return None,
         };
+        if swiss {
+            return Some(body.replace('ß', "ss").into_bytes());
+        }
         Some(body.as_bytes().to_vec())
     }
     fn namespaces(&self) -> Vec<String> {
@@ -438,6 +487,16 @@ impl Language {
     /// from every namespace and every source in priority order (later sources
     /// override).
     pub fn load(sources: &[&dyn ResourceSource], code: &str) -> Self {
+        let crate_files = CRATE_FILES.get().copied().unwrap_or_default();
+        Self::load_with(sources, code, crate_files)
+    }
+
+    /// [`Language::load`] with these crates' lang files.
+    fn load_with(
+        sources: &[&dyn ResourceSource],
+        code: &str,
+        crate_files: &[&[(&str, &str)]],
+    ) -> Self {
         let mut map = HashMap::new();
         let mut codes = vec![DEFAULT];
         if code != DEFAULT {
@@ -453,12 +512,14 @@ impl Language {
             sources.iter().flat_map(|s| s.namespaces()).collect();
         for c in codes {
             for namespace in &namespaces {
-                for source in sources {
-                    let Some(bytes) = source.read(&format!("assets/{namespace}/lang/{c}.json"))
-                    else {
-                        continue;
-                    };
-                    read_lang_file(&bytes, &mut map);
+                for (i, source) in sources.iter().enumerate() {
+                    if let Some(bytes) = source.read(&format!("assets/{namespace}/lang/{c}.json")) {
+                        read_lang_file(&bytes, &mut map);
+                    }
+                    // The crates' text right after the engine's own (`Bundled`, the first source).
+                    if i == 0 && namespace == "horizon" {
+                        read_crate_files(crate_files, c, &mut map);
+                    }
                 }
             }
         }
@@ -689,6 +750,43 @@ mod tests {
     }
 
     #[test]
+    fn a_crates_text_loads_after_the_engines_and_before_packs() {
+        static CRATE: &[(&str, &str)] = &[
+            (
+                "en_us",
+                r#"{"test.crate.hello": "Hello", "horizon.osk.close": "Shut", "test.crate.packed": "Crate"}"#,
+            ),
+            (
+                "de_de",
+                r#"{"test.crate.hello": "Grüß dich", "horizon.osk.close": "Zu"}"#,
+            ),
+            ("fr_fr", r#"{"test.crate.hello": "Bonjour"}"#),
+        ];
+        let pack = Mem(HashMap::from([(
+            "assets/horizon/lang/en_us.json".to_owned(),
+            br#"{"test.crate.packed": "Pack"}"#.to_vec(),
+        )]));
+        let load = |code| Language::load_with(&[&pack], code, &[CRATE]);
+        let en = load("en_us");
+        assert_eq!(en.get("test.crate.hello"), Some("Hello"));
+        // The engine's own file wins on a key both have; a pack wins over both.
+        assert_eq!(en.get("horizon.osk.close"), Some("Close"));
+        assert_eq!(en.get("test.crate.packed"), Some("Pack"));
+        let de = load("de_de");
+        assert_eq!(de.get("test.crate.hello"), Some("Grüß dich"));
+        assert_eq!(de.get("horizon.osk.close"), Some("Schließen"));
+        // Regional variants read their language's file, as the engine's do.
+        assert_eq!(load("de_ch").get("test.crate.hello"), Some("Grüss dich"));
+        assert_eq!(load("fr_ca").get("test.crate.hello"), Some("Bonjour"));
+        // A language the crate lacks falls back to its English.
+        assert_eq!(load("pl_pl").get("test.crate.hello"), Some("Hello"));
+        // Without crate files, nothing changes.
+        let plain = Language::load_with(&[&pack], "de_de", &[]);
+        assert_eq!(plain.get("test.crate.hello"), None);
+        assert_eq!(plain.len() + 1, de.len());
+    }
+
+    #[test]
     fn a_scoped_language_is_the_calling_threads_and_reports_what_it_lacks() {
         let empty = Mem(HashMap::new());
         let outside = code();
@@ -739,6 +837,20 @@ mod tests {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../horizon-client/assets/horizon/lang")
     }
+    /// The crates whose own lang files the game loads (`crates/<name>/assets/lang`,
+    /// registered through `horizon_hooks::lang`), with that folder.
+    fn crate_lang_dirs() -> Vec<(String, std::path::PathBuf)> {
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut dirs: Vec<_> = std::fs::read_dir(&crates)
+            .unwrap()
+            .flatten()
+            .map(|e| (e.file_name().into_string().unwrap(), e.path()))
+            .map(|(name, path)| (name, path.join("assets/lang")))
+            .filter(|(_, dir)| dir.join("en_us.json").is_file())
+            .collect();
+        dirs.sort();
+        dirs
+    }
     /// The keys of a flat bundled file in file order, duplicates included (a map
     /// would keep only the last of two equal keys). One `"key": "value"` per line.
     fn file_keys(body: &str) -> Vec<String> {
@@ -776,11 +888,33 @@ mod tests {
 
     #[test]
     fn bundled_files_are_served_and_have_no_stale_or_repeated_keys() {
-        let dir = bundled_dir();
+        let engine = check_lang_dir(&bundled_dir(), true);
+        assert!(
+            engine.1 >= 7,
+            "found {} bundled lang files in {}",
+            engine.1,
+            bundled_dir().display()
+        );
+        // A crate's files pass the same checks. Its keys are its own: on a key the engine's
+        // files also have, the engine's text would win and hide the crate's.
+        for (name, dir) in crate_lang_dirs() {
+            let (en, _) = check_lang_dir(&dir, false);
+            for key in en.keys() {
+                assert!(
+                    !engine.0.contains_key(key),
+                    "{name}: {key} is also the engine's"
+                );
+            }
+        }
+    }
+
+    /// The checks every lang folder passes: flat maps, no repeated key, no key en_us lacks, the
+    /// same placeholders as English, no empty text. Its en_us and how many files it has.
+    fn check_lang_dir(dir: &std::path::Path, bundled: bool) -> (HashMap<String, String>, usize) {
         let en_body = std::fs::read_to_string(dir.join("en_us.json")).unwrap();
         let en: HashMap<String, String> = serde_json::from_str(&en_body).unwrap();
         let mut seen = 0;
-        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
             let name = entry.file_name().into_string().unwrap();
             let Some(code) = name.strip_suffix(".json") else {
                 continue;
@@ -789,7 +923,7 @@ mod tests {
             // A file that Bundled::read does not name is never loaded.
             let path = format!("assets/horizon/lang/{name}");
             assert!(
-                Bundled.read(&path).is_some(),
+                !bundled || Bundled.read(&path).is_some(),
                 "{name} is not served by Bundled"
             );
             let body = std::fs::read_to_string(entry.path()).unwrap();
@@ -815,11 +949,7 @@ mod tests {
                 assert!(!value.trim().is_empty(), "{code}: {key} is empty");
             }
         }
-        assert!(
-            seen >= 7,
-            "found {seen} bundled lang files in {}",
-            dir.display()
-        );
+        (en, seen)
     }
 
     #[test]
@@ -834,10 +964,10 @@ mod tests {
                 }
             }
         }
-        let en: HashMap<String, String> = serde_json::from_str(
-            &std::fs::read_to_string(bundled_dir().join("en_us.json")).unwrap(),
-        )
-        .unwrap();
+        let english = |dir: &std::path::Path| -> HashMap<String, String> {
+            serde_json::from_str(&std::fs::read_to_string(dir.join("en_us.json")).unwrap()).unwrap()
+        };
+        let mut en = english(&bundled_dir());
         let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let mut files = Vec::new();
         for krate in [
@@ -846,6 +976,11 @@ mod tests {
             "horizon-client-core",
         ] {
             rust_files(&crates.join(krate).join("src"), &mut files);
+        }
+        // A crate that ships lang files names its keys in its own sources.
+        for (name, dir) in crate_lang_dirs() {
+            en.extend(english(&dir));
+            rust_files(&crates.join(name).join("src"), &mut files);
         }
         assert!(files.len() > 100, "found only {} sources", files.len());
         let mut found = 0;

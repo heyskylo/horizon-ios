@@ -5808,6 +5808,14 @@ def jukebox_saved_clock_cases():
     return cases(cmd)
 
 
+def item_count_predicate_cases():
+    try:
+        from .item_count_predicate_corpus import cases
+    except ImportError:
+        from item_count_predicate_corpus import cases
+    return cases(cmd)
+
+
 def structured_item_slots():
     range3 = '{type:"minecraft:slot_range",slots:"container.3"}'
     range5 = '{type:"minecraft:slot_range",slots:"container.5"}'
@@ -7716,6 +7724,7 @@ def groups():
         ('boat passenger tree', boat_passenger_tree_cases()),
         ('effective component presence', effective_component_presence_cases()),
         ('jukebox saved clock', jukebox_saved_clock_cases()),
+        ('item count predicate', item_count_predicate_cases()),
         ('loaded potion clouds', loaded_clouds(cmd, setup)),
         ('server clock', server_clock()),
         ('inline execute predicates', inline_execute_predicates()),

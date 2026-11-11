@@ -88,6 +88,7 @@ pub mod lan;
 pub mod landing;
 pub use horizon_client_render::loading_overlay;
 pub mod legacy_combat;
+pub mod living_death;
 pub mod locator_bar;
 pub mod lod_net;
 pub mod menu;
