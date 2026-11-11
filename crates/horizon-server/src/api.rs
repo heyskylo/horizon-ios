@@ -601,7 +601,10 @@ pub fn random_token() -> String {
 }
 
 pub fn same_token(a: &str, b: &str) -> bool {
-    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
+    // Digests of a fixed length: not even the token's length shows in the time taken.
+    use sha2::{Digest, Sha256};
+    let (x, y) = (Sha256::digest(a.as_bytes()), Sha256::digest(b.as_bytes()));
+    x.iter().zip(y.iter()).fold(0u8, |d, (p, q)| d | (p ^ q)) == 0
 }
 
 /// Writes a file only its owner can read: through a private temporary file renamed over it
@@ -1022,6 +1025,14 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tokens_compare_whole() {
+        assert!(same_token("abc123", "abc123"));
+        assert!(!same_token("abc123", "abc124"));
+        assert!(!same_token("abc123", "abc1234"));
+        assert!(!same_token("", "a"));
+    }
 
     fn wire_reply(
         address: SocketAddr,
