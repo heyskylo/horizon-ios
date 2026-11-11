@@ -730,8 +730,14 @@ impl Game<'_> {
         if !self.before_block(d) || self.mob_hit().is_some_and(|m| m.1 < d) {
             return false;
         }
-        let (_, _, crit, magic) = self.melee_damage("minecraft:armor_stand", true);
+        let ((_, scale, crit, magic), admitted) =
+            self.melee_damage_with_admission("minecraft:armor_stand", true);
         let hurt = self.hit_armor_stand(i, |g, area, id| {
+            let knockback = if admitted {
+                g.extra_knockback("minecraft:armor_stand", scale).0
+            } else {
+                0.0
+            };
             g.attack_effects(
                 area,
                 Some(id as i32),
@@ -739,11 +745,15 @@ impl Game<'_> {
                 super::mace::Spared::Stand(id),
                 magic.then_some(id as i32),
             );
+            g.special_attack_slowdown(knockback);
         });
         // Player.onAttack: the hit starts the attack strength again, hurt or
         // not (skipAttackInteraction only asks mayInteract).
         self.attack_ticks = 0;
         if hurt {
+            if admitted {
+                self.special_attack_exhaustion();
+            }
             self.swing_arm();
         }
         hurt
@@ -1954,8 +1964,7 @@ impl Game<'_> {
         mut skin: Option<&mut horizon_client::mobs::skin::Skin>,
         out: &mut Vec<Vertex>,
     ) {
-        let lights =
-            horizon_client::block_entity_render::diffuse_lights(self.dim == super::Dim::Nether);
+        let lights = horizon_client::block_entity_render::diffuse_lights(self.nether_lighting());
         let mut submit = |state: &horizon_client::item_render::ItemRenderState,
                           pose: glam::Mat4,
                           out: &mut Vec<Vertex>| {
@@ -2028,7 +2037,7 @@ impl Game<'_> {
                 out,
                 light,
                 lights: Some(horizon_client::block_entity_render::diffuse_lights(
-                    self.dim == super::Dim::Nether,
+                    self.nether_lighting(),
                 )),
                 glint: self.glint(),
                 tier: 0,

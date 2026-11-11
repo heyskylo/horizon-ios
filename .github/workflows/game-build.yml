@@ -50,7 +50,9 @@ jobs:
           ref: ${{ inputs.ref }}
           persist-credentials: false
           clean: true
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 2026-11
+        with:
+          toolchain: stable
       - run: bash tools/ci/runner-env.sh
         env:
           HORIZON_NO_SCCACHE: ${{ inputs.trusted && '1' || '' }}
@@ -156,10 +158,11 @@ jobs:
           # may end up in a release. target/ is rebuilt from scratch; .local/ is relinked by vanilla-data.sh, which
           # keeps its preparations outside the checkout.
           clean: true
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 2026-11
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: runner.environment == 'github-hosted' && !matrix.musl
         with:
           # A release restores only what a release saved: an untrusted build has its own key and saves nothing.

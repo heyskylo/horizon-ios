@@ -320,7 +320,14 @@ impl Game<'_> {
                 .and_then(|f| f.item.as_ref())
                 .map_or_else(String::new, |s| s.item.to_string());
             let rotation = frame.map_or(0, |f| f.rotation);
-            self.native_player_item_frame_change(player, &name, entity_id, action, &item, rotation);
+            self.native_player_item_frame_change(
+                player,
+                &name,
+                entity_id,
+                action,
+                &item,
+                rotation.rem_euclid(8) as u8,
+            );
         }
         self.swing_arm();
         true
@@ -394,7 +401,7 @@ impl Game<'_> {
                 entity_id,
                 if with_frame { "break" } else { "remove_item" },
                 if with_frame { "" } else { &old_item },
-                rotation,
+                rotation.rem_euclid(8) as u8,
             );
         }
         true
@@ -704,8 +711,7 @@ impl Game<'_> {
         }
         // `extractRenderState`: FIXED, seeded by the frame entity.
         let skinning = self.skinning();
-        let lights =
-            horizon_client::block_entity_render::diffuse_lights(self.dim == super::Dim::Nether);
+        let lights = horizon_client::block_entity_render::diffuse_lights(self.nether_lighting());
         for (stack, id, m, light, cull, kind) in items {
             let entity_start = out.len();
             self.mark_entity(entity_start, kind);
