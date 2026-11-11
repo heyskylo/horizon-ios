@@ -1053,7 +1053,7 @@ impl PackScreen {
             0,
         );
         self.search.draw(&mut out, m, blink_ms, None);
-        if self.search.contains(f64::from(mouse.0), f64::from(mouse.1)) {
+        if self.browser.is_none() && self.search.contains(f64::from(mouse.0), f64::from(mouse.1)) {
             crate::widgets::text_cursor(true, true);
         }
         for side in 0..2 {
