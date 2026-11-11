@@ -690,26 +690,36 @@ impl TextField {
     }
     /// `setValue`.
     pub fn set_value(&mut self, m: &Measure, value: &str) {
-        self.value = value.chars().take(self.max_length).collect();
+        self.value = crate::ui::utf16_prefix(value, self.max_length);
         self.move_cursor_to(m, chars(&self.value), false);
         self.set_highlight(m, self.cursor);
     }
     /// `insertText`: replaces the selection within the maximum length. True
-    /// when the value changed (its responder runs).
+    /// when the value changed (its responder runs). The limit is in UTF-16
+    /// code units, as Java's `String.length()` counts them.
     pub fn insert_text(&mut self, m: &Measure, input: &str) -> bool {
         let (start, end) = (
             self.cursor.min(self.highlight),
             self.cursor.max(self.highlight),
         );
-        let room = self.max_length as isize - chars(&self.value) as isize + (end - start) as isize;
-        if room <= 0 {
+        let selected_units: usize = self
+            .value
+            .chars()
+            .skip(start)
+            .take(end - start)
+            .map(char::len_utf16)
+            .sum();
+        let room = self
+            .max_length
+            .saturating_sub(crate::ui::utf16_len(&self.value) - selected_units);
+        if room == 0 {
             return false;
         }
         let filtered: String = input
             .chars()
             .filter(|c| *c >= ' ' && *c != '\u{7f}' && *c != '§')
             .collect();
-        let insert: String = filtered.chars().take(room as usize).collect();
+        let insert = crate::ui::utf16_prefix(&filtered, room);
         let n = chars(&insert);
         self.value = format!(
             "{}{}{}",
@@ -921,7 +931,8 @@ impl TextField {
             text_as_typed(out, t, draw_x, ty, color, self.text_shadow);
             draw_x += w + 1;
         }
-        let insert = self.cursor < len || len >= self.max_length;
+        // `value.length() >= maxLength` is Java's length: UTF-16 units.
+        let insert = self.cursor < len || crate::ui::utf16_len(&self.value) >= self.max_length;
         let mut cursor_x = draw_x;
         if !on_screen {
             cursor_x = if rel_cursor > 0 { tx + self.width } else { tx };
@@ -1461,5 +1472,34 @@ mod scissor_tests {
                 [0.0, 0.0, 200.0, 200.0],
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod max_length_tests {
+    use super::*;
+
+    fn atlas() -> HudAtlas {
+        HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap()
+    }
+
+    /// `EditBox.maxLength` counts Java `String.length()` (UTF-16 code units),
+    /// and the chat box is this field: ChatScreen's 256 takes 128 emoji, not
+    /// 256, and a half-fitted emoji is dropped rather than split.
+    #[test]
+    fn the_chat_box_maximum_counts_utf16_units() {
+        let atlas = atlas();
+        let m = Measure(&atlas.font);
+        let mut field = TextField::new(0, 0, 200, 20);
+        field.max_length = 3;
+        field.insert_text(&m, "ab😀");
+        assert_eq!(
+            field.value, "ab",
+            "three units: a, b and one of the emoji's"
+        );
+        field.set_value(&m, "");
+        field.max_length = 4;
+        field.insert_text(&m, "ab😀");
+        assert_eq!(field.value, "ab😀", "four units, both of the emoji's");
     }
 }
