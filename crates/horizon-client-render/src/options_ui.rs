@@ -6,6 +6,8 @@ use std::time::Instant;
 
 pub use crate::settings::Opt;
 
+#[path = "options_ui_widgets.rs"]
+mod widgets;
 use crate::{
     gamepad::{self, GlyphStyle},
     hdr_calibration::Picture,
@@ -17,6 +19,7 @@ use crate::{
     text::{self, Style, Text},
     ui,
 };
+pub(crate) use widgets::{button, inactive};
 
 #[path = "options_ui_values.rs"]
 mod values;
@@ -1292,7 +1295,7 @@ pub enum Page {
     Music,
 }
 #[derive(Clone, Debug, PartialEq)]
-enum Act {
+pub(crate) enum Act {
     None,
     Push(Page),
     Done,
@@ -1357,7 +1360,7 @@ enum WKind {
         code: String,
     },
 }
-struct Widget {
+pub(crate) struct Widget {
     x: f32,
     y: f32,
     w: f32,
@@ -1692,27 +1695,6 @@ impl Default for OptionsUi {
             wide_extras: Vec::new(),
         }
     }
-}
-fn button(x: f32, y: f32, w: f32, label: Text, act: Act) -> Widget {
-    Widget {
-        x,
-        y,
-        w,
-        h: 20.0,
-        kind: WKind::Button {
-            label,
-            active: true,
-            act,
-        },
-        list: false,
-        row: 0,
-    }
-}
-fn inactive(mut w: Widget) -> Widget {
-    if let WKind::Button { active, .. } = &mut w.kind {
-        *active = false;
-    }
-    w
 }
 fn option_widget(s: &Settings, opt: Opt, x: f32, y: f32, w: f32) -> Widget {
     // OptionsSubScreen.addContents: the narrator button is active only while
@@ -3080,13 +3062,20 @@ impl OptionsUi {
                 }
                 content = y + self.scroll - top + 2.0;
                 out[list_start..].iter_mut().for_each(|w| w.list = true);
-                out.push(button(
+                let reset_all = button(
                     cx - 154.0,
                     h - 27.0,
                     150.0,
                     tr("controls.resetAll"),
                     Act::ResetKeys,
-                ));
+                );
+                // KeyBindsScreen.extractRenderState: active only while some
+                // binding differs from its default.
+                out.push(if s.keys.changed_from_defaults() {
+                    reset_all
+                } else {
+                    inactive(reset_all)
+                });
                 out.push(button(cx + 4.0, h - 27.0, 150.0, tr("gui.done"), Act::Done));
             }
             Page::Language => {
