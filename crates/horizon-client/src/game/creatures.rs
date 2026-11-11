@@ -1390,16 +1390,10 @@ impl Game<'_> {
                 };
                 w.controlling_player_movement = controlling_player_movement;
                 ticked.insert(mobs[i].id);
-                horizon_threads::work::set_entity(horizon_threads::work::entity_id(
-                    &mobs[i].kind.id,
-                ));
-                // `horizon-report`'s cost by mob type (tick_profile.rs).
-                let sampled = super::tick_profile::start().map(|t| (t, mobs[i].kind.clone()));
+                let sampled = super::tick_profile::start_mob(&mobs[i].kind);
                 let kept =
                     horizon_client::mobs::riders::tick(&mut mobs, i, &w, &mut scratch, &mut events);
-                if let Some((started, kind)) = sampled {
-                    super::tick_profile::add(level_id, &kind, started);
-                }
+                super::tick_profile::end_mob(level_id, sampled);
                 let m = &mut mobs[i];
                 if seen_guest.is_none() {
                     base.player = w.player;

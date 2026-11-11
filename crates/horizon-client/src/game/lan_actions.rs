@@ -39,7 +39,6 @@ use horizon_world::entity_move::EntityMoveWorld;
 use winit::keyboard::KeyCode;
 
 mod horizon_channels;
-use horizon_channels::horizon_channel;
 
 #[cfg(test)]
 mod crack_feedback_tests;
@@ -2170,22 +2169,8 @@ impl Game<'_> {
         let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
             return;
         };
-        // Plugin channels a client registers in play (minecraft:register), from a dead player
-        // too; the packet goes on as before.
-        if let S::CustomPayload(p) = &packet
-            && let Some(register) = horizon_client::lan::channel_registration(&p.channel)
-        {
-            self.guest_channels(host, gi, &p.data, register);
-        }
-        // A plugin channel's message on a channel that isn't one of Horizon's own (the match below
-        // takes those) is for the mods, from a dead player too: vanilla's handleCustomPayload doesn't
-        // look at health.
-        let packet = match packet {
-            S::CustomPayload(p) if !horizon_channel(&p.channel) => {
-                self.guest_custom_payload(host, conn, p.channel, p.data);
-                return;
-            }
-            packet => packet,
+        let Some(packet) = self.guest_plugin_channels(host, conn, gi, packet) else {
+            return;
         };
         // A dead player acts no more, but the death screen still respawns and chats: its
         // commands run as anyone's (ServerGamePacketListenerImpl.handleChatCommand doesn't
@@ -6912,7 +6897,7 @@ mod guest_close_listener_tests {
 
 #[cfg(test)]
 mod horizon_channel_tests {
-    use super::horizon_channel;
+    use super::horizon_channels::horizon_channel;
 
     #[test]
     fn horizon_channels_reach_their_handlers_and_others_go_to_the_mods() {

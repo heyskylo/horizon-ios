@@ -433,6 +433,9 @@ impl Game<'_> {
         if let Some(value) = self.options_control(&words, line)? {
             return Ok(Some(value));
         }
+        if let Some(value) = self.lan_op_control(&words)? {
+            return Ok(Some(value));
+        }
         if let Some(value) = self.lan_control(&words)? {
             return Ok(Some(value));
         }

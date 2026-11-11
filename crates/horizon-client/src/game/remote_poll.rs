@@ -266,7 +266,13 @@ impl Game<'_> {
                     self.offer_reconnect(retry);
                     return Ok(());
                 }
-                Event::Packet(packet) => self.handle_packet(*packet)?,
+                Event::Packet(packet) => match *packet {
+                    // The server's answer to a `profile` request.
+                    C::CustomPayload(p) if p.channel == horizon_client::perf_net::CHANNEL => {
+                        self.remote_perf_reply(&p.data);
+                    }
+                    packet => self.handle_packet(packet)?,
+                },
             }
             chunks += started.map_or(Duration::ZERO, |t| t.elapsed());
             if self.remote.is_none() {

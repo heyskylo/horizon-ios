@@ -81,6 +81,19 @@ pub(super) fn add(dim: &'static str, kind: &MobType, started: Instant) {
     add_kind(dim, std::ptr::from_ref(kind) as usize, &kind.id, started);
 }
 
+/// A mob of type `kind` starts its tick: the CPU sampler's work, and `horizon-report`'s cost by mob type when sampled.
+pub(super) fn start_mob(kind: &MobType) -> Option<(Instant, MobType)> {
+    horizon_threads::work::set_entity(horizon_threads::work::entity_id(&kind.id));
+    start().map(|t| (t, kind.clone()))
+}
+
+/// The mob [`start_mob`] started ended its tick in level `dim`.
+pub(super) fn end_mob(dim: &'static str, sampled: Option<(Instant, MobType)>) {
+    if let Some((started, kind)) = sampled {
+        add(dim, &kind, started);
+    }
+}
+
 /// [`add`] for the type at address `key` named `id`.
 fn add_kind(dim: &'static str, key: usize, id: &str, started: Instant) {
     let nanos = started.elapsed().as_nanos() as u64;

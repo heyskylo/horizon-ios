@@ -3327,10 +3327,6 @@ impl Game<'_> {
             C::CustomPayload(p) if p.channel == horizon_protocol::mod_net::CHANNEL => {
                 self.remote_native_net(&p.data);
             }
-            // The server's answer to a `profile` request.
-            C::CustomPayload(p) if p.channel == horizon_client::perf_net::CHANNEL => {
-                self.remote_perf_reply(&p.data);
-            }
             // The synced attachments of a holder the server shows the window.
             C::CustomPayload(p) if p.channel == horizon_protocol::attachment_sync::CHANNEL => {
                 self.remote_attachment_sync(&p.data);

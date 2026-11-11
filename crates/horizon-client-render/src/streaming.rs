@@ -28,37 +28,7 @@ pub const IDLE_RELEASE: std::time::Duration = std::time::Duration::from_secs(5);
 /// Worker CPU time and job counts by kind, for benchmarks
 /// (`examples/gen_light_bench.rs`). Off unless enabled: a relaxed load per
 /// job then.
-pub mod job_stats {
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    pub const KINDS: [&str; 7] = [
-        "load", "generate", "decorate", "finish", "light", "mesh", "other",
-    ];
-    static ENABLED: AtomicBool = AtomicBool::new(false);
-    static NANOS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
-    static COUNT: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
-    pub fn enable(on: bool) {
-        ENABLED.store(on, Ordering::Relaxed);
-    }
-    pub(super) fn enabled() -> bool {
-        ENABLED.load(Ordering::Relaxed)
-    }
-    pub(super) fn add(kind: usize, nanos: u64) {
-        NANOS[kind].fetch_add(nanos, Ordering::Relaxed);
-        COUNT[kind].fetch_add(1, Ordering::Relaxed);
-    }
-    /// (kind, nanoseconds, count) since the last call; resets them.
-    pub fn take() -> Vec<(&'static str, u64, u64)> {
-        (0..KINDS.len())
-            .map(|i| {
-                (
-                    KINDS[i],
-                    NANOS[i].swap(0, Ordering::Relaxed),
-                    COUNT[i].swap(0, Ordering::Relaxed),
-                )
-            })
-            .collect()
-    }
-}
+pub mod job_stats;
 /// A chunk under generation, opaque to the streamer.
 pub type Proto = Box<dyn std::any::Any + Send>;
 /// Chunk generation in vanilla's stages: a neighbour-independent proto chunk
@@ -448,14 +418,6 @@ impl Mailbox {
             .unwrap();
         done.pop_front()
     }
-}
-/// What the streamer's work queues hold, each as (entries, estimated bytes).
-#[derive(Debug, Default)]
-pub struct QueueCensus {
-    /// Jobs queued and chunks generating.
-    pub generation: (usize, usize),
-    /// Chunks being lit and the edit log their jobs replay.
-    pub light: (usize, usize),
 }
 /// [`Streaming::proto_census`].
 #[derive(Debug, Default)]
@@ -1078,6 +1040,8 @@ pub struct WorkerContext {
     pub light: Arc<LightTables>,
 }
 mod bounded;
+mod queue_census;
+pub use queue_census::QueueCensus;
 mod forced_cover;
 mod relight_now;
 use bounded::nearest_first;
@@ -1669,31 +1633,6 @@ impl Streaming {
         census.light_view_bytes = self.light_views.values().map(|v| v.heap_bytes()).sum();
         census.caches = (self.caches)();
         census
-    }
-    /// The queues' lengths and the bytes of their tables, from capacities. For `horizon-ctl memory`.
-    pub fn queue_census(&self) -> QueueCensus {
-        use std::mem::size_of;
-        let table = |capacity: usize, entry: usize| capacity * (entry + 1);
-        let queued = {
-            let queue = self.shared.queue.lock().unwrap();
-            (queue.len(), queue.capacity() * size_of::<Queued>())
-        };
-        QueueCensus {
-            generation: (
-                queued.0 + self.generating.len(),
-                queued.1 + table(self.generating.capacity(), size_of::<(i32, i32)>()),
-            ),
-            light: (
-                self.lighting.len(),
-                table(self.lighting.capacity(), size_of::<((i32, i32), u64)>())
-                    + table(
-                        self.light_snapshots.capacity(),
-                        size_of::<((i32, i32), u64)>(),
-                    )
-                    + self.light_log.capacity() * size_of::<(u64, (i32, i32, i32))>()
-                    + self.light_scratch.capacity() * size_of::<(i64, i32, i32)>(),
-            ),
-        }
     }
     /// How much work each stage holds: queued jobs, then what is in flight or
     /// waiting at each step from generation to meshing.

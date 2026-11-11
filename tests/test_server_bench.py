@@ -132,8 +132,8 @@ class FakeServer:
             raise RuntimeError(f'no {pattern!r} within {timeout} s')
 
 
-SAVED_LINE = ('[10:02:11] [Server thread/INFO]: Horizon: Saved reports/profile-20261108-100211Z.hzperf. '
-              'Open it at https://playhorizon.dev/perf (the file stays on your computer)')
+SAVED_LINE = ('[10:02:11] [Server thread/INFO]: Horizon: Saved reports/profile-20261108-100211Z.hzperf '
+              '(the file stays on your computer)')
 
 
 class ServerBenchProfileTests(unittest.TestCase):

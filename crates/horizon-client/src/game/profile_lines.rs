@@ -1,6 +1,6 @@
 //! What `/profiler` says: a chat line when there is a next step, an action bar notice for progress.
 use horizon_client::client_perf::request::ProfileSide;
-use horizon_client::hud::MARK_SPRITE;
+use horizon_client::mark_sprite::SPRITE as MARK_SPRITE;
 use horizon_client::text::{
     ClickEvent, DARK_GRAY, GOLD, GRAY, InlineObject, RED, Style, Text, WHITE, YELLOW,
 };

@@ -283,10 +283,6 @@ pub fn decode_image_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     }
 }
 
-/// Horizon's mark (`docs/media/brand/mark-dark.svg`) on the text grid, for an inline text sprite.
-pub const MARK_SPRITE: &str = "horizon:gui/mark";
-const MARK_PNG: &[u8] = include_bytes!("../../horizon-client/assets/horizon/textures/gui/mark.png");
-
 /// A PNG in memory as RGBA pixels.
 pub fn decode_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
@@ -1423,16 +1419,12 @@ impl HudAtlas {
             edition.3 = pixels;
         }
         images.push(("horizon/white".into(), 4, 4, vec![255; 64]));
-        // The controller's art, unless a pack brought its own (walked above, as a mod's GUI
-        // textures are).
-        for image in crate::pad_glyph::images() {
+        // The controller's art and Horizon's mark, unless a pack brought its own (walked above, as a
+        // mod's GUI textures are).
+        for image in crate::pad_glyph::images().chain(crate::mark_sprite::image()) {
             if !images.iter().any(|i| i.0 == image.0) {
                 images.push(image);
             }
-        }
-        if !images.iter().any(|i| i.0 == MARK_SPRITE) {
-            let (width, height, rgba) = decode_bytes(MARK_PNG)?;
-            images.push((MARK_SPRITE.into(), width, height, rgba));
         }
         if full {
             // Official Recipes artwork from Just Enough Items, under MIT.

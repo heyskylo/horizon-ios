@@ -217,6 +217,7 @@ mod lan_far;
 mod lan_idle;
 mod lan_mobs;
 mod lan_mount_menu;
+mod lan_op;
 mod lan_particles;
 mod lan_pvp;
 mod lan_quiet;
