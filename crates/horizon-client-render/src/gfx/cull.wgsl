@@ -34,11 +34,21 @@ struct Test {
 @group(0) @binding(5) var<uniform> params: Params;
 
 // The corners (bit 0: x, bit 1: y, bit 2: z) of the box's 12 triangles,
-// counter-clockwise seen from outside.
-const CORNERS = array<u32, 36>(
-    0u, 6u, 2u, 0u, 4u, 6u, 1u, 3u, 7u, 1u, 7u, 5u, 0u, 1u, 5u, 0u, 5u, 4u,
-    2u, 7u, 3u, 2u, 6u, 7u, 0u, 3u, 1u, 0u, 2u, 3u, 4u, 5u, 7u, 4u, 7u, 6u,
-);
+// counter-clockwise seen from outside: 0 6 2, 0 4 6, 1 3 7, 1 7 5, 0 1 5, 0 5 4,
+// 2 7 3, 2 6 7, 0 3 1, 0 2 3, 4 5 7, 4 7 6.
+// Packed four bits each, eight a word, read through a switch: a constant array indexed by the
+// vertex would be a private array, which Adreno's Vulkan compiler (build 0676.41) fails to link.
+fn box_triangle_corner(v: u32) -> u32 {
+    var word: u32;
+    switch v / 8u {
+        case 0u: { word = 0x31640260u; }
+        case 1u: { word = 0x05105717u; }
+        case 2u: { word = 0x76237245u; }
+        case 3u: { word = 0x54320130u; }
+        default: { word = 0x00006747u; }
+    }
+    return (word >> (v % 8u * 4u)) & 0xfu;
+}
 
 struct Box {
     @builtin(position) position: vec4<f32>,
@@ -95,7 +105,7 @@ fn vs_box(@builtin(vertex_index) v: u32, @builtin(instance_index) t: u32) -> Box
         out.position = select(vec4(0.0, 0.0, 0.0, 1.0), vec4(p, 1.0, 1.0), v < 3u);
         return out;
     }
-    out.position = globals.view_proj * vec4(corner(origin, low, high, CORNERS[v]), 1.0);
+    out.position = globals.view_proj * vec4(corner(origin, low, high, box_triangle_corner(v)), 1.0);
     return out;
 }
 

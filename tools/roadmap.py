@@ -2,8 +2,8 @@
 """Horizon's roadmap: roadmap/roadmap.toml is the source, ROADMAP.md is generated from it.
 
     python3 tools/roadmap.py build              write ROADMAP.md and roadmap/roadmap.json
-    python3 tools/roadmap.py build --check      fail when either is out of date (CI)
-    python3 tools/roadmap.py check --offline    the file's own rules (CI)
+    python3 tools/roadmap.py build --check      fail when either is out of date (the Python tests do this)
+    python3 tools/roadmap.py check --offline    the file's own rules (the Python tests do this)
     python3 tools/roadmap.py check              the same, then GitHub: links resolve, no stale Now item
     python3 tools/roadmap.py sync [--dry-run]   items whose pull requests all merged become shipped,
                                                 with the release they went out in

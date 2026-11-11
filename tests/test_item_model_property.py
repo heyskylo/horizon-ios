@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import unittest
 
-from tests.test_world_input_capture import method
+from test_world_input_capture import method
 
 ROOT = Path(__file__).resolve().parents[1]
 
