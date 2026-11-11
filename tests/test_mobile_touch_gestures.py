@@ -14,7 +14,7 @@ class NativeGestureDispatchTests(unittest.TestCase):
         if not shutil.which("rustc"):
             self.skipTest("rustc required")
         source = (ROOT / "crates/horizon-client/src/game/touch.rs").read_text()
-        methods = "\n".join(method(source, name) for name in ["touch_native_reset", "touch_native_input", "touch_native_frame"])
+        methods = "\n".join(method(source, name) for name in ["touch_menu_cursor_mode", "touch_native_reset", "touch_native_input", "touch_native_frame"])
         key = method(source, "gesture_key") + method(source, "gesture_modifiers")
         start = source.index("struct ClickContext {")
         context = "#[derive(Clone,Debug,PartialEq)]" + source[start:source.index("\n}", start) + 2]
@@ -24,7 +24,7 @@ extern crate self as log;
 #[macro_export]macro_rules! warn {($($arg:tt)*)=>{()}}
 #[path="TOUCH_SOURCE"]mod actual;
 // The player's cursor-mode setting comes from the iOS launcher; the test chooses it.
-mod touch{pub use crate::actual::*;pub static CURSOR:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
+mod touch{pub use crate::actual::*;pub static GESTURES:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(true);pub fn mouse_gestures()->bool{GESTURES.load(std::sync::atomic::Ordering::Relaxed)}pub static CURSOR:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
  pub fn cursor_mode()->bool{CURSOR.load(std::sync::atomic::Ordering::Relaxed)}}
 use touch::desktop::Physical;
 mod winit{pub mod keyboard{
@@ -50,7 +50,7 @@ mod horizon_ios_launcher{
 CONTEXT
 #[derive(Default)]struct Input{click_contexts:Vec<(u64,ClickContext)>,cursor_delivery:Option<ClickContext>,native_pending:Vec<(Physical,f64,u64)>,native_keys:Vec<KeyCode>,native_mouse:[bool;2],native_screen:Option<u64>,cursor_screen:Option<u64>}
 /// `seen` is the (modifiers, pointer) each mouse edge was delivered with.
-#[derive(Default)]struct Game{touch:Input,key:u64,frames:u64,time:f64,playing:bool,events:Vec<Event>,modifiers:winit::keyboard::ModifiersState,seen:Vec<(u32,Option<(f32,f32)>)>}
+#[derive(Default)]struct Game{player:Option<()>,title:Option<()>,touch:Input,key:u64,frames:u64,time:f64,playing:bool,events:Vec<Event>,modifiers:winit::keyboard::ModifiersState,seen:Vec<(u32,Option<(f32,f32)>)>}
 struct Batch{width:f32,height:f32,scale:f32}
 KEY
 impl Game{
@@ -101,11 +101,15 @@ fn main(){
  let mut g=Game::default();let c=g.context((300.,150.),Some((7,(40.,40.))));g.touch.click_contexts.push((9,c));
  // Direct mode: the tap clicks under the finger.
  g.tap((50.,30.),9,0,7);assert_eq!(g.seen[0].1,Some((50.,30.)));g.seen.clear();
- touch::CURSOR.store(true,std::sync::atomic::Ordering::Relaxed);
+ g.player=Some(());touch::CURSOR.store(true,std::sync::atomic::Ordering::Relaxed);
  g.tap((50.,30.),9,0,7);assert_eq!(g.seen[0].1,Some((310.,140.)));
  g.tap((5000.,30.),9,0,7);assert_eq!(g.seen[1].1,Some((600.,140.)));
  // Another finger's tap clicks where the cursor was, unmoved.
  g.tap((50.,30.),9,0,8);assert_eq!(g.seen[2].1,Some((300.,150.)));
+ // The same saved virtual-mouse preference must not redirect title-screen taps.
+ touch::GESTURES.store(false,std::sync::atomic::Ordering::Relaxed);
+ g.title=Some(());g.tap((50.,30.),9,0,7);assert_eq!(g.seen.last().unwrap().1,Some((50.,30.)));
+ g.title=None;g.player=None;g.tap((70.,45.),9,0,7);assert_eq!(g.seen.last().unwrap().1,Some((70.,45.)));
  // A tap whose context is no longer known is dropped rather than clicking at today's cursor.
  let before=g.events.len();g.tap((50.,30.),4242,0,7);assert_eq!(g.events.len(),before);
 }

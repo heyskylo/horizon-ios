@@ -79,6 +79,22 @@ struct HomeView: View {
         .background(Theme.background.ignoresSafeArea())
         .tint(Theme.accent)
         .sheet(isPresented: $showingAccount) { accountSheet }
+        .sheet(isPresented: $link.requestingGameFiles) {
+            GameFilesRecovery(download: download, version: link.version,
+                              signedIn: account.profile != nil,
+                              configureManually: {
+                                  tab = .settings
+                                  link.requestingGameFiles = false
+                              })
+        }
+        .onChange(of: download.state) { state in
+            if case .done = state {
+                Task {
+                    await link.refresh()
+                    if GameFolder.hasGameFiles { link.requestingGameFiles = false }
+                }
+            }
+        }
         .alert("Something went wrong", isPresented: Binding(
             get: { link.problem != nil }, set: { if !$0 { link.problem = nil } }
         )) { Button("OK", role: .cancel) {} } message: { Text(link.problem ?? "") }
@@ -167,7 +183,10 @@ struct HomeView: View {
     private var home: some View {
         VStack(alignment: .leading, spacing: 28) {
             launchPanel
-            if needsFiles { GameFilesCard(download: download, missing: true) }
+            if needsFiles {
+                GameFilesCard(download: download, missing: true,
+                              setupHelp: { link.requestingGameFiles = true })
+            }
         }
     }
 
@@ -204,12 +223,24 @@ struct HomeView: View {
                 .controlSize(.large)
                 .launcherPrimaryButton()
                 .tint(Theme.accent)
-                .disabled(needsFiles || download.busy || link.launching != nil)
+                .disabled((download.busy && !needsFiles) || link.launching != nil)
                 .accessibilityIdentifier("launcher-play-button")
                 if link.launching != nil {
                     Button("Cancel") { link.cancelLaunch() }.foregroundStyle(.white).frame(minHeight: 44)
                 }
                 Spacer(minLength: 0)
+            }
+            if needsFiles, download.automaticFailure != nil {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Automatic file download failed.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Tap the game setup button above for help, or open Settings → Game files to configure your own files.")
+                        .font(.caption)
+                    Button("Show error and setup options") { link.requestingGameFiles = true }
+                        .font(.caption.weight(.semibold)).underline()
+                }
+                .foregroundStyle(.white)
+                .accessibilityIdentifier("launcher-automatic-download-error")
             }
             if case let .loading(progress) = link.phase {
                 ProgressView(value: progress).tint(.white).accessibilityLabel("Loading game")

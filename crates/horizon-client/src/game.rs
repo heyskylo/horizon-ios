@@ -5935,6 +5935,9 @@ impl Game<'_> {
         self.frame_graph
             .draw(self.settings.horizon.overlay, &mut batch, &self.gui.atlas);
         self.draw_pad_over_hud(&mut batch);
+        // Finalize touch input after every screen, including title/options early
+        // returns and prompts. Queued clicks require this drawn-pointer acknowledgement.
+        self.draw_touch_close(&mut batch);
         batch
     }
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
@@ -6372,7 +6375,6 @@ impl Game<'_> {
             self.remote_hud(&mut batch);
             self.draw_sign_editor(&mut batch);
             self.draw_book(&mut batch);
-            self.draw_touch_close(&mut batch);
         }
         if let Some((overlay, at)) = &mut self.loading_overlay {
             overlay.done(at.elapsed().as_secs_f32());

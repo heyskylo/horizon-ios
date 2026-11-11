@@ -10,12 +10,18 @@ class VirtualCursorTests(unittest.TestCase):
  def test_menu_drag_buttons_screen_change_and_cancel(self):
   if not shutil.which('rustc'): self.skipTest('requires Rust')
   code=(ROOT/'crates/horizon-client/src/game/touch.rs').read_text()
-  methods='\n'.join(method(code,n) for n in ['visible_touch_layout','touch_click_context','touch_record_click_context','touch_cursor_flush','touch_cursor_reset','touch_cursor_motion','touch_cursor_event','touch_cursor_frame','touch_queue_cursor_button'])
+  methods='\n'.join(method(code,n) for n in ['touch_menu_cursor_mode','visible_touch_layout','touch_click_context','touch_record_click_context','touch_cursor_flush','touch_cursor_reset','touch_cursor_motion','touch_cursor_event','touch_cursor_frame','touch_queue_cursor_button'])
   window=(ROOT/'crates/horizon-client/src/game/window_handler.rs').read_text()
   a=window.index('        if let WindowEvent::MouseInput { state, button, .. } = &event {')
   b=window.index('        let mouse =',a)
   ledger=window[a:b]
   methods += method((ROOT/'crates/horizon-client/src/game/hud_editor.rs').read_text(),'hud_editor_release')
+  hud = method((ROOT/'crates/horizon-client/src/game.rs').read_text(), 'hud')
+  # Execute the production final composition wrapper, with unrelated renderers stubbed.
+  # Its touch overlay acknowledgement drives the real deferred click dispatcher below.
+  methods += hud
+  acknowledgement = code[code.index('            self.touch.cursor_drawn = Some('):].split('\n', 1)[0]
+  acknowledgement = acknowledgement.replace('self.cursor', 'self.point')
   types='#[derive(Clone,Debug,PartialEq)]'+struct(code,'ClickContext')+struct(code,'CursorEdge')
   fixture=r'''
 #![allow(dead_code)]
@@ -23,7 +29,7 @@ class VirtualCursorTests(unittest.TestCase):
 mod touch {pub use crate::actual::{layout,desktop,Rect}; pub fn cursor_mode()->bool{true}}
 mod winit{pub mod keyboard{#[derive(Clone,Copy,Debug,Default,PartialEq)]pub struct ModifiersState(pub u8);}}
 // What is under a point: the test moves widgets by changing WIDGET, as a redraw would.
-mod horizon_client{pub mod widgets{
+mod horizon_client{pub mod hud_kit{pub mod room{pub use crate::Room;}} pub mod widgets{
  use std::sync::atomic::{AtomicU32,Ordering};
  pub static WIDGET:AtomicU32=AtomicU32::new(0);
  #[derive(Clone,Debug,PartialEq)]pub struct PointerGuard(u32);
@@ -44,20 +50,43 @@ KEY_OF
 enum WindowEvent{MouseInput{state:ElementState,button:MouseButton},Other}
 #[derive(Default)]struct Editor{drag:Option<()>,guides:(Option<f32>,Option<f32>)}
 #[derive(Default)]struct Pvp{editor:Option<Editor>}
-#[derive(Default)]struct Settings{saved:std::cell::Cell<usize>}
+#[derive(Default)]struct Settings{horizon:Horizon,saved:std::cell::Cell<usize>}
 impl Settings{fn save(&self,_:&str){self.saved.set(self.saved.get()+1);}}
 trait EventLoopCtl{} struct Loop;impl EventLoopCtl for Loop{}
 struct Batch{width:f32,height:f32}
+type HudBatch=Batch;
+impl Batch{fn new(size:[u32;2])->Self{Self{width:size[0] as f32,height:size[1] as f32}}}
+#[derive(Default)]pub struct Room;
+impl Room{fn new(_:f32,_:f32)->Self{Self}}
+#[derive(Default)]struct Ui{room:Room}
+#[derive(Default)]struct Packs{prompt:Option<()>}
+#[derive(Default)]struct Gui{atlas:()}
+#[derive(Default)]struct Graph;
+impl Graph{fn draw(&self,_:(),_:&mut Batch,_:&()){}}
+#[derive(Default)]struct Horizon{overlay:()}
+
 TYPES
 #[derive(Default)]struct Input{more:bool,hidden:bool,cursor:actual::desktop::Cursor,cursor_screen:Option<u64>,cursor_pending:Vec<CursorEdge>,fingers:actual::Touches,
  cursor_down:[bool;3],cursor_cancelled:[bool;3],cursor_delivery:Option<ClickContext>,cursor_drawn:Option<(u64,(f32,f32))>,
  click_contexts:Vec<(u64,ClickContext)>,native_surface:Option<(u64,(f32,f32))>,cursor_keys:Vec<Control>}
 /// `clicks` records (right, down, pointer, modifiers) as the screen receives each mouse edge.
-#[derive(Default)]struct Game{pvp:Pvp,settings:Settings,touch:Input,frames:u64,key:u64,point:(f32,f32),clicks:Vec<(bool,bool,(f32,f32),u8)>,switch_on_down:bool,
+#[derive(Default)]struct Game{title:Option<()>,ui:Ui,server_packs:Packs,code_of_conduct:Option<()>,command_prompt:Option<()>,player:Option<()>,gui:Gui,frame_graph:Graph,rendered:usize,pvp:Pvp,settings:Settings,touch:Input,frames:u64,key:u64,point:(f32,f32),clicks:Vec<(bool,bool,(f32,f32),u8)>,switch_on_down:bool,
  keys:Vec<(KeyCode,bool)>,modifiers:winit::keyboard::ModifiersState,physical_buttons:std::collections::HashSet<MouseButton>,size:(f32,f32)}
 impl Game{
+ fn advance_skin_frame(&mut self){}
+ fn dialog_open(&self)->bool{false}
+ fn hud_layers(&mut self,size:[u32;2])->Batch{Batch::new(size)}
+ fn draw_dialog(&mut self,_:&mut Batch){}
+ fn draw_pack_prompt(&mut self,_:&mut Batch){}
+ fn draw_code_of_conduct(&mut self,_:&mut Batch){}
+ fn draw_link_prompt(&mut self,_:&mut Batch){}
+ fn draw_command_prompt(&mut self,_:&mut Batch){}
+ fn draw_narrator_toast(&mut self,_:&mut Batch){}
+ fn draw_debug_overlay(&mut self,_:&mut Batch,_:[u32;2]){}
+ fn draw_pad_over_hud(&mut self,_:&mut Batch){}
+ fn draw_touch_close(&mut self,_:&mut Batch){ACKNOWLEDGEMENT self.rendered+=1;}
  fn options_path()->&'static str{"unused-test-path"}
- fn new()->Self{Game{size:(512.,300.),..Default::default()}}
+ fn new()->Self{Game{player:Some(()),size:(512.,300.),..Default::default()}}
  fn touch_raw_key(&mut self,key:KeyCode,down:bool)->Result<(),()>{self.keys.push((key,down));Ok(())}
  fn touch_now(&mut self)->f64{self.frames as f64/60.0}
  fn key_screen(&self)->u64{self.key}
@@ -72,13 +101,36 @@ LEDGER
   self.clicks.push((b==MouseButton::Right,down,self.point,self.modifiers.0));if down&&self.switch_on_down{self.key+=1;}}
  fn input(&mut self,id:u64,phase:TouchPhase,at:(f32,f32)){let size=self.size;self.touch_cursor_event(&Loop,id,phase,at,size);}
  /// One rendered frame: the screen is drawn with the pointer where it is, then input runs.
- fn frame(&mut self){self.touch.cursor_drawn=Some((self.key,self.point));self.frames+=1;self.touch_cursor_frame(&Loop,false);}
+ fn frame(&mut self){self.hud([self.size.0 as u32,self.size.1 as u32]);self.frames+=1;self.touch_cursor_frame(&Loop,false);}
  fn edges(&self)->Vec<(bool,bool)>{self.clicks.iter().map(|c|(c.0,c.1)).collect()}
 METHODS
 }
 fn main(){
  use horizon_client::widgets::WIDGET;use std::sync::atomic::Ordering::Relaxed;
  let layout=actual::layout(512.,300.);let centre=|c|{let r=layout.iter().find(|(b,_)|*b==c).unwrap().1;(r[0]+r[2]/2.,r[1]+r[3]/2.)};
+ assert!(!layout.iter().any(|(c,_)|*c==Control::Runtime));
+ // Every screen reaches the final overlay, even when layers were replaced by a prompt.
+ for prompt in [false,true] {
+  let mut g=Game::new();g.server_packs.prompt=prompt.then_some(());
+  g.input(1,TouchPhase::Started,centre(Control::LeftClick));g.frame();g.frame();
+  assert_eq!(g.rendered,2);assert!(g.edges().contains(&(false,true)));
+ }
+ // Title/disconnected screens have no overlay hitboxes and use direct touch.
+ for title in [None,Some(())] {
+  let mut g=Game::new();g.player=None;g.title=title;g.touch.more=true;
+  assert!(g.visible_touch_layout(512.,300.).is_empty());assert!(!g.touch_menu_cursor_mode());
+  g.input(1,TouchPhase::Started,centre(Control::Forward));
+  assert_eq!(g.point,centre(Control::Forward));
+  g.input(1,TouchPhase::Ended,centre(Control::Forward));g.frame();g.frame();
+  assert!(g.keys.is_empty());
+  g.touch.hidden=true;assert!(g.visible_touch_layout(512.,300.).is_empty());
+ }
+ // Returning to the title hides controls even if player teardown is not finished.
+ let mut title=Game::new();title.title=Some(());
+ assert!(!title.visible_touch_layout(512.,300.).iter().any(|(c,_)|*c==Control::Forward));
+ // World controls are restored without changing the saved layout.
+ title.title=None;
+ assert!(title.visible_touch_layout(512.,300.).iter().any(|(c,_)|*c==Control::Forward));
  // A surface finger drags the cursor relatively, from the middle of the screen.
  let mut g=Game::new();g.input(1,TouchPhase::Started,(200.,100.));g.input(1,TouchPhase::Moved,(220.,110.));assert_eq!(g.point,(276.,160.));assert!(g.clicks.is_empty());
  // A tap on the button is a press on one drawn frame and a release on the next, both at the cursor.
@@ -146,7 +198,7 @@ fn main(){
  g.frame();assert!(g.clicks.is_empty());g.frame();assert_eq!(g.edges(),[(false,true),(false,false)]);assert!(g.touch.cursor_pending.is_empty());
  g.switch_on_down=false;for _ in 0..3{g.frame();}assert_eq!(g.clicks.len(),2);assert!(g.physical_buttons.is_empty());
 }
-'''.replace('SOURCE',str(ROOT/'crates/horizon-client/src/touch.rs')).replace('METHODS',methods).replace('KEY_OF',method(code,'key_of')).replace('TYPES',types).replace('LEDGER',ledger)
+'''.replace('SOURCE',str(ROOT/'crates/horizon-client/src/touch.rs')).replace('METHODS',methods).replace('KEY_OF',method(code,'key_of')).replace('TYPES',types).replace('LEDGER',ledger).replace('ACKNOWLEDGEMENT',acknowledgement)
   with tempfile.TemporaryDirectory(prefix='horizon-virtual-cursor-') as d:
    p=Path(d);(p/'probe.rs').write_text(fixture)
    b=subprocess.run(['rustc','--edition=2024',str(p/'probe.rs'),'-o',str(p/'probe')],capture_output=True,text=True,cwd=p);self.assertEqual(b.returncode,0,b.stdout+b.stderr)

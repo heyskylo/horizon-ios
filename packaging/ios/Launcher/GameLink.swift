@@ -86,6 +86,7 @@ final class GameLink: ObservableObject {
     @Published private(set) var serverRound = 0
     @Published private(set) var version = "26.3"
     /// What the Play button says while it waits for the game to be ready to take it somewhere.
+    @Published var requestingGameFiles = false
     @Published private(set) var launching: String?
     /// The last thing that went wrong, for an alert.
     @Published var problem: String?
@@ -209,6 +210,16 @@ final class GameLink: ObservableObject {
 
     private func beginLaunch(_ label: String) -> LaunchAttempt? {
         guard launching == nil else { return nil }
+        // Every entry point (Play, world creation/opening and joining a server)
+        // offers setup before starting an engine with missing resources.
+        if case .needsFiles = phase {
+            requestingGameFiles = true
+            return nil
+        }
+        if phase == .waiting && !GameFolder.hasGameFiles {
+            requestingGameFiles = true
+            return nil
+        }
         let attempt = LaunchAttempt()
         currentLaunch = attempt
         phaseEpoch = UUID()

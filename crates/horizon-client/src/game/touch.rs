@@ -1021,7 +1021,7 @@ impl Game<'_> {
                 .cursor
                 .position
                 .unwrap_or((batch.width / 2.0, batch.height / 2.0));
-            for y in 0..if touch::cursor_mode() { 9 } else { 0 } {
+            for y in 0..if self.touch_menu_cursor_mode() { 9 } else { 0 } {
                 batch.fill(
                     &self.gui.atlas,
                     at.0,
@@ -1305,7 +1305,9 @@ impl Game<'_> {
             TouchPhase::Ended => 2,
             TouchPhase::Cancelled => 3,
         };
-        self.touch.cursor.set_virtual_mouse(touch::cursor_mode());
+        self.touch
+            .cursor
+            .set_virtual_mouse(self.touch_menu_cursor_mode());
         let events = self
             .touch
             .cursor
@@ -1620,7 +1622,10 @@ impl Game<'_> {
             return;
         };
         let blocked = horizon_ios_launcher::covered();
-        let flags = u32::from(self.touch_playing()) | if blocked { 2 } else { 0 };
+        let no_world = self.player.is_none() || self.title.is_some();
+        let flags = u32::from(self.touch_playing())
+            | if blocked { 2 } else { 0 }
+            | if no_world { 8 } else { 0 };
         self.touch_record_click_context();
         let events = horizon_ios_launcher::touch_gestures(
             screen,
@@ -1656,7 +1661,7 @@ impl Game<'_> {
             let context = context.map(|mut context| {
                 context.modifiers = gesture_modifiers(event.modifiers);
                 if event.kind == 1 {
-                    if !touch::cursor_mode() {
+                    if !self.touch_menu_cursor_mode() {
                         context.at = (event.point.0 as f32, event.point.1 as f32);
                     } else if let Some((id, at)) = context.surface
                         && id == event.touch
@@ -1680,7 +1685,9 @@ impl Game<'_> {
                 slot: event.slot,
                 point: event.point,
             };
-            for (delay, input) in recognized.inputs(self.touch_playing(), touch::mouse_gestures()) {
+            for (delay, input) in
+                recognized.inputs(self.touch_playing(), no_world || touch::mouse_gestures())
+            {
                 if delay == 0.0 {
                     let old_modifiers = self.modifiers;
                     let old_context = self.touch.cursor_delivery.clone();
@@ -1704,10 +1711,21 @@ impl Game<'_> {
 }
 
 impl Game<'_> {
+    // Title-screen taps must target the visible button directly, even when the
+    // player's in-world menus use a virtual pointer with separate click buttons.
+    fn touch_menu_cursor_mode(&self) -> bool {
+        self.player.is_some() && self.title.is_none() && touch::cursor_mode()
+    }
+
     fn visible_touch_layout(&self, w: f32, h: f32) -> Vec<(Control, touch::Rect)> {
         touch::layout(w, h)
             .into_iter()
             .filter(|(c, _)| {
+                // No controller overlay outside a world, including stale player
+                // state while returning to the title. Painting and hit tests agree.
+                if self.player.is_none() || self.title.is_some() {
+                    return false;
+                }
                 if self.touch.hidden {
                     matches!(c, Control::Hide | Control::Hotbar(_))
                 } else {

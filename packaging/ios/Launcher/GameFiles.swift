@@ -1,6 +1,7 @@
 import Security
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// Prepared game files downloaded automatically on first launch, or imported from a custom link.
 /// Both routes use the game's checked importer. Raw Java assets are prepared on a computer.
@@ -44,6 +45,13 @@ final class GameFilesDownload: NSObject, ObservableObject {
         case .downloading, .installing: return true
         default: return false
         }
+    }
+
+    /// Only automatic setup failures belong in the Play panel. Custom-link and
+    /// local-file errors remain in their own setup UI.
+    var automaticFailure: String? {
+        guard resourcesOnly, case let .failed(message) = state else { return nil }
+        return message
     }
 
     /// Where a finished download waits for the importer; it consumes the file.
@@ -100,6 +108,42 @@ final class GameFilesDownload: NSObject, ObservableObject {
         }
         // A custom link's token belongs only to that link, never the public source.
         begin(url: url, token: nil)
+    }
+
+    /// Import through the same resource-only validator as automatic setup.
+    func importPreparedFile(_ url: URL) async {
+        guard !busy else { return }
+        resourcesOnly = false
+        attempt = UUID()
+        let generation = attempt
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let local = Self.destination
+        defer { try? FileManager.default.removeItem(at: local) }
+        state = .installing
+        do {
+            // Files providers may need to hydrate a large ZIP. Keep that I/O off
+            // the main actor, and reject oversized files before duplicating them.
+            try await Task.detached(priority: .utility) {
+                var source = url
+                source.removeAllCachedResourceValues()
+                let values = try source.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+                guard values.isRegularFile == true,
+                      let size = values.fileSize, Int64(size) <= Self.maximumArchiveBytes else {
+                    throw CocoaError(.fileReadTooLarge)
+                }
+                try FileManager.default.copyItem(at: url, to: local)
+            }.value
+            guard generation == attempt, !Task.isCancelled else { return }
+            let answer = await importArchive("import-game-files \(local.path)")
+            guard generation == attempt else { return }
+            if let error = answer.error { state = .failed(error); Haptics.failed() }
+            else { state = .done(Self.describe(answer)); Haptics.done() }
+        } catch {
+            guard generation == attempt, !Task.isCancelled else { return }
+            state = .failed(error.localizedDescription)
+            Haptics.failed()
+        }
     }
 
     private func begin(url: URL, token: String?) {
@@ -285,6 +329,7 @@ struct GameFilesCard: View {
     @ObservedObject var download: GameFilesDownload
     /// The game has none yet: say so first.
     var missing: Bool
+    var setupHelp: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -299,6 +344,10 @@ struct GameFilesCard: View {
                     .font(Theme.sans(12)).foregroundStyle(Theme.textMuted)
             }
             progress
+            if missing, let setupHelp {
+                Button("Other ways to get game files", action: setupHelp)
+                    .accessibilityIdentifier("launcher-game-files-help")
+            }
 
             if download.busy {
                 SecondaryButton(title: "Cancel", action: download.cancel)
@@ -370,5 +419,83 @@ struct GameFilesCard: View {
 
     private static func size(_ bytes: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+}
+
+
+/// Recovery appears on an explicit play/setup request, never over background setup.
+struct GameFilesRecovery: View {
+    @ObservedObject var download: GameFilesDownload
+    let version: String
+    let signedIn: Bool
+    var configureManually: (() -> Void)? = nil
+    @State private var choosingFile = false
+    @State private var fileIssue: String?
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    if case let .failed(message) = download.state {
+                        Text(download.automaticFailure != nil ? "Automatic file download failed." : "Game-file setup failed.")
+                            .font(.headline)
+                        Text(message).foregroundStyle(.secondary).textSelection(.enabled)
+                        Text("You can retry, or go to Settings → Game files to configure your own files manually.")
+                    } else if download.busy {
+                        Text("Game files are being set up. You can play when installation finishes.")
+                    } else {
+                        Text("Horizon needs Minecraft game files before you can play, open a world or join a server.")
+                    }
+                    Text("You can retry automatic setup below, or prepare and transfer the files from a computer.")
+                }
+                Section("Download from Mojang with Microsoft") {
+                    Text(signedIn
+                         ? "Your Microsoft account is signed in here. To prepare game files, also sign in to the Horizon desktop launcher with an account that owns Minecraft: Java Edition."
+                         : "On a computer, sign in to the Horizon desktop launcher with a Microsoft account that owns Minecraft: Java Edition.")
+                    Text("Choose Download and prepare for Minecraft \(version). The desktop launcher downloads from Mojang and prepares the files for Horizon.")
+                    Text("Signing in on this iPad alone does not download or prepare these files yet. Transfer the prepared files using the steps below.")
+                        .foregroundStyle(.secondary)
+                    Link("Get the Horizon desktop launcher", destination: URL(string: "https://github.com/horizon-rust/horizon/releases")!)
+                }
+                Section("Prepare or transfer your own files") {
+                    if let configureManually {
+                        Button("Open Settings → Game files", action: configureManually)
+                            .accessibilityIdentifier("launcher-game-files-open-settings")
+                    }
+                    Text("If Minecraft \(version) is already installed on your computer, use the desktop launcher’s From my install option to prepare it instead.")
+                    Text("Export the prepared folder with the desktop game executable:")
+                    Text("horizon-client --pack-resources <prepared-folder> --out Horizon-\(version).zip")
+                        .font(.footnote.monospaced()).textSelection(.enabled)
+                    Text("Replace <prepared-folder> with the folder created by preparation. A Minecraft JAR, world ZIP or resource pack alone cannot replace these files.")
+                    Text("Copy the prepared ZIP into Horizon’s Documents folder using Finder or Apple Devices file sharing. You can also put it at a link this iPad can reach and use Download from link below.")
+                    Button("Choose prepared ZIP") { choosingFile = true }
+                        .disabled(download.busy)
+                        .accessibilityIdentifier("launcher-import-prepared-files")
+                    Text("Choose the ZIP from Files after transferring it. When installation finishes, return to Play. Your worlds and sign-in are kept.")
+                    Link("Read game-file transfer instructions", destination: URL(string: "https://github.com/heyskylo/horizon-ios/blob/main/docs/native-client.md#carry-your-game-files-to-a-phone")!)
+                }
+                Section("Automatic setup or download link") {
+                    GameFilesCard(download: download, missing: true)
+                }
+            }
+            .navigationTitle("Game files needed")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .fileImporter(isPresented: $choosingFile, allowedContentTypes: [.zip]) { result in
+            switch result {
+            case let .success(url): Task { await download.importPreparedFile(url) }
+            case let .failure(error): fileIssue = error.localizedDescription
+            }
+        }
+        .alert("Couldn’t open game files", isPresented: Binding(
+            get: { fileIssue != nil }, set: { if !$0 { fileIssue = nil } }
+        )) { Button("OK", role: .cancel) {} } message: { Text(fileIssue ?? "") }
+        .accessibilityIdentifier("launcher-game-files-recovery")
     }
 }

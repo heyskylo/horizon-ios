@@ -34,11 +34,11 @@ struct MenuFinger{id:u64}
 struct TouchInput{more:bool,hidden:bool,seen:bool,hardware:Hardware,fingers:touch::Touches,menu:Option<MenuFinger>}
 struct Pad{in_use:bool,held:Vec<&'static str>,released:Vec<&'static str>}
 struct EmoteWheel{controller:Option<()>}
-struct Game{emote_wheel:EmoteWheel,touch:TouchInput,pad:Pad,last_input:Instant,dispatched:Vec<(bool,Vec<touch::Out>)>}
+struct Game{player:Option<()>,title:Option<()>,emote_wheel:EmoteWheel,touch:TouchInput,pad:Pad,last_input:Instant,dispatched:Vec<(bool,Vec<touch::Out>)>}
 impl Game{
  fn menu_input_blocked(&self)->bool{false}
  fn cancel_touch_for_reload(&mut self){panic!("no reload in handoff fixture");}
- fn new()->Self{Self{emote_wheel:EmoteWheel{controller:Some(())},touch:TouchInput{more:false,hidden:false,seen:false,hardware:Hardware,fingers:touch::Touches::default(),menu:None},pad:Pad{in_use:true,held:vec!["key.forward","key.attack"],released:vec![]},last_input:Instant::now(),dispatched:vec![]}}
+ fn new()->Self{Self{player:Some(()),title:None,emote_wheel:EmoteWheel{controller:Some(())},touch:TouchInput{more:false,hidden:false,seen:false,hardware:Hardware,fingers:touch::Touches::default(),menu:None},pad:Pad{in_use:true,held:vec!["key.forward","key.attack"],released:vec![]},last_input:Instant::now(),dispatched:vec![]}}
  fn touch_batch(&self)->Option<Batch>{Some(Batch{width:1000.,height:600.,scale:2.})}
  fn touch_playing(&self)->bool{true}
  fn touch_release_menu(&mut self,_:&dyn EventLoopCtl){self.touch.menu=None;}

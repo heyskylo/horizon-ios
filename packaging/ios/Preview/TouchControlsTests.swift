@@ -11,6 +11,29 @@ final class TouchControlsTests: XCTestCase {
     }
     override func tearDown() { defaults.removePersistentDomain(forName: suite) }
 
+    @MainActor func testTitleTapsIgnoreHiddenGameplayHitboxesAndGesturePreference() {
+        var config = TouchConfiguration()
+        config.mouseGestures = false
+        let size = CGSize(width: 600, height: 300)
+        config.move(.leftClick, to: CGPoint(x: 300, y: 150), in: size)
+        let bridge = TouchGestureBridge(configuration: { config })
+        let surface = UIView(frame: CGRect(origin: .zero, size: size))
+        bridge.attach(to: surface)
+        let scale = Double(UIScreen.main.scale)
+        _ = bridge.poll(screen: 70, flags: 8, width: 600, height: 300, scale: scale, capacity: 64)
+        let tap = TouchSurfaceTap()
+        for button in [TouchButton.leftClick, .rightClick, .joystick] {
+            let rect = config.rect(button, in: size)
+            let touch = PositionedTouch(CGPoint(x: rect.midX, y: rect.midY))
+            XCTAssertTrue(bridge.gestureRecognizer(tap, shouldReceive: touch))
+        }
+        // Entering a world restores both the control hitboxes and gesture setting.
+        _ = bridge.poll(screen: 71, flags: 0, width: 600, height: 300, scale: scale, capacity: 64)
+        XCTAssertFalse(bridge.gestureRecognizer(tap, shouldReceive: PositionedTouch(CGPoint(x: 300, y: 150))))
+        XCTAssertFalse(bridge.gestureRecognizer(tap, shouldReceive: PositionedTouch(CGPoint(x: 300, y: 80))))
+        _ = bridge.poll(screen: 72, flags: 8, width: 600, height: 300, scale: scale, capacity: 64)
+        XCTAssertTrue(bridge.gestureRecognizer(tap, shouldReceive: PositionedTouch(CGPoint(x: 300, y: 150))))
+    }
     func testNewInstallAndResetUseDefaultButtonsVisibleInCaptures() {
         var config = TouchPreferences(defaults: defaults).configuration
         XCTAssertTrue(config.showControls)
@@ -107,6 +130,14 @@ final class TouchControlsTests: XCTestCase {
         XCTAssertEqual(TouchButton.joystick.rawValue,12)
         XCTAssertEqual(TouchButton.playerList.rawValue,19)
     }
+    func testRuntimeSlotStaysReservedButPauseIsTheOnlyMenuButton() {
+        let config = TouchConfiguration()
+        XCTAssertEqual(TouchButton.runtime.rawValue, 17)
+        XCTAssertEqual(TouchButton.debug.rawValue, 18)
+        XCTAssertFalse(config.buttons.contains(.runtime))
+        XCTAssertTrue(config.buttons.contains(.pause))
+        XCTAssertEqual(config.snapshot().0.count, 100)
+    }
     func testV2SnapshotCapacityAndLegacyLimit() {
         var values = [Float](repeating:123,count:102)
         values.withUnsafeMutableBufferPointer { b in
@@ -182,4 +213,10 @@ final class TouchControlsTests: XCTestCase {
 private final class FixedGestureHold: UILongPressGestureRecognizer {
     var phase: UIGestureRecognizer.State = .began
     override var state: UIGestureRecognizer.State { get { phase } set { phase = newValue } }
+}
+
+private final class PositionedTouch: UITouch {
+    private let point: CGPoint
+    init(_ point: CGPoint) { self.point = point; super.init() }
+    override func location(in view: UIView?) -> CGPoint { point }
 }

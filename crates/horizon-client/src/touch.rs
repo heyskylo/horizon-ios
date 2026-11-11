@@ -121,10 +121,6 @@ fn default_layout(w: f32, h: f32) -> Vec<(Control, Rect)> {
             Control::Hide,
             [w - 69.6 * unit, 0.0, 69.6 * unit, 40.0 * unit],
         ),
-        (
-            Control::Runtime,
-            [w - 176.4 * unit, 0.0, 104.8 * unit, 39.2 * unit],
-        ),
     ]);
     let d = button_size(h);
     let (cx, cy) = (MARGIN + d, h - MARGIN - 2.0 * d - 16.0);

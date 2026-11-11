@@ -131,6 +131,8 @@ struct TouchConfiguration: Codable, Equatable {
     }
     var buttons: [TouchButton] {
         TouchButton.allCases.filter { button in
+            // Keep the reserved ID for saved layouts, but Pause already owns Escape.
+            if button == .runtime { return false }
             if button == .joystick { return joystick }
             if [.forward, .back, .left, .right].contains(button) { return !joystick }
             return true
@@ -459,6 +461,8 @@ final class TouchGestureBridge: NSObject, UIGestureRecognizerDelegate {
     private var screen: UInt64 = 0
     private var active = false
     private var playing = false
+    private var noWorld = false
+    private let configuration: () -> TouchConfiguration
     private var gui = CGSize.zero
     private var guiScale: Double = 1
     private var pending: [(Double, [Double], UInt64, UInt32, UInt64)] = []
@@ -469,6 +473,11 @@ final class TouchGestureBridge: NSObject, UIGestureRecognizerDelegate {
     private var hotbarSlot = -1
     private var suppressTap = false
 
+    init(configuration: @escaping () -> TouchConfiguration = { TouchPreferences.shared.configuration }) {
+        self.configuration = configuration
+        super.init()
+    }
+
     func attach(to view: UIView) {
         guard surface !== view else { return }
         if let surface { for recognizer in recognizers { surface.removeGestureRecognizer(recognizer) } }
@@ -477,7 +486,7 @@ final class TouchGestureBridge: NSObject, UIGestureRecognizerDelegate {
         let double = UITapGestureRecognizer(target: self, action: #selector(doubleTapped(_:)))
         double.numberOfTapsRequired = 2
         let hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
-        hold.minimumPressDuration = TouchPreferences.shared.configuration.holdDuration
+        hold.minimumPressDuration = configuration().holdDuration
         hotbarHold = hold
         let keyboard = UILongPressGestureRecognizer(target: self, action: #selector(keyboardHeld(_:)))
         keyboard.numberOfTouchesRequired = 2
@@ -496,10 +505,11 @@ final class TouchGestureBridge: NSObject, UIGestureRecognizerDelegate {
 
     func poll(screen: UInt64, flags: UInt32, width: Double, height: Double, scale: Double, capacity: Int, withContext: Bool = false) -> [[Double]] {
         if flags & 4 != 0 { pending.removeAll(); return [] }
-        hotbarHold?.minimumPressDuration = TouchPreferences.shared.configuration.holdDuration
+        hotbarHold?.minimumPressDuration = configuration().holdDuration
         let enabled = flags & 2 == 0
         if self.screen != screen || active != enabled { pending.removeAll(); hotbarSlot = -1; suppressTap = false }
         self.screen = screen; active = enabled; playing = flags & 1 != 0
+        noWorld = flags & 8 != 0
         gui = CGSize(width: width, height: height); guiScale = max(1, scale)
         let now = ProcessInfo.processInfo.systemUptime
         let count = min(max(0, capacity), pending.count)
@@ -518,7 +528,7 @@ final class TouchGestureBridge: NSObject, UIGestureRecognizerDelegate {
         return CGPoint(x: location.x * factor, y: location.y * factor)
     }
     private func slot(_ location: CGPoint) -> Int {
-        guard playing, TouchPreferences.shared.configuration.hotbarGestures else { return -1 }
+        guard playing, configuration().hotbarGestures else { return -1 }
         guard let surface else { return -1 }
         let displayScale = Double(surface.window?.screen.scale ?? UIScreen.main.scale)
         return TouchHotbar.slot(point: CGPoint(x: location.x * displayScale, y: location.y * displayScale),
@@ -539,20 +549,20 @@ final class TouchGestureBridge: NSObject, UIGestureRecognizerDelegate {
         guard active, gui.width > 0, gui.height > 0, let surface,
               surface.window?.rootViewController?.presentedViewController == nil else { return false }
         let location = touch.location(in: surface), p = point(location)
-        let configuration = TouchPreferences.shared.configuration
-        if configuration.buttons.contains(where: { configuration.rect($0, in: gui).contains(p) }) { return false }
+        let configuration = configuration()
+        if !noWorld && configuration.buttons.contains(where: { configuration.rect($0, in: gui).contains(p) }) { return false }
         // The existing close/keyboard affordances own their touches.
         if p.y < 38 && p.x > gui.width - 76 { return false }
         hotbarSlot = slot(location)
         suppressTap = false
         if gestureRecognizer is TouchHotbarTracker { return playing && hotbarSlot >= 0 }
         if gestureRecognizer is TouchSurfaceTap || gestureRecognizer is UILongPressGestureRecognizer {
-            return configuration.mouseGestures || hotbarSlot >= 0 || (gestureRecognizer as? UILongPressGestureRecognizer)?.numberOfTouchesRequired == 2
+            return noWorld || configuration.mouseGestures || hotbarSlot >= 0 || (gestureRecognizer as? UILongPressGestureRecognizer)?.numberOfTouchesRequired == 2
         }
         if let tap = gestureRecognizer as? UITapGestureRecognizer, tap.numberOfTapsRequired == 2 {
             return configuration.hotbarGestures
         }
-        return configuration.mouseGestures
+        return noWorld || configuration.mouseGestures
     }
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool { true }
