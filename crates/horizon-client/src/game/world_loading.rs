@@ -945,8 +945,12 @@ pub(super) fn make_streaming(
         .horizon
         .leaf_culling_effective(&settings.resource_packs);
     streaming.biome_zoom = BiomeZoom::new(obfuscate_seed(seed));
-    streaming.sky_light = dim != Dim::Nether;
-    streaming.nether_shading = dim == Dim::Nether;
+    let facts = horizon_world::dimension_type::DimensionFacts::of_builtin_level(
+        horizon_core::LevelKey::builtin_or_overworld(dim.id()),
+    );
+    streaming.sky_light = facts.height.has_skylight;
+    streaming.nether_shading =
+        facts.cardinal_light == horizon_world::dimension_type::CardinalLight::Nether;
     // A server draws nothing: neither the integrated server nor the
     // dedicated one meshes sections.
     streaming.mesh = options.execution_role.is_client();
