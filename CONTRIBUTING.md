@@ -118,9 +118,10 @@ python3 tools/pr_ready.py --base upstream/main   # or origin/main if you work on
 ```
 
 It looks at what your branch changes and runs what matters: rustfmt, clippy with warnings denied, the tests of the
-crates you touched (and the launcher's), generated files, `Cargo.lock`, the Python tests, and the vanilla harnesses
-your change can affect. Without the vanilla data on your machine it lists those harnesses instead; CI runs them.
-`--quick` skips the harnesses. It exits non-zero when something fails.
+crates you touched (and the launcher's), generated files, `Cargo.lock` and the Python tests. Like CI, it runs the
+vanilla harnesses only when your branch changes a harness, an oracle, a probe or the runner; otherwise it lists the
+ones your change can affect, and main's parity run checks them after the merge. `--harnesses` runs them on your
+machine anyway (it needs the vanilla data). It exits non-zero when something fails.
 
 For the game workspace, Clippy checks all targets of the touched crates and their transitive workspace dependents,
 including examples. The dependency scope includes optional, platform, build and development dependencies. Tests run
