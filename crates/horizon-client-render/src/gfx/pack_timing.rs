@@ -426,7 +426,9 @@ impl PassTiming {
         Some(stamps(&self.queries, i))
     }
 
-    /// Timestamp writes for the compute pass `name`, in a timed frame.
+    /// Timestamp writes for the compute pass `name`, in a timed frame. Shader packs' compute
+    /// passes come as `<program> (compute)`, apart from the fragment program of the same name
+    /// (`deferred2.csh` beside `deferred2.fsh`), whose time theirs would otherwise add to.
     pub fn compute_writes(&mut self, name: &str) -> Option<wgpu::ComputePassTimestampWrites<'_>> {
         let i = self.push_pass(name)?;
         Some(compute_stamps(&self.queries, i))
@@ -593,16 +595,10 @@ impl PassTiming {
                 }
             }
         }
-        for (name, ms) in &passes {
-            let i = match self.samples.iter().position(|s| s.0 == *name) {
-                Some(i) => i,
-                None => {
-                    self.samples.push((name.clone(), VecDeque::new()));
-                    self.samples.len() - 1
-                }
-            };
-            window_push(&mut self.samples[i].1, *ms);
-        }
+        record(
+            &mut self.samples,
+            passes.iter().map(|(name, ms)| (name, Some(*ms))),
+        );
         for (pass, list) in &parts {
             for (part, ms) in list {
                 let i = match self
@@ -1140,6 +1136,40 @@ pub fn counted<'e>(
     counted
 }
 
+/// Adds one timed frame's pass times to `samples`, each pass's window of its last `WINDOW`
+/// frames. Passes of one name in a frame (a program drawn over several render passes) count as
+/// one sample, their sum: as separate samples they shared one window, and its median was the
+/// time of neither. Unnamed and unstamped passes are left out.
+fn record<'a>(
+    samples: &mut Vec<(String, VecDeque<f32>)>,
+    frame: impl Iterator<Item = (&'a String, Option<f32>)>,
+) {
+    let mut sums: Vec<(&str, f32)> = Vec::new();
+    for (name, ms) in frame {
+        let Some(ms) = ms.filter(|_| !name.is_empty()) else {
+            continue;
+        };
+        match sums.iter_mut().find(|s| s.0 == name) {
+            Some(s) => s.1 += ms,
+            None => sums.push((name, ms)),
+        }
+    }
+    for (name, ms) in sums {
+        let i = match samples.iter().position(|s| s.0 == name) {
+            Some(i) => i,
+            None => {
+                samples.push((name.to_owned(), VecDeque::new()));
+                samples.len() - 1
+            }
+        };
+        let window = &mut samples[i].1;
+        if window.len() == WINDOW {
+            window.pop_front();
+        }
+        window.push_back(ms);
+    }
+}
+
 /// Pass `i`'s beginning and end timestamps.
 fn stamps(queries: &wgpu::QuerySet, i: u32) -> wgpu::RenderPassTimestampWrites<'_> {
     wgpu::RenderPassTimestampWrites {
@@ -1227,9 +1257,10 @@ fn frame_span(
 mod tests {
     use super::{
         Counters, DetailSupport, FragmentUnit, PartsMode, PassCounters, PassTiming, compute_parts,
-        counted, counters_by_pass_json, detail_json, entry_times, frame_span,
+        counted, counters_by_pass_json, detail_json, entry_times, frame_span, record,
     };
     use serde_json::json;
+    use std::collections::VecDeque;
 
     fn interleave(pairs: &[(f32, f32)]) -> Vec<u64> {
         let ns = |ms: f32| (ms * 1e6) as u64;
@@ -1241,6 +1272,19 @@ mod tests {
         for (g, w) in got.iter().zip(want) {
             assert!((g.expect("timed") - w).abs() < 1e-4, "{got:?} vs {want:?}");
         }
+    }
+
+    #[test]
+    fn passes_of_one_name_count_as_their_sum() {
+        let names = ["terrain", "sky", "terrain", "", "water"].map(String::from);
+        let times = [Some(1.0), Some(2.0), Some(3.0), Some(9.0), None];
+        let mut samples: Vec<(String, VecDeque<f32>)> = Vec::new();
+        record(&mut samples, names.iter().zip(times));
+        let got: Vec<(&str, Vec<f32>)> = samples
+            .iter()
+            .map(|(n, w)| (n.as_str(), w.iter().copied().collect()))
+            .collect();
+        assert_eq!(got, [("terrain", vec![4.0]), ("sky", vec![2.0])]);
     }
 
     #[test]

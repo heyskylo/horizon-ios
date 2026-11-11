@@ -1979,7 +1979,7 @@ fn sun_burn_tick(m: &mut Mob, w: &MobWorld) -> bool {
         m.position.z.floor() as i32,
     );
     let br = w.brightness(x, y, z);
-    let wet = m.fluids.in_water || in_rain(m, w);
+    let wet = m.fluids.in_water || in_rain(m, w) || in_powder_snow(m, w) || m.in_powder_snow;
     br > 0.5 && m.random.next_float() * 30.0 < (br - 0.4) * 2.0 && !wet && w.can_see_sky(x, y, z)
 }
 /// Mob.serverAiStep
@@ -2835,13 +2835,13 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
     let power = (m.attrs.attack_knockback as f32 + super::gear::knockback(m) as f32) / 2.0;
     if power > 0.0 {
         use horizon_core::geometry::trig::Mth;
-        let to_rad = std::f32::consts::PI / 180.0;
         cx.events.push(MobEvent::Knockback {
             target: who,
             power: f64::from(power),
-            x: f64::from((m.yaw * to_rad).msin()),
-            z: f64::from(-(m.yaw * to_rad).mcos()),
+            x: f64::from(m.yaw.to_radians().msin()),
+            z: f64::from(-m.yaw.to_radians().mcos()),
             source,
+            apply_blocking: None,
         });
         m.velocity = Vec3::new(m.velocity.x * 0.6, m.velocity.y, m.velocity.z * 0.6);
     }
@@ -3048,6 +3048,7 @@ fn tick_effects(
     // a totem adds its effects to it). An effect a tick appends ticks from
     // the next tick on.
     let first = m.extra.effects.len();
+    let old_max_absorption = super::armor::max_absorption(m);
     let old_boost_amp = m
         .extra
         .effects
@@ -3140,17 +3141,13 @@ fn tick_effects(
         }
         i += 1;
     }
-    let absorption_gone = m
-        .extra
-        .effects
-        .iter()
-        .any(|e| e.0 == "minecraft:absorption" && e.1 <= 0 && e.1 != -1);
     m.extra.effects.retain(|e| e.1 > 0 || e.1 == -1);
-    // LivingEntity.onEffectsRemoved -> refreshDirtyAttributes ->
-    // onAttributeUpdated(MAX_ABSORPTION): the amount is clamped to the
-    // maximum left without the effect's modifier.
-    if absorption_gone {
-        m.absorption = m.absorption.min(super::armor::max_absorption(m));
+    // LivingEntity.onEffectsRemoved, or onEffectUpdated for a promoted hidden
+    // instance (a weaker Absorption) -> refreshDirtyAttributes ->
+    // onAttributeUpdated(MAX_ABSORPTION): the amount is clamped to the new max.
+    let max_absorption = super::armor::max_absorption(m);
+    if max_absorption != old_max_absorption {
+        m.absorption = m.absorption.min(max_absorption);
     }
     // LivingEntity.onEffectsRemoved / onEffectUpdated -> refreshDirtyAttributes.
     let new_boost_amp = m
@@ -4928,6 +4925,86 @@ mod burn_and_rose_tests {
         m
     }
 
+    fn zombie(types: &crate::mobs::MobTypes) -> Mob {
+        let kind = Arc::new(types.types["minecraft:zombie"].clone());
+        let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+        register(&mut m);
+        m.no_ai = true;
+        m.random = LegacyRandom::new(3);
+        m
+    }
+
+    /// `Mob.isSunBurnTick`: `isInWaterOrRain() || isInPowderSnow || wasInPowderSnow`
+    /// is not burnable, so a zombie standing in powder snow only freezes. The
+    /// draws are the mob's own, so the answer over a run of them is fixed.
+    #[test]
+    fn powder_snow_keeps_a_zombie_from_burning_in_daylight() {
+        let ran = crate::mobs::world::with_built_test_world(
+            &[],
+            build_with("minecraft:powder_snow"),
+            |w, types| {
+                let mut day = w.clone();
+                day.monsters_burn = true;
+                let mut m = zombie(types);
+                let burns = |m: &mut Mob| (0..500).any(|_| sun_burn_tick(m, &day));
+                assert!(!burns(&mut m), "in the powder snow at (0, 64, 0)");
+                // The same mob out of it, in plain daylight: the same draws burn it.
+                m.position = Vec3::new(3.5, 64.0, 3.5);
+                assert!(!m.in_powder_snow);
+                assert!(burns(&mut m), "in plain daylight");
+                // Having been in the powder snow last tick (`wasInPowderSnow`).
+                m.in_powder_snow = true;
+                assert!(!burns(&mut m), "was in the powder snow");
+                // It waits that one tick before the sun reaches it.
+                m.in_powder_snow = false;
+                assert!(burns(&mut m), "the tick after it stepped out");
+            },
+        );
+        let _ = ran;
+    }
+
+    /// `PowderSnowBlock.entityInside`: a mob that is already burning destroys
+    /// the powder snow (`mobGriefing`) and is put out, once, and then no longer
+    /// catches fire there in daylight.
+    #[test]
+    fn a_burning_zombie_in_powder_snow_breaks_the_block_and_is_put_out() {
+        let ran = crate::mobs::world::with_built_test_world(
+            &[],
+            build_with("minecraft:powder_snow"),
+            |w, types| {
+                let mut day = w.clone();
+                day.monsters_burn = true;
+                let mut m = zombie(types);
+                m.ignite_for_ticks(100);
+                assert!(m.is_on_fire());
+                let (mut lr, mut events) = (LegacyRandom::new(7), Vec::new());
+                assert!(tick(&mut m, &day, &mut lr, &mut events));
+                let broken: Vec<([i32; 3], bool)> = events
+                    .iter()
+                    .filter_map(|e| match e {
+                        MobEvent::BreakBlock { pos, drop } => Some((*pos, *drop)),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(broken, vec![([0, 64, 0], false)], "the powder snow breaks");
+                assert_eq!(m.fire_ticks, 0, "and puts the zombie out");
+                events.clear();
+                for _ in 0..200 {
+                    tick(&mut m, &day, &mut lr, &mut events);
+                }
+                assert!(!m.removed, "the zombie stays");
+                assert_eq!(m.fire_ticks, 0, "no sun burn while it stands in it");
+                assert!(
+                    !events
+                        .iter()
+                        .any(|e| matches!(e, MobEvent::BreakBlock { .. })),
+                    "nothing left to destroy"
+                );
+            },
+        );
+        let _ = ran;
+    }
+
     /// `WitherRoseBlock.entityInside` tests the world difficulty and
     /// `isInvulnerableTo(wither)`, not the regional difficulty of a fresh
     /// chunk and not the hit timer: a golem that was just hurt still gets it.
@@ -6170,6 +6247,37 @@ mod hurt_teleport_contact_tests {
                 assert!(teleported > 0, "some seed teleports");
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod hidden_absorption_promotion_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// #11384: a promoted hidden instance goes through `onEffectUpdated(effect,
+    /// true)`, whose `refreshDirtyAttributes` clamps the absorption amount to the
+    /// weaker effect's `max_absorption` (Absorption II's 8 down to I's 4).
+    #[test]
+    fn a_promoted_weaker_absorption_clamps_the_amount() {
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.id = "minecraft:pig".into();
+        kind.species = Species::Pig;
+        let mut m = Mob::new(203, Arc::new(kind), Vec3::ZERO, 0.0);
+        m.add_effect("absorption", 600, 0);
+        m.add_effect("absorption", 2, 1);
+        assert_eq!(m.extra.effect_fallbacks.len(), 1, "Absorption I waits");
+        assert_eq!(
+            (m.absorption, super::super::armor::max_absorption(&m)),
+            (8.0, 8.0)
+        );
+        for _ in 0..3 {
+            tick_effects(&mut m, None, &mut |_| {});
+        }
+        assert_eq!(m.extra.effects.len(), 1);
+        assert_eq!(m.extra.effects[0].2, 0, "Absorption I took over");
+        assert_eq!(super::super::armor::max_absorption(&m), 4.0);
+        assert_eq!(m.absorption, 4.0);
     }
 }
 

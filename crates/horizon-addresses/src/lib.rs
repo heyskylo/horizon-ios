@@ -23,6 +23,10 @@ pub const WITHDRAWN_PARTNER_SERVER: &str = "afri-network.co.za";
 /// (the telemetry server's status checks).
 pub const OFFICIAL_SERVER_STATUS: &str = "play.playhorizon.dev:24454";
 
+/// Horizon's website, where the launcher is downloaded: the game started without its prepared
+/// files sends the player there.
+pub const WEBSITE: &str = "https://playhorizon.dev";
+
 /// The cosmetics service: cosmetics, emotes, "Show me as a Horizon player"
 /// (`HORIZON_COSMETICS_API` overrides it).
 pub const COSMETICS_API: &str = "https://cosmetics.playhorizon.dev";

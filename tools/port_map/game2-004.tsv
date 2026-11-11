@@ -38,7 +38,7 @@ Piglin.customServerAiStep	port	crates/horizon-client/src/mobs/piglin.rs::ai_step
 Piglin.finishConversion	port	crates/horizon-client/src/mobs/piglin.rs::ai_step	the conversion cancels the admire and drops the admired item; the rest of a piglin's carried inventory is still not scattered
 Piglin.hurtServer	inline	crates/horizon-client/src/mobs/piglin.rs::celebrate	gap: player: a hit by a player does not stop an admiring piglin or start its admiring-disabled wait; babies do not flee the attacker
 Piglin.canUseNonMeleeWeapon	port	crates/horizon-client/src/game/piglins.rs::Game::piglin_wanted	gap: minor: checks the preferred-weapons tag only, not the usable-crossbow tag or the kinetic weapon component
-Piglin.holdInOffHand	port	crates/horizon-client/src/game/piglins.rs::Game::start_admiring	gap: minor: does not drop an item already in the off hand and does not set persistence
+Piglin.holdInOffHand	port	crates/horizon-client/src/mobs/piglin.rs::hold_in_offhand	equips the item (drop chance 2.0 as setItemSlotAndDropWhenKilled) and makes the piglin persistent unless it is the barter item
 Piglin.wantsToPickUp	port	crates/horizon-client/src/game/piglins.rs::Game::piglin_wants	gap: minor: does not check the admiring-disabled wait after a hit by a player
 Piglin.startRiding	port	crates/horizon-client/src/mobs/riders.rs::start_riding	the boarding tests (not the vehicle it is on, not one it carries, the boarding cooldown, a free vehicle) plus the `Piglin` case: a baby piglin on a hoglin goes on top of the up-to-three piglins already there
 Piglin.getTopPassenger	port	crates/horizon-client/src/mobs/riders.rs::top_passenger	the top of the passenger chain, capped at four passengers on a hoglin
@@ -56,7 +56,7 @@ PiglinAi.createIdleMovementBehaviors	inline	crates/horizon-client/src/mobs/pigli
 PiglinAi.updateActivity	inline	crates/horizon-client/src/mobs/piglin.rs::register_piglin	gap: minor: the activity choice is the goal priority order; the aggressive and dancing flags are set elsewhere
 PiglinAi.isBabyRidingBaby	port	crates/horizon-client/src/mobs/piglin.rs::is_baby_riding_baby	a baby piglin on a baby piglin or a baby hoglin
 PiglinAi.pickUpItem	port	crates/horizon-client/src/game/piglins.rs::Game::piglin_pickups	loved item admired, food eaten, else worn or stored
-PiglinAi.holdInOffhand	port	crates/horizon-client/src/game/piglins.rs::Game::start_admiring	gap: minor: does not drop an item already in the off hand and does not set persistence
+PiglinAi.holdInOffhand	port	crates/horizon-client/src/game/piglins.rs::Game::start_admiring	drops what the off hand held, whole, then holds the item through hold_in_offhand (Piglin.holdInOffHand), which sets persistence
 PiglinAi.removeOneItemFromItemEntity	port	crates/horizon-client/src/game/piglins.rs::Game::piglin_pickups	takes one item from the stack (nuggets whole)
 PiglinAi.cancelAdmiring	port	crates/horizon-client/src/mobs/piglin.rs::stop_admiring	the off hand is emptied and admiring is disabled for a while
 PiglinAi.throwItems	port	crates/horizon-client/src/game/piglins.rs::Game::finish_admiring	gap: minor: only the barter path throws; the target choice is nearest player within 16, else a spot nearby
@@ -137,7 +137,7 @@ Drowned.checkDrownedSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.r
 Drowned.isDeepEnoughToSpawn	inline	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	below sea level minus 5
 Drowned.populateDefaultEquipmentSlots	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::populate	10 percent chance of a trident (10 in 16) or fishing rod
 Drowned.canReplaceCurrentItem	port	crates/horizon-client/src/game/mob_looting.rs::Game::can_replace	the mob pickup compare (armour, toughness, attack damage) with the drowned's nautilus shell guard; called before a mob swaps what it holds
-Drowned.rangedAttackUncertainty	port	crates/horizon-client/src/mobs/undead.rs::drowned_throw	gap: minor: fixed uncertainty 6 (normal difficulty), not 14 minus 4 times the difficulty
+Drowned.rangedAttackUncertainty	port	crates/horizon-client/src/mobs/undead.rs::drowned_throw	the field defaults to -1.0f, so the throw's uncertainty is 14 minus 4 times the difficulty id (ranged_attack_uncertainty)
 Drowned.rideTick	port	crates/horizon-client/src/mobs/riders.rs::takes_vehicle_body	the body yaw of a PathfinderMob it steers (getControlledVehicle)
 Drowned.wantsToPickUp	port	crates/horizon-client/src/mobs/equip.rs::wants_to_pick_up	spears are refused, then the zombie checks
 Drowned.DrownedGoToBeachGoal.isValidTarget	port	crates/horizon-client/src/mobs/undead.rs::beach_target	two empty blocks above and a standable block below

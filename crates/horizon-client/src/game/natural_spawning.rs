@@ -800,6 +800,26 @@ impl<'a> Game<'a> {
             levels.loaded_ticking(cx, cz) && super::ticking_chunk(&self.world, cx, cz)
         })
     }
+    /// The tick's spawning phases in `ServerLevel.tick`'s order: the raids
+    /// tick first (`this.raids.tick`), then the chunk source's
+    /// (`getChunkSource().tick`): natural spawning, then the custom spawners
+    /// of `ServerChunkCache.tickChunks`. A wave that lands this tick therefore
+    /// joins before that tick's spawns, with the lower entity ids.
+    pub(super) fn tick_spawners(&mut self) {
+        let from = self.lan_synced_from();
+        horizon_client::spans::time("spawn_raids", || self.tick_raids());
+        horizon_client::spans::time("spawn_natural", || self.spawn_natural());
+        // ServerChunkCache.tickChunks: the custom spawners tick only with spawn_mobs.
+        if self.ui.rules.bool("spawn_mobs") {
+            horizon_client::spans::time("spawn_custom", || {
+                self.tick_wandering_trader();
+                self.tick_patrol_spawner();
+                self.tick_cat_spawner();
+                self.tick_village_siege();
+            });
+        }
+        self.lan_synced_since(from);
+    }
     /// `ServerChunkCache.tickChunks`: the spawn state over the loaded mobs,
     /// the categories under their global caps (creatures every 400 ticks),
     /// then `tickSpawningChunk` in the shuffled spawning chunks of every
@@ -1340,6 +1360,31 @@ mod tests {
             NearestPlayers::new(&spectators)
                 .nearest(0.0, 0.0, 0.0)
                 .is_none()
+        );
+    }
+
+    /// `ServerLevel.tick` ticks the raids before the chunk source spawns
+    /// (`raids.tick`, then `getChunkSource().tick`): a wave that lands in a
+    /// tick joins before that tick's natural and custom spawns, with the
+    /// lower entity ids. The phases name themselves in the spans they run in.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn raids_tick_before_natural_and_custom_spawning() {
+        let mut game = crate::game::native_machines::tests::server_game();
+        horizon_client::spans::record_here(true);
+        let _ = horizon_client::spans::take_raw();
+        game.tick_spawners();
+        let raw = horizon_client::spans::take_raw();
+        horizon_client::spans::record_here(false);
+        let phases: Vec<&str> = raw
+            .iter()
+            .map(|s| s.name)
+            .filter(|name| name.starts_with("spawn_"))
+            .collect();
+        assert_eq!(
+            phases,
+            ["spawn_raids", "spawn_natural", "spawn_custom"],
+            "ServerLevel.tick ticks the raids before the chunk source's spawns"
         );
     }
 }

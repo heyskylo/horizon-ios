@@ -1206,6 +1206,8 @@ mod tests {
         let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
         let home = std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap()).join("h260");
         let world = home.join("saves/h260");
+        // A new world each run: a border saved by the last one would already be 50.
+        let _ = std::fs::remove_dir_all(&home);
         {
             let mut game = open_game(&root, &home, &world);
             // A server ticks before it saves.
@@ -1243,6 +1245,8 @@ mod tests {
         let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
         let home = std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
             .join("h260-controls");
+        // A new world each run, as the first open expects.
+        let _ = std::fs::remove_dir_all(&home);
         let world = home.join("saves/h260");
         let sizes = |game: &mut Game<'_>| {
             assert!(game.run_command("execute in minecraft:overworld run worldborder get"));

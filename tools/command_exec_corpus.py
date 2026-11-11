@@ -1910,6 +1910,29 @@ def aquatic_from_bucket():
     return ops
 
 
+def noai_tadpole_age():
+    """`Tadpole.aiStep` counts the age up and grows the tadpole into a frog at
+    24000; `NoAI` skips only `serverAiStep`, so a NoAI tadpole ages too. An
+    age-locked one doesn't (#14615)."""
+    box = 'x=8,y=218,z=8,dx=10,dy=6,dz=4'
+    # (tag, x, saved Age, AgeLocked)
+    tadpoles = [('h14615_young', 10, 0, False), ('h14615_due', 13, 23998, False),
+                ('h14615_locked', 16, 0, True)]
+    ops = []
+    for tag, x, age, locked in tadpoles:
+        lock = ',AgeLocked:1b' if locked else ''
+        ops += setup(f'/summon minecraft:tadpole {x}.5 220 10.5 {{Tags:["{tag}"],NoAI:1b,'
+                     f'NoGravity:1b,Silent:1b,PersistenceRequired:1b,Age:{age}{lock}}}')
+    for ticks in (1, 2):
+        ops.append({'op': 'tick', 'n': ticks})
+        for tag, *_ in tadpoles:
+            target = f'@e[type=minecraft:tadpole,tag={tag},limit=1]'
+            ops += [cmd(f'/execute if entity {target}'), cmd(f'/data get entity {target} Age')]
+        ops.append(cmd(f'/execute if entity @e[type=minecraft:frog,{box}]'))
+    ops += setup(f'/kill @e[type=minecraft:tadpole,{box}]', f'/kill @e[type=minecraft:frog,{box}]')
+    return ops
+
+
 def dispensed_spawn_egg_persistence():
     """`SpawnEggItemBehavior.execute` spawns with `EntitySpawnReason.DISPENSER`
     and never calls `Mob.setPersistenceRequired`: the mob saves
@@ -7654,6 +7677,23 @@ def dispensed_item_escape():
                        f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0} {z0 + 15} air', f'/forceload remove {x0} {z0}')
 
 
+def comparator_setblock_output():
+    """#13870: `BlockInput.place` loads a comparator's tag (`ComparatorBlockEntity.loadAdditional`:
+    `getIntOr("OutputSignal", 0)`), as `/data merge block` does."""
+    x0, y0, z0 = 4096 - 320, 260, 3584
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd('/tick freeze', False),
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', False)]
+    for n, data in enumerate(('{OutputSignal:20}', '{OutputSignal:-1}', '{}', '{OutputSignal:7}'), 1):
+        x = x0 + 2 * n
+        ops += [cmd(f'/setblock {x} {y0} {z0 + 8} comparator{data}', expect_result=1),
+                cmd(f'/data get block {x} {y0} {z0 + 8} OutputSignal')]
+    # A second /setblock over the same comparator loads the tag again.
+    ops += [cmd(f'/setblock {x0 + 8} {y0} {z0 + 8} comparator{{OutputSignal:3}}'),
+            cmd(f'/data get block {x0 + 8} {y0} {z0 + 8} OutputSignal')]
+    return ops + setup('/tick unfreeze', f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
 def groups():
     try:
         from .spectral_duration_corpus import cases as spectral_saved_duration
@@ -7825,6 +7865,7 @@ def groups():
         ('axolotl integer memory TTL', axolotl_integer_memory_ttl()),
         ('parrot saved Age', parrot_saved_age()),
         ('animal NoAI love', animal_noai_love()),
+        ('NoAI tadpole age', noai_tadpole_age()),
         ('turtle summon home', turtle_summon_home()),
         ('command minecart loaded success', command_minecart_loaded_success()),
         ('ravager NoAI counters', ravager_noai_counters()),
@@ -7850,6 +7891,7 @@ def groups():
         ('primed tnt fall', primed_tnt_fall()),
         ('dispensed item escape', dispensed_item_escape()),
         ('command block last output', command_block_last_output()),
+        ('comparator setblock output', comparator_setblock_output()),
         ('glide fall accumulation', glide_fall_accumulation()),
         ('living short timers', living_short_timers()),
         ('projectile fall distance', projectile_fall_distance()),

@@ -707,7 +707,7 @@ impl Game<'_> {
             p.id = self.next_entity;
             self.restore_portal_cooldown(p.id, &tag);
             self.remember_tags(p.id, &tag);
-            self.remember_uuid(p.id, uuid, &tag);
+            self.remember_uuid(p.id, Some(p.own_uuid(uuid)), &tag);
             self.add_projectile(p);
         }
     }
@@ -725,8 +725,8 @@ impl Game<'_> {
             self.next_entity += 1;
             p.id = self.next_entity;
             self.restore_portal_cooldown(p.id, &tag);
-            // Entity.load: the saved or summoned UUID, as the other projectiles keep theirs.
-            self.remember_uuid(p.id, uuid, &tag);
+            // Entity.load: the saved or summoned UUID, else its own random's.
+            self.remember_uuid(p.id, Some(p.own_uuid(uuid)), &tag);
             self.add_projectile(p);
             self.remember_last_projectile_tags(&tag);
         }
@@ -752,7 +752,7 @@ impl Game<'_> {
             self.next_entity += 1;
             p.id = self.next_entity;
             self.restore_portal_cooldown(p.id, &tag);
-            self.remember_uuid(p.id, uuid, &tag);
+            self.remember_uuid(p.id, Some(p.own_uuid(uuid)), &tag);
             self.add_projectile(p);
             self.remember_last_projectile_tags(&tag);
         }
@@ -771,7 +771,7 @@ impl Game<'_> {
             self.next_entity += 1;
             p.id = self.next_entity;
             self.restore_portal_cooldown(p.id, &tag);
-            self.remember_uuid(p.id, uuid, &tag);
+            self.remember_uuid(p.id, Some(p.own_uuid(uuid)), &tag);
             self.add_projectile(p);
             self.remember_last_projectile_tags(&tag);
         }

@@ -885,10 +885,19 @@ mod tests {
             unprompted: Some(body(0x21, 2)),
         };
         let served = serve(Connection::local(b), probe, Duration::from_secs(30));
+        // The queued packet and the one the session sends of its own accord
+        // are framed by different paths (`Outbox::take` and `Session::tick`
+        // in `sweep`), so which of the two goes out first is the sweep's
+        // timing, not an order the pool promises: take both, then tell them
+        // apart. The kick still has to come after the queued one.
         served.send(vec![body(3, 10)], None);
-        assert_eq!(client.recv().unwrap(), packet(&body(3, 10)));
-        // What the session sends of its own accord.
-        assert_eq!(client.recv().unwrap(), packet(&body(0x21, 2)));
+        let mut first = client.recv().unwrap();
+        let mut second = client.recv().unwrap();
+        if first == packet(&body(0x21, 2)) {
+            std::mem::swap(&mut first, &mut second);
+        }
+        assert_eq!(first, packet(&body(3, 10)));
+        assert_eq!(second, packet(&body(0x21, 2)));
         client.send(&body(9, 1)).unwrap();
         client.send(&body(10, 1)).unwrap();
         assert_eq!(client.recv().unwrap(), packet(&body(0x7f, 3)));
