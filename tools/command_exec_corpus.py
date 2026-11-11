@@ -7677,6 +7677,23 @@ def dispensed_item_escape():
                        f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0} {z0 + 15} air', f'/forceload remove {x0} {z0}')
 
 
+def comparator_setblock_output():
+    """#13870: `BlockInput.place` loads a comparator's tag (`ComparatorBlockEntity.loadAdditional`:
+    `getIntOr("OutputSignal", 0)`), as `/data merge block` does."""
+    x0, y0, z0 = 4096 - 320, 260, 3584
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]},
+           cmd('/tick freeze', False),
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', False)]
+    for n, data in enumerate(('{OutputSignal:20}', '{OutputSignal:-1}', '{}', '{OutputSignal:7}'), 1):
+        x = x0 + 2 * n
+        ops += [cmd(f'/setblock {x} {y0} {z0 + 8} comparator{data}', expect_result=1),
+                cmd(f'/data get block {x} {y0} {z0 + 8} OutputSignal')]
+    # A second /setblock over the same comparator loads the tag again.
+    ops += [cmd(f'/setblock {x0 + 8} {y0} {z0 + 8} comparator{{OutputSignal:3}}'),
+            cmd(f'/data get block {x0 + 8} {y0} {z0 + 8} OutputSignal')]
+    return ops + setup('/tick unfreeze', f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
 def groups():
     try:
         from .spectral_duration_corpus import cases as spectral_saved_duration
@@ -7874,6 +7891,7 @@ def groups():
         ('primed tnt fall', primed_tnt_fall()),
         ('dispensed item escape', dispensed_item_escape()),
         ('command block last output', command_block_last_output()),
+        ('comparator setblock output', comparator_setblock_output()),
         ('glide fall accumulation', glide_fall_accumulation()),
         ('living short timers', living_short_timers()),
         ('projectile fall distance', projectile_fall_distance()),
