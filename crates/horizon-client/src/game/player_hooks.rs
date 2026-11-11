@@ -11,8 +11,8 @@ use horizon_client::mobs::anim::{self, BodyPose, PooledPoses, Poses};
 use horizon_client::mobs::{Mob, Part, Polygon, render};
 use horizon_hooks::engine;
 use horizon_hooks::players::{
-    Bone, CameraView, Frame, Gear, Kind, Mesh, PartPoses, Pass, PlayerDraw, PlayerModel,
-    PlayerModels, SpriteStore, Sprites,
+    Bone, CameraView, Frame, Gear, Kind, Light, Look, Mesh, Motion, PartPoses, Particle, Pass,
+    PlayerDraw, PlayerModel, PlayerModels, SpriteStore, Sprites, View,
 };
 use std::sync::Arc;
 
@@ -182,6 +182,14 @@ fn part_of(mesh: &Arc<Mesh>) -> Arc<Part> {
     })
 }
 
+/// Full light, packed as the vertices carry it.
+const FULL: u32 = 240 | 240 << 8;
+
+thread_local! {
+    /// What crates draw see-through this frame, added after every player.
+    static SEE_THROUGH: std::cell::RefCell<Vec<Vertex>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// Forgets the meshes no crate holds any more (once a frame).
 fn forget_meshes() {
     let _ = MESHES.try_with(|m| {
@@ -199,7 +207,7 @@ impl PartPoses for PosesOf<'_> {
     }
 }
 
-/// A player model drawn in the world pass, as a crate draws on it: posed on the GPU's skin path
+/// A player model drawn, as a crate draws on it: posed on the GPU's skin path
 /// when `gpu` (the mob pass's skin frame, begun; the bounds of what went there grow, for
 /// culling), else its vertices go to `out`.
 struct DrawPlayer<'a, 'g> {
@@ -208,6 +216,7 @@ struct DrawPlayer<'a, 'g> {
     pass: Pass,
     /// The model's matrix (`render::base_transform`).
     base: glam::Mat4,
+    camera: glam::DVec3,
     alpha: f32,
     light: u32,
     gpu: bool,
@@ -223,6 +232,19 @@ impl DrawPlayer<'_, '_> {
         let (key, _) = render::body(self.m);
         self.m.kind.layer(&key).unwrap_or(&self.m.kind.model)
     }
+
+    /// `light` packed; `at`: the place `Light::AtPlace` reads, relative to the camera.
+    fn packed(&self, light: Light, at: glam::Vec3) -> u32 {
+        match light {
+            Light::Full => FULL,
+            Light::AtPlace => {
+                let p = (self.camera + at.as_dvec3()).floor();
+                let l = self.game.world.light(p.x as i32, p.y as i32, p.z as i32);
+                (u32::from(l >> 4) * 16) | ((u32::from(l & 15) * 16) << 8)
+            }
+            _ => self.light,
+        }
+    }
 }
 
 impl PlayerDraw for DrawPlayer<'_, '_> {
@@ -234,7 +256,52 @@ impl PlayerDraw for DrawPlayer<'_, '_> {
         self.m.age as f32 + self.alpha
     }
 
+    fn base(&self) -> [[f32; 4]; 4] {
+        self.base.to_cols_array_2d()
+    }
+
+    fn motion(&self) -> Motion {
+        let (m, a) = (self.m, self.alpha);
+        let t = f64::from(a);
+        let (p, n) = (m.previous, m.position);
+        let feet = [
+            p.x + (n.x - p.x) * t,
+            p.y + (n.y - p.y) * t,
+            p.z + (n.z - p.z) * t,
+        ];
+        let turn = horizon_client::mobs::living::wrap(m.head_yaw - m.previous_head_yaw);
+        let yaw = m.previous_head_yaw + turn * a;
+        let pitch = m.previous_head_pitch + (m.head_pitch - m.previous_head_pitch) * a;
+        let asleep = m.extra.avatar_pose == horizon_client::pose::Pose::Sleeping;
+        let swimming = m.extra.swim.amount(a) > 0.0;
+        Motion::new(feet, yaw, pitch).poses(
+            m.extra.crouching,
+            asleep,
+            m.extra.fall_flying,
+            swimming,
+        )
+    }
+
+    fn view(&self) -> View {
+        let q = self.game.camera_orientation();
+        let (right, up) = (
+            (q * glam::Vec3::X).to_array(),
+            (q * glam::Vec3::Y).to_array(),
+        );
+        let (yaw, pitch) = (self.game.yaw.to_radians(), self.game.pitch.to_radians());
+        let forward = [
+            -yaw.sin() * pitch.cos(),
+            -pitch.sin(),
+            yaw.cos() * pitch.cos(),
+        ];
+        let left = [yaw.cos(), 0.0, yaw.sin()];
+        View::new(self.camera.to_array(), right, up).looking(forward, left)
+    }
+
     fn bone(&mut self, bone: Bone) -> Option<[[f32; 4]; 4]> {
+        if self.pass == Pass::FirstPerson {
+            return None;
+        }
         if self.body.is_none() {
             let mut poses = Poses::pooled();
             poses.reset(self.body());
@@ -260,13 +327,30 @@ impl PlayerDraw for DrawPlayer<'_, '_> {
         &mut self,
         mesh: &Arc<Mesh>,
         matrix: [[f32; 4]; 4],
-        uv: [f32; 4],
+        look: Look,
         pose: &mut dyn FnMut(&mut dyn PartPoses),
     ) {
         let model = part_of(mesh);
         let matrix = glam::Mat4::from_cols_array_2d(&matrix);
+        let (uv, light) = (look.uv, self.packed(look.light, matrix.w_axis.truncate()));
         self.poses.reset(&model);
         pose(&mut PosesOf(&mut self.poses));
+        let poses = &self.poses;
+        if let Some(alpha) = look.see_through {
+            let color = ((alpha.clamp(0.0, 1.0) * 255.0) as u32) << 24 | 0x00FF_FFFF;
+            let pose_of = |p: &Part| poses.pose(p);
+            SEE_THROUGH.with_borrow_mut(|out| {
+                let start = out.len();
+                horizon_client::mobs::render_model(&model, matrix, &pose_of, uv, light, 0, out);
+                for v in &mut out[start..] {
+                    v.color = color;
+                    // Seen through, a face turned away would add to the near one: `entity.wgsl`
+                    // drops back faces, so it is `alpha` at most.
+                    v.normal[3] = horizon_client::mesher::SHADED_CULL_W;
+                }
+            });
+            return;
+        }
         if self.gpu {
             let mut models = self.game.skin_models.borrow_mut();
             let mut frame = self.game.skin_frame.borrow_mut();
@@ -276,30 +360,43 @@ impl PlayerDraw for DrawPlayer<'_, '_> {
                 uv,
                 scroll: 0.0,
                 color: 0xFFFF_FFFF,
-                light: self.light,
+                light,
                 overlay: 0,
             };
-            if skin.draw(&model, matrix, &self.poses, paint) {
+            if skin.draw(&model, matrix, poses, paint) {
                 self.bounds = skin.bounds;
                 return;
             }
         }
-        let poses = &self.poses;
-        horizon_client::mobs::render_model(
-            &model,
-            matrix,
-            &|p: &Part| poses.pose(p),
-            uv,
-            self.light,
-            0,
-            self.out,
-        );
+        let pose_of = |p: &Part| poses.pose(p);
+        horizon_client::mobs::render_model(&model, matrix, &pose_of, uv, light, 0, self.out);
+    }
+
+    fn particles(&mut self, uv: [f32; 4], particles: &[Particle], light: Light) {
+        let light = self.packed(light, glam::Vec3::ZERO);
+        SEE_THROUGH.with_borrow_mut(|out| {
+            for q in particles {
+                let color = ((q.alpha.clamp(0.0, 1.0) * 255.0) as u32) << 24 | 0x00FF_FFFF;
+                for (corner, [u, v]) in q.corners.iter().zip(q.uv) {
+                    out.push(Vertex {
+                        pos: *corner,
+                        uv: [uv[0] + (uv[2] - uv[0]) * u, uv[1] + (uv[3] - uv[1]) * v],
+                        layer: 0,
+                        color,
+                        light,
+                        // Unlit: a particle keeps its colour whichever way it faces.
+                        normal: [0, 0, 0, 0],
+                        glint_uv: [0.0, 0.0],
+                    });
+                }
+            }
+        });
     }
 }
 
 impl Game<'_> {
-    /// What crates draw on player model `m` in the world pass (`creatures.rs`), then the
-    /// cosmetics still drawn here: see [`DrawPlayer`]. The bounds of what went to the GPU.
+    /// What crates draw on player model `m` in the world pass (`creatures.rs`): see
+    /// [`DrawPlayer`]. The bounds of what went to the GPU.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn player_layers_geometry(
         &self,
@@ -315,33 +412,102 @@ impl Game<'_> {
             self.serving.is_none(),
             "a server thread calls no client hook"
         );
-        let kind = kind(m)?;
-        let mut bounds = None;
-        if engine::any() {
-            let model = model(m, kind, self.remote_player_uuid(m.id));
+        let kind = kind(m).filter(|_| engine::any())?;
+        let model = model(m, kind, self.remote_player_uuid(m.id));
+        let mut draw = DrawPlayer {
+            game: self,
+            m,
+            pass: Pass::World,
+            base,
+            camera,
+            alpha,
+            light,
+            gpu,
+            out,
+            bounds: None,
+            body: None,
+            poses: Poses::pooled(),
+        };
+        engine::player_layers(&model, &mut draw);
+        draw.bounds
+    }
+
+    /// What crates draw on the window's own model `m` (its vertices to `out`): in the world in
+    /// third person (`Pass::World`), or in the inventory's picture of it (`Pass::Picture`).
+    /// `camera`: the world view's camera, or the picture's.
+    pub(super) fn own_layers_geometry(
+        &self,
+        m: &Mob,
+        pass: Pass,
+        camera: glam::DVec3,
+        alpha: f32,
+        light: u32,
+        out: &mut Vec<Vertex>,
+    ) {
+        debug_assert!(
+            self.serving.is_none(),
+            "a server thread calls no client hook"
+        );
+        if !engine::any() {
+            return;
+        }
+        let model = model(m, Kind::Own, self.remote.as_ref().map(|r| r.profile()));
+        let mut draw = DrawPlayer {
+            game: self,
+            m,
+            pass,
+            base: render::base_transform(m, alpha, camera),
+            camera,
+            alpha,
+            light,
+            gpu: false,
+            out,
+            bounds: None,
+            body: None,
+            poses: Poses::pooled(),
+        };
+        engine::player_layers(&model, &mut draw);
+    }
+
+    /// After every player (`game.rs`): what crates draw around the window's own model in first
+    /// person, then what was drawn see-through, in one span.
+    pub(super) fn players_after_geometry(
+        &self,
+        camera: glam::DVec3,
+        alpha: f64,
+        out: &mut Vec<Vertex>,
+    ) {
+        if engine::any()
+            && !self.own_body_in_view()
+            && let Some(m) = self.player_model.as_ref()
+        {
+            let own = model(m, Kind::Own, self.remote.as_ref().map(|r| r.profile()));
+            let own = own.looks(own.gear, own.invisible || self.own_invisible());
+            self.mark_entity(out.len(), "minecraft:player");
             let mut draw = DrawPlayer {
                 game: self,
                 m,
-                pass: Pass::World,
-                base,
-                alpha,
-                light,
-                gpu,
+                pass: Pass::FirstPerson,
+                base: render::base_transform(m, alpha as f32, camera),
+                camera,
+                alpha: alpha as f32,
+                light: FULL,
+                gpu: false,
                 out: &mut *out,
                 bounds: None,
                 body: None,
                 poses: Poses::pooled(),
             };
-            engine::player_layers(&model, &mut draw);
-            bounds = draw.bounds;
+            engine::first_person(&own, &mut draw);
         }
-        let worn = super::cosmetics::enabled()
-            .then(|| self.cosmetics_geometry(m, false, base, Some(camera), alpha, light, gpu, out))
-            .flatten();
-        match (bounds, worn) {
-            (Some((l, h)), Some((lo, hi))) => Some((l.min(lo), h.max(hi))),
-            (b, w) => b.or(w),
-        }
+        let _ = SEE_THROUGH.try_with(|v| {
+            let mut v = v.borrow_mut();
+            if !v.is_empty() {
+                self.mark_translucent_entity(out.len(), "minecraft:player");
+                out.extend_from_slice(&v);
+                v.clear();
+            }
+        });
     }
 
     /// Once a frame, before drawing.
@@ -358,6 +524,7 @@ impl Game<'_> {
         let frame = Frame::new(connection, self.integrated.is_some());
         engine::frame(&frame, &mut HookStore(self));
         forget_meshes();
+        let _ = SEE_THROUGH.try_with(|v| v.borrow_mut().clear());
         self.cosmetics_frame();
     }
 

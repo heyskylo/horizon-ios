@@ -1178,3 +1178,75 @@ fn a_steered_mount_moves_through_the_air_at_a_tenth_of_its_speed() {
     m.extra.saddled = true;
     assert_eq!(m.flying_speed(), 0.3_f32 * 0.1);
 }
+
+/// `Strider.checkFallDamage`: in lava the fall is reset before the base runs, so
+/// a strider that drops into a lava sea lands with no damage and no dust — and
+/// walks out owing nothing — while a pig in the same lava takes the fall, and a
+/// strider landing on stone takes it too.
+#[test]
+fn a_strider_landing_in_lava_takes_no_fall_damage() {
+    use std::sync::Arc;
+    // A stone floor with a lava pool on it: the mob stands at y = 1.
+    let landed = |id: &str, lava: bool| -> Option<(f32, f64, bool)> {
+        let mut out = None;
+        let ran = crate::mobs::world::with_built_test_world(
+            &[],
+            move |world, registry| {
+                let stone = registry.default_state("minecraft:stone").unwrap();
+                let lava_state = registry.default_state("minecraft:lava").unwrap();
+                for cx in -1..1 {
+                    for cz in -1..1 {
+                        world
+                            .chunks
+                            .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
+                    }
+                }
+                for x in -4..4 {
+                    for z in -4..4 {
+                        world.set(x, 1, z, stone).unwrap();
+                    }
+                }
+                if lava {
+                    for x in -4..4 {
+                        for z in -4..4 {
+                            for y in 2..=4 {
+                                world.set(x, y, z, lava_state).unwrap();
+                            }
+                        }
+                    }
+                }
+            },
+            |w, types| {
+                let kind = Arc::new(types.types[id].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(0.5, 2.0, 0.5), 0.0);
+                m.on_ground = true;
+                // Six blocks of fall: three of damage on a safe distance of 3.
+                m.fall_distance = 6.0;
+                let start = m.health;
+                let mut events = Vec::new();
+                m.check_fall_damage(w, Vec3::ZERO, &mut events);
+                let dust = events
+                    .iter()
+                    .any(|e| matches!(e, MobEvent::LandingDust { .. }));
+                out = Some((start - m.health, m.fall_distance, dust));
+            },
+        );
+        if !ran {
+            return None;
+        }
+        out
+    };
+    let Some((strider_lava, rest, dust)) = landed("minecraft:strider", true) else {
+        return;
+    };
+    assert_eq!(strider_lava, 0.0, "a strider in lava takes no fall damage");
+    assert_eq!(rest, 0.0, "and its fall is reset");
+    assert!(!dust, "and no dust is sent up");
+    let (pig_lava, _, _) = landed("minecraft:pig", true).unwrap();
+    assert_eq!(pig_lava, 3.0, "a pig in the same lava takes the fall");
+    let (strider_stone, _, _) = landed("minecraft:strider", false).unwrap();
+    assert_eq!(
+        strider_stone, 3.0,
+        "a strider landing on stone takes it too"
+    );
+}
