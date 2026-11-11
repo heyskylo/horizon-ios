@@ -1278,6 +1278,28 @@ impl Items {
         }
         self.get(&stack.item)?.tool_damage_per_block
     }
+    /// `Weapon.disableBlockingForSeconds`: the stack's `weapon` component,
+    /// else the item's prototype; zero without one.
+    pub fn weapon_disable_blocking(&self, stack: &ItemStack) -> f32 {
+        if stack.count == 0 || &*stack.item == "minecraft:air" {
+            return 0.0;
+        }
+        if stack
+            .data()
+            .is_some_and(|d| d.other("!minecraft:weapon").is_some())
+        {
+            return 0.0;
+        }
+        if let Some(weapon) = stack.data().and_then(|d| d.other("minecraft:weapon")) {
+            return horizon_world::datafix::dynamic::as_float(
+                weapon.get("disable_blocking_for_seconds"),
+                0.0,
+            );
+        }
+        self.get(&stack.item)
+            .map_or(0.0, |i| i.disable_blocking_seconds)
+    }
+
     /// `Weapon.itemDamagePerAttack`: the stack's `weapon` component, else the
     /// item's prototype. A removed component leaves no weapon.
     pub fn weapon_damage(&self, stack: &ItemStack) -> Option<u32> {
@@ -2954,6 +2976,59 @@ mod tests {
             )>::new())),
         );
         assert_eq!(items.weapon_damage(&sword), None);
+    }
+
+    #[test]
+    fn weapon_disable_blocking_comes_from_the_stack() {
+        let root = std::env::temp_dir().join(format!(
+            "horizon-weapon-disable-blocking-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("items.json"),
+            r#"{"minecraft:stick":{},"minecraft:diamond_axe":{"minecraft:weapon":{"disable_blocking_for_seconds":5.0}}}"#,
+        )
+        .unwrap();
+        let items = Items::catalog(&root, &PackOverlay::NONE).unwrap();
+        let mut axe = ItemStack::new("minecraft:diamond_axe", 1);
+        assert_eq!(items.weapon_disable_blocking(&axe), 5.0);
+        for item in ["minecraft:stick", "test:unknown", "minecraft:air"] {
+            assert_eq!(items.weapon_disable_blocking(&ItemStack::new(item, 1)), 0.0);
+        }
+
+        // A replacement component uses the codec's zero default, not the axe's.
+        let empty = crate::item_data::command_components("[weapon={}]").unwrap();
+        (axe.damage, axe.extra) = crate::item_data::decode_components(Some(&empty));
+        assert_eq!(items.weapon_disable_blocking(&axe), 0.0);
+
+        let custom =
+            crate::item_data::command_components("[weapon={disable_blocking_for_seconds:1.5f}]")
+                .unwrap();
+        (axe.damage, axe.extra) = crate::item_data::decode_components(Some(&custom));
+        assert_eq!(items.weapon_disable_blocking(&axe), 1.5);
+        let mut stick = ItemStack::new("minecraft:stick", 1);
+        (stick.damage, stick.extra) = crate::item_data::decode_components(Some(&custom));
+        assert_eq!(items.weapon_disable_blocking(&stick), 1.5);
+        stick.count = 0;
+        assert_eq!(items.weapon_disable_blocking(&stick), 0.0);
+        stick.count = 1;
+        stick.item = "minecraft:air".into();
+        assert_eq!(items.weapon_disable_blocking(&stick), 0.0);
+
+        axe.data_mut().set_other(
+            "!minecraft:weapon",
+            Some(horizon_world::nbt::Tag::compound(Vec::<(
+                &str,
+                horizon_world::nbt::Tag,
+            )>::new())),
+        );
+        assert_eq!(items.weapon_disable_blocking(&axe), 0.0);
+        let removal = crate::item_data::command_components("[!weapon]").unwrap();
+        (axe.damage, axe.extra) = crate::item_data::decode_components(Some(&removal));
+        let restored = crate::item_nbt::item_from_nbt(&crate::item_nbt::item_to_nbt(&axe)).unwrap();
+        assert_eq!(items.weapon_disable_blocking(&restored), 0.0);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
