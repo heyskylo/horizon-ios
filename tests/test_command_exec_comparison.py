@@ -33,3 +33,28 @@ class CommandComparisonTests(unittest.TestCase):
     def test_unknown_comparison_fails_loudly(self):
         with self.assertRaises(ValueError):
             compare(self.record(1), self.record(1), 'typo')
+
+    def test_domain_probe_keeps_failure_feedback_and_callbacks_exact(self):
+        valid = {'cmd': '/execute unless data entity UUID VillagerData run data get entity UUID VillagerData.profession',
+                 'messages': [], 'results': []}
+        self.assertIsNone(compare(valid, copy.deepcopy(valid)))
+        for invalid in ({**valid, 'results': [[True, 7]]},
+                        {**valid, 'results': [[False, 0]]},
+                        {**valid, 'messages': [[['missing data', [None, False, False, False, False, False]]]]}):
+            with self.subTest(invalid=invalid):
+                self.assertIsNotNone(compare(valid, invalid))
+
+    def test_saved_data_feedback_styles_and_finalized_state_stay_exact(self):
+        saved = self.record(3)
+        saved['cmd'] = '/data get entity UUID VillagerData'
+        saved['messages'][0][0][0] = '{profession:"minecraft:cleric",type:"minecraft:taiga",level:2}'
+        finalized = self.record(1)
+        finalized['cmd'] = '/data get entity UUID VillagerDataFinalized'
+        for changed in ('profession:"minecraft:farmer"', 'type:"minecraft:plains"', 'level:1'):
+            wrong = copy.deepcopy(saved)
+            wrong['messages'][0][0][0] = changed
+            self.assertEqual(compare(saved, wrong), 'messages')
+        wrong_style = copy.deepcopy(saved)
+        wrong_style['messages'][0][0][1][1] = True
+        self.assertEqual(compare(saved, wrong_style), 'messages')
+        self.assertEqual(compare(finalized, {**finalized, 'results': [[True, 0]]}), 'results')
