@@ -59,7 +59,7 @@ fn meta_hub() -> horizon_client::lan::hub::Hub {
 /// What the host sends for `m`, and the flags byte among it.
 fn sent(m: &Mob, hub: &horizon_client::lan::hub::Hub) -> (Vec<(u8, i32, Value)>, Option<i8>) {
     let (mut meta, mut defaults) = (Vec::new(), Vec::new());
-    lan::mob_meta(m, hub, None, 0, &mut meta, &mut defaults);
+    lan::mob_meta(m, hub.sync_data(), None, 0, &mut meta, &mut defaults);
     let flags = meta
         .iter()
         .find(|(index, _, _)| *index == 18)

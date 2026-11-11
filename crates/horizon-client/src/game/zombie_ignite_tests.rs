@@ -3,7 +3,7 @@
 use super::*;
 use crate::game::*;
 use horizon_client::mobs::{ai::do_hurt_target, goals::Cx};
-use horizon_core::random::LegacyRandom;
+use horizon_core::random::{EntityRandom, LegacyRandom};
 use horizon_world::food::Difficulty;
 
 fn with_game(test: impl FnOnce(&mut Game<'_>)) {
@@ -72,7 +72,7 @@ fn blows(cases: &[Case]) -> Vec<(i32, f32)> {
             let mut m = Mob::new(41, type_, Vec3::new(2.5, 64.0, 0.5), 0.0);
             m.fire_ticks = if burning { 100 } else { 0 };
             m.extra.main_hand = hand.map(Arc::from);
-            m.random = LegacyRandom::new(seed);
+            m.random = EntityRandom::own(LegacyRandom::new(seed));
             g.mobs.push(m);
             // The mob out of the level while its own blow runs, as in its tick.
             let mut mobs = std::mem::take(&mut g.mobs);
