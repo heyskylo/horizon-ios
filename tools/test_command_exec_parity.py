@@ -180,6 +180,7 @@ def main():
     parser.add_argument('--mob-health-boost-raw-diagnostic', action='store_true', help='add each mob\'s whole entity data')
     parser.add_argument('--sulfur-body-attributes-fixture', action='store_true', help='a sulfur cube\'s body archetype attribute modifiers through /attribute')
     parser.add_argument('--sulfur-body-replace-fixture', action='store_true', help='a sulfur cube\'s body replaced and removed through /data')
+    parser.add_argument('--sulfur-body-item-fixture', action='store_true', help='/item replace on a sulfur cube\'s armor.body')
     parser.add_argument('--sulfur-body-attributes-raw-diagnostic', action='store_true', help='add the whole attributes lists and entity data')
     parser.add_argument('--mob-absorption-fixture', action='store_true', help='a mob\'s Absorption effect once the absorption is used up')
     parser.add_argument('--mob-absorption-infinite-fixture', action='store_true', help='infinite Absorption used up, kept, and beside another infinite effect')
@@ -227,6 +228,8 @@ def main():
     if not args.only:
         groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_JUKEBOX_CLOCK]
         groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_GUEST_CLOSE]
+        groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_ITEM_COUNT]
+        groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_SHULKER_LOCK]
         groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_POT_HOPPER]
     if args.vehicle_container_diagnostic:
         try:
@@ -398,7 +401,7 @@ def main():
     if args.pufferfish_contact_fixture:
         from pufferfish_contact_corpus import contact_fixture
         groups = [("pufferfish player contact", contact_fixture(args.pufferfish_body_diagnostic))]
-    if args.only == 'hopper pot saved slot':
+    if args.only in ('hopper pot saved slot', 'shulker external lock drop'):
         groups = [g for g in groups if g[0] == args.only]
     elif args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
@@ -417,11 +420,17 @@ def main():
     if args.vehicle_kill_diagnostic:
         from vehicle_kill_corpus import vehicle_kill_contents
         groups = [('setup', corpus_module.group_setup()), ('vehicle kill contents', vehicle_kill_contents(corpus_module.cmd, True))]
+    if args.only in corpus_module.ISOLATED_ITEM_COUNT:
+        groups = [g for g in groups if g[0] == args.only]
     if args.slot_codec_diagnostic:
         groups.append(('slot source codec diagnostic', [corpus_module.cmd(
             '/item fill block 4 200 4 {type:"minecraft:slot_range",slots:"container.99"} with diamond')]))
     if any(name in corpus_module.ISOLATED_JUKEBOX_CLOCK for name, _ in groups) and len(groups) != 1:
         parser.error('jukebox clock fixture requires --only with its exact group')
+    if any(name in corpus_module.ISOLATED_ITEM_COUNT for name, _ in groups) and len(groups) != 1:
+        parser.error('item count fixture requires --only with its exact group')
+    if any(name in corpus_module.ISOLATED_SHULKER_LOCK for name, _ in groups) and len(groups) != 1:
+        parser.error('shulker lock fixture requires --only with its exact group')
     if any(name in corpus_module.ISOLATED_POT_HOPPER for name, _ in groups) and len(groups) != 1:
         parser.error('pot hopper fixture requires --only with its exact group')
     if any(name in isolated_reinforcements for name, _ in groups) and sum(name != 'setup' for name, _ in groups) != 1:
@@ -467,6 +476,9 @@ def main():
     if args.sulfur_body_replace_fixture:
         from sulfur_body_attributes_corpus import sulfur_body_replace
         groups = [('setup', corpus_module.group_setup()), ('sulfur body replace', sulfur_body_replace())]
+    if args.sulfur_body_item_fixture:
+        from sulfur_body_attributes_corpus import sulfur_body_item_replace
+        groups = [('setup', corpus_module.group_setup()), ('sulfur body item replace', sulfur_body_item_replace())]
     if args.mob_absorption_fixture:
         from mob_absorption_corpus import mob_absorption
         groups = [('setup', corpus_module.group_setup()), ('mob depleted absorption', mob_absorption(args.mob_absorption_raw_diagnostic))]

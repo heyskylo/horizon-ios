@@ -166,7 +166,8 @@ impl FurnaceCooking for Furnace {
                 self.cooking_timer = 0;
             }
         } else if self.cooking_timer > 0 {
-            self.cooking_timer = (self.cooking_timer - 2).clamp(0, self.cooking_total);
+            // Vanilla Mth.clamp is min(max(v, 0), max): saturates at a negative total instead of panicking.
+            self.cooking_timer = (self.cooking_timer - 2).max(0).min(self.cooking_total);
         }
         (was_lit != lit).then_some(lit)
     }
