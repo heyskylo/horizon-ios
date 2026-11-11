@@ -894,8 +894,6 @@ impl Game<'_> {
         true
     }
 
-    /// `ComparatorBlockEntity.saveAdditional`: expose the circuit's live output,
-    /// rather than keeping a second copy in the ordinary block entity map.
     /// `ComparatorBlockEntity.loadAdditional` (`getIntOr("OutputSignal", 0)`)
     /// for a comparator at `p`: None for any other block; else whether the
     /// loaded output differs from the one it had (None inside when the tag
@@ -918,6 +916,9 @@ impl Game<'_> {
         }
         Some(Some(output != before))
     }
+
+    /// `ComparatorBlockEntity.saveAdditional`: expose the circuit's live output,
+    /// rather than keeping a second copy in the ordinary block entity map.
     fn comparator_data(&self, p: [i32; 3]) -> Option<Tag> {
         if self.data_block_name(p) != "minecraft:comparator" {
             return None;
