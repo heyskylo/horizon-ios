@@ -485,6 +485,29 @@ impl Containers<'_> {
         }
     }
     /// `canTakeItemThroughFace` (furnaces and brewing stands restrict it).
+    /// `Container.canTakeItem` for a hopper's slot of `source`: the vanilla
+    /// shelf rule needs to know where the item is going.
+    fn can_take_into(
+        &self,
+        view: &View,
+        slot: usize,
+        stack: &ItemStack,
+        face: Direction,
+        target: &View,
+    ) -> bool {
+        if view.kind == Kind::Bookshelf {
+            // `ChiseledBookShelfBlockEntity.canTakeItem`: the target must have
+            // a free slot or a matching stack with room (`hasAnyMatching`).
+            return (0..target.len()).any(|i| match self.get(target, i) {
+                None => true,
+                Some(other) => {
+                    other.same_item_same_components(stack)
+                        && other.count + stack.count <= self.max_stack(other)
+                }
+            });
+        }
+        self.can_take(view, slot, stack, face)
+    }
     fn can_take(&self, view: &View, slot: usize, stack: &ItemStack, face: Direction) -> bool {
         if let Kind::Composter(level) = view.kind {
             // OutputContainer.canTakeItemThroughFace.
@@ -1437,7 +1460,7 @@ impl Game<'_> {
                 let Some(stack) = c.insertion_item(source, slot).map(Cow::into_owned) else {
                     continue;
                 };
-                if !c.can_take(source, slot, &stack, Direction::Down) {
+                if !c.can_take_into(source, slot, &stack, Direction::Down, hopper) {
                     continue;
                 }
             }
