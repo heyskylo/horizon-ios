@@ -1,6 +1,10 @@
 //! The per-tick mob update in vanilla order (`Entity.baseTick`,
 //! `LivingEntity.baseTick/tick/aiStep`, `Mob.serverAiStep`) and the
 //! dispatch to each species family's goals and special behaviour.
+mod feeding;
+
+pub use feeding::takes_food;
+
 use super::{
     Damage, DamageKind, Mob, MobEvent, MobWorld, Species, Who, aquatic,
     control::{BodyRotation, LookControl, MoveControl},
@@ -21,9 +25,15 @@ use horizon_core::{
 #[cfg(test)]
 #[path = "fall_flying_tests.rs"]
 mod fall_flying_tests;
+#[path = "ai_glide.rs"]
+mod glide;
+use glide::update_fall_flying;
 #[cfg(test)]
 #[path = "wet_fire_tests.rs"]
 mod wet_fire_tests;
+
+mod step;
+pub(crate) use step::step_sound;
 
 use crate::powder_snow::particle_velocity as powder_snow_particle_velocity;
 
@@ -709,9 +719,7 @@ pub fn tick(
     if m.no_ai {
         update_fall_flying(m, w, events);
         reset_effect_fall_distance(m);
-        // Mob.aiStep still runs without AI (only serverAiStep is skipped),
-        // so undead still burn in daylight and the endermite's life keeps
-        // counting.
+        // Mob.aiStep still runs without AI: undead burn, endermites age.
         burn_undead(m, w, events);
         if m.species() == Species::Endermite {
             endermite_lifetime(m);
@@ -753,13 +761,10 @@ pub fn tick(
         if m.species() == Species::Ravager {
             super::ravager::ai_step(m, w, events);
         }
-        if m.species() == Species::Pufferfish {
-            // Pufferfish.aiStep's mob contacts run even when serverAiStep is skipped.
-            aquatic::sting_touching_mobs(m, w, events);
+        if family(m.species()) == Family::Aquatic {
+            aquatic::no_ai_step(m, w, events);
         }
-        if m.species() == Species::GlowSquid {
-            aquatic::glow_squid_dark_tick(m);
-        }
+        super::cube::no_ai_tick(m, w, events); // AbstractCubeMob.tick
         // Shulker.tick after its living tick: a NoAI shell still keeps a
         // face and eases its lid, pushing what the lid opens into.
         if m.species() == Species::Shulker {
@@ -775,6 +780,9 @@ pub fn tick(
     }
     count_fall_fly_ticks(m);
     effects_from_blocks(m, w, level_random, events);
+    if m.alive() {
+        freeze_tick(m, w, events);
+    }
     extinguish_if_wet(m, w, was_on_fire, events);
     if m.species() == Species::SulfurCube && m.alive() {
         // SulfurCube.doPush applies the body's contact damage even with NoAI.
@@ -1344,7 +1352,6 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
                 }
             }
         }
-        freeze_tick(m, w, events);
     }
     if m.species() == Species::Illusioner {
         super::illusioner::tick(m, events);
@@ -1394,9 +1401,7 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
     super::leash::tick(m, w, events);
     was_on_fire
 }
-/// `LivingEntity.aiStep`'s "freezing" with `InsideBlockEffectType.FREEZE`:
-/// powder snow builds `ticks_frozen` up, anywhere else it melts twice as
-/// fast, and a fully frozen mob takes one freeze damage every 40 ticks.
+/// `LivingEntity.aiStep` freezing: runs after the move and `effects_from_blocks`.
 fn freeze_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     let in_snow = in_powder_snow(m, w);
     m.in_powder_snow = in_snow;
@@ -1674,61 +1679,6 @@ fn ageable_step(
     }
 }
 
-/// `LivingEntity.updateFallFlying` on the server, which `aiStep` calls while
-/// the glide flag is set, with or without AI: a mob that cannot glide
-/// (`canGlide`: on the ground, riding, levitating, or no slot holding a
-/// glider whose next damage will not break it, `canGlideUsing`) stops
-/// gliding; else on every 20th glide tick one of its gliders, picked with
-/// `Util.getRandom` from the mob's own random, takes a point of wear.
-/// `checkFallDistanceAccumulation` and the `ELYTRA_GLIDE` game event of
-/// every 10th tick are not ported here.
-fn update_fall_flying(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
-    use horizon_world::player_inventory::EquipmentSlot;
-    if !m.extra.fall_flying {
-        return;
-    }
-    let gliders: Vec<EquipmentSlot> = match w.items {
-        Some(items) => EquipmentSlot::ALL
-            .into_iter()
-            .filter(|&slot| {
-                super::finalize::equipment_stack(m, slot).is_some_and(|stack| {
-                    crate::item_sync::can_glide_using(&stack, glider_slot_name(slot), items)
-                })
-            })
-            .collect(),
-        None => Vec::new(),
-    };
-    if m.on_ground
-        || m.extra.mount.is_some()
-        || m.has_effect("minecraft:levitation")
-        || gliders.is_empty()
-    {
-        m.extra.fall_flying = false;
-        return;
-    }
-    let ticks = m.extra.fall_fly_ticks + 1;
-    if ticks % 10 == 0 && (ticks / 10) % 2 == 0 {
-        let pick = m.random.next_int_bound(gliders.len() as i32).unwrap_or(0) as usize;
-        events.push(MobEvent::GliderWear {
-            mob: m.id,
-            slot: gliders[pick],
-        });
-    }
-}
-/// `EquipmentSlot`'s serialized name, which `equippable` names its slot by.
-fn glider_slot_name(slot: horizon_world::player_inventory::EquipmentSlot) -> &'static str {
-    use horizon_world::player_inventory::EquipmentSlot as S;
-    match slot {
-        S::MainHand => "mainhand",
-        S::OffHand => "offhand",
-        S::Feet => "feet",
-        S::Legs => "legs",
-        S::Chest => "chest",
-        S::Head => "head",
-        S::Body => "body",
-        S::Saddle => "saddle",
-    }
-}
 /// `LivingEntity.tick` after `aiStep`: the glide's tick count.
 fn count_fall_fly_ticks(m: &mut Mob) {
     m.extra.fall_fly_ticks = if m.extra.fall_flying {
@@ -2222,7 +2172,7 @@ fn species_ai_step(
         Species::Vex => super::vex::ai_step(m, w),
         Species::Ravager => super::ravager::ai_step(m, w, events),
         Species::Wither => super::wither::ai_step(m, w, level_random, events),
-        Species::Allay => super::allay::ai_step(m),
+        Species::Allay => super::allay::ai_step(m, w),
         Species::Bee => super::bee::ai_step(m, w),
         Species::PolarBear => super::polar_bear::ai_step(m, w),
         Species::Breeze => super::breeze::ai_step(m),
@@ -2274,12 +2224,12 @@ pub fn despawn_check(m: &mut Mob, w: &MobWorld) -> bool {
 }
 /// `Mob.requiresCustomPersistence` and its overrides: a passenger or a leashed
 /// mob, a raider in a raid, an enderman carrying a block, a tame nautilus, a
-/// sulfur cube holding a block or let out of a bucket, a fish or axolotl
-/// let out of a bucket (`AbstractFish`/`Axolotl`: `|| fromBucket()`). The spawn
-/// caps do not count these mobs either (`NaturalSpawner.createState`).
+/// sulfur cube holding a block or let out of a bucket, a fish or axolotl let
+/// out of a bucket and every tadpole (`AbstractFish`/`Axolotl`: `fromBucket()`).
+/// The spawn caps do not count these mobs either (`NaturalSpawner.createState`).
 pub fn requires_custom_persistence(m: &Mob) -> bool {
     super::riders::keeps_alive(m)
-        || m.extra.from_bucket
+        || super::aquatic::from_bucket(m)
         || m.extra.leash.is_some()
         || super::raider::state(m).is_some_and(|s| s.raid_id.is_some())
         || m.species() == Species::Enderman && m.extra.carried.is_some()
@@ -2305,10 +2255,10 @@ fn check_despawn(m: &mut Mob, w: &MobWorld) -> bool {
     let persistent = m.persistent || requires_custom_persistence(m);
     // removeWhenFarAway: animals, villagers, golems, patrols and raiders,
     // zombie villagers being cured and ridden mobs stay, bar the two felines.
-    let creature = m.kind.category == "creature";
     let feline_goes = feline_removed_when_far(m.species(), m.extra.tame || m.extra.trusting, m.age);
     let removable = !(never_removed_when_far(m.species())
-        || creature && m.kind.flags.animal && !m.extra.jockey && !feline_goes
+        || super::aquatic::named_keeps_it(m)
+        || m.kind.category == "creature" && m.kind.flags.animal && !m.extra.jockey && !feline_goes
         || super::raider::keeps_alive(m, d)
         || super::zombie_villager::keeps_alive(m)
         || super::riders::keeps_alive(m));
@@ -2475,16 +2425,6 @@ pub fn voice_sounds(m: &Mob) -> [&'static str; 3] {
         }
         _ => m.kind.sounds,
     }
-}
-/// Whether `Animal.mobInteract` takes the animal's food: an adult at age 0
-/// that `canFallInLove` (not in love yet) or a baby that `canAgeUp` (not age
-/// locked). Tamed wolves and cats only sit or stand when it does not.
-pub fn takes_food(m: &Mob) -> bool {
-    // `Turtle.canFallInLove` is `super.canFallInLove() && !this.hasEgg()`: a
-    // turtle that already carries an egg refuses its food instead of breeding.
-    let breedable =
-        m.extra.in_love <= 0 && !(m.species() == Species::Turtle && super::turtle::has_egg(m));
-    (m.extra.age == 0 && breedable) || (m.extra.age < 0 && !m.extra.age_locked)
 }
 /// `Animal.mobInteract` with its food in hand: an adult that can fall in
 /// love does, a baby grows up by a tenth, and either plays its eating sound
@@ -3256,109 +3196,6 @@ pub fn movement_sounds(m: &Mob) -> bool {
             | Species::Breeze
     )
 }
-/// `playStepSound`: the species' footstep, or the block's step sound at 15%.
-pub fn step_sound(
-    m: &Mob,
-    w: &MobWorld,
-    pos: [i32; 3],
-    state: horizon_world::registry::BlockStateId,
-) -> Option<(&'static str, f32, f32)> {
-    use Species as S;
-    let baby = m.is_baby();
-    let quiet = |s: &'static str| Some((s, 0.15, 1.0));
-    match m.species() {
-        // `playStepSound` overridden with an empty body: a fish, an allay, a bee,
-        // a happy ghast and a nautilus have no footfall of their own, so the
-        // block's step sound is not taken either.
-        S::Allay
-        | S::Bee
-        | S::Cod
-        | S::Salmon
-        | S::TropicalFish
-        | S::Pufferfish
-        | S::Tadpole
-        | S::HappyGhast
-        | S::Nautilus
-        | S::ZombieNautilus => None,
-        S::Armadillo => quiet("entity.armadillo.step"),
-        S::Chicken | S::Cow | S::Pig | S::Wolf => {
-            super::finalize::variant_sound(m, "step").and_then(quiet)
-        }
-        S::Mooshroom => quiet("entity.cow.step"),
-        S::Llama | S::TraderLlama => quiet("entity.llama.step"),
-        S::Frog => quiet("entity.frog.step"),
-        S::Goat => quiet("entity.goat.step"),
-        S::Panda => quiet("entity.panda.step"),
-        S::Parrot => quiet("entity.parrot.step"),
-        S::PolarBear => quiet("entity.polar_bear.step"),
-        S::Sheep => quiet("entity.sheep.step"),
-        S::Sniffer => quiet("entity.sniffer.step"),
-        S::Turtle if baby => quiet("entity.turtle.shamble_baby"),
-        S::Turtle => quiet("entity.turtle.shamble"),
-        S::Creaking => quiet("entity.creaking.step"),
-        S::Hoglin => quiet("entity.hoglin.step"),
-        S::Zoglin => quiet("entity.zoglin.step"),
-        S::Piglin => quiet("entity.piglin.step"),
-        S::PiglinBrute => quiet("entity.piglin_brute.step"),
-        S::Ravager => quiet("entity.ravager.step"),
-        S::Skeleton => quiet("entity.skeleton.step"),
-        S::Stray => quiet("entity.stray.step"),
-        S::Bogged => quiet("entity.bogged.step"),
-        S::Parched => quiet("entity.parched.step"),
-        S::WitherSkeleton => quiet("entity.wither_skeleton.step"),
-        S::Spider | S::CaveSpider => quiet("entity.spider.step"),
-        // Silverfish.playStepSound and Endermite.playStepSound: both ask for
-        // their own step at 15%, though neither type's movement emission plays
-        // it (`movement_sounds`).
-        S::Silverfish => quiet("entity.silverfish.step"),
-        S::Endermite => quiet("entity.endermite.step"),
-        S::Zombie | S::ZombifiedPiglin => quiet("entity.zombie.step"),
-        S::Husk => quiet("entity.husk.step"),
-        S::Drowned => quiet("entity.drowned.step"),
-        S::ZombieVillager => quiet("entity.zombie_villager.step"),
-        // Camel.playStepSound and CamelHusk.playStepSound: sand and concrete
-        // powder have their own step.
-        S::CamelHusk | S::Camel => {
-            let sand = w.has_tag(
-                "minecraft:camel_sand_step_sound_blocks",
-                &w.facts.get(state).name,
-            );
-            Some(match (m.species(), sand) {
-                (S::Camel, true) => ("entity.camel.step_sand", 1.0, 1.0),
-                (S::Camel, false) => ("entity.camel.step", 1.0, 1.0),
-                (_, true) => ("entity.camel_husk.step_sand", 0.4, 1.0),
-                (_, false) => ("entity.camel_husk.step", 0.4, 1.0),
-            })
-        }
-        S::IronGolem => Some(("entity.iron_golem.step", 1.0, 1.0)),
-        // CopperGolem.playStepSound: its oxidation level's step.
-        S::CopperGolem => Some((super::copper_golem::sound(m, "step"), 1.0, 1.0)),
-        S::Strider if m.fluids.in_lava => Some(("entity.strider.step_lava", 1.0, 1.0)),
-        S::Strider => Some(("entity.strider.step", 1.0, 1.0)),
-        S::Warden => Some(("entity.warden.step", 10.0, 1.0)),
-        _ => {
-            // Entity.playStepSound: the block's sound type.
-            let _ = pos;
-            let sounds = &w.facts.get(state).sounds;
-            let step: &'static str = super::ai::intern_sound(&sounds.step);
-            Some((step, sounds.volume * 0.15, sounds.pitch))
-        }
-    }
-}
-/// A block sound id as a static string (the block facts intern them).
-pub fn intern_sound(s: &std::sync::Arc<str>) -> &'static str {
-    use std::{collections::HashSet, sync::Mutex};
-    static NAMES: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
-    let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
-    let set = names.get_or_insert_with(HashSet::new);
-    let key = s.strip_prefix("minecraft:").unwrap_or(s);
-    if let Some(found) = set.get(key) {
-        return found;
-    }
-    let leaked: &'static str = Box::leak(key.to_owned().into_boxed_str());
-    set.insert(leaked);
-    leaked
-}
 /// `getSwimSound`. A skeleton horse's own override counts the steps it takes
 /// through the water, so it needs the mob, not just its species.
 pub fn swim_sound(m: &mut Mob) -> &'static str {
@@ -3429,6 +3266,31 @@ mod despawn_tests {
         for s in [Species::Cow, Species::Sheep, Species::Wolf] {
             assert!(!feline_removed_when_far(s, false, 12000), "{s:?}");
         }
+    }
+    /// `AbstractFish.removeWhenFarAway` and `Axolotl.removeWhenFarAway`: a fish or
+    /// an axolotl with a custom name is kept however far it swims, while the name
+    /// saves no other mob — a monster still goes.
+    #[test]
+    fn a_named_fish_or_axolotl_never_despawns() {
+        crate::mobs::world::with_test_world(&[], |w, types| {
+            let far = MobWorld {
+                // 200 blocks from the player: past the 128 a monster loses.
+                nearest_player: Some(Vec3::new(200.0, 64.0, 0.0)),
+                ..w.clone()
+            };
+            let checked = |id: &str, name: Option<&str>| {
+                let kind = std::sync::Arc::new(types.types[id].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(0.0, 64.0, 0.0), 0.0);
+                m.custom_name = name.map(str::to_owned);
+                despawn_check(&mut m, &far)
+            };
+            for fish in ["minecraft:cod", "minecraft:salmon", "minecraft:axolotl"] {
+                assert!(checked(fish, Some("Bubbles")), "{fish} keeps its name");
+                assert!(!checked(fish, None), "{fish} without one goes");
+            }
+            // A name is not persistence for anything else.
+            assert!(!checked("minecraft:zombie", Some("Bubbles")));
+        });
     }
 }
 
@@ -4518,6 +4380,36 @@ mod feed_tests {
             m.extra.age = 6000;
             assert!(!takes_food(&m), "{id}: breeding cooldown");
         }
+    }
+
+    /// `Animal.mobInteract`'s growing branch is `canAgeUp()` — `isBaby() &&
+    /// !isAgeLocked()` — and a species `canBeABaby` says is never a baby does
+    /// not grow when fed, however negative its `Age` is: a frog spawned with
+    /// `Age` at `getBabyStartAge` keeps its food. A cow at the same age takes
+    /// it and grows a tenth.
+    #[test]
+    fn a_mob_that_cannot_be_a_baby_never_takes_the_food_that_grows_it() {
+        let mob = |id: &str, species: Species, age: i32| {
+            let mut kind = crate::mobs::sensor_scan_tests::kind();
+            let k = Arc::make_mut(&mut kind);
+            k.id = id.into();
+            k.species = species;
+            let mut m = Mob::new(1, kind, Vec3::ZERO, 0.0);
+            m.extra.age = age;
+            m
+        };
+        let mut level = LegacyRandom::new(0);
+        let mut frog = mob("minecraft:frog", Species::Frog, -24_000);
+        assert!(!frog.is_baby());
+        assert!(!takes_food(&frog), "a frog is never a baby");
+        assert!(feed_animal(&mut frog, &mut level, None).is_none());
+        assert_eq!(frog.extra.age, -24_000, "it does not grow");
+
+        let mut cow = mob("minecraft:cow", Species::Cow, -24_000);
+        assert!(cow.is_baby());
+        assert!(takes_food(&cow));
+        assert!(feed_animal(&mut cow, &mut level, None).is_some());
+        assert_eq!(cow.extra.age, -24_000 + 120 * 20, "it grows a tenth");
     }
 
     /// `Turtle.canFallInLove` (#8612): a turtle that already carries an egg

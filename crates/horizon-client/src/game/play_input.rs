@@ -58,6 +58,22 @@ impl Game<'_> {
             self.keys.remove(&key);
         }
     }
+    pub(super) fn update_modifiers(&mut self, state: winit::keyboard::ModifiersState) {
+        self.modifiers = state;
+        horizon_client_input::modifiers::reconcile(
+            self.modifiers,
+            &mut self.physical_keys,
+            &self.settings.keys,
+            &mut self.toggles,
+            [self.settings.toggle_crouch, self.settings.toggle_sprint],
+            [
+                self.pad.holds_action("key.sneak"),
+                self.pad.holds_action("key.sprint"),
+            ],
+        );
+        self.sync_toggle(SNEAK);
+        self.sync_toggle(SPRINT);
+    }
     /// Let a held sneak, sprint or modifier key go when the keyboard reports
     /// its modifier up. A release does not always reach the mapping: a screen
     /// reads presses only, and an unfocused window is given no release at all,
@@ -90,6 +106,16 @@ impl Game<'_> {
                 self.physical_keys.remove(&key);
             }
         }
+        if !self.modifiers.alt_key() {
+            for key in [KeyCode::AltLeft, KeyCode::AltRight] {
+                self.physical_keys.remove(&key);
+            }
+        }
+        if !self.modifiers.super_key() {
+            for key in [KeyCode::SuperLeft, KeyCode::SuperRight] {
+                self.physical_keys.remove(&key);
+            }
+        }
         for (slot, mapping, needs_toggle) in [
             (0, "key.sneak", self.settings.toggle_crouch),
             (1, "key.sprint", self.settings.toggle_sprint),
@@ -114,9 +140,7 @@ impl Game<'_> {
             // A pad's toggle-sneak isn't holding it: it has no release that would end it.
             Source::Keyboard => {
                 !(slot == SNEAK && self.settings.controller.toggle_sneak)
-                    && self
-                        .pad
-                        .holds_action(&self.settings.controller, ["key.sneak", "key.sprint"][slot])
+                    && self.pad.holds_action(["key.sneak", "key.sprint"][slot])
             }
             Source::Pad => self.physical_keys.iter().any(|physical| {
                 self.settings
@@ -459,7 +483,7 @@ impl Game<'_> {
 
     /// Whether a device holds the key mapping named `mapping` (`key.use`).
     pub(super) fn input_holds(&self, mapping: &str) -> bool {
-        self.pad.holds_action(&self.settings.controller, mapping)
+        self.pad.holds_action(mapping)
     }
 
     /// Turns the view by what the devices give this frame (`Entity.turn`).
@@ -481,7 +505,7 @@ impl Game<'_> {
 
     /// A new player entity took over (spawn, respawn, a server joined, a dimension change).
     pub(super) fn input_player_replaced(&mut self) {
-        self.pad.player_replaced();
+        self.pad_player_replaced();
     }
 
     /// Whether the drop about to happen is a device's whole-stack drop (it has no Control key to

@@ -52,7 +52,7 @@ pub struct TextureFlags {
 impl TextureFlags {
     /// The `texture` section of a `.png.mcmeta` file, if it sets either flag.
     pub fn from_mcmeta(json: &str) -> Option<Self> {
-        let meta: serde_json::Value = serde_json::from_str(json).ok()?;
+        let meta = crate::packs::first_json(json.as_bytes())?;
         let section = meta.get("texture")?;
         let flag = |key| section.get(key).and_then(serde_json::Value::as_bool) == Some(true);
         let flags = Self {
@@ -387,7 +387,7 @@ fn strip_frame(pixels: &[u8], stride: u32, x: u32, y: u32, w: u32, h: u32) -> Ve
 }
 /// The `animation` section of a texture's `.mcmeta`.
 fn animation_of(mcmeta: Option<&str>) -> Option<AnimationMetadata> {
-    let meta: serde_json::Value = serde_json::from_str(mcmeta?).ok()?;
+    let meta = crate::packs::first_json(mcmeta?.as_bytes())?;
     AnimationMetadata::from_json(&meta.get("animation")?.to_string()).ok()
 }
 /// An animated strip's first frame: the region the mcmeta's frame size picks
@@ -3109,6 +3109,18 @@ mod coverage_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn animated_texture_metadata_ignores_trailing_pack_signature() {
+        let meta = r#"{"animation":{"frametime":2,"width":2,"height":2}}
+// High Contrast pack signature"#;
+        let animation = animation_of(Some(meta)).expect("the first JSON value is metadata");
+        assert_eq!(animation.frame_size(8, 4), [2, 2]);
+        let pixels = (0..8 * 4).flat_map(|i| [i as u8, 0, 0, 255]).collect();
+        let (_, height, first) = first_frame((8, 4, pixels), Some(&animation));
+        assert_eq!(height, 2);
+        assert_eq!(first.len(), 2 * 2 * 4);
+    }
 
     #[test]
     fn object_skin_revision_tracks_changes_and_capacity_clear() {
