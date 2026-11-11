@@ -1598,13 +1598,7 @@ impl<R: RandomSource> Context<'_, R> {
             }
             "minecraft:set_enchantments" => {
                 if let Some(map) = f["enchantments"].as_object() {
-                    if stack.item == "minecraft:book" {
-                        stack.item = "minecraft:enchanted_book".into();
-                    }
-                    for (name, level) in map {
-                        let level = self.int(level);
-                        enchant(&mut stack, name, level);
-                    }
+                    set_enchantments(&mut stack, map, |value| self.int(value));
                 }
             }
             "minecraft:set_potion" => stack.potion = f["id"].as_str().map(str::to_owned),
@@ -2156,6 +2150,22 @@ struct Choice<'v> {
     entry: &'v Value,
     item: Option<String>,
 }
+/// `SetEnchantmentsFunction.run`: replace the stack's levels with `map`'s
+/// (a book transmutes to an enchanted book first).
+fn set_enchantments(
+    stack: &mut LootStack,
+    map: &serde_json::Map<String, serde_json::Value>,
+    mut level: impl FnMut(&serde_json::Value) -> i32,
+) {
+    if stack.item == "minecraft:book" {
+        stack.item = "minecraft:enchanted_book".into();
+    }
+    stack.enchantments.clear();
+    for (name, value) in map {
+        stack.enchantments.push((name.clone(), level(value).max(0)));
+    }
+}
+
 fn enchant(stack: &mut LootStack, name: &str, level: i32) {
     match stack.enchantments.iter_mut().find(|(n, _)| n == name) {
         Some(slot) => slot.1 = level,
