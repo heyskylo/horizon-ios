@@ -21,7 +21,6 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 pub mod combat;
-pub mod prediction;
 pub mod timer;
 
 /// What one check's violation level leads to.
@@ -162,8 +161,8 @@ checks! {
 
     /// Prediction: each move played again from the client's own inputs with vanilla's movement code,
     /// and compared (speed, step, fly, jesus...). Each player's client ticks are recorded
-    /// (`prediction::Record`), with a ping a tick to place what the server changes, and played again
-    /// (horizon-client's `lan::prediction`). A move that lands farther than `tolerance` from the
+    /// (horizon-client's `lan::prediction::record`), with a ping a tick to place what the server changes,
+    /// and played again (`lan::prediction`). A move that lands farther than `tolerance` from the
     /// replay flags, by how far it lands (one `tolerance` off weighs 1, at most 5 a tick), and the
     /// setback puts the player back where its moves last agreed. A tick near what the replay can't
     /// play yet (another entity, a block change or abilities the client hadn't seen, a moving piston,
@@ -279,15 +278,6 @@ pub struct Player {
     pub timer: timer::Balance,
     /// The server tick and height where the ground last held the player.
     pub ground: Option<(u64, f64)>,
-    /// The client ticks the prediction plays again (only while it runs).
-    pub record: Option<Box<prediction::Record>>,
-    /// Sprinting as the client's own commands left it (ServerboundPlayerCommandPacket's
-    /// START_SPRINTING and STOP_SPRINTING: LocalPlayer.wasSprinting), which the record's ticks take.
-    /// Not the server's player: a hit with extra knockback stops its sprint
-    /// (Player.causeExtraKnockback), the client's own `Player.attack` doesn't (a mob's `hurtClient`
-    /// is false), and once the server's flag reaches it LocalPlayer.aiStep starts the sprint again
-    /// while the sprint key is held, with nothing to say: wasSprinting never changed.
-    pub sprinting: bool,
     /// The attacks of the client tick being heard.
     pub attacks: combat::Attacks,
 }
