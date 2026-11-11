@@ -2307,6 +2307,66 @@ mod tests {
             "an alive attacker is avenged; a dead one is not"
         );
     }
+    /// `Cat.CatAvoidEntityGoal.canContinueToUse` is `!cat.isTame()
+    /// && super.canContinueToUse()`: taming a fleeing cat stops the flight.
+    #[test]
+    fn a_cat_stops_fleeing_when_it_is_tamed() {
+        use crate::mobs::goals::Cx;
+        use crate::mobs::path::{Path, PathNode, PathType};
+        use crate::mobs::world::with_test_world;
+        use horizon_core::random::LegacyRandom;
+        use std::sync::Arc;
+        let mut outcomes = Vec::new();
+        if !with_test_world(&[], |w, _| {
+            for tame in [false, true] {
+                let mut kind = (*kind()).clone();
+                kind.species = Species::Cat;
+                let mut m = Mob::new(1, Arc::new(kind), Vec3::new(0.5, 65.0, 0.5), 0.0);
+                m.extra.tame = tame;
+                m.ai.nav.path = Some(Path {
+                    nodes: vec![
+                        PathNode {
+                            x: 0,
+                            y: 65,
+                            z: 0,
+                            kind: PathType::Walkable,
+                        },
+                        PathNode {
+                            x: 2,
+                            y: 65,
+                            z: 0,
+                            kind: PathType::Walkable,
+                        },
+                    ],
+                    next: 0,
+                    target: [2, 65, 0],
+                    dist_to_target: 0.0,
+                    reached: true,
+                });
+                let mut goal = CatAvoid(super::super::goals::AvoidEntity::new(
+                    super::super::goals::Avoid::Player,
+                    16.0,
+                    0.8,
+                    1.33,
+                ));
+                let mut lr = LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                outcomes.push(goal.can_continue(&mut m, &mut cx));
+            }
+        }) {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            vec![true, false],
+            "an untamed cat flees; a tamed one stops"
+        );
+    }
 }
 
 /// `NeutralMob.isAngryAtAllPlayers`: with the `universal_anger` game rule on, a
