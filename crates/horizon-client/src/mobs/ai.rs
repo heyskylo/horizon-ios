@@ -655,7 +655,7 @@ pub fn tick(
     m.previous_head_pitch = m.head_pitch;
     m.previous_swell = m.swell;
     m.anim.begin_tick();
-    m.age += 1;
+    super::camel::tick_age(m, w.game_time);
     m.ai.seen_cache.clear();
     if m.ai.last_hurt_by_player > 0 {
         m.ai.last_hurt_by_player -= 1;
