@@ -28,6 +28,10 @@ STANDS = [
     ('small', 2, 12, ''),
     ('nodrops', 3, 20, ''),
     ('kill', 4, 28, ''),
+    # #12514: `brokenByPlayer` (an `always_kills_armor_stands` hit, a second player hit within five ticks)
+    # pops the named stand item, then `brokenByAnything` rolls the table and pops the equipment.
+    ('arrow', 5, 52, ''),
+    ('punch', 6, 60, ''),
 ]
 LOOT_X = 40
 
@@ -56,12 +60,12 @@ def stand_break_loot(full=False):
                         ('advance_weather', 'false'), ('mob_drops', 'true')]:
         cmd(f'/gamerule {rule} {value}', 'rule-' + rule, admission=False)
     cmd('/datapack list enabled', 'pack-enabled', admission=False)
-    cmd('/forceload add 0 0 47 15', 'force', 3)
-    ops.append({'op': 'settle', 'required_chunks': [[0, 0], [1, 0], [2, 0]]})
-    for c in range(3):
+    cmd('/forceload add 0 0 63 15', 'force', 4)
+    ops.append({'op': 'settle', 'required_chunks': [[0, 0], [1, 0], [2, 0], [3, 0]]})
+    for c in range(4):
         cmd(f'/execute if loaded {c * 16 + 8} {Y} {Z}', f'loaded-{c}', 1)
-    cmd(f'/fill 0 {Y - 1} 0 47 {Y - 1} 15 stone', 'floor', 768)
-    cmd(f'/fill 0 {Y} 0 47 {Y + 4} 15 air', 'clear', admission=False)
+    cmd(f'/fill 0 {Y - 1} 0 63 {Y - 1} 15 stone', 'floor', 1024)
+    cmd(f'/fill 0 {Y} 0 63 {Y + 4} 15 air', 'clear', admission=False)
     cmd('/kill @e[type=!player]', 'clear-entities', admission=False, diagnostic=True)
     cmd('/kill @e[type=item]', 'clear-items', admission=False, diagnostic=True)
     cmd('/execute if entity @e[type=item]', 'no-items')
@@ -78,7 +82,8 @@ def stand_break_loot(full=False):
 
     def summon(name, n, x, extra):
         small = ',Small:1b' if name == 'small' else ''
-        cmd(f'/summon armor_stand {x + 0.5} {Y} {Z + 0.5} {{NoGravity:1b,Fire:200s,Health:0.6f,'
+        burning = 'CustomName:"Bob"' if name in ('arrow', 'punch') else 'Fire:200s,Health:0.6f'
+        cmd(f'/summon armor_stand {x + 0.5} {Y} {Z + 0.5} {{NoGravity:1b,{burning},'
             f'UUID:[I;23326,0,0,{n}]{small},equipment:{{head:{{id:"minecraft:diamond_helmet",count:1}}{extra}}}}}',
             f'{name}-summon', admission=False)
         cmd(f'/execute as {uuid(n)} if entity @s[type=armor_stand,x={x + 0.5},y={Y},z={Z + 0.5},distance=..0.01]',
@@ -91,7 +96,7 @@ def stand_break_loot(full=False):
 
     def reads(name, n, x):
         near = f'x={x + 0.5},y={Y},z={Z + 0.5},distance=..3'
-        prefix = 'target-' if name in ('normal', 'small') else ''
+        prefix = 'target-' if name in ('normal', 'small', 'arrow', 'punch') else ''
         cmd(f'/execute if entity {uuid(n)}', f'{name}-alive-after', admission=False)
         cmd(f'/execute if entity @e[type=item,{near}]', f'{name}-items', admission=False)
         cmd(f'/execute if entity @e[type=item,{near},nbt={{Item:{{id:"minecraft:stick"}}}}]',
@@ -104,6 +109,8 @@ def stand_break_loot(full=False):
             f'{name}-helmet-item', admission=False)
         cmd(f'/execute if entity @e[type=item,{near},nbt={{Item:{{id:"minecraft:leather_boots"}}}}]',
             f'{name}-boots', admission=False)
+        cmd(f'/data get entity @e[type=item,limit=1,{near},nbt={{Item:{{id:"minecraft:armor_stand"}}}}] Item',
+            f'{prefix}{name}-stand-item', admission=False)
         cmd(f'/data get entity @e[type=item,limit=1,{near},nbt={{Item:{{id:"minecraft:diamond_helmet"}}}}] Motion',
             f'diag-{name}-helmet-motion', admission=False, diagnostic=True)
 
@@ -123,6 +130,18 @@ def stand_break_loot(full=False):
     summon(name, n, x, extra)
     cmd(f'/kill {uuid(n)}', 'kill-command', admission=False)
     reads(name, n, x)
+    name, n, x, extra = STANDS[4]
+    summon(name, n, x, extra)
+    cmd(f'/damage {uuid(n)} 1 minecraft:arrow', 'arrow-damage', admission=False)
+    reads(name, n, x)
+    name, n, x, extra = STANDS[5]
+    summon(name, n, x, extra)
+    cmd('/gamemode survival @p', 'survival', admission=False)
+    cmd(f'/damage {uuid(n)} 1 minecraft:player_attack by @p', 'punch-first', admission=False)
+    cmd(f'/execute if entity {uuid(n)}', 'punch-wobbled', admission=False)
+    cmd(f'/damage {uuid(n)} 1 minecraft:player_attack by @p', 'punch-second', admission=False)
+    reads(name, n, x)
+    cmd('/gamemode creative @p', 'creative', admission=False)
     cmd('/execute if entity @e[type=armor_stand]', 'stands-after', admission=False)
     cmd('/execute store result score now sb run time query gametime', 'diag-clock-now', admission=False,
         diagnostic=True)

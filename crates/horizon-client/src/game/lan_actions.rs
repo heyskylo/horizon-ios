@@ -4190,8 +4190,8 @@ impl Game<'_> {
                 .map_or([0.5, 80.0, 0.5], |[x, y, z]| {
                     [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5]
                 });
-            let at = found.map_or(world, |(at, yaw)| {
-                host.hub.guests[i].yaw = yaw;
+            let at = found.map_or(world, |(at, yaw, pitch)| {
+                (host.hub.guests[i].yaw, host.hub.guests[i].pitch) = (yaw, pitch);
                 [at.x, at.y, at.z]
             });
             if found.is_none() {
@@ -5478,35 +5478,6 @@ impl Game<'_> {
                 velocity: [v.x, v.y, v.z],
             }));
         }
-    }
-
-    /// ServerGamePacketListenerImpl.handlePlayerCommand START_RIDING_JUMP: the
-    /// vehicle the guest rides takes its own `handleStartJump` — a horse rears
-    /// and slides on the rider's keys, a camel dashes — and the sound vanilla's
-    /// server plays is broadcast to the players near the mount, the rider
-    /// included (their own client plays none).
-    fn lan_start_riding_jump(&mut self, host: &mut LanHost, conn: u32, data: i32) {
-        let Some(Some(index)) = self.as_guest(host, conn, |g| g.mount_index()) else {
-            return;
-        };
-        let m = &mut self.mobs[index];
-        let Some((sound, volume)) = crate::game::mounts::start_riding_jump(m, data) else {
-            return;
-        };
-        let at = m.center();
-        // LivingEntity.getSoundSource: a mob's sounds are in the neutral source.
-        let neutral = horizon_client::settings::SOUND_SOURCES
-            .iter()
-            .position(|s| *s == "neutral")
-            .unwrap_or(0) as i32;
-        host.hub.sound(
-            &format!("minecraft:{sound}"),
-            at,
-            volume,
-            1.0,
-            neutral,
-            None,
-        );
     }
 
     /// ServerGamePacketListenerImpl.handlePlayerCommand START_FALL_FLYING:

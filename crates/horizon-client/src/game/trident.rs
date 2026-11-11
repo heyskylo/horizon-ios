@@ -956,9 +956,9 @@ impl Game<'_> {
                         }
                     }
                 }
-                // Boats and minecarts are pickable too (`VehicleEntity.isPickable`).
+                // Boats, minecarts and primed TNT are pickable too (`isPickable`).
                 if !t.dealt_damage {
-                    for (who, b) in self.vehicle_targets() {
+                    for (who, b) in self.pickable_object_targets() {
                         if let Who::Mob(id) = who
                             && let Some(d) = segment_box(t.position, t.velocity, b.inflate(grow))
                             && hit_mob.is_none_or(|(_, best)| d < best)

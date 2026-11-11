@@ -12,6 +12,7 @@ use std::{
 };
 use wgpu::util::DeviceExt;
 
+mod animate;
 pub mod cit_glint;
 mod pack_text;
 pub mod pictures;
@@ -51,7 +52,7 @@ pub struct TextureFlags {
 impl TextureFlags {
     /// The `texture` section of a `.png.mcmeta` file, if it sets either flag.
     pub fn from_mcmeta(json: &str) -> Option<Self> {
-        let meta: serde_json::Value = serde_json::from_str(json).ok()?;
+        let meta = crate::packs::first_json(json.as_bytes())?;
         let section = meta.get("texture")?;
         let flag = |key| section.get(key).and_then(serde_json::Value::as_bool) == Some(true);
         let flags = Self {
@@ -386,7 +387,7 @@ fn strip_frame(pixels: &[u8], stride: u32, x: u32, y: u32, w: u32, h: u32) -> Ve
 }
 /// The `animation` section of a texture's `.mcmeta`.
 fn animation_of(mcmeta: Option<&str>) -> Option<AnimationMetadata> {
-    let meta: serde_json::Value = serde_json::from_str(mcmeta?).ok()?;
+    let meta = crate::packs::first_json(mcmeta?.as_bytes())?;
     AnimationMetadata::from_json(&meta.get("animation")?.to_string()).ok()
 }
 /// An animated strip's first frame: the region the mcmeta's frame size picks
@@ -2876,59 +2877,6 @@ impl HudRenderer {
             pack_text::PackText::new(device, self.format, &self.atlas_view, shader, self.coverage)
         });
     }
-    pub fn animate_sprites(
-        &mut self,
-        uploads: &mut crate::gfx::upload::Uploads,
-        encoder: &mut wgpu::CommandEncoder,
-        tick: u64,
-    ) {
-        let Some(texture) = &self.atlas_texture else {
-            return;
-        };
-        for (rect, animation, previous) in &mut self.sprite_animations {
-            // `SpriteContents.AnimationState`: the frame from the mcmeta's
-            // list, blended into the next one by the sub-frame's thousandths
-            // when the sprite interpolates.
-            let blend = animation.blend(tick);
-            let state = (blend.frame, blend.next, blend.millis);
-            if state == *previous {
-                continue;
-            }
-            let (w, h) = rect.texels((texture.width(), texture.height()));
-            let pixels = if blend.millis == 0 {
-                animation.resized_pixels(blend.frame, w, h)
-            } else {
-                let current = animation.resized_pixels(blend.frame, w, h);
-                let next = animation.resized_pixels(blend.next, w, h);
-                let millis = blend.millis;
-                current
-                    .iter()
-                    .zip(next)
-                    .map(|(&a, b)| {
-                        ((u32::from(a) * (1000 - millis) + u32::from(b) * millis + 500) / 1000)
-                            as u8
-                    })
-                    .collect()
-            };
-            uploads.texture(
-                encoder,
-                wgpu::TexelCopyTextureInfo {
-                    texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d {
-                        x: (rect.u0 * texture.width() as f32).round() as u32,
-                        y: (rect.v0 * texture.height() as f32).round() as u32,
-                        z: 0,
-                    },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                w,
-                h,
-                &pixels,
-            );
-            *previous = state;
-        }
-    }
     /// Stage `patches` into the shared atlas texture.
     pub fn upload_patches(
         &self,
@@ -3161,6 +3109,18 @@ mod coverage_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn animated_texture_metadata_ignores_trailing_pack_signature() {
+        let meta = r#"{"animation":{"frametime":2,"width":2,"height":2}}
+// High Contrast pack signature"#;
+        let animation = animation_of(Some(meta)).expect("the first JSON value is metadata");
+        assert_eq!(animation.frame_size(8, 4), [2, 2]);
+        let pixels = (0..8 * 4).flat_map(|i| [i as u8, 0, 0, 255]).collect();
+        let (_, height, first) = first_frame((8, 4, pixels), Some(&animation));
+        assert_eq!(height, 2);
+        assert_eq!(first.len(), 2 * 2 * 4);
+    }
 
     #[test]
     fn object_skin_revision_tracks_changes_and_capacity_clear() {

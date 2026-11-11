@@ -5,6 +5,11 @@
     "dockerfilePath": "crates/horizon-telemetry-server/Dockerfile",
     "watchPatterns": [
       "/crates/horizon-telemetry/**",
+      "/crates/horizon-addresses/**",
+      "/crates/horizon-core/**",
+      "/crates/horizon-hooks/**",
+      "/crates/horizon-platform/**",
+      "/crates/horizon-system/**",
       "/crates/horizon-telemetry-server/**",
       "/Cargo.toml"
     ]

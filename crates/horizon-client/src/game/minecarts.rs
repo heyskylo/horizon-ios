@@ -475,11 +475,12 @@ impl Game<'_> {
             [x, y, z]
         }
     }
+    /// `AbstractMinecart.isRedstoneConductor`: the block state's own flag
+    /// (soul sand conducts without a full collision shape).
     fn conductor(&self, x: i32, y: i32, z: i32) -> bool {
-        self.res
-            .facts()
-            .get(self.world.block(x, y, z))
-            .full_collision
+        self.res.behaviours().facts(self.world.block(x, y, z)).flags
+            & horizon_world::level::data::state_flags::CONDUCTOR
+            != 0
     }
     /// `OldMinecartBehavior.getPos`: the point on the rail under (x, y, z).
     fn rail_pos(&self, x: f64, y: f64, z: f64) -> Option<[f64; 3]> {
@@ -535,11 +536,9 @@ impl Game<'_> {
     /// collision, which sets a TNT minecart off.
     fn cart_entity_collisions(&self, c: &Minecart) -> Vec<Aabb> {
         let near = c.bounds().inflate(Vec3::new(2.0, 2.0, 2.0));
-        // Every cart asks about every entity of the level each tick, and the box
-        // turns nearly all of them away: it is tested first, before a mob's
-        // pushable state, and only the boxes kept are collected.
+        // Every moving cart asks each tick, and the box turns nearly every entity of
+        // the level away: it is tested first, and only the mobs near it are read.
         let close = |b: &Aabb| b.intersects(near);
-        let reach = self.vehicle_mob_reach();
         let mut boxes: Vec<Aabb> = self
             .carts
             .iter()
@@ -552,22 +551,13 @@ impl Game<'_> {
                     .map(super::boats::Boat::bounds)
                     .filter(close),
             )
-            .chain(
-                self.mobs
-                    .iter()
-                    .filter(|m| reach.is_none_or(|r| r.may_meet(m, near)))
-                    .map(|m| (m, m.bounds()))
-                    .filter(|(m, b)| {
-                        close(b)
-                            && !m.removed
-                            && m.extra.mount != Some(c.id)
-                            && (m.pushable()
-                                || m.species() == horizon_client::mobs::Species::Shulker
-                                    && m.alive())
-                    })
-                    .map(|(_, b)| b),
-            )
             .collect();
+        self.mobs_meeting(near, |_, m, b| {
+            let counts = m.pushable() || m.species() == Species::Shulker && m.alive();
+            if !m.removed && m.extra.mount != Some(c.id) && counts {
+                boxes.push(b);
+            }
+        });
         if self.riding != Some(c.id)
             && let Some(p) = self.player.as_ref()
             && !self.spectator()
@@ -706,12 +696,7 @@ impl Game<'_> {
     /// sits in it. `getSlowdownFactor` (0.997) and the 0.75 speed scale key on
     /// this, not on who rides.
     fn cart_is_vehicle(&self, id: u32) -> bool {
-        self.riding == Some(id)
-            || self.ridden_by_guest(id)
-            || self
-                .mobs
-                .iter()
-                .any(|m| !m.removed && m.extra.mount == Some(id))
+        self.riding == Some(id) || self.ridden_by_guest(id) || self.mob_rides(id)
     }
     /// `OldMinecartBehavior.moveAlongTrack`.
     fn move_along_track(
@@ -720,7 +705,8 @@ impl Game<'_> {
         pos: [i32; 3],
         rail: &Rail,
         intent: [f64; 2],
-    ) -> (Vec3, Vec3) {
+        slot: usize,
+    ) {
         c.fall_distance = 0.0;
         let ridden = self.cart_is_vehicle(c.id);
         let (x, z) = (c.position.x, c.position.z);
@@ -791,11 +777,11 @@ impl Game<'_> {
             0.0,
             (scale * c.velocity.z).clamp(-max, max),
         );
-        // Entity.move records this step at the rail's top height; the tick's
-        // applyEffectsFromBlocks sweeps it, whatever the cart does after.
-        let step_from = c.position;
         self.move_cart(c, delta);
-        let step = (step_from, c.position);
+        // 🤖 Agent: `AbstractMinecart.move` runs applyEffectsFromBlocks at
+        // once, the cart still at the rail's top height (below it is lowered).
+        let here = c.position;
+        self.cart_inside_blocks(c, slot, here, here);
         let at = |e: [i32; 3], c: &Minecart| {
             c.position.x.floor() as i32 - pos[0] == e[0]
                 && c.position.z.floor() as i32 - pos[2] == e[2]
@@ -845,7 +831,6 @@ impl Game<'_> {
                 }
             }
         }
-        step
     }
     /// `Entity.checkInsideBlocks` for a recorded move of the cart from `from`
     /// to `to`: the entity-sensing blocks (plates, buttons, tripwires, detector
@@ -1373,11 +1358,10 @@ impl Game<'_> {
         // applyGravity
         c.velocity.y -= c.get_gravity();
         let pos = self.rail_block(c.position);
-        let mut step = None;
         if self.minecart_improvements() {
             self.move_along_track_new(c, intent);
         } else if let Some(rail) = self.rail(pos[0], pos[1], pos[2]) {
-            step = Some(self.move_along_track(c, pos, &rail, intent));
+            self.move_along_track(c, pos, &rail, intent, slot);
             if &*rail.name == "minecraft:activator_rail" {
                 self.activate_cart(c, rail.powered);
             }
@@ -1388,6 +1372,8 @@ impl Game<'_> {
         // The old behavior derives yaw once per tick; the experiment has
         // already recorded each step's yaw and pitch.
         if !self.minecart_improvements() {
+            // OldMinecartBehavior.tick: setXRot(0.0F) before the yaw update.
+            c.pitch = 0.0;
             let (xd, zd) = (c.previous.x - c.position.x, c.previous.z - c.position.z);
             if xd * xd + zd * zd > 0.001 {
                 c.yaw = horizon_core::geometry::trig::atan2_degrees_double(zd, xd);
@@ -1401,13 +1387,13 @@ impl Game<'_> {
                 c.flipped = !c.flipped;
             }
             c.yaw %= 360.0;
+            c.pitch %= 360.0;
         }
         if !self.minecart_improvements() {
             self.cart_block_effects(c);
-            // applyEffectsFromBlocks over the step moveAlongTrack recorded.
-            if let Some((from, to)) = step {
-                self.cart_inside_blocks(c, slot, from, to);
-            }
+            // OldMinecartBehavior.tick: applyEffectsFromBlocks() once settled.
+            let here = c.position;
+            self.cart_inside_blocks(c, slot, here, here);
         }
         // OldMinecartBehavior.tick ends with pushAndPickupEntities, before
         // AbstractMinecart.tick's updateFluidInteraction. The experiment still
@@ -1639,27 +1625,30 @@ impl Game<'_> {
         }
         self.push_carts_from_mobs(&cells);
     }
-    /// `AbstractMinecart.push(mob)` from each mob walking into a cart
-    /// (`LivingEntity.pushEntities` -> `doPush`): the cart gets the push and
-    /// the mob a quarter of it back (`Entity.push`, which needs the mob to be
-    /// pushable and to carry no one). Bats push nothing (`Bat.pushEntities`).
-    fn push_carts_from_mobs(&mut self, cells: &horizon_client::mobs::seen_grid::SeenGrid) {
-        let teams = self.mob_teams();
+    /// `AbstractMinecart.push(mob)` from each mob walking into a cart (`LivingEntity.pushEntities`
+    /// -> `doPush`): the cart gets the push and the mob a quarter of it back (`Entity.push`, which
+    /// needs the mob to be pushable and to carry no one). Bats push nothing (`Bat.pushEntities`),
+    /// nor does a mob whose box reaches no cart: its box is worked out only if it may.
+    fn push_carts_from_mobs(&mut self, cells: &SeenGrid) {
+        let (teams, mut near) = (self.mob_teams(), Vec::new());
+        // The mobs a cart is near, or every mob, each then asked which carts it is near.
+        let slots = self.mobs_near_carts();
+        let reach = slots.is_none().then(|| self.vehicle_mob_reach()).flatten();
+        let slots = slots.unwrap_or_else(|| (0..self.mobs.len() as u32).collect());
         // (mob index, feet, box)
-        let pushers: Vec<(usize, Vec3, Aabb)> = self
-            .mobs
-            .iter()
-            .enumerate()
+        let pushers: Vec<(usize, Vec3, Aabb)> = slots
+            .into_iter()
+            .map(|j| (j as usize, &self.mobs[j as usize]))
             .filter(|(_, m)| {
                 !m.removed
                     && m.alive()
                     && m.species() != Species::Bat
+                    && reach.is_none_or(|r| self.mob_may_meet_cart(r, m, cells, &mut near))
                     && pushable_by(teams.of(Who::Mob(m.id)), None, true)
             })
             .map(|(j, m)| (j, m.position, m.bounds()))
             .collect();
         drop(teams);
-        let mut near = Vec::new();
         for (j, feet, bb) in pushers {
             if !cells.candidates(bb, &mut near) {
                 near.extend(0..self.carts.len() as u32);
@@ -2139,6 +2128,51 @@ impl Game<'_> {
             p.velocity = Vec3::ZERO;
         }
     }
+    /// `EntityType.createDefaultStackConfig` on a vehicle an item made: the
+    /// item's custom name and custom data (`applyComponentsFromItemStack`:
+    /// `Entity.applyImplicitComponent`'s two, saved as `CustomName` and
+    /// `data`), then its
+    /// `minecraft:entity_data` loaded over the vehicle (`updateCustomEntityTag`)
+    /// when it names this type. An op-only type (command block and spawner
+    /// minecarts) takes it from an op player only, never from a dispenser
+    /// (`by_player` false).
+    pub(super) fn apply_vehicle_stack_config(
+        &mut self,
+        target: super::commands::Target,
+        kind: &str,
+        stack: &ItemStack,
+        by_player: bool,
+    ) {
+        use horizon_world::nbt::Tag;
+        let name = stack.data().and_then(|d| d.custom_name.clone());
+        let custom = stack
+            .data()
+            .and_then(|d| d.other("minecraft:custom_data"))
+            .cloned();
+        let op = by_player && self.acting_player_is_op();
+        let data =
+            horizon_client::block_entity_item::spawn_egg_entity_data(stack, kind, op).cloned();
+        if name.is_none() && custom.is_none() && data.is_none() {
+            return;
+        }
+        let Some(mut own) = self.entity_nbt(target) else {
+            return;
+        };
+        if let Tag::Compound(map) = &mut own {
+            if let Some(name) = name {
+                map.insert("CustomName".into(), name);
+            }
+            if let Some(custom) = custom {
+                map.insert("data".into(), custom);
+            }
+        }
+        let tag = match &data {
+            Some(data) => horizon_client::data_cmd::merged(&own, data),
+            None => own,
+        };
+        // The vehicle's own compound, its name and data merged in: it loads back.
+        let _ = self.apply_entity_nbt(target, tag);
+    }
     /// `MinecartItem.useOn`: a cart on the clicked rail.
     pub(super) fn place_minecart(&mut self, hit: &Hit, stack: &ItemStack) -> bool {
         let Some(kind) = CartKind::from_id(&stack.item) else {
@@ -2159,6 +2193,8 @@ impl Game<'_> {
             .modified
             .insert((hit.pos[0] >> 4, hit.pos[2] >> 4));
         self.carts.push(cart);
+        let id = self.next_entity;
+        self.apply_vehicle_stack_config(super::commands::Target::Cart(id), kind.id(), stack, true);
         if self.serving.is_some() || self.options.dedicated.is_some() {
             let cart = self.carts.last().unwrap();
             self.native_vehicle_create(
@@ -3515,6 +3551,29 @@ mod tnt_impact_tests {
 
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_powered_rail_pushes_a_resting_cart_away_from_soul_sand() {
+        let mut game = server_game();
+        let registry = game.pack.assets.registry;
+        let rail = registry.default_state("minecraft:powered_rail").unwrap();
+        let mut state = registry.state(rail).unwrap().clone();
+        state.properties.insert("shape".into(), "east_west".into());
+        state.properties.insert("powered".into(), "true".into());
+        let rail = registry.id(&state).unwrap();
+        game.world.set(5, 64, 8, rail).unwrap();
+        for (block, pushed) in [
+            ("minecraft:soul_sand", true),
+            ("minecraft:stone", true),
+            ("minecraft:oak_slab", false),
+        ] {
+            let id = registry.default_state(block).unwrap();
+            game.world.set(4, 64, 8, id).unwrap();
+            let push = game.redstone_direction([5, 64, 8], super::Shape::EastWest);
+            assert_eq!(push.x == 1.0, pushed, "{block}");
+        }
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn a_tnt_cart_stopped_head_on_by_a_wall_does_not_blow_up() {
         // OldMinecartBehavior.moveAlongTrack: the move zeroes the blocked x
         // and the track's re-pointing scales what is left, so MinecartTNT
@@ -3580,6 +3639,89 @@ mod tnt_impact_tests {
             "{:?}",
             registry.state(game.world.block(6, 65, 8))
         );
+    }
+
+    /// A cart blocked by a fence on a slope sits below the plate on the fence,
+    /// but `AbstractMinecart.move` sweeps its blocks while it is still at the
+    /// rail's top height, so the plate clocks on and off.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_cart_resting_against_a_fence_keeps_toggling_the_plate_above_it() {
+        let mut game = server_game();
+        let registry = game.pack.assets.registry;
+        let stone = registry.default_state("minecraft:stone").unwrap();
+        let fence = registry.default_state("minecraft:oak_fence").unwrap();
+        let plate = registry
+            .default_state("minecraft:oak_pressure_plate")
+            .unwrap();
+        let rail = registry.default_state("minecraft:rail").unwrap();
+        let mut slope = registry.state(rail).unwrap().clone();
+        slope
+            .properties
+            .insert("shape".into(), "ascending_east".into());
+        let slope = registry.id(&slope).unwrap();
+        for x in 0..16 {
+            for z in 0..16 {
+                game.world.set(x, 62, z, stone).unwrap();
+            }
+        }
+        game.world.set(0, 64, 8, fence).unwrap();
+        game.world.set(0, 65, 8, plate).unwrap();
+        game.world.set(1, 63, 8, stone).unwrap();
+        game.world.set(1, 64, 8, slope).unwrap();
+        game.world.set(2, 64, 8, stone).unwrap();
+        game.world.set(2, 65, 8, rail).unwrap();
+        game.carts.push(Minecart::new(
+            1,
+            CartKind::Rideable,
+            Vec3::new(1.9, 64.9, 8.5),
+        ));
+        // Scheduled ticks and carts only run in lit, surrounded chunks near a
+        // player.
+        game.settings.simulation_distance = 4;
+        game.settings.render_distance = 12;
+        game.player = Some(
+            horizon_client::motion::PlayerMotion::new(game.motion, Vec3::new(8.5, 70.0, 12.5))
+                .unwrap(),
+        );
+        for cx in -2..=2 {
+            for cz in -2..=2 {
+                if (cx, cz) != (0, 0) {
+                    let mut chunk = horizon_client::chunk::Chunk::empty(cx, cz);
+                    chunk.lit = true;
+                    game.world
+                        .chunks
+                        .insert((cx, cz), std::sync::Arc::new(chunk));
+                    game.block_ticks
+                        .add_empty_chunk(horizon_core::position::ChunkPos::new(cx, cz))
+                        .unwrap();
+                }
+            }
+        }
+        let mut center = (**game.world.chunks.get(&(0, 0)).unwrap()).clone();
+        center.lit = true;
+        game.world
+            .chunks
+            .insert((0, 0), std::sync::Arc::new(center));
+        game.update_chunk_tickets();
+        let mut edges = 0;
+        let mut last = false;
+        for _ in 0..200 {
+            game.world.game_time += 1;
+            game.tick_carts_now();
+            game.tick_blocks().unwrap();
+            let on = registry
+                .state(game.world.block(0, 65, 8))
+                .unwrap()
+                .properties
+                .get("powered")
+                .is_some_and(|v| v == "true");
+            if on != last {
+                edges += 1;
+                last = on;
+            }
+        }
+        assert!(edges >= 4, "the plate changed {edges} times in 200 ticks");
     }
 }
 

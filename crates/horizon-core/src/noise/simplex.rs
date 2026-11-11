@@ -39,6 +39,11 @@ impl SimplexNoise {
     }
 
     pub fn get2(&self, x: f64, y: f64) -> f32 {
+        self.get2_f64(x, y) as f32
+    }
+
+    /// `get2` before its cast to `float` (1.21's `SimplexNoise.getValue(x, y)` returned the double).
+    pub fn get2_f64(&self, x: f64, y: f64) -> f64 {
         let x = x + self.table.offsets[0];
         let y = y + self.table.offsets[1];
         let root3 = 3.0_f64.sqrt();
@@ -65,10 +70,15 @@ impl SimplexNoise {
             [dx - 1.0 + 2.0 * unskew, dy - 1.0 + 2.0 * unskew, 0.0],
             0.5,
         );
-        (70.0 * (first + second + third)) as f32
+        70.0 * (first + second + third)
     }
 
     pub fn get3(&self, x: f64, y: f64, z: f64) -> f32 {
+        self.get3_f64(x, y, z) as f32
+    }
+
+    /// `get3` before its cast to `float`.
+    pub fn get3_f64(&self, x: f64, y: f64, z: f64) -> f64 {
         let shifted = [
             x + self.table.offsets[0],
             y + self.table.offsets[1],
@@ -116,6 +126,6 @@ impl SimplexNoise {
             0.6,
         );
         let fourth = Self::corner(grad([1; 3]), point.map(|v| v - 1.0 + 0.5), 0.6);
-        (32.0 * (first + second + third + fourth)) as f32
+        32.0 * (first + second + third + fourth)
     }
 }
