@@ -18,6 +18,10 @@ pub struct StackData {
     pub stored_enchantments: Levels,
     /// `minecraft:repair_cost` (anvil prior-work penalty).
     pub repair_cost: u32,
+    /// An explicit `minecraft:damage` of zero. The damage is outside
+    /// `StackData`, and a non-damageable item's prototype has no such
+    /// component, so its presence is part of the stack's components.
+    pub explicit_zero_damage: bool,
     /// The original `minecraft:custom_name` component; plain text is derived
     /// when gameplay needs it, so styled names have one source of truth.
     pub custom_name: Option<Tag>,
@@ -258,6 +262,9 @@ pub struct WrittenBook {
     /// Each page's component when it is not a plain string, so that its
     /// click events survive; empty or one per page.
     pub page_tags: Vec<Tag>,
+    /// `WrittenBookContent.resolved`: a book whose selectors and scores have
+    /// been resolved is never resolved again.
+    pub resolved: bool,
 }
 impl StackData {
     pub fn is_empty(&self) -> bool {
@@ -267,7 +274,7 @@ impl StackData {
 
 /// `BlockItem.onDestroyed` (`ItemStack.onDestroyed` for a container item): the
 /// stack's `container` is emptied and the stacks it held come back in slot
-/// order — `ItemUtils.onContainerDestroyed` drops each where the entity lay.
+/// order â€” `ItemUtils.onContainerDestroyed` drops each where the entity lay.
 pub fn destroyed_container(stack: &mut ItemStack) -> Vec<ItemStack> {
     let Some(data) = stack.extra.as_deref_mut() else {
         return Vec::new();
@@ -364,9 +371,22 @@ impl ItemStack {
         }
         self.tidy();
     }
-    /// `ItemStack.enchant`: upgrade to the higher level.
+    /// `ItemStack.enchant`: upgrade to the higher level. Vanilla's
+    /// `EnchantmentHelper.updateEnchantments` returns EMPTY when the component
+    /// is absent, so a removal patch makes this a no-op.
     pub fn enchant(&mut self, id: &str, level: u32) {
         let book = &*self.item == "minecraft:enchanted_book";
+        let removal = if book {
+            "!minecraft:stored_enchantments"
+        } else {
+            "!minecraft:enchantments"
+        };
+        if self
+            .data()
+            .is_some_and(|data| data.other(removal).is_some())
+        {
+            return;
+        }
         let data = self.data_mut();
         let list = if book {
             &mut data.stored_enchantments
@@ -560,6 +580,37 @@ fn plain_component(t: &Tag) -> Tag {
     }
     t.clone()
 }
+/// `WrittenBookContent.CODEC`: the title and author as `Filterable` values,
+/// the pages (each `{raw: component}`), the generation when it is not 0 and
+/// the resolved flag when it is set.
+fn written_book_tag(w: &WrittenBook) -> Tag {
+    // Filterable values are saved as {raw: ..}.
+    let raw = |t: Tag| Tag::compound([("raw", t)]);
+    let pages = if w.page_tags.len() == w.pages.len() {
+        w.page_tags.iter().cloned().map(raw).collect()
+    } else {
+        w.pages
+            .iter()
+            .map(|p| raw(Tag::String(p.as_str().into())))
+            .collect()
+    };
+    let mut fields = vec![
+        ("title", raw(Tag::String(w.title.as_str().into()))),
+        ("author", Tag::String(w.author.as_str().into())),
+    ];
+    // `optionalFieldOf("pages", List.of())`: no pages, no field.
+    if !w.pages.is_empty() {
+        fields.push(("pages", Tag::List(pages)));
+    }
+    if w.generation != 0 {
+        fields.push(("generation", Tag::Int(i32::from(w.generation))));
+    }
+    if w.resolved {
+        fields.push(("resolved", Tag::Byte(1)));
+    }
+    Tag::compound(fields)
+}
+
 /// `WrittenBookContent` from its component: the title and author (a
 /// `Filterable`'s raw text), the generation and the pages, whose component
 /// tags are kept apart from their plain text for click events.
@@ -579,6 +630,58 @@ fn written_book_from_tag(b: &Tag) -> WrittenBook {
                 .collect(),
             _ => Vec::new(),
         },
+        resolved: b.get("resolved").and_then(component_bool).unwrap_or(false),
+    }
+}
+
+/// `WrittenBookContent.resolvePage`: the page's component with its selectors
+/// and scores replaced by the text they name, recursing into `extra` and
+/// `with`.
+fn resolve_page_tag(tag: &Tag, text: &mut impl FnMut(&Tag) -> Option<String>) -> Tag {
+    let Tag::Compound(c) = tag else {
+        return tag.clone();
+    };
+    if let Some(resolved) = text(tag) {
+        return Tag::compound([("text", Tag::String(resolved.as_str().into()))]);
+    }
+    let mut out = c.clone();
+    for key in ["extra", "with"] {
+        if let Some(Tag::List(list)) = out.get(&key.into()) {
+            let list = list.iter().map(|t| resolve_page_tag(t, text)).collect();
+            out.insert(key.into(), Tag::List(list));
+        }
+    }
+    Tag::Compound(out)
+}
+
+impl WrittenBook {
+    /// `WrittenBookContent.resolve` and `markResolved`: every page's
+    /// selectors and scores become their text, and the book is marked
+    /// resolved. A page whose resolved text passes `WrittenBookContent`'s
+    /// 32767-character limit (`resolvePage`) cancels the resolution, and the
+    /// book is only marked resolved. True when the pages were rewritten.
+    pub fn resolve(&mut self, mut text: impl FnMut(&Tag) -> Option<String>) -> bool {
+        if self.resolved {
+            return false;
+        }
+        self.resolved = true;
+        if self.page_tags.len() != self.pages.len() {
+            return false;
+        }
+        let mut pages = Vec::with_capacity(self.pages.len());
+        let mut tags = Vec::with_capacity(self.page_tags.len());
+        for tag in &self.page_tags {
+            let resolved = resolve_page_tag(tag, &mut text);
+            let plain = horizon_client_core::component::name_text(&resolved).plain();
+            if plain.chars().count() > 32767 {
+                return false;
+            }
+            pages.push(plain);
+            tags.push(resolved);
+        }
+        self.pages = pages;
+        self.page_tags = tags;
+        true
     }
 }
 
@@ -878,7 +981,12 @@ pub fn encode_components_with_items(stack: &ItemStack, items: &crate::items::Ite
 /// `encode_components` from the damage value and extra components.
 pub fn components_tag(damage: u32, data: Option<&StackData>) -> Option<Tag> {
     let mut entries: Vec<(&str, Tag)> = Vec::new();
-    if damage > 0 {
+    // A custom max damage can make zero DAMAGE a meaningful saved component.
+    if damage > 0
+        || data.is_some_and(|data| {
+            data.explicit_zero_damage && data.other("minecraft:max_damage").is_some()
+        })
+    {
         entries.push(("minecraft:damage", Tag::Int(damage as i32)));
     }
     if let Some(d) = data {
@@ -937,31 +1045,7 @@ pub fn components_tag(damage: u32, data: Option<&StackData>) -> Option<Tag> {
             ));
         }
         if let Some(w) = &d.written {
-            let pages = if w.page_tags.len() == w.pages.len() {
-                w.page_tags.iter().cloned().map(raw).collect()
-            } else {
-                w.pages
-                    .iter()
-                    .map(|p| raw(Tag::String(p.as_str().into())))
-                    .collect()
-            };
-            entries.push((
-                "minecraft:written_book_content",
-                Tag::compound({
-                    let mut fields = vec![
-                        ("title", raw(Tag::String(w.title.as_str().into()))),
-                        ("author", Tag::String(w.author.as_str().into())),
-                    ];
-                    // `optionalFieldOf("pages", List.of())`: no pages, no field.
-                    if !w.pages.is_empty() {
-                        fields.push(("pages", Tag::List(pages)));
-                    }
-                    if w.generation != 0 {
-                        fields.push(("generation", Tag::Int(i32::from(w.generation))));
-                    }
-                    fields
-                }),
-            ));
+            entries.push(("minecraft:written_book_content", written_book_tag(w)));
         }
         if let Some((flight, explosions)) = &d.fireworks {
             let mut fields = Vec::new();
@@ -1078,15 +1162,97 @@ pub fn components_tag(damage: u32, data: Option<&StackData>) -> Option<Tag> {
     }
     (!out.is_empty()).then_some(Tag::Compound(out))
 }
+/// The ASCII bytes of an NBT key, in `buf`. Every component ID is ASCII; a key
+/// with any other unit cannot be one of them and needs no comparison.
+fn ascii_key<'a>(key: &JavaString, buf: &'a mut [u8; 64]) -> Option<&'a str> {
+    let units = &key.0;
+    if units.len() > buf.len() {
+        return None;
+    }
+    for (slot, &unit) in buf.iter_mut().zip(units) {
+        if unit > 0x7f {
+            return None;
+        }
+        *slot = unit as u8;
+    }
+    std::str::from_utf8(&buf[..units.len()]).ok()
+}
+/// The saved tags of the component IDs `decode_components` models, found in one
+/// pass over the compound. Reading them one at a time built a key and walked the
+/// tree for every ID, present or not, and most items carry one or two.
+#[derive(Default)]
+struct Seen<'a> {
+    damage: Option<&'a Tag>,
+    potion_contents: Option<&'a Tag>,
+    enchantments: Option<&'a Tag>,
+    stored_enchantments: Option<&'a Tag>,
+    repair_cost: Option<&'a Tag>,
+    custom_name: Option<&'a Tag>,
+    map_id: Option<&'a Tag>,
+    banner_patterns: Option<&'a Tag>,
+    base_color: Option<&'a Tag>,
+    writable_book_content: Option<&'a Tag>,
+    written_book_content: Option<&'a Tag>,
+    fireworks: Option<&'a Tag>,
+    firework_explosion: Option<&'a Tag>,
+    dyed_color: Option<&'a Tag>,
+    pot_decorations: Option<&'a Tag>,
+    bundle_contents: Option<&'a Tag>,
+    suspicious_stew: Option<&'a Tag>,
+    map_post_processing: Option<&'a Tag>,
+    charged_projectiles: Option<&'a Tag>,
+    container: Option<&'a Tag>,
+    item_name: Option<&'a Tag>,
+    amplifier: Option<&'a Tag>,
+    trim: Option<&'a Tag>,
+}
+impl<'a> Seen<'a> {
+    fn read(c: &'a Tag) -> Self {
+        let Tag::Compound(map) = c else {
+            return Self::default();
+        };
+        let mut seen = Self::default();
+        let mut buf = [0u8; 64];
+        for (key, value) in map {
+            match ascii_key(key, &mut buf) {
+                Some("minecraft:damage") => seen.damage = Some(value),
+                Some("minecraft:potion_contents") => seen.potion_contents = Some(value),
+                Some("minecraft:enchantments") => seen.enchantments = Some(value),
+                Some("minecraft:stored_enchantments") => seen.stored_enchantments = Some(value),
+                Some("minecraft:repair_cost") => seen.repair_cost = Some(value),
+                Some("minecraft:custom_name") => seen.custom_name = Some(value),
+                Some("minecraft:map_id") => seen.map_id = Some(value),
+                Some("minecraft:banner_patterns") => seen.banner_patterns = Some(value),
+                Some("minecraft:base_color") => seen.base_color = Some(value),
+                Some("minecraft:writable_book_content") => seen.writable_book_content = Some(value),
+                Some("minecraft:written_book_content") => seen.written_book_content = Some(value),
+                Some("minecraft:fireworks") => seen.fireworks = Some(value),
+                Some("minecraft:firework_explosion") => seen.firework_explosion = Some(value),
+                Some("minecraft:dyed_color") => seen.dyed_color = Some(value),
+                Some("minecraft:pot_decorations") => seen.pot_decorations = Some(value),
+                Some("minecraft:bundle_contents") => seen.bundle_contents = Some(value),
+                Some("minecraft:suspicious_stew_effects") => seen.suspicious_stew = Some(value),
+                Some("minecraft:map_post_processing") => seen.map_post_processing = Some(value),
+                Some("minecraft:charged_projectiles") => seen.charged_projectiles = Some(value),
+                Some("minecraft:container") => seen.container = Some(value),
+                Some("minecraft:item_name") => seen.item_name = Some(value),
+                Some("minecraft:ominous_bottle_amplifier") => seen.amplifier = Some(value),
+                Some("minecraft:trim") => seen.trim = Some(value),
+                _ => {}
+            }
+        }
+        seen
+    }
+}
 /// Damage and extra components from a stack's `components` compound.
 pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData>>) {
     let Some(c) = components else {
         return (0, None);
     };
+    let seen = Seen::read(c);
     // NbtOps.getNumberValue supplies a boxed number; Codec.INT truncates its value.
-    let damage =
-        horizon_world::datafix::dynamic::as_int(c.get("minecraft:damage"), 0).max(0) as u32;
-    let potion = match c.get("minecraft:potion_contents") {
+    let damage = horizon_world::datafix::dynamic::as_int(seen.damage, 0).max(0) as u32;
+    let potion = match seen.potion_contents {
         Some(Tag::String(s)) => Some(Arc::from(s.to_string_lossy().as_str())),
         Some(t) => t
             .get("potion")
@@ -1094,7 +1260,7 @@ pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData
             .map(|s| Arc::from(s.as_str())),
         None => None,
     };
-    let potion_extra = match c.get("minecraft:potion_contents") {
+    let potion_extra = match seen.potion_contents {
         Some(Tag::Compound(map)) => map
             .iter()
             .filter(|(k, _)| k.to_string_lossy() != "potion")
@@ -1102,39 +1268,31 @@ pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData
             .collect(),
         _ => Vec::new(),
     };
-    let data = StackData {
-        enchantments: read_levels(c.get("minecraft:enchantments")),
-        stored_enchantments: read_levels(c.get("minecraft:stored_enchantments")),
-        repair_cost: c
-            .get("minecraft:repair_cost")
-            .and_then(int)
-            .unwrap_or(0)
-            .max(0) as u32,
-        custom_name: c
-            .get("minecraft:custom_name")
+    let mut data = StackData {
+        enchantments: read_levels(seen.enchantments),
+        stored_enchantments: read_levels(seen.stored_enchantments),
+        repair_cost: seen.repair_cost.and_then(int).unwrap_or(0).max(0) as u32,
+        explicit_zero_damage: damage == 0 && seen.damage.is_some(),
+        custom_name: seen
+            .custom_name
             .filter(|tag| read_text(tag).is_some())
             .cloned()
             .map(collapsed_text),
         potion,
         potion_extra,
-        map_id: c.get("minecraft:map_id").and_then(int).map(|v| v as i32),
-        banner_patterns: crate::banner_layer::layers_from_nbt(c.get("minecraft:banner_patterns")),
-        base_color: c
-            .get("minecraft:base_color")
+        map_id: seen.map_id.and_then(int).map(|v| v as i32),
+        banner_patterns: crate::banner_layer::layers_from_nbt(seen.banner_patterns),
+        base_color: seen
+            .base_color
             .and_then(string)
             .map(|s| Arc::from(s.as_str())),
-        writable_pages: match c
-            .get("minecraft:writable_book_content")
-            .and_then(|b| b.get("pages"))
-        {
+        writable_pages: match seen.writable_book_content.and_then(|b| b.get("pages")) {
             Some(Tag::List(pages)) => pages.iter().filter_map(filterable_text).collect(),
             _ => Vec::new(),
         },
-        written: c
-            .get("minecraft:written_book_content")
-            .map(written_book_from_tag),
-        fireworks: c
-            .get("minecraft:fireworks")
+        written: seen.written_book_content.map(written_book_from_tag),
+        fireworks: seen
+            .fireworks
             .map(|f| {
                 let flight = f
                     .get("flight_duration")
@@ -1148,23 +1306,20 @@ pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData
                 (flight, explosions)
             })
             .filter(|(flight, explosions)| !(*flight == 1 && explosions.is_empty())),
-        firework_explosion: c.get("minecraft:firework_explosion").map(explosion_from),
-        dyed_color: c
-            .get("minecraft:dyed_color")
-            .and_then(int)
-            .map(|v| v as i32),
-        pot_decorations: c
-            .get("minecraft:pot_decorations")
+        firework_explosion: seen.firework_explosion.map(explosion_from),
+        dyed_color: seen.dyed_color.and_then(int).map(|v| v as i32),
+        pot_decorations: seen
+            .pot_decorations
             .map(|p| {
                 let side = |name: &str| p.get(name).and_then(template_from);
                 Box::new([side("back"), side("left"), side("right"), side("front")])
             })
             .filter(|sides| !all_bricks(sides)),
-        bundle_contents: match c.get("minecraft:bundle_contents") {
+        bundle_contents: match seen.bundle_contents {
             Some(Tag::List(list)) => list.iter().filter_map(template_from).collect(),
             _ => Vec::new(),
         },
-        stew_effects: match c.get("minecraft:suspicious_stew_effects") {
+        stew_effects: match seen.suspicious_stew {
             Some(Tag::List(list)) => list
                 .iter()
                 .filter_map(|e| {
@@ -1176,19 +1331,19 @@ pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData
                 .collect(),
             _ => Vec::new(),
         },
-        map_post_processing: match c.get("minecraft:map_post_processing") {
+        map_post_processing: match seen.map_post_processing {
             Some(Tag::String(s)) => Some(u8::from(s.to_string_lossy() != "lock")),
             Some(t) => int(t).map(|v| v.clamp(0, 1) as u8),
             None => None,
         },
-        charged: match c.get("minecraft:charged_projectiles") {
+        charged: match seen.charged_projectiles {
             Some(Tag::List(list)) => list
                 .iter()
                 .filter_map(crate::item_nbt::item_from_nbt)
                 .collect(),
             _ => Vec::new(),
         },
-        container: match c.get("minecraft:container") {
+        container: match seen.container {
             Some(Tag::List(list)) => list
                 .iter()
                 .filter_map(|e| {
@@ -1200,25 +1355,21 @@ pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData
                 .collect(),
             _ => Vec::new(),
         },
-        ominous_banner: c
-            .get("minecraft:item_name")
+        ominous_banner: seen
+            .item_name
             .and_then(|n| n.get("translate"))
             .and_then(string)
             .as_deref()
             == Some("block.minecraft.ominous_banner")
             && matches!(
-                c.get("minecraft:banner_patterns"),
+                seen.banner_patterns,
                 Some(Tag::List(layers)) if layers.len() == OMINOUS_LAYERS.len()),
-        ominous_amplifier: c
-            .get("minecraft:ominous_bottle_amplifier")
-            .and_then(int)
-            .map(|v| v.clamp(0, 4) as u8),
-        trim: c.get("minecraft:trim").and_then(trim::from_nbt),
+        ominous_amplifier: seen.amplifier.and_then(int).map(|v| v.clamp(0, 4) as u8),
+        trim: seen.trim.and_then(trim::from_nbt),
         bundle_selected: BundleSelected::default(),
         other: Vec::new(),
         wire: Wire::default(),
     };
-    let mut data = data;
     if let Tag::Compound(map) = c {
         for (k, v) in map {
             let key = k.to_string_lossy();
@@ -1937,6 +2088,30 @@ mod tests {
     }
 
     #[test]
+    fn an_absent_enchantments_component_is_not_enchantable() {
+        let mut stack = ItemStack::new("minecraft:diamond_sword", 1);
+        stack.data_mut().set_other(
+            "!minecraft:enchantments",
+            Some(horizon_world::nbt::Tag::compound(Vec::<(
+                &str,
+                horizon_world::nbt::Tag,
+            )>::new())),
+        );
+        stack.enchant("minecraft:sharpness", 1);
+        assert!(stack.enchantments().is_empty());
+        let mut book = ItemStack::new("minecraft:enchanted_book", 1);
+        book.data_mut().set_other(
+            "!minecraft:stored_enchantments",
+            Some(horizon_world::nbt::Tag::compound(Vec::<(
+                &str,
+                horizon_world::nbt::Tag,
+            )>::new())),
+        );
+        book.enchant("minecraft:sharpness", 1);
+        assert!(book.stored_enchantments().is_empty());
+    }
+
+    #[test]
     fn components_round_trip() {
         let mut stack = ItemStack::new("minecraft:diamond_sword", 1);
         stack.damage = 12;
@@ -2319,6 +2494,271 @@ mod tests {
         );
         assert_eq!(data.debug_stick_property("minecraft:dirt"), None);
     }
+
+    /// The modelled component IDs, as `decode_components` read them before the
+    /// single pass: one `BTreeMap` lookup per ID, whether or not the item
+    /// carries it.
+    fn baseline_decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData>>) {
+        let Some(c) = components else {
+            return (0, None);
+        };
+        let damage =
+            horizon_world::datafix::dynamic::as_int(c.get("minecraft:damage"), 0).max(0) as u32;
+        let potion = match c.get("minecraft:potion_contents") {
+            Some(Tag::String(s)) => Some(Arc::from(s.to_string_lossy().as_str())),
+            Some(t) => t
+                .get("potion")
+                .and_then(string)
+                .map(|s| Arc::from(s.as_str())),
+            None => None,
+        };
+        let potion_extra = match c.get("minecraft:potion_contents") {
+            Some(Tag::Compound(map)) => map
+                .iter()
+                .filter(|(k, _)| k.to_string_lossy() != "potion")
+                .map(|(k, v)| (k.to_string_lossy(), v.clone()))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let mut data = StackData {
+            enchantments: read_levels(c.get("minecraft:enchantments")),
+            stored_enchantments: read_levels(c.get("minecraft:stored_enchantments")),
+            repair_cost: c
+                .get("minecraft:repair_cost")
+                .and_then(int)
+                .unwrap_or(0)
+                .max(0) as u32,
+            explicit_zero_damage: damage == 0 && c.get("minecraft:damage").is_some(),
+            custom_name: c
+                .get("minecraft:custom_name")
+                .filter(|tag| read_text(tag).is_some())
+                .cloned()
+                .map(collapsed_text),
+            potion,
+            potion_extra,
+            map_id: c.get("minecraft:map_id").and_then(int).map(|v| v as i32),
+            banner_patterns: crate::banner_layer::layers_from_nbt(
+                c.get("minecraft:banner_patterns"),
+            ),
+            base_color: c
+                .get("minecraft:base_color")
+                .and_then(string)
+                .map(|s| Arc::from(s.as_str())),
+            writable_pages: match c
+                .get("minecraft:writable_book_content")
+                .and_then(|b| b.get("pages"))
+            {
+                Some(Tag::List(pages)) => pages.iter().filter_map(filterable_text).collect(),
+                _ => Vec::new(),
+            },
+            written: c
+                .get("minecraft:written_book_content")
+                .map(written_book_from_tag),
+            fireworks: c
+                .get("minecraft:fireworks")
+                .map(|f| {
+                    let flight = f
+                        .get("flight_duration")
+                        .and_then(int)
+                        .unwrap_or(0)
+                        .clamp(0, 255) as u8;
+                    let explosions = match f.get("explosions") {
+                        Some(Tag::List(list)) => list.iter().map(explosion_from).collect(),
+                        _ => Vec::new(),
+                    };
+                    (flight, explosions)
+                })
+                .filter(|(flight, explosions)| !(*flight == 1 && explosions.is_empty())),
+            firework_explosion: c.get("minecraft:firework_explosion").map(explosion_from),
+            dyed_color: c
+                .get("minecraft:dyed_color")
+                .and_then(int)
+                .map(|v| v as i32),
+            pot_decorations: c
+                .get("minecraft:pot_decorations")
+                .map(|p| {
+                    let side = |name: &str| p.get(name).and_then(template_from);
+                    Box::new([side("back"), side("left"), side("right"), side("front")])
+                })
+                .filter(|sides| !all_bricks(sides)),
+            bundle_contents: match c.get("minecraft:bundle_contents") {
+                Some(Tag::List(list)) => list.iter().filter_map(template_from).collect(),
+                _ => Vec::new(),
+            },
+            stew_effects: match c.get("minecraft:suspicious_stew_effects") {
+                Some(Tag::List(list)) => list
+                    .iter()
+                    .filter_map(|e| {
+                        Some((
+                            Arc::from(e.get("id").and_then(string)?.as_str()),
+                            e.get("duration").and_then(int).unwrap_or(160) as i32,
+                        ))
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            },
+            map_post_processing: match c.get("minecraft:map_post_processing") {
+                Some(Tag::String(s)) => Some(u8::from(s.to_string_lossy() != "lock")),
+                Some(t) => int(t).map(|v| v.clamp(0, 1) as u8),
+                None => None,
+            },
+            charged: match c.get("minecraft:charged_projectiles") {
+                Some(Tag::List(list)) => list
+                    .iter()
+                    .filter_map(crate::item_nbt::item_from_nbt)
+                    .collect(),
+                _ => Vec::new(),
+            },
+            container: match c.get("minecraft:container") {
+                Some(Tag::List(list)) => list
+                    .iter()
+                    .filter_map(|e| {
+                        Some((
+                            e.get("slot").and_then(int)?.clamp(0, 255) as u8,
+                            template_from(e.get("item")?)?,
+                        ))
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            },
+            ominous_banner: c
+                .get("minecraft:item_name")
+                .and_then(|n| n.get("translate"))
+                .and_then(string)
+                .as_deref()
+                == Some("block.minecraft.ominous_banner")
+                && matches!(
+                    c.get("minecraft:banner_patterns"),
+                    Some(Tag::List(layers)) if layers.len() == OMINOUS_LAYERS.len()),
+            ominous_amplifier: c
+                .get("minecraft:ominous_bottle_amplifier")
+                .and_then(int)
+                .map(|v| v.clamp(0, 4) as u8),
+            trim: c.get("minecraft:trim").and_then(trim::from_nbt),
+            bundle_selected: BundleSelected::default(),
+            other: Vec::new(),
+            wire: Wire::default(),
+        };
+        if let Tag::Compound(map) = c {
+            for (k, v) in map {
+                let key = k.to_string_lossy();
+                let ominous_part = data.ominous_banner
+                    && (matches!(key.as_str(), "minecraft:item_name" | "minecraft:rarity")
+                        || (key == "minecraft:tooltip_display" && v == &ominous_tooltip_display()));
+                if key == "minecraft:stored_enchantments"
+                    && data.stored_enchantments.is_empty()
+                    && matches!(v, Tag::Compound(_))
+                {
+                    data.other
+                        .push((key, Tag::compound(Vec::<(&str, Tag)>::new())));
+                } else if !MODELLED.contains(&key.as_str()) && !ominous_part {
+                    let value = canonical_other_component(&key, v);
+                    data.other.push((key, value));
+                }
+            }
+            data.other.sort_by(|a, b| a.0.cmp(&b.0));
+        }
+        (damage, (!data.is_empty()).then(|| Box::new(data)))
+    }
+    /// Components as saved: none, one kept ID, every modelled ID, and IDs the
+    /// model keeps in `other`, one of them with a non-ASCII unit.
+    fn component_cases() -> Vec<(&'static str, Tag)> {
+        let parse = |text: &str| horizon_world::nbt::parse_snbt(text).unwrap().0;
+        vec![
+            ("not a compound", Tag::String("minecraft:damage".into())),
+            ("empty", Tag::compound(Vec::<(&str, Tag)>::new())),
+            (
+                "one kept id",
+                parse(r#"{"minecraft:custom_data":{fixture:"save batch"}}"#),
+            ),
+            (
+                "every modelled id",
+                parse(
+                    r#"{"minecraft:damage": 7,
+                        "minecraft:potion_contents": {potion:"minecraft:water",custom_color:255,custom_effects:[{id:"minecraft:speed",duration:100,amplifier:1}]},
+                        "minecraft:enchantments": {levels:{"minecraft:sharpness":3}},
+                        "minecraft:stored_enchantments": {levels:{"minecraft:mending":1}},
+                        "minecraft:repair_cost": 4,
+                        "minecraft:custom_name": {text:"Blade",color:"red"},
+                        "minecraft:map_id": 12,
+                        "minecraft:banner_patterns": [{pattern:"minecraft:border",color:"blue"}],
+                        "minecraft:base_color": "red",
+                        "minecraft:writable_book_content": {pages:[{raw:"one"},{raw:"two"}]},
+                        "minecraft:written_book_content": {title:{raw:"T"},author:"A",generation:1,pages:[{raw:"p"}]},
+                        "minecraft:fireworks": {flight_duration:2,explosions:[{shape:"large_ball",colors:[I;16711680],has_twinkle:true}]},
+                        "minecraft:firework_explosion": {shape:"star",colors:[I;255]},
+                        "minecraft:dyed_color": 16711680,
+                        "minecraft:pot_decorations": {back:{id:"minecraft:brick"},front:{id:"minecraft:brick"}},
+                        "minecraft:bundle_contents": [{id:"minecraft:stone",count:2}],
+                        "minecraft:suspicious_stew_effects": [{id:"minecraft:poison",duration:100}],
+                        "minecraft:map_post_processing": "lock",
+                        "minecraft:charged_projectiles": [{id:"minecraft:arrow",count:1}],
+                        "minecraft:container": [{slot:0,item:{id:"minecraft:stone",count:3}}],
+                        "minecraft:ominous_bottle_amplifier": 2,
+                        "minecraft:trim": {material:"minecraft:gold",pattern:"minecraft:coast"},
+                        "minecraft:item_name": {translate:"block.minecraft.ominous_banner"},
+                        "minecraft:rarity": "uncommon",
+                        "minecraft:tooltip_display": {hide_tooltip:true}
+                    }"#,
+                ),
+            ),
+            (
+                "unknown and non-ASCII ids",
+                parse(
+                    r#"{"minecraft:custom_data":{keep:1},"minecraft:future_component":"x","minecraft:damage\u00e9":3}"#,
+                ),
+            ),
+        ]
+    }
+    /// One pass over the compound decodes every shape the per-ID lookups did,
+    /// including IDs kept in `other` and keys that are not ASCII.
+    #[test]
+    fn one_pass_decode_matches_the_per_id_lookups() {
+        for (name, tag) in component_cases() {
+            assert_eq!(
+                decode_components(Some(&tag)),
+                baseline_decode_components(Some(&tag)),
+                "{name}"
+            );
+        }
+        assert_eq!(decode_components(None), baseline_decode_components(None));
+    }
+    /// `decode_components` against the per-ID lookups, over the cases above. 25
+    /// measured rounds alternate order and report the median microseconds per
+    /// call.
+    #[test]
+    #[ignore = "microbenchmark; run with --ignored --nocapture"]
+    fn benchmark_decode_components() {
+        use std::{hint::black_box, time::Instant};
+        for (name, tag) in component_cases() {
+            let reps = 10_000;
+            let mut times = [Vec::new(), Vec::new()];
+            for round in 0..25 {
+                for optimized in [round % 2 == 0, round % 2 != 0] {
+                    let started = Instant::now();
+                    for _ in 0..reps {
+                        if optimized {
+                            black_box(decode_components(black_box(Some(&tag))));
+                        } else {
+                            black_box(baseline_decode_components(black_box(Some(&tag))));
+                        }
+                    }
+                    if round > 0 {
+                        times[usize::from(optimized)]
+                            .push(started.elapsed().as_secs_f64() * 1e6 / f64::from(reps));
+                    }
+                }
+            }
+            for t in &mut times {
+                t.sort_by(f64::total_cmp);
+            }
+            let (base, new) = (times[0][times[0].len() / 2], times[1][times[1].len() / 2]);
+            println!(
+                "decode {name}: baseline {base:.3} us, new {new:.3} us, {:.2}x",
+                base / new
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2376,5 +2816,89 @@ mod charged_projectile_template_tests {
                 Some(&marker)
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod written_book_tests {
+    use super::*;
+
+    /// `WrittenBookContent.resolve`/`markResolved`: each page's selectors and
+    /// scores become their text, the book is marked resolved, and a resolved
+    /// book is left alone.
+    #[test]
+    fn a_written_books_pages_resolve_selectors_and_scores() {
+        let selector = Tag::compound([("selector", Tag::String("@p".into()))]);
+        let score = Tag::compound([(
+            "score",
+            Tag::compound([
+                ("name", Tag::String("*".into())),
+                ("objective", Tag::String("kills".into())),
+            ]),
+        )]);
+        let mut book = WrittenBook {
+            title: "t".into(),
+            author: "a".into(),
+            pages: vec!["@p".into(), "score".into(), "plain".into()],
+            page_tags: vec![selector, score, Tag::String("plain".into())],
+            resolved: false,
+            ..Default::default()
+        };
+        let mut asked = 0;
+        let changed = book.resolve(|tag| {
+            asked += 1;
+            if tag.get("selector").is_some() {
+                return Some("Steve".into());
+            }
+            tag.get("score").map(|_| "7".into())
+        });
+        assert!(changed, "the pages were rewritten");
+        assert!(book.resolved, "the book is marked resolved");
+        assert_eq!(asked, 2, "a plain page is not asked");
+        assert_eq!(book.pages, ["Steve", "7", "plain"]);
+        assert_eq!(
+            book.page_tags[0],
+            Tag::compound([("text", Tag::String("Steve".into()))])
+        );
+        // A resolved book is never resolved again.
+        assert!(!book.resolve(|_| Some("other".into())));
+        assert_eq!(book.pages, ["Steve", "7", "plain"]);
+    }
+
+    /// `WrittenBookContent.resolvePage`: a page whose resolved text passes
+    /// 32767 characters cancels the resolution, and the raw pages stay.
+    #[test]
+    fn an_over_long_resolved_page_leaves_the_pages_raw() {
+        let mut book = WrittenBook {
+            pages: vec!["x".into()],
+            page_tags: vec![Tag::compound([("selector", Tag::String("@p".into()))])],
+            ..Default::default()
+        };
+        let changed = book.resolve(|_| Some("y".repeat(32768)));
+        assert!(!changed);
+        assert!(book.resolved, "the book is still marked resolved");
+        assert_eq!(book.pages, ["x"], "the raw pages stay");
+    }
+
+    /// `WrittenBookContent.CODEC` keeps the resolved flag through a save and a
+    /// load.
+    #[test]
+    fn a_resolved_book_round_trips_its_flag() {
+        let book = WrittenBook {
+            title: "T".into(),
+            author: "A".into(),
+            pages: vec!["hi".into()],
+            page_tags: vec![Tag::String("hi".into())],
+            resolved: true,
+            ..Default::default()
+        };
+        let tag = written_book_tag(&book);
+        assert_eq!(tag.get("resolved"), Some(&Tag::Byte(1)));
+        assert_eq!(written_book_from_tag(&tag), book);
+        let unresolved = WrittenBook {
+            resolved: false,
+            ..book
+        };
+        assert_eq!(written_book_tag(&unresolved).get("resolved"), None);
     }
 }

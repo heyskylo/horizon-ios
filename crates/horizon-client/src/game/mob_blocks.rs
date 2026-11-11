@@ -8,6 +8,16 @@ use horizon_client::{
     mobs::{Mob, Species, render},
 };
 
+// `FishingRodCast`: the main hand takes precedence when both hold rods.
+fn fishing_cast_item(
+    player_id: u32,
+    hook_owners: impl Iterator<Item = u32>,
+    main_hand_rod: bool,
+    off_hand: bool,
+) -> bool {
+    hook_owners.into_iter().any(|owner| owner == player_id) && main_hand_rod != off_hand
+}
+
 /// `CarriedBlockLayer.submit`: block models use coordinates in [0, 1].
 fn carried_block_matrix(base: glam::Mat4) -> glam::Mat4 {
     base * glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.6875, -0.75))
@@ -172,7 +182,7 @@ impl Game<'_> {
                 .iter()
                 .position(|n| *n == dye)
                 .unwrap_or(0);
-            let color = render::abgr(render::DYE[index]);
+            let color = render::abgr(render::dye(index));
             render::draw(flag, m, &flag_poses, r, color, light, 0, out);
         }
     }
@@ -461,13 +471,17 @@ impl Game<'_> {
                 mob.body_yaw,
                 &mob.kind.id,
             );
-            // The local player's rod while its hook is out.
-            owner.fishing_cast_with_this_item = self.cast_rod().is_some()
-                && self.main_hand_rod() != off_hand
-                && self
-                    .player_model
-                    .as_ref()
-                    .is_some_and(|p| std::ptr::eq(p, mob));
+            owner.fishing_cast_with_this_item = if local_player {
+                self.cast_rod().is_some() && self.main_hand_rod() != off_hand
+            } else {
+                let active = self.remote_hooks.iter().filter(|h| h.owner_fishing);
+                fishing_cast_item(
+                    mob.id,
+                    active.map(|hook| hook.owner),
+                    mob.extra.main_hand.as_deref() == Some("minecraft:fishing_rod"),
+                    off_hand,
+                )
+            };
             owner.main_arm_left = mob.main_arm_left();
             if off_hand == mob.extra.using_off_hand && mob.extra.using_item > 0 {
                 owner.using_this_item = true;
@@ -701,6 +715,17 @@ mod tests {
             horizon_core::geometry::Vec3::new(0.0, 0.0, 0.0),
             0.0,
         ))
+    }
+
+    #[test]
+    fn remote_fishing_rod_cast_follows_owner_and_holding_hand() {
+        let owners = [7, 12];
+        assert!(fishing_cast_item(7, owners.into_iter(), true, false));
+        assert!(!fishing_cast_item(7, owners.into_iter(), true, true));
+        assert!(fishing_cast_item(12, owners.into_iter(), false, true));
+        assert!(!fishing_cast_item(12, owners.into_iter(), false, false));
+        assert!(!fishing_cast_item(8, owners.into_iter(), true, false));
+        assert!(!fishing_cast_item(7, [].into_iter(), true, false));
     }
 
     #[test]

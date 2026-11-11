@@ -1,6 +1,7 @@
 //! A remote player: connection, position, chunk and entity views, and the
 //! player state (inventory, health, game mode) that the host's gameplay code
 //! operates on when it acts for them.
+use super::prediction::record::{Change, Record};
 use super::{Joined, PlayerSender, entity::Tracker};
 use crate::{
     items::ItemStack,
@@ -124,6 +125,10 @@ pub struct Guest {
     /// A native mod's limit on `view_distance` for this player alone
     /// (`native_set_player_view_distance`); None: the server's.
     pub view_limit: Option<i32>,
+    /// A fake player (a mod's bot with no client; `native_set_player_fake`): it keeps only a small
+    /// area loaded and ticking around it and does not count for natural spawning, so hundreds of
+    /// bots do not each hold a whole view distance.
+    pub fake: bool,
     pub position: [f64; 3],
     pub previous_position: [f64; 3],
     pub yaw: f32,
@@ -169,10 +174,10 @@ pub struct Guest {
     /// Where the player respawns (a bed's spot; `ServerPlayer.respawnConfig`),
     /// None for the world spawn.
     pub spawn: Option<[f64; 3]>,
-    /// A respawn point outside the Overworld (a respawn anchor, or one
-    /// `spawnpoint` set there): its dimension, block, yaw and whether it is
-    /// forced, as the player's save keeps it (`respawn`).
-    pub respawn_elsewhere: Option<(String, [i32; 3], f32, bool)>,
+    /// A block-resolved personal respawn point: its dimension, block, yaw,
+    /// pitch and whether it is forced, as the player's save keeps it
+    /// (`respawn`).
+    pub respawn_elsewhere: Option<(String, [i32; 3], f32, f32, bool)>,
     /// Pending ClientboundPlayerPositionPacket id; movement is ignored until
     /// the client accepts it (ServerGamePacketListenerImpl.awaitingPositionFromClient).
     pub awaiting_teleport: Option<(i32, [f64; 3])>,
@@ -217,10 +222,19 @@ pub struct Guest {
     pub position_this_tick: bool,
     /// Violation levels and the checks' state (the anticheat, when on).
     pub anticheat: horizon_anticheat::Player,
+    /// The client ticks the movement prediction plays again (only while it records).
+    pub record: Option<Box<Record>>,
+    /// Sprinting as the client's own commands left it (ServerboundPlayerCommandPacket's
+    /// START_SPRINTING and STOP_SPRINTING: LocalPlayer.wasSprinting), which the record's ticks take.
+    /// Not the server's player: a hit with extra knockback stops its sprint
+    /// (Player.causeExtraKnockback), the client's own `Player.attack` doesn't (a mob's `hurtClient`
+    /// is false), and once the server's flag reaches it LocalPlayer.aiStep starts the sprint again
+    /// while the sprint key is held, with nothing to say: wasSprinting never changed.
+    pub client_sprinting: bool,
     /// The movement prediction's replay of the client's own moves (only while it runs).
     pub replay: Option<Box<super::prediction::Replay>>,
     /// What the server sent this tick that changes how the client moves (only while it records).
-    pub changes: std::sync::Mutex<Vec<horizon_anticheat::prediction::Change>>,
+    pub changes: std::sync::Mutex<Vec<Change>>,
     /// It accepted a move since the last entity range checks
     /// (ServerChunkCache.move), which then check all of its pairs again.
     pub moved: bool,
@@ -329,6 +343,8 @@ pub struct Guest {
     /// The shared flags (Entity.DATA_SHARED_FLAGS_ID) the player's client was
     /// last sent about itself.
     pub sent_shared: i8,
+    /// Pose last delivered to this player's own entity data, initially Standing.
+    pub sent_pose: Pose,
     /// The shoulder parrots (Player.DATA_SHOULDER_PARROT_LEFT and _RIGHT) the
     /// player's client was last sent about itself.
     pub sent_shoulders: [Option<i32>; 2],
@@ -458,6 +474,7 @@ impl Guest {
             latency: j.latency,
             view_distance: i32::from(j.info.view_distance).max(2).min(view_distance),
             view_limit: None,
+            fake: false,
             info: j.info,
             brand: j.brand,
             channels: j.configured.channels,
@@ -508,6 +525,8 @@ impl Guest {
             support_blocks_sent: 0,
             position_this_tick: false,
             anticheat: Default::default(),
+            record: None,
+            client_sprinting: false,
             replay: None,
             changes: Default::default(),
             moved: false,
@@ -559,6 +578,7 @@ impl Guest {
             sent_air: (300, 0.0),
             sent_frozen: 0,
             sent_shared: 0,
+            sent_pose: Pose::Standing,
             sent_shoulders: [None; 2],
             last_death: None,
             ack_up_to: std::cell::Cell::new(-1),
@@ -615,7 +635,10 @@ impl Guest {
         })
     }
     pub fn send(&self, packet: &play::Clientbound) {
-        if self.anticheat.record.is_some() {
+        if self.fake && !super::conn::fake_wants_id(packet.id()) {
+            return;
+        }
+        if self.record.is_some() {
             self.note_change(packet);
         }
         self.sender.send(packet.encode());
@@ -642,7 +665,6 @@ impl Guest {
     /// What `packet` changes about how the client moves, for the prediction's replay: kept until
     /// the tick's ping places it (`Hub::anticheat_ping`).
     fn note_change(&self, packet: &play::Clientbound) {
-        use horizon_anticheat::prediction::Change;
         use play::Clientbound as C;
         let own = |id: i32| id == self.entity_id;
         let change = match packet {
@@ -733,6 +755,10 @@ impl Guest {
     }
     pub fn spectator(&self) -> bool {
         self.game_mode == SPECTATOR
+    }
+    /// `Abilities.mayBuild`: survival or creative.
+    pub fn may_build(&self) -> bool {
+        matches!(self.game_mode, SURVIVAL | CREATIVE)
     }
     /// PlayerAbilities flags (invulnerable, flying, may fly, instabuild).
     pub fn ability_flags(&self) -> i8 {
@@ -1394,19 +1420,28 @@ fn network_stack(
                 .push((horizon_protocol::item::component::TRIM, component));
         }
         // BannerPatternLayers: each pattern a reference into the synced registry;
-        // a layer that has none leaves the stack without the component.
-        let layers: Option<Vec<(i32, i32)>> = d
-            .banner_patterns
+        // a layer that has none leaves the stack without the component. An
+        // ominous banner made by the raid keeps only its flag, so its layers
+        // are the ones the NBT encoder synthesises from it.
+        let patterns: Vec<(&str, &str)> = if d.ominous_banner && d.banner_patterns.is_empty() {
+            crate::item_data::OMINOUS_LAYERS.to_vec()
+        } else {
+            d.banner_patterns
+                .iter()
+                .map(|layer| (&*layer.pattern, &*layer.color))
+                .collect()
+        };
+        let layers: Option<Vec<(i32, i32)>> = patterns
             .iter()
-            .map(|layer| {
-                let name = if layer.pattern.contains(':') {
-                    layer.pattern.to_string()
+            .map(|(pattern, color)| {
+                let name = if pattern.contains(':') {
+                    pattern.to_string()
                 } else {
-                    format!("minecraft:{}", layer.pattern)
+                    format!("minecraft:{pattern}")
                 };
                 Some((
                     synced_id("minecraft:banner_pattern", &name)?,
-                    dye_id(&layer.color)?,
+                    dye_id(color)?,
                 ))
             })
             .collect();
@@ -1414,6 +1449,29 @@ fn network_stack(
             stack.added.push((
                 horizon_protocol::item::component::BANNER_PATTERNS,
                 horizon_protocol::item::Component::BannerPatterns(layers),
+            ));
+        }
+        // The raid captain's banner: `Raid.getBannerComponentPatch` gives it
+        // the ominous name, rarity and hidden layers, which `StackData` keeps
+        // as `ominous_banner` rather than in `other` (#12530).
+        if d.ominous_banner {
+            stack.added.push((
+                horizon_protocol::item::component::ITEM_NAME,
+                horizon_protocol::item::Component::Text(horizon_world::nbt::Tag::compound([(
+                    "translate",
+                    horizon_world::nbt::Tag::String("block.minecraft.ominous_banner".into()),
+                )])),
+            ));
+            stack.added.push((
+                horizon_protocol::item::component::RARITY,
+                horizon_protocol::item::Component::Int(1),
+            ));
+            stack.added.push((
+                horizon_protocol::item::component::TOOLTIP_DISPLAY,
+                horizon_protocol::item::Component::TooltipDisplay {
+                    hide: false,
+                    hidden: vec![horizon_protocol::item::component::BANNER_PATTERNS],
+                },
             ));
         }
         // `painting/variant`: a reference into the synced registry.

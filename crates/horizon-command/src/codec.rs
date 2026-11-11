@@ -1,6 +1,8 @@
 //! ResourceOrIdArgument and the data-fixer-upper decoding of inline values
 //! commands accept (loot predicates, item modifiers, slot sources, context
 //! providers, dialogs), reproducing the codec error messages vanilla reports.
+mod slot_sources;
+
 use super::args::{Registries, is_id_char, parse_identifier, slot_ranges};
 use super::{CmdResult, CommandError, Reader};
 use horizon_world::nbt::{Compound, JavaString, Tag};
@@ -150,6 +152,128 @@ fn predicate_fields(id: &str, map: &Compound, t: &Tag, reg: &Registries) -> Resu
     }
 }
 
+/// `Feature.DIRECT_CODEC`: validates the feature `type` against
+/// `minecraft:worldgen/feature_type` and checks required configuration keys
+/// with DataFixerUpper error formatting. The type's fields sit beside `type`
+/// in the same map (there is no `config` wrapper), so a missing one names
+/// the whole map.
+fn check_feature(tag: &Tag, reg: &Registries) -> Result<(), String> {
+    const KNOWN_FEATURE_TYPES: &[&str] = &[
+        "minecraft:no_op",
+        "minecraft:tree",
+        "minecraft:fallen_tree",
+        "minecraft:flower",
+        "minecraft:no_bonemeal_flower",
+        "minecraft:random_patch",
+        "minecraft:block_pile",
+        "minecraft:spring_feature",
+        "minecraft:chorus_plant",
+        "minecraft:replace_single_block",
+        "minecraft:void_start_platform",
+        "minecraft:desert_well",
+        "minecraft:fossil",
+        "minecraft:huge_red_mushroom",
+        "minecraft:huge_brown_mushroom",
+        "minecraft:huge_fungus",
+        "minecraft:ice_spike",
+        "minecraft:glowstone_blob",
+        "minecraft:freeze_top_layer",
+        "minecraft:vines",
+        "minecraft:block_column",
+        "minecraft:vegetation_patch",
+        "minecraft:waterlogged_vegetation_patch",
+        "minecraft:root_system",
+        "minecraft:multiface_growth",
+        "minecraft:underwater_magma",
+        "minecraft:monster_room",
+        "minecraft:blue_ice",
+        "minecraft:iceberg",
+        "minecraft:forest_rock",
+        "minecraft:disk",
+        "minecraft:lake",
+        "minecraft:ore",
+        "minecraft:scattered_ore",
+        "minecraft:end_platform",
+        "minecraft:end_spike",
+        "minecraft:end_island",
+        "minecraft:end_gateway",
+        "minecraft:seagrass",
+        "minecraft:kelp",
+        "minecraft:coral_tree",
+        "minecraft:coral_mushroom",
+        "minecraft:coral_claw",
+        "minecraft:sea_pickle",
+        "minecraft:simple_block",
+        "minecraft:bamboo",
+        "minecraft:geode",
+        "minecraft:dripstone_cluster",
+        "minecraft:large_dripstone",
+        "minecraft:pointed_dripstone",
+        "minecraft:sculk_patch",
+        "minecraft:twisting_vines",
+        "minecraft:weeping_vines",
+        "minecraft:nether_forest_vegetation",
+        "minecraft:basalt_columns",
+        "minecraft:delta_feature",
+        "minecraft:netherrack_replace_blobs",
+        "minecraft:fill_layer",
+        "minecraft:bonus_chest",
+        "minecraft:basalt_pillar",
+        "minecraft:random_selector",
+        "minecraft:simple_random_selector",
+        "minecraft:random_boolean_selector",
+    ];
+    let Tag::Compound(c) = tag else {
+        return Err(not_map(tag));
+    };
+    let Some(ty) = get(c, "type") else {
+        return Err(no_key("type", tag));
+    };
+    let Some(name) = as_string(ty) else {
+        return Err("Not a string".into());
+    };
+    let Some(full) = parse_identifier(&name) else {
+        return Err(format!("Not a valid resource location: {name}"));
+    };
+    let known_ids = reg.ids("minecraft:worldgen/feature_type");
+    let known = if !known_ids.is_empty() {
+        known_ids.contains(&full)
+    } else {
+        KNOWN_FEATURE_TYPES.contains(&full.as_str())
+    };
+    if !known {
+        return Err(format!(
+            "Unknown registry key in ResourceKey[minecraft:root / minecraft:worldgen/feature_type]: {full}"
+        ));
+    }
+    if full == "minecraft:simple_block" && get(c, "to_place").is_none() {
+        return Err(no_key("to_place", tag));
+    }
+    Ok(())
+}
+
+fn dfu_feature_error(tag: &Tag, msg: &str) -> String {
+    if let Some(field) = msg.strip_prefix("invalid world generation field: ") {
+        if field == "basic feature type"
+            && let Some(Tag::String(s)) = tag.get("type")
+        {
+            let raw = s.to_string_lossy();
+            let full = if raw.contains(':') {
+                raw
+            } else {
+                format!("minecraft:{raw}")
+            };
+            return format!(
+                "Unknown registry key in ResourceKey[minecraft:root / minecraft:worldgen/feature_type]: {full}"
+            );
+        }
+        if matches!(tag, Tag::Compound(c) if get(c, field).is_none()) {
+            return no_key(field, tag);
+        }
+    }
+    msg.to_owned()
+}
+
 /// Decode an inline value of a ResourceOrIdArgument registry.
 pub fn decode(registry: &str, t: &Tag, reg: &Registries) -> Result<(), String> {
     match registry {
@@ -169,41 +293,7 @@ pub fn decode(registry: &str, t: &Tag, reg: &Registries) -> Result<(), String> {
         "minecraft:item_modifier" => element_or_list(t, &|x| {
             dispatch(x, reg, "minecraft:loot_function_type", &|_, _, _| Ok(()))
         }),
-        "minecraft:slot_source" => element_or_list(t, &|x| {
-            dispatch(x, reg, "minecraft:slot_source_type", &|id, map, t| {
-                if id == "minecraft:contents" {
-                    require(map, t, &["component"])?;
-                    let value = get(map, "component").expect("required component");
-                    let name = as_string(value).ok_or_else(|| "Not a string".to_owned())?;
-                    let component = parse_identifier(&name)
-                        .ok_or_else(|| format!("Not a valid resource location: {name}"))?;
-                    let known = reg.ids("minecraft:data_component_type");
-                    if !known.is_empty() && !known.contains(&component) {
-                        return Err(format!(
-                            "Unknown registry key in ResourceKey[minecraft:root / minecraft:data_component_type]: {component}"
-                        ));
-                    }
-                    if !matches!(
-                        component.as_str(),
-                        "minecraft:container"
-                            | "minecraft:bundle_contents"
-                            | "minecraft:charged_projectiles"
-                    ) {
-                        return Err("No items in component".into());
-                    }
-                } else if id == "minecraft:slot_range" {
-                    // RangeSlotSource.MAP_CODEC uses the global SlotRanges.CODEC,
-                    // independently of the eventual target inventory's size.
-                    require(map, t, &["slots"])?;
-                    let value = get(map, "slots").expect("required slots");
-                    let name = as_string(value).ok_or_else(|| "Not a string".to_owned())?;
-                    if !slot_ranges().iter().any(|(known, _)| known == &name) {
-                        return Err(format!("Unknown element name:{name}"));
-                    }
-                }
-                Ok(())
-            })
-        }),
+        "minecraft:slot_source" => slot_sources::decode(t, reg),
         // Dialog types: CommonDialogData's title, then each type's own.
         "minecraft:dialog" => dispatch(t, reg, "minecraft:dialog_type", &|id, map, t| {
             let own: &[&str] = match id {
@@ -218,17 +308,102 @@ pub fn decode(registry: &str, t: &Tag, reg: &Registries) -> Result<(), String> {
             require(map, t, &keys)
         }),
         // The ConfiguredFeature codec, where the source has the live features.
-        "minecraft:worldgen/feature" => match t {
-            Tag::Compound(_) => match &reg.inline_feature {
-                Some(codec) => codec.check(t),
-                None => Ok(()),
-            },
-            _ => Err(not_map(t)),
-        },
+        "minecraft:worldgen/feature" => {
+            check_feature(t, reg)?;
+            if let Some(codec) = &reg.inline_feature {
+                return codec.check(t).map_err(|msg| dfu_feature_error(t, &msg));
+            }
+            Ok(())
+        }
         "minecraft:loot_table" => match t {
-            Tag::Compound(_) => Ok(()),
+            Tag::Compound(_) => loot_table_references(t, reg),
             _ => Err(not_map(t)),
         },
+        _ => Ok(()),
+    }
+}
+
+/// A partial check of `LootTable.DIRECT_CODEC`: only the holders of its
+/// `minecraft:loot_table` entries, in the codec's own structure: `pools`,
+/// each pool's `entries`, a composite entry's `children` (alternatives, group,
+/// sequence), and a `NestedLootTable`'s `value`. Every other field, entry type
+/// and codec error is not checked here and stays accepted.
+fn loot_table_references(t: &Tag, reg: &Registries) -> Result<(), String> {
+    let Tag::Compound(map) = t else {
+        return Ok(());
+    };
+    let Some(Tag::List(pools)) = get(map, "pools") else {
+        return Ok(());
+    };
+    for pool in pools {
+        let Tag::Compound(pool) = pool else {
+            continue;
+        };
+        if let Some(Tag::List(entries)) = get(pool, "entries") {
+            for entry in entries {
+                loot_entry_references(entry, reg)?;
+            }
+        }
+    }
+    Ok(())
+}
+/// `LootPoolEntries.CODEC`, dispatched on the entry's `type`.
+fn loot_entry_references(t: &Tag, reg: &Registries) -> Result<(), String> {
+    let Tag::Compound(map) = t else {
+        return Ok(());
+    };
+    let Some(ty) = get(map, "type")
+        .and_then(as_string)
+        .and_then(|name| parse_identifier(&name))
+    else {
+        return Ok(());
+    };
+    match ty.as_str() {
+        "minecraft:alternatives" | "minecraft:group" | "minecraft:sequence" => {
+            if let Some(Tag::List(children)) = get(map, "children") {
+                for child in children {
+                    loot_entry_references(child, reg)?;
+                }
+            }
+            Ok(())
+        }
+        "minecraft:loot_table" => match get(map, "value") {
+            Some(value) => loot_table_holder_set(value, reg),
+            None => Ok(()),
+        },
+        _ => Ok(()),
+    }
+}
+/// `HolderSetCodec`: either a `TagKey.hashedCodec` or `compactListCodec`,
+/// itself either a list or one `RegistryFileCodec` holder: an identifier the
+/// registry holds, or an inline table.
+fn loot_table_holder_set(t: &Tag, reg: &Registries) -> Result<(), String> {
+    match t {
+        Tag::String(_) => {
+            let name = as_string(t).unwrap_or_default();
+            // A tag's contents are not checked here.
+            if name.starts_with('#') {
+                return Ok(());
+            }
+            // A string that is not an identifier would decode inline: not checked here.
+            let Some(id) = parse_identifier(&name) else {
+                return Ok(());
+            };
+            let known = reg.ids("minecraft:loot_table");
+            if known.is_empty() || known.contains(&id) {
+                return Ok(());
+            }
+            Err(either(
+                "Not a tag id".into(),
+                either(
+                    not_list(t),
+                    format!("Failed to get element {id} from registry minecraft:loot_table"),
+                ),
+            ))
+        }
+        // The inline holder's error is the partial result both eithers keep.
+        Tag::Compound(_) => loot_table_references(t, reg),
+        // A list of holders is not checked here.
         _ => Ok(()),
     }
 }
@@ -300,6 +475,43 @@ mod predicate_tests {
         ] {
             assert_eq!(decode_text(bad), Err("No key type in MapLike[{}]".into()));
         }
+    }
+}
+
+#[cfg(test)]
+mod feature_tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_feature_field_names_the_whole_map() {
+        // Feature.DIRECT_CODEC dispatches on `type` to the type's own map
+        // codec; a `config` key is just another unread key.
+        let reg = Registries::default();
+        let decode_text = |text| {
+            let (tag, _) = horizon_world::nbt::parse_snbt(text).unwrap();
+            decode("minecraft:worldgen/feature", &tag, &reg)
+        };
+        assert_eq!(
+            decode_text(r#"{type:"minecraft:simple_block"}"#),
+            Err(r#"No key to_place in MapLike[{type:"minecraft:simple_block"}]"#.into())
+        );
+        assert_eq!(
+            decode_text(r#"{type:"minecraft:simple_block",config:{}}"#),
+            Err(r#"No key to_place in MapLike[{config:{},type:"minecraft:simple_block"}]"#.into())
+        );
+        assert_eq!(
+            decode_text(
+                r#"{type:"minecraft:simple_block",config:{to_place:{type:"minecraft:simple_state_provider",state:{Name:"minecraft:stone"}}}}"#
+            ),
+            Err(
+                r#"No key to_place in MapLike[{config:{to_place:{state:{Name:"minecraft:stone"},type:"minecraft:simple_state_provider"}},type:"minecraft:simple_block"}]"#
+                    .into()
+            )
+        );
+        assert!(
+            decode_text(r#"{type:"minecraft:simple_block",to_place:{id:"minecraft:stone"}}"#)
+                .is_ok()
+        );
     }
 }
 

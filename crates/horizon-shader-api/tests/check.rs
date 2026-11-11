@@ -348,6 +348,15 @@ fn a_0_2_pack_is_checked_against_its_own_line() {
     let report = pack_0_2(POST, TONEMAP, "[frame]\nblend = \"linear\"\n").unwrap();
     let kinds: Vec<_> = report.stages.iter().map(|s| s.kind).collect();
     assert_eq!(kinds, [StageKind::Post, StageKind::Tonemap]);
+    // A wide-gamut pack passes the check (the game refuses it for now), and reads its space.
+    let wide = "fn tonemap(input: TonemapInput) -> vec3<f32> {\n    \
+                return vec3<f32>(dot(input.color, frame.luminance)) * f32(frame.primaries);\n}\n";
+    let frame = "[frame]\nblend = \"linear\"\nprimaries = \"bt2020\"\n";
+    let report = pack_0_2(POST, wide, frame).unwrap();
+    assert_eq!(
+        report.manifest.primaries,
+        horizon_shader_api::Primaries::Bt2020
+    );
     // The 0.2 prelude's display fields and colour boundary are there to use.
     let source = &report.stages[1].source;
     assert!(source.contains("    black_level: f32,\n") && source.contains("fn horizon_decode("));
@@ -375,6 +384,130 @@ fn a_0_2_pack_is_checked_against_its_own_line() {
             .any(|p| p.message.contains("`horizon_decode_mine`")),
         "{named:#?}"
     );
+}
+
+/// A 0.2 pack of a material, a post pass and a tonemap stage.
+fn pack_0_2_with_material(
+    material: &str,
+    post: &str,
+    tonemap: &str,
+) -> Result<horizon_shader_api::Report, Vec<Problem>> {
+    let manifest = "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n\
+                    [material]\nfile = \"material.wgsl\"\n[[post]]\nfile = \"post.wgsl\"\n\
+                    [tonemap]\nfile = \"tonemap.wgsl\"\n";
+    let files = [
+        (MANIFEST, manifest),
+        ("material.wgsl", material),
+        ("post.wgsl", post),
+        ("tonemap.wgsl", tonemap),
+    ]
+    .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
+    .into();
+    check(&Pack::from_files(files).unwrap())
+}
+
+const MATERIAL: &str =
+    "fn material(input: MaterialInput) -> Surface { return Surface(input.albedo); }\n";
+
+fn refused(problems: &[Problem], name: &str) -> Vec<(String, usize)> {
+    let needle = format!("constructs `{name}`: it is Horizon's and may gain fields");
+    problems
+        .iter()
+        .filter(|p| p.message.contains(&needle))
+        .map(|p| (p.file.clone(), p.line))
+        .collect()
+}
+
+#[test]
+fn a_0_2_pack_constructs_no_struct_horizon_hands_it() {
+    let post = "fn post(input: PostInput) -> vec4<f32> {\n    \
+                let moved = PostInput(input.uv * 0.5, input.pixel, input.color, input.depth);\n    \
+                return moved.color;\n}\n";
+    let p = pack_0_2(post, TONEMAP, "").expect_err("should fail");
+    assert_eq!(
+        refused(&p, "PostInput"),
+        [("post.wgsl".into(), 2)],
+        "{p:#?}"
+    );
+
+    // Inside a helper, at the module's level, and the frame too.
+    let tonemap = "fn darker(c: vec3<f32>) -> TonemapInput {\n    \
+                   return TonemapInput(vec2<f32>(0.0), vec2<f32>(0.0), c * 0.5);\n}\n\
+                   fn tonemap(input: TonemapInput) -> vec3<f32> { return darker(input.color).color; }\n";
+    let p = pack_0_2(POST, tonemap, "").expect_err("should fail");
+    assert_eq!(
+        refused(&p, "TonemapInput"),
+        [("tonemap.wgsl".into(), 2)],
+        "{p:#?}"
+    );
+    let fields: Vec<String> = horizon_shader_api::Frame::WGSL
+        .fields
+        .iter()
+        .map(|f| format!("{}()", f.ty))
+        .collect();
+    let tonemap = format!(
+        "const still = Frame({});\n\
+         fn tonemap(input: TonemapInput) -> vec3<f32> {{ return input.color * still.headroom; }}\n",
+        fields.join(", ")
+    );
+    let p = pack_0_2(POST, &tonemap, "").expect_err("should fail");
+    assert_eq!(refused(&p, "Frame"), [("tonemap.wgsl".into(), 1)], "{p:#?}");
+
+    let material = "fn material(input: MaterialInput) -> Surface {\n    \
+                    let again = MaterialInput(input.albedo, input.tint, input.light, input.lightmap, \
+                    input.position, input.uv, input.translucent, input.tags, input.material, input.screen, \
+                    input.face, input.fluid, input.emission, input.normal, input.tangent, input.colored_light, \
+                    input.displaced);\n    \
+                    return Surface(again.albedo);\n}\n";
+    let p = pack_0_2_with_material(material, POST, TONEMAP).expect_err("should fail");
+    assert_eq!(
+        refused(&p, "MaterialInput"),
+        [("material.wgsl".into(), 2)],
+        "{p:#?}"
+    );
+
+    // `surface_at`'s result: Horizon's helper builds it, the pack doesn't.
+    let post = "fn post(input: PostInput) -> vec4<f32> {\n    \
+                let s = SurfaceData(true, vec3<f32>(0.0, 1.0, 0.0), 0.5, 0.0);\n    \
+                return input.color * s.smoothness * surface_at(vec2<i32>(input.pixel)).smoothness;\n}\n";
+    let p = pack_0_2(post, TONEMAP, "").expect_err("should fail");
+    assert_eq!(
+        refused(&p, "SurfaceData"),
+        [("post.wgsl".into(), 2)],
+        "{p:#?}"
+    );
+}
+
+#[test]
+fn a_0_2_pack_reads_horizon_s_structs_passes_them_along_and_builds_its_surface() {
+    // A name that merely contains a struct's, a comment and a field read are no construction.
+    let post = "// PostInput(input.uv) would be refused\n\
+                struct MyPostInput { color: vec4<f32> }\n\
+                fn graded(input: PostInput) -> MyPostInput { return MyPostInput(input.color * frame.headroom); }\n\
+                fn post(input: PostInput) -> vec4<f32> { return graded(input).color; }\n";
+    let tonemap = "fn curve(input: TonemapInput) -> vec3<f32> { return input.color / (input.color + 1.0); }\n\
+                   fn tonemap(input: TonemapInput) -> vec3<f32> { return curve(input); }\n";
+    pack_0_2_with_material(MATERIAL, post, tonemap).unwrap();
+    // The tonemap prelude has no `SurfaceData`: one of the pack's own is the pack's to build.
+    let tonemap = "struct SurfaceData { gain: f32 }\n\
+                   fn tonemap(input: TonemapInput) -> vec3<f32> { return input.color * SurfaceData(0.5).gain; }\n";
+    pack_0_2_with_material(MATERIAL, POST, tonemap).unwrap();
+    // Nor is an alias of the pack's own by that name.
+    let tonemap = "alias SurfaceData = vec3<f32>;\n\
+                   fn tonemap(input: TonemapInput) -> vec3<f32> { return SurfaceData(input.color.r, 0.0, 0.0); }\n";
+    pack_0_2_with_material(MATERIAL, POST, tonemap).unwrap();
+}
+
+#[test]
+fn a_0_1_pack_may_still_construct_its_inputs() {
+    let mut files = sample().files;
+    files.insert(
+        GRADE.into(),
+        b"override saturation: f32 = 1.1;\noverride tonemap: u32 = 1u;\n\
+          fn post(input: PostInput) -> vec4<f32> { return PostInput(input.uv, input.pixel, input.color, input.depth).color; }\n"
+            .to_vec(),
+    );
+    check(&Pack::from_files(files).unwrap()).unwrap();
 }
 
 #[test]

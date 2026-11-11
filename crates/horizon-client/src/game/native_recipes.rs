@@ -34,11 +34,26 @@ pub(super) struct RecipeTables {
     /// recipe_content`) over the window's own: what `Game::recipes` reads on
     /// a client once they came.
     synced: Option<horizon_client::crafting::Recipes>,
+    /// The display numbers of those recipes: the server numbers its book's
+    /// displays over its own recipe set, a world's data pack recipes
+    /// included, so the book numbers them the same (`Game::display_index`).
+    pub(super) synced_index: Option<horizon_client::recipe_book::RecipeIndex>,
     /// The recipe content's parts so far, until its last.
     incoming: Vec<(String, serde_json::Value)>,
     /// The types that came before the player did: the mods hear of them
     /// once the helpers can answer (`recipes_received_now`).
     received: Option<Vec<String>>,
+    /// The stacks mods asked the recipe viewer to show
+    /// (`native_show_recipes`), heard next frame (`native_recipe_lookup`).
+    pub(super) lookups: std::sync::Mutex<
+        Vec<(
+            horizon_client::mod_api::NativeStack,
+            horizon_client::mod_api::NativeRecipeLookup,
+        )>,
+    >,
+    /// Bumped each time a mod's recipe categories change
+    /// (`native_recipe_categories_changed`).
+    pub(super) categories_version: std::sync::atomic::AtomicU64,
 }
 
 /// Item id -> its index in [`Recipes::items`].
@@ -128,6 +143,15 @@ impl Game<'_> {
         }
         self.mod_give(item, count.clamp(1, 99), "");
         Ok(())
+    }
+    /// `native_transfer_recipe`, and with `all` as many sets as the
+    /// inventory (and a mod crafting grid's sources) allow, as Shift on the
+    /// recipe book places: every grid slot gets the same count, capped at the
+    /// ingredients' stack size, alternatives (tags) shared out as vanilla's
+    /// `StackedItemContents` does. A server from before `all` ignores it.
+    /// API @API:transfer_recipe_all@.
+    pub(super) fn native_transfer_recipe_all(&mut self, book_id: i32, all: bool) {
+        self.transfer_viewer_recipe(book_id, all);
     }
     /// `native_place_recipe`: refused as `recipes.place` refuses it.
     pub(super) fn recipe_place(&mut self, book_id: i32, all: bool) -> Result<(), String> {
@@ -364,12 +388,22 @@ impl Game<'_> {
     pub(super) fn synced_recipes(&self) -> Option<&horizon_client::crafting::Recipes> {
         self.recipe_tables.synced.as_ref()
     }
+    /// The display numbers the recipe book reads: the server's recipes',
+    /// once a server sent them, else the world's own.
+    pub(super) fn display_index(&self) -> &horizon_client::recipe_book::RecipeIndex {
+        match &self.recipe_tables.synced_index {
+            Some(index) => index,
+            None => &self.stations().recipe_index,
+        }
+    }
     /// A new play session (`Login`): what the last server sent is gone.
     pub(super) fn forget_synced_recipes(&mut self) {
         self.recipe_tables.synced = None;
+        self.recipe_tables.synced_index = None;
         self.recipe_tables.incoming.clear();
         self.recipe_tables.received = None;
         self.recipe_tables.tables = None;
+        self.recipe_ui_forget_server_entries();
         self.forget_book();
     }
     /// `native_recipes_received` for the types that came, once the window
@@ -432,6 +466,7 @@ impl Game<'_> {
         let received = std::mem::take(&mut self.recipe_tables.incoming);
         // No type any more: back on the window's own recipes.
         if types.is_empty() {
+            self.recipe_tables.synced_index = None;
             if self.recipe_tables.synced.take().is_some() {
                 self.recipe_tables.tables = None;
                 self.forget_book();
@@ -446,11 +481,18 @@ impl Game<'_> {
             let of = |v: &serde_json::Value| types.iter().any(|t| v["type"].as_str() == Some(t));
             let mut all: Vec<_> = own.into_iter().filter(|(_, v)| !of(v)).collect();
             all.extend(received);
+            // The server numbers the displays over these same recipes: a
+            // world's data pack recipes shift the numbers of every recipe
+            // after them, and the book must agree (the server's entries go
+            // over its own by number).
+            let index = horizon_client::recipe_book::RecipeIndex::load_from_sources(&all);
             horizon_client::crafting::Recipes::from_sources(root, self.items(), &overlay, all)
+                .map(|recipes| (recipes, index))
         });
         match built {
-            Ok(recipes) => {
+            Ok((recipes, index)) => {
                 self.recipe_tables.synced = Some(recipes);
+                self.recipe_tables.synced_index = Some(index);
                 // What was made of the window's own recipes is made again.
                 self.recipe_tables.tables = None;
                 self.forget_book();
@@ -461,3 +503,52 @@ impl Game<'_> {
         }
     }
 }
+
+impl Game<'_> {
+    /// `native_loot_odds`: the odds of the world's loot table `table`.
+    pub(super) fn loot_odds(
+        &mut self,
+        table: &str,
+        tool: Option<&str>,
+    ) -> Option<Vec<horizon_client::mod_api::NativeLootOdds>> {
+        let loot = horizon_client::structure_blocks::loot_data(
+            &self.options.resources,
+            &self.pack_files(),
+        )?;
+        let odds = loot.odds(table, tool)?;
+        Some(
+            odds.into_iter()
+                .map(|o| horizon_client::mod_api::NativeLootOdds {
+                    item: o.item,
+                    components: String::new(),
+                    chance: o.chance,
+                    min: o.min,
+                    max: o.max,
+                    conditions: o.conditions,
+                })
+                .collect(),
+        )
+    }
+}
+
+impl Game<'_> {
+    /// The recipe lookups mods asked for since the last frame
+    /// (`native_show_recipes`), heard by the recipe viewers.
+    pub(super) fn recipe_lookups_now(&mut self) {
+        let lookups = std::mem::take(
+            &mut *self
+                .recipe_tables
+                .lookups
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        );
+        for (stack, lookup) in lookups {
+            let mut handled = false;
+            self.native_recipe_lookup(&stack, &lookup, &mut handled);
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "recipe_viewer_tests.rs"]
+mod recipe_viewer_tests;

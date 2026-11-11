@@ -8,7 +8,7 @@
 
 use glam::{Mat4, Vec3};
 use horizon_shader_api::{
-    Api, Frame as FrameInputs, StageKind, check::CheckedStage, stages::GROUP,
+    Api, Frame as FrameInputs, Primaries, StageKind, check::CheckedStage, stages::GROUP,
 };
 
 use super::Frame;
@@ -164,16 +164,24 @@ fn fullscreen_pass(
 }
 
 /// The tonemap stage's entries as the renderer draws them: the check's, with the result
-/// encoded into the frame's gamma, where the camera overlays and the HUD draw on it.
-fn tonemap_entries() -> String {
+/// encoded into the frame's gamma, where the camera overlays and the HUD draw on it. A pack's
+/// `[tonemap]` is held to `frame.headroom`. Horizon's own (`default`) is a clip at white in
+/// SDR; in HDR it leaves the light as it is for Horizon's tone curve (`Hdr::tonemap`), the
+/// one HDR without a pack uses.
+fn tonemap_entries(default: bool) -> String {
+    let held = if default {
+        "select(min(horizon_sanitize(out), vec3<f32>(frame.headroom)), horizon_sanitize(out), frame.hdr == 1u)"
+    } else {
+        "min(horizon_sanitize(out), vec3<f32>(frame.headroom))"
+    };
     StageKind::Tonemap.entries(Api::V0_2).replace(
         "return vec4<f32>(min(horizon_sanitize(out), vec3<f32>(frame.headroom)), 1.0);",
-        "return vec4<f32>(horizon_encode(min(horizon_sanitize(out), vec3<f32>(frame.headroom))), 1.0);",
+        &format!("return vec4<f32>(horizon_encode({held}), 1.0);"),
     )
 }
 
-/// Horizon's tonemap for a 0.2 pack without `[tonemap]`: SDR's clip at white, which is the
-/// entries' hold at `frame.headroom` (1 until 0.2 packs get HDR output).
+/// The tonemap of a 0.2 pack without `[tonemap]`: the picture as it is, held as
+/// `tonemap_entries` holds Horizon's.
 const DEFAULT_TONEMAP: &str =
     "fn tonemap(input: TonemapInput) -> vec3<f32> { return input.color; }\n";
 
@@ -763,14 +771,26 @@ impl NativeFrame {
         );
     }
 
-    /// Writes this frame's inputs, for a world of `size`.
-    pub fn write(&mut self, queue: &wgpu::Queue, frame: &Frame, size: [u32; 2]) {
-        let inputs = self.next_inputs(frame, size);
+    /// Writes this frame's inputs, for a world of `size` drawn for `display`
+    /// (`EffectiveOutput::display`), which a 0.2 pack reads.
+    pub(crate) fn write(
+        &mut self,
+        queue: &wgpu::Queue,
+        frame: &Frame,
+        size: [u32; 2],
+        display: super::output::DisplayValues,
+    ) {
+        let inputs = self.next_inputs(frame, size, display);
         queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(&inputs));
     }
 
     /// This frame's inputs, moving the eased values and the frame count on.
-    fn next_inputs(&mut self, frame: &Frame, size: [u32; 2]) -> FrameInputs {
+    fn next_inputs(
+        &mut self,
+        frame: &Frame,
+        size: [u32; 2],
+        display: super::output::DisplayValues,
+    ) -> FrameInputs {
         // Under `HORIZON_STILL` the world's ticks are the clock (`PackInputs::still_ticks`), and
         // eased values sit at their targets.
         // A scripted clock (`PackInputs::frame_timing`) comes first, and eased values
@@ -799,6 +819,13 @@ impl NativeFrame {
         if self.api == Api::V0_2 {
             inputs.sky_color = decoded(inputs.sky_color);
             inputs.fog_color = decoded(inputs.fog_color);
+            if display.hdr {
+                inputs.hdr = 1;
+                inputs.headroom = display.headroom;
+                inputs.paper_white = display.paper_white;
+                inputs.peak = display.peak;
+                inputs.black_level = display.black_level;
+            }
         }
         if !self.reflects {
             inputs.has_reflection = 0;
@@ -1054,7 +1081,7 @@ impl NativePost {
                 let source = tonemap.map_or_else(
                     || StageKind::Tonemap.prelude(Api::V0_2) + DEFAULT_TONEMAP,
                     |s| s.source.clone(),
-                ) + &tonemap_entries();
+                ) + &tonemap_entries(tonemap.is_none());
                 let file = tonemap.map_or("<tonemap>", |s| s.file.as_str());
                 let module = naga::front::wgsl::parse_str(&source)
                     .map_err(|e| format!("{file}: {}", e.emit_to_string(&source)))?;
@@ -1116,6 +1143,11 @@ impl NativePost {
             format,
             display,
         })
+    }
+
+    /// Whether the pack has a `[tonemap]` of its own, which replaces Horizon's tone curve.
+    pub fn tonemaps(&self) -> bool {
+        self.display.as_ref().is_some_and(|d| d.label.is_some())
     }
 
     /// The passes' labels, in order, then the pack's tonemap's.
@@ -1557,14 +1589,18 @@ pub fn frame_inputs(
             let k = super::native_shadow::distortion(s.distance, s.resolution);
             2.0 * s.distance / s.resolution.max(1) as f32 * (1.0 - k)
         }),
-        // Shader API 0.2's display fields, which 0.1 packs don't declare: SDR's values, also
-        // with HDR on, until HDR output is served for 0.2 packs.
+        // Shader API 0.2's display fields, which 0.1 packs don't declare: SDR's values, which
+        // `NativeFrame::write` replaces on an HDR display.
         hdr: 0,
         headroom: 1.0,
         paper_white: 80.0,
         peak: 80.0,
         black_level: 0.0,
-        padding: [0; 3],
+        // No pack is served another space yet (`[frame] primaries`).
+        primaries: Primaries::Bt709 as u32,
+        luminance_gap: [0; 2],
+        luminance: Primaries::Bt709.luminance(),
+        padding: 0,
     }
 }
 
@@ -1695,7 +1731,10 @@ mod tests {
         assert_eq!(eased(1.0, 0.0, 2.0, 0.0), 1.0);
     }
     use super::*;
+    use crate::gfx::output::DisplayValues;
     use horizon_shader_api::{MANIFEST, Pack, check};
+
+    const SDR: DisplayValues = DisplayValues::SDR;
 
     #[test]
     fn wetness_rises_slower_than_it_dries() {
@@ -1726,7 +1765,7 @@ mod tests {
         frame.pack.eye_light = [0, 15];
         frame.pack.rain = 1.0;
         frame.pack.frame_timing = Some(FrameTiming::nth(1, 2000.0));
-        let first = native.next_inputs(&frame, [4, 4]);
+        let first = native.next_inputs(&frame, [4, 4], SDR);
         assert_eq!(
             (first.time, first.frame_index, first.delta_time),
             (0.0, 1, 0.0)
@@ -1737,7 +1776,7 @@ mod tests {
         native.last.as_mut().unwrap().2 -= std::time::Duration::from_secs(5);
         frame.pack.eye_light = [0, 0];
         frame.pack.frame_timing = Some(FrameTiming::nth(2, 2000.0));
-        let second = native.next_inputs(&frame, [4, 4]);
+        let second = native.next_inputs(&frame, [4, 4], SDR);
         assert_eq!(
             (second.time, second.frame_index, second.delta_time),
             (2.0, 2, 2.0)
@@ -1779,14 +1818,14 @@ mod tests {
         frame.pack.eye_in = 1;
         for n in 1..=5 {
             frame.pack.frame_timing = Some(FrameTiming::nth(n, 700.0));
-            used.next_inputs(&frame, [4, 4]);
+            used.next_inputs(&frame, [4, 4], SDR);
         }
         used.reset_history();
         frame.pack.eye_light = [2, 15];
         frame.pack.eye_in = 0;
         for n in 1..=3 {
             frame.pack.frame_timing = Some(FrameTiming::nth(n, 50.0));
-            let inputs = [&mut used, &mut fresh].map(|f| f.next_inputs(&frame, [4, 4]));
+            let inputs = [&mut used, &mut fresh].map(|f| f.next_inputs(&frame, [4, 4], SDR));
             assert_eq!(
                 bytemuck::bytes_of(&inputs[0]),
                 bytemuck::bytes_of(&inputs[1]),
@@ -2484,7 +2523,7 @@ file = \"b.wgsl\"
     /// an 8-bit step), at alpha 1.
     #[test]
     fn a_0_2_world_comes_back_through_decode_tonemap_and_encode() {
-        assert!(tonemap_entries().contains("horizon_encode(min(horizon_sanitize(out)"));
+        assert!(tonemap_entries(false).contains("horizon_encode(min(horizon_sanitize(out)"));
         let Some((device, queue)) = device() else {
             return;
         };
@@ -2598,6 +2637,204 @@ file = \"b.wgsl\"
                     .all(|(&got, want)| got.abs_diff(want) <= 1),
                 "{extra}: {pixel:?}"
             );
+        }
+    }
+
+    /// A 0.2 pack's `Frame` describes the HDR display its picture goes to, and SDR
+    /// without one: `hdr` 0, `headroom` 1, `paper_white` and `peak` 80, `black_level` 0.
+    #[test]
+    fn a_0_2_frame_describes_the_display_it_goes_to() {
+        let Some((device, _)) = device() else {
+            return;
+        };
+        let hud = crate::hud::HudBatch::new([4, 4]);
+        let frame = crate::gfx::pack_uniforms::initial_history_tests::frame(&hud);
+        let mut native = NativeFrame::new(
+            &device,
+            None,
+            Vec::new(),
+            Default::default(),
+            None,
+            Api::V0_2,
+        );
+        let fields = |i: &FrameInputs| (i.hdr, i.headroom, i.paper_white, i.peak, i.black_level);
+        assert_eq!(
+            fields(&native.next_inputs(&frame, [4, 4], SDR)),
+            (0, 1.0, 80.0, 80.0, 0.0)
+        );
+        let hdr = |headroom, paper_white, peak, black_level| DisplayValues {
+            hdr: true,
+            headroom,
+            paper_white,
+            peak,
+            black_level,
+        };
+        assert_eq!(
+            fields(&native.next_inputs(&frame, [4, 4], hdr(4.0, 250.0, 1000.0, 0.05))),
+            (1, 4.0, 250.0, 1000.0, 0.05)
+        );
+        // Read every frame: a change of display shows on the next one.
+        let next = native.next_inputs(&frame, [4, 4], hdr(2.0, 300.0, 600.0, 0.0));
+        assert_eq!(fields(&next).1, 2.0);
+        assert_eq!(fields(&native.next_inputs(&frame, [4, 4], SDR)).0, 0);
+    }
+
+    /// On the layered HDR frame a 0.2 pack's light is tone mapped once: by Horizon's curve,
+    /// the one HDR without a pack uses, when the pack has no `[tonemap]`, else by the pack's
+    /// alone, held to the headroom. In SDR Horizon's is a clip at white. An HDR output switched
+    /// to scRGB and back to HDR10 (`Hdr::retargeted`) maps it once all the same.
+    #[test]
+    fn a_0_2_pack_is_tone_mapped_once_by_its_own_curve_or_horizons() {
+        let Some((device, queue)) = device() else {
+            return;
+        };
+        // Light 8 times paper white, as the world's float frame stores it, in gamma.
+        let light = 8.0f32;
+        let (paper, peak) = (203.0, 1000.0);
+        let headroom = peak / paper;
+        // The picture shown for that light, in linear light: (a pack's [tonemap], HDR, the
+        // output switched).
+        let shown = |pack_curve: bool, hdr: bool, switched: bool| {
+            let (stage, file, source) = if pack_curve {
+                (
+                    "[tonemap]",
+                    "t.wgsl",
+                    "fn tonemap(input: TonemapInput) -> vec3<f32> { return input.color; }\n",
+                )
+            } else {
+                (
+                    "[sky]",
+                    "s.wgsl",
+                    "fn sky(input: SkyInput) -> vec4<f32> { return input.color; }\n",
+                )
+            };
+            let manifest = format!(
+                "schema = 1\nid = \"t\"\nname = \"T\"\nversion = \"1\"\napi = \"0.2\"\n\
+                 {stage}\nfile = \"{file}\"\n"
+            );
+            let files = [(MANIFEST, manifest.as_str()), (file, source)]
+                .into_iter()
+                .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
+                .collect();
+            let report = check(&Pack::from_files(files).unwrap()).unwrap();
+            let tonemap = report.stages.iter().find(|s| s.kind == StageKind::Tonemap);
+            let format = wgpu::TextureFormat::Rgba16Float;
+            let frame = NativeFrame::new(
+                &device,
+                None,
+                Vec::new(),
+                Default::default(),
+                None,
+                Api::V0_2,
+            );
+            let inputs = FrameInputs {
+                hdr: u32::from(hdr),
+                headroom: if hdr { headroom } else { 1.0 },
+                ..Default::default()
+            };
+            queue.write_buffer(&frame.buffer, 0, bytemuck::bytes_of(&inputs));
+            let mut post = NativePost::new(
+                &device,
+                Vec::new(),
+                &report.manifest,
+                &[],
+                format,
+                &frame,
+                tonemap,
+            )
+            .unwrap();
+            assert_eq!(post.tonemaps(), pack_curve);
+            let mut display = super::super::hdr::Hdr::new(
+                &device,
+                &queue,
+                format,
+                super::super::hdr::Output::Pq,
+                true,
+            );
+            (display.paper_white, display.peak) = (paper, peak);
+            if switched {
+                use super::super::hdr::Output::{Pq, ScRgb};
+                display = display.retargeted(&device, &queue, ScRgb);
+                display = display.retargeted(&device, &queue, Pq);
+            }
+            let screen = display.frame(&device, [4, 4]);
+            let usage =
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+            let color = texture(&device, format, usage);
+            let depth = texture(&device, wgpu::TextureFormat::Depth32Float, usage);
+            let [color, depth] = [&color, &depth].map(|t| t.create_view(&Default::default()));
+            let mut encoder = device.create_command_encoder(&Default::default());
+            let g = f64::from(light.powf(1.0 / 2.2));
+            drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &color,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: g,
+                            g,
+                            b: g,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            }));
+            let view = screen.create_view(&Default::default());
+            let world = (&color, &depth, &frame.surface_view);
+            post.run(&device, &mut encoder, world, &view, [4, 4], true, None);
+            // The renderer's rule, then its curve, as it runs them after the pack's chain.
+            if crate::gfx::horizon_tone_curve(hdr, true, post.tonemaps()) {
+                display.begin(&queue, true);
+                display.tonemap(&mut encoder, None);
+            }
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 256,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            encoder.copy_texture_to_buffer(
+                screen.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(256),
+                        rows_per_image: None,
+                    },
+                },
+                wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+            );
+            queue.submit([encoder.finish()]);
+            buffer.map_async(wgpu::MapMode::Read, .., |r| r.unwrap());
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let bytes = buffer.get_mapped_range(..).unwrap();
+            half::f16::from_le_bytes([bytes[0], bytes[1]])
+                .to_f32()
+                .powf(2.2)
+        };
+        let near = |got: f32, want: f32| (got - want).abs() <= 0.01 * want;
+        // Horizon's curve once: BT.2390's EETF at 203 and 1000 nits puts light 8 at 4.82
+        // (worked out apart from the shader, as in the HDR tone curve's own test). Clipped at
+        // the headroom first, or mapped twice, it would land lower.
+        for switched in [false, true] {
+            let horizon = shown(false, true, switched);
+            assert!(near(horizon, 4.82043), "{switched}: {horizon}");
+            // The pack's identity curve alone: the light held to the headroom, not eased again.
+            let pack = shown(true, true, switched);
+            assert!(near(pack, headroom), "{switched}: {pack}");
+        }
+        // SDR: a clip at white, the pack's or Horizon's.
+        for pack_curve in [false, true] {
+            let sdr = shown(pack_curve, false, false);
+            assert!(near(sdr, 1.0), "{pack_curve}: {sdr}");
         }
     }
 }

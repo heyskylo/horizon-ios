@@ -18,10 +18,10 @@ horizon-client-core = { path = "../horizon-client-core" }
 horizon-client-input = { path = "../horizon-client-input" }
 horizon-client-render = { path = "../horizon-client-render" }
 horizon-command = { path = "../horizon-command" }
-# Emotes pose the player model (`Mob::emote`, `mobs::anim::setup`).
-horizon-cosmetics = { path = "../horizon-cosmetics" }
 horizon-items = { path = "../horizon-items" }
 horizon-core = { path = "../horizon-core" }
+# Extension points for the crates above the engine (docs/layers.md, "How a Horizon crate plugs in").
+horizon-hooks = { path = "../horizon-hooks" }
 # `horizon-ctl mcp`: the Model Context Protocol, shared with the launcher and the server.
 horizon-mcp = { path = "../horizon-mcp" }
 # The server thread ahead of the workers (MinecraftServer.spin's Thread.setPriority).
@@ -42,8 +42,6 @@ horizon-chat-filter = { path = "../horizon-chat-filter" }
 horizon-shaders = { path = "../horizon-shaders" }
 # Horizon's own shader packs: the format, the stages and the check (docs/shaders.md).
 horizon-shader-api = { path = "../horizon-shader-api" }
-# Play with Friends: invite codes and their tunnel; the `friends` feature.
-horizon-friends = { path = "../horizon-friends", optional = true }
 # The narrator (GameNarrator): text-to-speech of chat, system messages and screens.
 horizon-narrator = { path = "../horizon-narrator" }
 # Horizon mods: sandboxed WebAssembly components, off unless installed and turned on (docs/mods.md).
@@ -72,17 +70,13 @@ flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs", 
 mio = { version = "1.2.4", features = ["os-poll", "net"] }
 # Shared chunk frames are found by one keyed 128-bit hash of their body (lan/conn.rs SharedFrames).
 xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
-horizon-theme = { path = "../horizon-theme" }
-# Opt-in data collection: the game keeps, the launcher sends (docs/telemetry.md); `live` is
-# the anonymous "I'm playing" ping the game sends itself (`heartbeat.rs`), the `heartbeat` feature.
+# Opt-in data collection: the game keeps, the launcher sends (docs/telemetry.md).
 horizon-telemetry = { path = "../horizon-telemetry", default-features = false }
 horizon-bench = { path = "../horizon-bench" }
 crc32fast = "1"
 zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 # Controllers (evdev + libudev on Linux, IOKit on macOS, Windows.Gaming.Input); the `controllers` feature.
 gilrs = { version = "0.11", optional = true }
-# The DualSense's rumble, adaptive triggers and lights over HID (gilrs only reads it).
-horizon-dualsense = { path = "../horizon-dualsense", optional = true }
 # HTTPS to the Minecraft services (online-mode session join).
 ureq = { version = "2", default-features = false, features = ["tls"] }
 unicode-bidi = "0.3.18"
@@ -97,8 +91,8 @@ rustix = { version = "1", default-features = false, features = ["std", "time", "
 # Use the registered URI handler without routing links through Explorer/cmd.
 open = { version = "5.4.5", features = ["shellexecute-on-windows"] }
 # DirectX 12, where Vulkan has no adapter or device, or by choice (`graphicsApi`, graphics.rs).
-# Shaders compile with FXC (d3dcompiler_47.dll, part of Windows), or DXC when dxcompiler.dll is
-# on the PATH.
+# Shaders compile with FXC (d3dcompiler_47.dll, part of Windows), or on integrated GPUs with DXC
+# (dxcompiler.dll beside the game, gfx/dx12_compiler.rs).
 wgpu = { version = "30.0.1", default-features = false, features = ["dx12"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -114,18 +108,12 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
 
 [features]
-default = ["audio", "controllers", "discord", "friends", "heartbeat"]
+default = ["audio", "controllers"]
 # Sound output. Without it (and `controllers`) the program links neither libasound nor libudev on
 # Linux: the server build (`--no-default-features`, released as horizon-engine; docs/server.md).
 audio = ["horizon-client-render/audio"]
 # Controllers: gilrs, and the DualSense's own output. Without it only `horizon-ctl pad`'s virtual pad.
-controllers = ["dep:gilrs", "dep:horizon-dualsense", "horizon-client-input/controllers"]
-# "Playing Horizon" on the player's Discord profile (`discord_presence`).
-discord = []
-# Play with Friends, joining side (`net.rs`): without it no invite code joins.
-friends = ["dep:horizon-friends"]
-# The anonymous "I'm playing" ping (`heartbeat.rs`, docs/telemetry.md).
-heartbeat = ["horizon-telemetry/live"]
+controllers = ["dep:gilrs", "horizon-client-input/controllers"]
 # Records the call sites of mob random draws (`mob_ai_probe` traces).
 rng-trace = ["horizon-core/rng-trace"]
 # Compatibility with earlier experiment commands: main already uses mimalloc.
@@ -137,6 +125,8 @@ windows-segment-heap = []
 workspace = true
 
 [dev-dependencies]
+# ui_theme's unit tests draw text in the design system's fonts.
+horizon-theme = { path = "../horizon-theme" }
 horizon-client-render = { path = "../horizon-client-render", features = ["test-support"] }
 horizon-items = { path = "../horizon-items", features = ["test-support"] }
 # Every WGSL shader translated as wgpu's DirectX 12 backend does (gfx.rs tests).

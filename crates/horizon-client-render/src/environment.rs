@@ -8,9 +8,11 @@ use horizon_world::environment_attributes::{
 use horizon_world::environment_system::{BiomeBlend, Builder, Conditions, System};
 use horizon_world::environment_timeline::Timeline;
 use serde_json::Value as Json;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
+
+mod noise;
 
 pub struct Environment {
     system: System,
@@ -163,9 +165,18 @@ pub struct Frame {
     /// The sky and block light at the camera.
     pub sky_light: i32,
     pub block_light: i32,
-    /// The camera's biome's climate (`o.temperature`, `o.downfall`).
+    /// The camera's biome (`o.biome()`), and its climate (`o.temperature`, `o.downfall`).
+    pub biome: String,
     pub temperature: f32,
     pub downfall: f32,
+}
+
+impl Frame {
+    /// `g.rain`: the mean of the rain and thunder levels, so plain rain is 0.5 and a
+    /// thunderstorm 1 (observed on the real mod: a pack's `g.rain` colormap row).
+    pub fn global_rain(&self) -> f64 {
+        (f64::from(self.rain) + f64::from(self.thunder)) / 2.0
+    }
 }
 
 /// The game side of a pack expression in an attribute value: `g`, `p`, `c`, `o` (the camera's
@@ -175,6 +186,21 @@ struct FrameHost<'a> {
     configs: &'a horizon_polytone::pack::Configs,
     value: f64,
     seed: u64,
+}
+
+/// `program`'s value for the frame (a pack's expression outside attribute layers: its `v` is 0).
+pub(crate) fn eval_frame(
+    program: &horizon_polytone::expr::Program,
+    frame: &Frame,
+    configs: &horizon_polytone::pack::Configs,
+) -> Option<horizon_polytone::expr::Value> {
+    let mut host = FrameHost {
+        frame,
+        configs,
+        value: 0.0,
+        seed: frame.game_time as u64,
+    };
+    program.eval(&mut host).ok()
 }
 
 impl horizon_polytone::expr::Host for FrameHost<'_> {
@@ -196,7 +222,7 @@ impl horizon_polytone::expr::Host for FrameHost<'_> {
         let on = |root: Root| *target == V::Object(root as u32);
         let num = |n: f64| Ok(V::Num(n));
         match name {
-            "rain" if on(Root::Global) => num(f64::from(f.rain)),
+            "rain" if on(Root::Global) => num(f.global_rain()),
             "time" if on(Root::Global) => num(f.game_time as f64),
             "dayTime" if on(Root::Global) => num(f.day_time as f64),
             "skyType" if on(Root::Global) => num(f64::from(f.sky_type)),
@@ -216,6 +242,9 @@ impl horizon_polytone::expr::Host for FrameHost<'_> {
             "blockLight" if on(Root::Object) || on(Root::Player) => num(f64::from(f.block_light)),
             "temperature" if on(Root::Object) => num(f64::from(f.temperature)),
             "downfall" if on(Root::Object) => num(f64::from(f.downfall)),
+            "biome" if on(Root::Object) || on(Root::Player) || on(Root::Camera) => {
+                Ok(V::Str(f.biome.as_str().into()))
+            }
             "rand" if on(Root::Random) => {
                 // A splitmix64 step: the frame's own sequence.
                 self.seed = self.seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
@@ -265,24 +294,122 @@ fn as_number(value: &Value) -> f64 {
 
 /// A Polytone colormap used as an attribute value (wiki "Colormaps"): an image read at the
 /// column and row its two expressions pick, each 0 to 1 with 1 the top-left corner.
-struct Colormap {
-    x: horizon_polytone::expr::Program,
-    y: horizon_polytone::expr::Program,
+pub(crate) struct Colormap {
+    x: Axis,
+    y: Axis,
     /// Only the lower-left triangle: the row value is scaled by the column value, as vanilla's
     /// grass colormap scales downfall by temperature.
     triangular: bool,
     /// Rounds to the nearest pixel (the default) instead of the one below.
     rounds: bool,
+    /// `biome_blend`: blocks take the mean of the colours around them, over the Biome Blend
+    /// square, as vanilla's biome tints do. Without the field, maps that sample the biome
+    /// (`temperature`, `downfall`, `biome_id`) blend: Polytone 6.8.6's water by `biome_id`
+    /// fades over a biome edge.
+    pub(crate) biome_blend: bool,
+    /// Its axes read nothing that changes up a column of one biome (no `o.y`): a section of
+    /// one biome can sample it once per column.
+    pub(crate) column: bool,
     width: u32,
     height: u32,
     rgba: Vec<u8>,
 }
 
+/// A colormap axis: an expression (or a named sampler, wiki "Default Samplers"), or the
+/// `biome_id` sampler with its mapper.
+enum Axis {
+    Expr(horizon_polytone::expr::Program),
+    /// `biome_id`: the value the mapper gives the biome where it samples (0 for the others),
+    /// and the expression naming that biome. Unlike the other axes it counts from the left (or
+    /// top) edge, in pixel coordinates over the mapper's `texture_size`: the column (or row) is
+    /// `floor(value * size)`, so `1` over a `texture_size` of 16 is the second pixel, and the
+    /// biomes left out are the first, as the wiki's "start your mapper at 1" advice expects.
+    BiomeId(HashMap<String, f64>, horizon_polytone::expr::Program),
+}
+
+impl Axis {
+    /// Whether the axis reads only what stays the same up a column of one biome.
+    fn column(&self) -> bool {
+        use horizon_polytone::expr::Root;
+        let flat = |root: Root, name: &str| match root {
+            Root::Object => matches!(name, "x" | "z" | "biome" | "temperature" | "downfall"),
+            Root::Random => name == "noise",
+            _ => false,
+        };
+        match self {
+            Self::Expr(program) | Self::BiomeId(_, program) => program.reads_only(&flat),
+        }
+    }
+    fn value(&self, host: &mut dyn horizon_polytone::expr::Host) -> Option<f64> {
+        match self {
+            Self::Expr(program) => Some(program.eval(host).ok()?.num()),
+            Self::BiomeId(mapper, biome) => {
+                let biome = match biome.eval(host).ok()? {
+                    horizon_polytone::expr::Value::Str(s) => s,
+                    _ => return Some(0.0),
+                };
+                Some(mapper.get(biome.as_ref()).copied().unwrap_or(0.0))
+            }
+        }
+    }
+}
+
+/// A `biome_id_mapper`: inline, or an id of `polytone/biome_id_mappers/<path>.json`. Its values
+/// are divided by its `texture_size`, when it has one (pixel coordinates).
+fn biome_id_mapper(pack_root: &Path, json: &Json) -> HashMap<String, f64> {
+    let object = match json {
+        Json::String(id) => {
+            let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
+            let file = pack_root.join(format!(
+                "assets/{namespace}/polytone/biome_id_mappers/{path}.json"
+            ));
+            horizon_world::json_file::read::<Json>(&file).unwrap_or(Json::Null)
+        }
+        other => other.clone(),
+    };
+    let Some(object) = object.as_object() else {
+        return HashMap::new();
+    };
+    let size = object
+        .get("texture_size")
+        .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
+        .filter(|s| *s > 0.0)
+        .unwrap_or(1.0);
+    object
+        .iter()
+        .filter(|(k, _)| *k != "texture_size")
+        .filter_map(|(k, v)| {
+            let id = if k.contains(':') {
+                k.clone()
+            } else {
+                format!("minecraft:{k}")
+            };
+            Some((id, v.as_f64()? / size))
+        })
+        .collect()
+}
+
 impl Colormap {
+    /// One colour wherever it samples (a `biome_colors` flat colour, RGB).
+    pub(crate) fn flat(rgb: u32) -> Self {
+        let zero = || Axis::Expr(horizon_polytone::expr::Program::compile("0").expect("a number"));
+        let [_, r, g, b] = rgb.to_be_bytes();
+        Self {
+            x: zero(),
+            y: zero(),
+            triangular: false,
+            rounds: true,
+            biome_blend: false,
+            column: true,
+            width: 1,
+            height: 1,
+            rgba: vec![r, g, b, 255],
+        }
+    }
+
     /// `assets/<namespace>/polytone/colormaps/<path>.png` and its optional `.json` (without
-    /// one, the axes are the biome's temperature and downfall). The `biome_id` axis isn't
-    /// supported yet.
-    fn load(pack_root: &Path, id: &str) -> Option<Self> {
+    /// one, the axes are the biome's temperature and downfall).
+    pub(crate) fn load(pack_root: &Path, id: &str) -> Option<Self> {
         let (namespace, path) = id.split_once(':')?;
         let base = pack_root.join(format!("assets/{namespace}/polytone/colormaps/{path}"));
         let png = base.with_extension("png");
@@ -295,13 +422,31 @@ impl Colormap {
         };
         let json: Json =
             horizon_world::json_file::read(&base.with_extension("json")).unwrap_or(Json::Null);
-        let axis = |key: &str, default: &str| -> Option<horizon_polytone::expr::Program> {
+        let compile = horizon_polytone::expr::Program::compile;
+        let mut by_biome = false;
+        let mut axis = |key: &str, default: &str| -> Option<Axis> {
             let src = match &json[key] {
                 Json::String(s) => s.clone(),
                 Json::Number(n) => n.to_string(),
                 _ => default.to_owned(),
             };
-            match horizon_polytone::expr::Program::compile(&src) {
+            by_biome |= matches!(
+                src.trim(),
+                "biome_id" | "temperature" | "legacy_temperature" | "downfall"
+            ) || matches!(src.trim(), "o.temperature" | "o.downfall");
+            // The named samplers (wiki "Default Samplers") as the expressions they stand for.
+            let src = match src.trim() {
+                "biome_id" => {
+                    let mapper = biome_id_mapper(pack_root, &json["biome_id_mapper"]);
+                    return Some(Axis::BiomeId(mapper, compile("o.biome()").ok()?));
+                }
+                "temperature" | "legacy_temperature" => "o.temperature".to_owned(),
+                "downfall" => "o.downfall".to_owned(),
+                "y_level" => "o.y / 128".to_owned(),
+                "day_time" => "1 - (g.dayTime % 24000) / 24000".to_owned(),
+                _ => src,
+            };
+            match compile(&src).map(Axis::Expr) {
                 Ok(program) => Some(program),
                 Err(e) => {
                     log::warn!("colormap {id} {key}: {e}");
@@ -309,9 +454,16 @@ impl Colormap {
                 }
             }
         };
+        let (x, y) = (
+            axis("x_axis", "o.temperature")?,
+            axis("y_axis", "o.downfall")?,
+        );
+        let column = [&x, &y].iter().all(|axis| axis.column());
         Some(Self {
-            x: axis("x_axis", "o.temperature")?,
-            y: axis("y_axis", "o.downfall")?,
+            x,
+            y,
+            column,
+            biome_blend: json["biome_blend"].as_bool().unwrap_or(by_biome),
             triangular: json["triangular"].as_bool() == Some(true),
             rounds: json["rounds"].as_bool() != Some(false),
             width,
@@ -322,21 +474,157 @@ impl Colormap {
 
     /// The colour the axes pick, ARGB; `None` for a transparent pixel (the value stays what
     /// it was, the default `fallback_colormap: original`) or an axis that fails.
-    fn sample(&self, host: &mut dyn horizon_polytone::expr::Host) -> Option<u32> {
-        let x = self.x.eval(host).ok()?.num().clamp(0.0, 1.0);
-        let mut y = self.y.eval(host).ok()?.num().clamp(0.0, 1.0);
+    pub(crate) fn sample(&self, host: &mut dyn horizon_polytone::expr::Host) -> Option<u32> {
+        let x = self.x.value(host)?.clamp(0.0, 1.0);
+        let mut y = self.y.value(host)?.clamp(0.0, 1.0);
         if self.triangular {
             y *= x;
         }
-        let pixel = |v: f64, size: u32| {
-            let p = (1.0 - v) * f64::from(size.saturating_sub(1));
+        let pixel = |axis: &Axis, v: f64, size: u32| {
+            let last = size.saturating_sub(1);
+            if let Axis::BiomeId(..) = axis {
+                return ((v * f64::from(size)).floor() as u32).min(last);
+            }
+            let p = (1.0 - v) * f64::from(last);
             let p = if self.rounds { p.round() } else { p.floor() };
-            (p as u32).min(size.saturating_sub(1))
+            (p as u32).min(last)
         };
-        let (px, py) = (pixel(x, self.width), pixel(y, self.height));
+        let (px, py) = (
+            pixel(&self.x, x, self.width),
+            pixel(&self.y, y, self.height),
+        );
         let i = (py as usize * self.width as usize + px as usize) * 4;
         let [r, g, b, a] = self.rgba.get(i..i + 4)?.try_into().ok()?;
         (a != 0).then(|| u32::from(a) << 24 | u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b))
+    }
+}
+
+/// The colormaps of the Polytone block and fluid modifiers of the packs merged at `pack_root`:
+/// (a fluid modifier, its targets, the colormap's id). Inline colormaps aren't read.
+pub(crate) fn polytone_colormap_modifiers(
+    pack_root: &Path,
+) -> Vec<(bool, horizon_polytone::Targets, String)> {
+    let mut out = Vec::new();
+    let namespaces = std::fs::read_dir(pack_root.join("assets"))
+        .into_iter()
+        .flatten()
+        .flatten();
+    for namespace in namespaces {
+        for (kind, fluid) in [("block_modifiers", false), ("fluid_modifiers", true)] {
+            let mut stack = vec![namespace.path().join("polytone").join(kind)];
+            while let Some(dir) = stack.pop() {
+                for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        stack.push(path);
+                        continue;
+                    }
+                    let Ok(json) = horizon_world::json_file::read::<Json>(&path) else {
+                        continue;
+                    };
+                    let Some(id) = json.get("colormap").and_then(Json::as_str) else {
+                        continue;
+                    };
+                    let id = if id.contains(':') {
+                        id.to_owned()
+                    } else {
+                        format!("minecraft:{id}")
+                    };
+                    let relative = path
+                        .strip_prefix(pack_root)
+                        .unwrap_or(&path)
+                        .to_string_lossy();
+                    let implicit = horizon_polytone::implicit_id(&relative, kind);
+                    match horizon_polytone::Targets::parse(json.get("targets"), implicit.as_deref())
+                    {
+                        Ok(targets) => out.push((fluid, targets, id)),
+                        Err(e) => log::warn!("{relative}: {e}"),
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// What a block colormap's axes read where it samples: the block (`o.x`, `o.biome()`, its
+/// biome's climate) and `r.noise`. The world isn't reachable from the mesher, so the rest fails
+/// and the block keeps its own tint.
+pub(crate) struct BlockHost<'a> {
+    at: [i32; 3],
+    biome: &'a crate::biome::BiomeInfo,
+}
+
+impl<'a> BlockHost<'a> {
+    pub(crate) fn new(at: [i32; 3], biome: &'a crate::biome::BiomeInfo) -> Self {
+        Self { at, biome }
+    }
+}
+
+/// The noise `r.noise(x, y)` reads, the same for blocks and particles.
+pub(crate) fn polytone_noise() -> &'static noise::PerlinSimplex {
+    noise::builtin()
+}
+
+impl horizon_polytone::expr::Host for BlockHost<'_> {
+    fn field(
+        &mut self,
+        root: horizon_polytone::expr::Root,
+        field: horizon_polytone::expr::Field,
+    ) -> Option<horizon_polytone::expr::Value> {
+        use horizon_polytone::expr::Field as F;
+        if root != horizon_polytone::expr::Root::Object {
+            return None;
+        }
+        Some(horizon_polytone::expr::Value::Num(match field {
+            F::X => f64::from(self.at[0]),
+            F::Y => f64::from(self.at[1]),
+            F::Z => f64::from(self.at[2]),
+            F::Temperature => f64::from(self.biome.temperature),
+            F::Downfall => f64::from(self.biome.downfall),
+            _ => return None,
+        }))
+    }
+
+    fn root(&mut self, root: horizon_polytone::expr::Root) -> horizon_polytone::expr::Value {
+        use horizon_polytone::expr::Root;
+        horizon_polytone::expr::Value::Object(match root {
+            Root::Object => 1,
+            Root::Random => 2,
+            _ => 0,
+        })
+    }
+
+    fn method(
+        &mut self,
+        target: &horizon_polytone::expr::Value,
+        name: &str,
+        args: &[horizon_polytone::expr::Value],
+    ) -> std::result::Result<horizon_polytone::expr::Value, String> {
+        use horizon_polytone::expr::Value as V;
+        let num = |n: f64| Ok(V::Num(n));
+        match (target, name) {
+            (V::Object(1), "x" | "y" | "z") => {
+                num(f64::from(self.at[usize::from(name.as_bytes()[0] - b'x')]))
+            }
+            (V::Object(1), "biome") => Ok(V::Str(self.biome.name.as_str().into())),
+            (V::Object(1), "temperature") => num(f64::from(self.biome.temperature)),
+            (V::Object(1), "downfall") => num(f64::from(self.biome.downfall)),
+            (V::Object(2), "noise") => {
+                let mut coords = args.iter().filter(|v| !matches!(v, V::Str(_))).map(V::num);
+                let (x, y) = (coords.next().unwrap_or(0.0), coords.next().unwrap_or(0.0));
+                num(polytone_noise().get(x, y))
+            }
+            _ => Err(format!("{name} is not available to block colormaps")),
+        }
+    }
+
+    fn function(
+        &mut self,
+        name: &str,
+        _: &[horizon_polytone::expr::Value],
+    ) -> std::result::Result<horizon_polytone::expr::Value, String> {
+        Err(format!("{name} is not available to block colormaps"))
     }
 }
 
@@ -511,43 +799,6 @@ impl Resolver {
     }
 }
 
-/// The biome ids a `#tag` (`data/<namespace>/tags/worldgen/biome/<path>.json`) holds, nested
-/// tags included.
-fn biome_tag(
-    root: &Path,
-    tag: &str,
-    cache: &mut HashMap<String, HashSet<String>>,
-) -> HashSet<String> {
-    if let Some(hit) = cache.get(tag) {
-        return hit.clone();
-    }
-    cache.insert(tag.to_owned(), HashSet::new());
-    let (namespace, path) = tag.split_once(':').unwrap_or(("minecraft", tag));
-    let file = root.join(format!("data/{namespace}/tags/worldgen/biome/{path}.json"));
-    let mut out = HashSet::new();
-    if let Ok(json) = horizon_world::json_file::read::<Json>(&file) {
-        for value in json["values"].as_array().into_iter().flatten() {
-            let id = value
-                .as_str()
-                .or_else(|| value["id"].as_str())
-                .unwrap_or_default();
-            match id.strip_prefix('#') {
-                Some(inner) => out.extend(biome_tag(root, inner, cache)),
-                None if !id.is_empty() => {
-                    out.insert(if id.contains(':') {
-                        id.to_owned()
-                    } else {
-                        format!("minecraft:{id}")
-                    });
-                }
-                None => {}
-            }
-        }
-    }
-    cache.insert(tag.to_owned(), out.clone());
-    out
-}
-
 /// The timeline ids a dimension type's `timelines` names: an id, a `#tag` or a list,
 /// tags resolved through `tags/timeline/` (their entries may be `{"id", "required"}`).
 fn timeline_ids(root: &Path, json: &Json, out: &mut Vec<String>, depth: u32) {
@@ -601,10 +852,14 @@ impl Environment {
             &root.join(format!("data/minecraft/dimension_type/{dimension}.json")),
         )?;
         let id = format!("minecraft:{dimension}");
+        let tags = crate::pack_tags::Tags::new(root);
         let mine: Vec<_> = packs
             .dimensions
             .iter()
-            .filter(|m| m.targets.matches(&id, |_| false))
+            .filter(|m| {
+                m.targets
+                    .matches(&id, |tag| tags.contains("dimension_type", tag, &id))
+            })
             .collect();
         let frame = Arc::new(RwLock::new(Frame::default()));
         let resolver = Resolver {
@@ -627,7 +882,6 @@ impl Environment {
         // Without biome data (a bare dimension type), there is no biome layer.
         let mut biomes = HashMap::new();
         let mut post = HashMap::new();
-        let tags = std::cell::RefCell::new(HashMap::new());
         if let Ok(folder) =
             horizon_world::json_folder::read(&root.join("data/minecraft/worldgen/biome"))
         {
@@ -643,8 +897,7 @@ impl Environment {
                 };
                 let mut post_map = AttributeMap::default();
                 for m in &packs.biomes {
-                    let in_tag =
-                        |tag: &str| biome_tag(root, tag, &mut tags.borrow_mut()).contains(&name);
+                    let in_tag = |tag: &str| tags.contains("worldgen/biome", tag, &name);
                     if m.targets.matches(&name, in_tag) {
                         resolver.apply(&mut map, &m.base);
                         resolver.apply(&mut post_map, &m.post_process);
@@ -968,20 +1221,25 @@ mod tests {
                 r#"{"default_value": 7}"#,
             ),
         ]);
-        let at = |rain: f32, chunks: i32| {
+        let at = |rain: f32, thunder: f32, chunks: i32| {
             env.set_frame(Frame {
                 rain,
+                thunder,
                 render_distance: chunks,
                 ..Frame::default()
             });
             sky_at(&env, "minecraft:plains", 0.0)
         };
         // `c.viewDistance` is in blocks: 16 chunks are 256.
-        assert_eq!(at(0.0, 16).fog_end, 224.0);
-        assert_eq!(at(0.25, 32).fog_end, 498.0);
+        assert_eq!(at(0.0, 0.0, 16).fog_end, 224.0);
+        // `g.rain` is the mean of rain and thunder: half rain is 0.25 (448 + 50), plain rain
+        // 0.5 and a thunderstorm 1, both past the `min` (224 + 100).
+        assert_eq!(at(0.5, 0.0, 32).fog_end, 498.0);
+        assert_eq!(at(1.0, 0.0, 16).fog_end, 324.0);
+        assert_eq!(at(1.0, 1.0, 16).fog_end, 324.0);
         // `v` is the value the layers before gave: the default start 0, and 192.33 for clouds.
-        assert_eq!(at(0.0, 16).fog_start, 7.0);
-        assert_eq!(at(0.0, 16).cloud_height, 192.33 * 0.5);
+        assert_eq!(at(0.0, 0.0, 16).fog_start, 7.0);
+        assert_eq!(at(0.0, 0.0, 16).cloud_height, 192.33 * 0.5);
     }
 
     /// A PNG of RGBA pixels in one row.
@@ -1016,17 +1274,60 @@ mod tests {
             ),
             ("assets/mypack/polytone/colormaps/sky.png", &png),
         ]);
-        let sky = |rain: f32| {
+        let sky = |rain: f32, thunder: f32| {
             env.set_frame(Frame {
                 rain,
+                thunder,
                 ..Frame::default()
             });
             env.sample(&Sample::default()).sky_color
         };
-        assert_eq!(sky(0.0), [1.0, 0.0, 0.0]);
-        assert_eq!(sky(0.3), [0.0, 1.0, 0.0]);
-        assert_eq!(sky(1.0), [0.0, 0.0, 1.0]);
-        // A transparent pixel keeps the colour the layers before gave (the dimension's #808080).
-        assert_eq!(sky(0.7), [128.0 / 255.0; 3]);
+        // `g.rain` 0, 0.3 (rain 0.6), 1 (a thunderstorm).
+        assert_eq!(sky(0.0, 0.0), [1.0, 0.0, 0.0]);
+        assert_eq!(sky(0.6, 0.0), [0.0, 1.0, 0.0]);
+        assert_eq!(sky(1.0, 1.0), [0.0, 0.0, 1.0]);
+        // A transparent pixel keeps the colour the layers before gave (the dimension's #808080):
+        // `g.rain` 0.7.
+        assert_eq!(sky(1.0, 0.4), [128.0 / 255.0; 3]);
+    }
+
+    #[test]
+    fn biome_id_colormaps_read_the_column_their_mapper_gives_the_biome() {
+        // Left to right: red, green, transparent, blue.
+        let png = png_row(&[
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [9, 9, 9, 0],
+            [0, 0, 255, 255],
+        ]);
+        let env = with_pack_files(&[
+            (
+                "assets/minecraft/polytone/dimension_modifiers/overworld.json",
+                br#"{"attributes_modifiers": {"visual/sky_color": "mypack:sky"}}"#,
+            ),
+            (
+                "assets/mypack/polytone/colormaps/sky.json",
+                br#"{"x_axis": "biome_id", "y_axis": 0, "biome_id_mapper": "mypack:biomes"}"#,
+            ),
+            ("assets/mypack/polytone/colormaps/sky.png", &png),
+            (
+                // Pixel columns from the left, over a texture_size of the image's width.
+                "assets/mypack/polytone/biome_id_mappers/biomes.json",
+                br#"{"minecraft:desert": 3, "swamp": 1, "minecraft:plains": 2, "texture_size": 4}"#,
+            ),
+        ]);
+        let sky = |biome: &str| {
+            env.set_frame(Frame {
+                biome: biome.to_owned(),
+                ..Frame::default()
+            });
+            env.sample(&Sample::default()).sky_color
+        };
+        assert_eq!(sky("minecraft:desert"), [0.0, 0.0, 1.0]);
+        assert_eq!(sky("minecraft:swamp"), [0.0, 1.0, 0.0]);
+        // A biome the mapper doesn't name is 0: the first column.
+        assert_eq!(sky("minecraft:forest"), [1.0, 0.0, 0.0]);
+        // Plains land on the transparent pixel: the colour before stays.
+        assert_eq!(sky("minecraft:plains"), [128.0 / 255.0; 3]);
     }
 }

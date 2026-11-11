@@ -25,7 +25,7 @@ pub enum StageKind {
     Weather,
     /// A full-screen pass over the world's picture, under the hand and HUD.
     Post,
-    /// 0.2: the picture for the display, once per pixel of the window after the post chain,
+    /// 0.2: the picture for an output (the display), once per pixel of it after the post chain,
     /// before the camera overlays and the HUD.
     Tonemap,
 }

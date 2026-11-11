@@ -335,8 +335,77 @@ impl SectionScratch {
     }
 }
 
+/// Lighting scratch (some 4.4 MB at full height) shared by every thread that lights: a job takes one
+/// (or makes one) and gives it back, and at most [`kept_scratch`] stay allocated between jobs. One per
+/// thread kept that much on every generation worker for good.
+static SCRATCH_POOL: std::sync::Mutex<Vec<LightScratch>> = std::sync::Mutex::new(Vec::new());
+
+/// How many scratches the pool keeps: one per worker thread (at least 4), so a chunk-load burst
+/// that lights on every streaming worker at once reuses them instead of building and freeing a
+/// scratch per job. `worker_count` is read once and cached.
+fn kept_scratch() -> usize {
+    horizon_threads::worker_count().max(4)
+}
+
+/// A scratch from the pool, or a new one.
+fn take_scratch() -> LightScratch {
+    let taken = SCRATCH_POOL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .pop();
+    taken.unwrap_or_else(LightScratch::new)
+}
+
+/// Gives a scratch back to the pool, unless it already keeps [`kept_scratch`].
+fn give_scratch(scratch: LightScratch) {
+    let mut pool = SCRATCH_POOL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if pool.len() < kept_scratch() {
+        pool.push(scratch);
+    }
+}
+
 thread_local! {
-    static SCRATCH: RefCell<LightScratch> = RefCell::new(LightScratch::new());
+    static RELIGHT_SCRATCH: RefCell<RelightScratch> = RefCell::new(RelightScratch::new());
+}
+
+struct RelightScratch {
+    decrease: VecDeque<(Pos, u8)>,
+    cleared: Vec<Pos>,
+    increase: VecDeque<Pos>,
+    sources: FxHashMap<(i32, i32), i32>,
+}
+
+impl RelightScratch {
+    fn new() -> Self {
+        Self {
+            decrease: VecDeque::new(),
+            cleared: Vec::new(),
+            increase: VecDeque::new(),
+            sources: FxHashMap::default(),
+        }
+    }
+
+    fn clear(&mut self) {
+        const MAX_CAPACITY: usize = 16_384;
+        self.decrease.clear();
+        if self.decrease.capacity() > MAX_CAPACITY {
+            self.decrease.shrink_to(MAX_CAPACITY);
+        }
+        self.cleared.clear();
+        if self.cleared.capacity() > MAX_CAPACITY {
+            self.cleared.shrink_to(MAX_CAPACITY);
+        }
+        self.increase.clear();
+        if self.increase.capacity() > MAX_CAPACITY {
+            self.increase.shrink_to(MAX_CAPACITY);
+        }
+        self.sources.clear();
+        if self.sources.capacity() > MAX_CAPACITY {
+            self.sources.shrink_to(MAX_CAPACITY);
+        }
+    }
 }
 
 /// Where a section sits in the 48-wide region.
@@ -449,7 +518,10 @@ pub fn light_chunk(
     tables: &LightTables,
     sky_light: bool,
 ) -> Vec<Light> {
-    SCRATCH.with_borrow_mut(|scratch| light_chunk_with_scratch(region, tables, sky_light, scratch))
+    let mut scratch = take_scratch();
+    let lit = light_chunk_with_scratch(region, tables, sky_light, &mut scratch);
+    give_scratch(scratch);
+    lit
 }
 
 fn light_chunk_with_scratch(
@@ -851,12 +923,12 @@ impl<'w> Region<'w> {
         Self {
             layout: world.layout(),
             world,
-            slots: Vec::new(),
+            slots: Vec::with_capacity(16),
             index: FxHashMap::default(),
             last: ((i32::MIN, 0, 0), NONE),
         }
     }
-    #[inline]
+    #[inline(always)]
     fn slot(&mut self, x: i32, y: i32, z: i32) -> Option<usize> {
         let s = self.layout.section_index(y)?;
         let key = (x >> 4, s as i32, z >> 4);
@@ -1113,10 +1185,25 @@ pub fn relight(
     force: bool,
     changed: &mut LightChanges,
 ) {
-    let mut region = Region::new(world);
-    changed.keyed(region.layout);
-    relight_region(&mut region, tables, sky_light, positions, force, changed);
-    region.finish();
+    changed.keyed(world.layout());
+    if positions.is_empty() {
+        return;
+    }
+    RELIGHT_SCRATCH.with_borrow_mut(|scratch| {
+        scratch.clear();
+        let mut region = Region::new(world);
+        relight_region(
+            &mut region,
+            tables,
+            sky_light,
+            positions,
+            force,
+            scratch,
+            changed,
+        );
+        region.finish();
+        scratch.clear();
+    });
 }
 /// The columns `changed` touched that border a loaded column not lit yet
 /// (`unlit`). `relight` reads and writes only lit columns, so an edit's
@@ -1141,10 +1228,11 @@ fn relight_region(
     sky_light: bool,
     positions: &[Pos],
     force: bool,
+    scratch: &mut RelightScratch,
     changed: &mut LightChanges,
 ) {
     crate::spans::time("lt_block", || {
-        relight_layer(world, tables, false, positions.to_vec(), force, changed)
+        relight_layer(world, tables, false, positions, force, scratch, changed)
     });
     if sky_light {
         let (min_y, max_y) = (world.layout.min_y(), world.layout.max_y());
@@ -1172,7 +1260,7 @@ fn relight_region(
             }
         });
         crate::spans::time("lt_sky", || {
-            relight_layer(world, tables, true, seeds, force, changed)
+            relight_layer(world, tables, true, &seeds, force, scratch, changed)
         });
     }
 }
@@ -1180,14 +1268,30 @@ fn relight_layer(
     world: &mut Region,
     tables: &LightTables,
     sky: bool,
-    seeds: Vec<Pos>,
+    seeds: &[Pos],
     force: bool,
+    scratch: &mut RelightScratch,
     changed: &mut LightChanges,
 ) {
-    let mut decrease: VecDeque<(Pos, u8)> = VecDeque::new();
-    let mut cleared: Vec<Pos> = Vec::new();
-    let mut increase: VecDeque<Pos> = VecDeque::new();
-    for p in seeds {
+    scratch.decrease.clear();
+    scratch.cleared.clear();
+    scratch.increase.clear();
+    scratch.sources.clear();
+
+    if seeds.len() > scratch.decrease.capacity() {
+        scratch.decrease.reserve(seeds.len());
+    }
+    if seeds.len() > scratch.cleared.capacity() {
+        scratch.cleared.reserve(seeds.len());
+    }
+    if seeds.len() > scratch.increase.capacity() {
+        scratch.increase.reserve(seeds.len());
+    }
+
+    let decrease = &mut scratch.decrease;
+    let cleared = &mut scratch.cleared;
+    let increase = &mut scratch.increase;
+    for &p in seeds {
         let Some(old) = level(world, sky, p) else {
             continue;
         };
@@ -1238,13 +1342,22 @@ fn relight_layer(
         }
     }
     // Sources inside the cleared area light up again.
-    let mut sources: FxHashMap<(i32, i32), i32> = FxHashMap::default();
+    let sources = &mut scratch.sources;
+    let mut last_xz = (i32::MIN, i32::MIN);
+    let mut last_lowest = 0;
     crate::spans::time("lt_sources", || {
-        for p in cleared {
+        for &p in cleared.iter() {
             let seed = if sky {
-                let lowest = *sources
-                    .entry((p.0, p.2))
-                    .or_insert_with(|| lowest_sky_source(world, tables, p.0, p.2));
+                let lowest = if (p.0, p.2) == last_xz {
+                    last_lowest
+                } else {
+                    let lowest = *sources
+                        .entry((p.0, p.2))
+                        .or_insert_with(|| lowest_sky_source(world, tables, p.0, p.2));
+                    last_xz = (p.0, p.2);
+                    last_lowest = lowest;
+                    lowest
+                };
                 if p.1 >= lowest { 15 } else { 0 }
             } else {
                 world
@@ -1283,7 +1396,7 @@ fn relight_layer(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::chunk::{HEIGHT, MIN_Y, SECTIONS};
 
@@ -1312,13 +1425,13 @@ mod tests {
         assert_eq!(dirty(&[(0, 0, 0)]).len(), 8);
     }
 
-    const AIR: u32 = 0;
+    pub(crate) const AIR: u32 = 0;
     const STONE: u32 = 1;
-    const TORCH: u32 = 2;
+    pub(crate) const TORCH: u32 = 2;
     const SLAB: u32 = 3;
     /// Air, stone, torch and a bottom slab (full bottom face, half sides,
     /// empty top), with a third face shape for the half sides.
-    fn tables() -> LightTables {
+    pub(crate) fn tables() -> LightTables {
         let cell = |dampening, emission, faces: [u16; 6]| Cell {
             dampening,
             emission,
@@ -1337,7 +1450,7 @@ mod tests {
             3,
         )
     }
-    fn world(edit: impl Fn(&mut Chunk)) -> HashMap<(i32, i32), Arc<Chunk>> {
+    pub(crate) fn world(edit: impl Fn(&mut Chunk)) -> HashMap<(i32, i32), Arc<Chunk>> {
         world_of(crate::chunk::ColumnLayout::VANILLA, edit)
     }
     /// Lit chunks around (0, 0) of `layout`, stone up to y 0.
@@ -2090,9 +2203,39 @@ mod tests {
             relight(&mut w, &t, true, &positions, false, &mut changed);
         }
         println!(
-            "relight_bench: {:?}, {} sections",
-            start.elapsed(),
-            changed.sections().count()
+            "relight_bench (large batch: 400 rounds x 32 blocks): {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn relight_single_block_bench() {
+        let mut w: FxHashMap<_, _> = world(|_| {}).into_iter().collect();
+        let t = tables();
+        let mut rng = 0x2545_f491_u32;
+        let mut next = |n: i32| {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            (rng % n as u32) as i32
+        };
+        let start = std::time::Instant::now();
+        let mut changed = LightChanges::default();
+        for round in 0..2000 {
+            let state = [TORCH, SLAB, AIR][round % 3];
+            let pos = (next(32) - 8, next(12), next(32) - 8);
+            Arc::make_mut(w.get_mut(&(pos.0 >> 4, pos.2 >> 4)).unwrap()).set(
+                pos.0 & 15,
+                pos.1,
+                pos.2 & 15,
+                state,
+            );
+            relight(&mut w, &t, true, &[pos], false, &mut changed);
+        }
+        println!(
+            "relight_single_block_bench (single block: 2000 rounds): {:?}",
+            start.elapsed()
         );
     }
 
@@ -2389,6 +2532,44 @@ mod tests {
                 assert_eq!(queue, want_queue, "{distinct} values, emitting {emitting}");
             }
         }
+    }
+
+    /// Threads lighting at once each take their own scratch from the pool: every result is what the old
+    /// flood fill gives, and the pool keeps no more than its cap afterwards.
+    #[test]
+    fn pooled_scratch_lights_like_the_old_algorithm_across_threads() {
+        let t = tables();
+        let layout = ColumnLayout::VANILLA;
+        let mut chunks = Vec::new();
+        for cz in -1..=1 {
+            for cx in -1..=1 {
+                let mut c = Chunk::with_layout(cx, cz, layout);
+                for i in 0..256 {
+                    c.set(i & 15, 60, i >> 4, STONE);
+                }
+                c.set(((cx + 1) * 5) & 15, 61, ((cz + 1) * 3) & 15, TORCH);
+                c.set(8, 40, 8, TORCH);
+                c.set(2, 70 + cx * 3, 14, SLAB);
+                chunks.push(c);
+            }
+        }
+        let region: [[Option<&Chunk>; 3]; 3] =
+            std::array::from_fn(|dz| std::array::from_fn(|dx| Some(&chunks[dz * 3 + dx])));
+        let want = old_light_chunk(&region, &t, true);
+        std::thread::scope(|s| {
+            for _ in 0..kept_scratch() + 2 {
+                s.spawn(|| {
+                    for _ in 0..3 {
+                        let got = light_chunk(&region, &t, true);
+                        assert_eq!(got.len(), want.len());
+                        for (g, w) in got.iter().zip(&want) {
+                            assert!((0..4096).all(|i| g.get(i) == w.get(i)));
+                        }
+                    }
+                });
+            }
+        });
+        assert!(SCRATCH_POOL.lock().unwrap().len() <= kept_scratch());
     }
 
     #[test]

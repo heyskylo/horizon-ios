@@ -49,12 +49,12 @@ fn terrain_fade_reaches_pack_pixels_through_real_instances() {
         std::env::temp_dir().join(format!("horizon-terrain-fade-{}", std::process::id())),
     );
     std::fs::create_dir_all(folder.0.join("shaders")).unwrap();
-    // The guard, initializer, varying and integer output are independent probe code.
+    // The initializer, varying and integer output are independent probe code. The program reads
+    // `mc_chunkFade` unguarded: Horizon defines no `IRIS_FEATURE_*` (spec OQ-2).
     let vertex = "#version 330\nout vec4 observation;\n\
-        #ifdef IRIS_FEATURE_FADE_VARIABLE\nfloat first = mc_chunkFade;\n#endif\n\
-        void main() {\n#ifdef IRIS_FEATURE_FADE_VARIABLE\n\
+        float first = mc_chunkFade;\n\
+        void main() {\n\
         observation = vec4(mc_chunkFade, first, gl_Color.a, gl_MultiTexCoord0.x);\n\
-        #else\nobservation = vec4(1.0, 1.0, gl_Color.a, gl_MultiTexCoord0.x);\n#endif\n\
         gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n}";
     let fragment = "#version 330\nin vec4 observation;\nlayout(location = 0) out uvec4 pixel;\n\
         void main() { pixel = floatBitsToUint(observation); }";
@@ -125,7 +125,7 @@ fn terrain_fade_reaches_pack_pixels_through_real_instances() {
                         terrain: Some(atlas.terrain_inputs(flat)),
                         terrain_geometry: geometry.then(|| horizon_shaders::GeometryInputs {
                             inputs: atlas.terrain_inputs(true),
-                            pull: super::PULL.to_owned(),
+                            pull: String::new(),
                             index: "@".to_owned(),
                         }),
                         ..Default::default()
@@ -159,7 +159,8 @@ fn terrain_fade_reaches_pack_pixels_through_real_instances() {
                             origin,
                             0x80ffffff,
                         );
-                        let fade = if requested { expected } else { 1.0 };
+                        // The fade reaches the program whether the pack requested it or not.
+                        let fade = expected;
                         let expected = [
                             fade,
                             if geometry { 0.8125 } else { fade },
@@ -307,9 +308,12 @@ fn sample(
         bytemuck::cast_slice(&vertices),
         wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX,
     );
-    let ids = buffer(bytemuck::bytes_of(&[0i32; 3]), wgpu::BufferUsages::STORAGE);
+    let ids = buffer(bytemuck::bytes_of(&[0u32; 2]), wgpu::BufferUsages::STORAGE);
     let rects = buffer(
-        bytemuck::cast_slice(&atlas.rects_table()),
+        bytemuck::cast_slice(&super::super::pack_post::terrain_tables(
+            &[],
+            &atlas.rects_table(),
+        )),
         wgpu::BufferUsages::STORAGE,
     );
     let binding = |n, storage| wgpu::BindGroupLayoutEntry {
@@ -326,8 +330,30 @@ fn sample(
         },
         count: None,
     };
+    let samplers: Vec<wgpu::BindGroupLayoutEntry> = (program.interface.samplers.iter())
+        .flat_map(|s| {
+            [
+                wgpu::BindGroupLayoutEntry {
+                    binding: s.binding,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: s.binding + 1,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                    count: None,
+                },
+            ]
+        })
+        .collect();
     let entries = [
-        vec![binding(0, false)],
+        [vec![binding(0, false)], samplers].concat(),
         if flat {
             vec![binding(0, true), binding(1, true)]
         } else {
@@ -363,20 +389,54 @@ fn sample(
             vec![]
         },
     ];
+    // The program's samplers (water's boats' patches, `horizonWaterMask`): a 1x1 stand-in each,
+    // as the pack binds when there is none, its sampler beside it.
+    let stand_in = device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+        .create_view(&Default::default());
+    let nearest = device.create_sampler(&Default::default());
+    let samplers = &program.interface.samplers;
     let groups: Vec<_> = layouts
         .iter()
         .zip(bindings)
-        .map(|(layout, buffers)| {
+        .enumerate()
+        .map(|(group, (layout, buffers))| {
+            let mut entries: Vec<_> = buffers
+                .into_iter()
+                .map(|(binding, buffer)| wgpu::BindGroupEntry {
+                    binding,
+                    resource: buffer.as_entire_binding(),
+                })
+                .collect();
+            if group == 0 {
+                for s in samplers {
+                    entries.push(wgpu::BindGroupEntry {
+                        binding: s.binding,
+                        resource: wgpu::BindingResource::TextureView(&stand_in),
+                    });
+                    entries.push(wgpu::BindGroupEntry {
+                        binding: s.binding + 1,
+                        resource: wgpu::BindingResource::Sampler(&nearest),
+                    });
+                }
+            }
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: None,
                 layout,
-                entries: &buffers
-                    .into_iter()
-                    .map(|(binding, buffer)| wgpu::BindGroupEntry {
-                        binding,
-                        resource: buffer.as_entire_binding(),
-                    })
-                    .collect::<Vec<_>>(),
+                entries: &entries,
             })
         })
         .collect();

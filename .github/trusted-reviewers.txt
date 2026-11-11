@@ -13,4 +13,3 @@
 87152661 rdbtCVS         # added by Ludovic, 2026-10-27
 84875247 Online5277      # added by Ludovic, 2026-10-27 (his top three by merged pull requests)
 86072227 levzzz5154      # added by Ludovic, 2026-10-28 (Horizon Team; author of horizon-mixins)
-87478350 Qwerner88880    # added by Ludovic, 2026-10-31 (Discord vladislav_hagen; native-mod hooks)

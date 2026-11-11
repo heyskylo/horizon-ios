@@ -7,11 +7,12 @@ rust-version.workspace = true
 description = "The client's world data, rendering and screens: chunks, meshing, light, streaming, the renderer, the HUD, menus and settings; no gameplay"
 
 [dependencies]
+# The settings stores of the crates above the engine (docs/layers.md, "Platform registries").
+horizon-hooks = { path = "../horizon-hooks" }
 horizon-cosmetics = { path = "../horizon-cosmetics" }
 # The GUI atlas's pixels, kept compressed once uploaded (hud.rs `pack_pixels`).
 lz4_flex = { version = "0.14", default-features = false, features = ["std", "safe-encode", "safe-decode", "checked-decode"] }
 horizon-assets = { path = "../horizon-assets" }
-horizon-bench = { path = "../horizon-bench" }
 horizon-client-core = { path = "../horizon-client-core" }
 horizon-client-input = { path = "../horizon-client-input" }
 horizon-command = { path = "../horizon-command" }
@@ -27,8 +28,7 @@ horizon-polytone = { path = "../horizon-polytone" }
 horizon-protocol = { path = "../horizon-protocol" }
 horizon-shader-api = { path = "../horizon-shader-api" }
 horizon-shaders = { path = "../horizon-shaders" }
-horizon-telemetry = { path = "../horizon-telemetry", default-features = false }
-horizon-theme = { path = "../horizon-theme" }
+horizon-system = { path = "../horizon-system" }
 horizon-threads = { path = "../horizon-threads" }
 horizon-world = { path = "../horizon-world" }
 ab_glyph = "0.2.32"
@@ -75,13 +75,16 @@ wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
 audio = ["dep:cpal"]
 # Helpers horizon-client's tests build their fixtures with.
 test-support = []
-
-[build-dependencies]
-horizon-mod-api-gen = { path = "../horizon-mod-api-gen" }
+# horizon-client's `horizon-extras`: asking the device for hardware ray tracing on request
+# (`gfx/ray_query.rs`, `HORIZON_RAY_TRACING=1`). Without it the device is requested as without
+# the variable.
+horizon-extras = []
 
 [lints]
 workspace = true
 
 [dev-dependencies]
+# Tests: a TrueType font to load, and the design system the menus' motion curves match.
+horizon-theme = { path = "../horizon-theme" }
 horizon-items = { path = "../horizon-items", features = ["test-support"] }
 naga = { version = "30.0.1", features = ["wgsl-in", "hlsl-out", "glsl-out", "msl-out", "spv-out"] }

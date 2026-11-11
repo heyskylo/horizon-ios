@@ -25,7 +25,7 @@ use horizon_world::{
         FluidSections, FluidTagId,
     },
     entity_fluid_tick::{self, EntityFluidTickWorld},
-    fluid::{FluidHeightWorld, FluidKind, FluidState},
+    fluid::{FluidHeightWorld, FluidKind, FluidState, FluidTemplate},
     fluid_flow::{FluidFlowWorld, flow_at},
     registry::BlockStateId,
     water_splash::{self, SplashParticle, WaterSplashWorld},
@@ -274,8 +274,8 @@ impl ArrowState {
     /// `Arrow.getColor` of the server's own arrow: the colour of the potion on
     /// its pickup item, None for a plain arrow (`PotionContents.EMPTY`).
     pub fn potion_color(&self) -> Option<u32> {
-        let potion = self.pickup_item.potion()?;
-        Some(crate::brewing::potion_color(Some(potion)))
+        (!crate::brewing::contents_empty(&self.pickup_item))
+            .then(|| crate::brewing::contents_color(&self.pickup_item))
     }
     /// The `AbstractArrow` constructor's `pickupItemStack`: the drawn ammo
     /// (one item). Ammo drawn without being used up (`INTANGIBLE_PROJECTILE`)
@@ -899,11 +899,8 @@ impl Ticker<'_, '_, '_, '_> {
     /// `AbstractArrow.startFalling`.
     fn start_falling(&mut self) {
         self.st.in_ground = false;
-        let v = self.p.velocity;
-        let x = f64::from(self.st.random.next_float() * 0.2);
-        let y = f64::from(self.st.random.next_float() * 0.2);
-        let z = f64::from(self.st.random.next_float() * 0.2);
-        self.p.velocity = Vec3::new(v.x * x, v.y * y, v.z * z);
+        self.p.velocity =
+            crate::projectiles::start_falling_velocity(self.p.velocity, &mut self.st.random);
         self.st.life = 0;
     }
     /// `AbstractArrow.stepMoveAndHit`: the nearest entity on the way, else the
@@ -1321,15 +1318,15 @@ impl ArrowScene<'_, '_> {
             }
             if inside_fluid {
                 effects.advance(step);
-                match fluid.kind() {
+                match fluid.kind().template() {
                     // WaterFluid.entityInside.
-                    FluidKind::Water | FluidKind::FlowingWater => effects.apply(Effect::Extinguish),
+                    FluidTemplate::Water => effects.apply(Effect::Extinguish),
                     // LavaFluid.entityInside (lavaHurt does nothing to arrows).
-                    FluidKind::Lava | FluidKind::FlowingLava => {
+                    FluidTemplate::Lava => {
                         effects.apply(Effect::ClearFreeze);
                         effects.apply(Effect::LavaIgnite);
                     }
-                    FluidKind::Empty => {}
+                    FluidTemplate::Empty => {}
                 }
             }
         }

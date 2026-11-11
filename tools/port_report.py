@@ -18,6 +18,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 try:
     from . import class_index, vanilla_map
@@ -42,8 +43,6 @@ GENERATORS = [
      lambda d: bool(d["commands"]["added"] or d["commands"]["removed"])),
     ("crates/horizon-command/src/vanilla_order.rs", "python3 tools/generate_command_order.py",
      lambda d: bool(d["commands"]["added"] or d["commands"]["removed"])),
-    ("crates/horizon-world/src/datafix/block_state_data.txt", "python3 tools/gen_block_state_data.py",
-     lambda d: "net/minecraft/util/datafix/fixes/BlockStateData" in d["classes"]["changed"]),
 ]
 # Registries whose new entries are new things to port.
 CONTENT = ["minecraft:block", "minecraft:item", "minecraft:entity_type", "minecraft:block_entity_type",
@@ -54,7 +53,9 @@ def version_sites(facts, root=ROOT):
     """file:line of every place the code states these version facts (not tests)."""
     pattern = ["-e", str(facts["protocol_version"]), "-e", str(facts["world_version"])]
     found = []
-    for command in (["git", "grep", "-n", "-w"] + pattern, ["git", "grep", "-n", "-F", f'"{facts["id"]}"']):
+    for command in (["git", "grep", "-n", "-w"] + pattern,
+                    ["git", "grep", "-n", "-F", f'"{facts["id"]}"'],
+                    ["git", "grep", "-n", "-F", f"'{facts['id']}'"]):
         result = subprocess.run(command + ["--", "crates/*.rs", "launcher/*.rs", "tools/*.py"],
                                 cwd=root, capture_output=True, text=True)
         found += [line.split(":", 2)[0] + ":" + line.split(":", 2)[1] for line in result.stdout.splitlines()]
@@ -376,3 +377,9 @@ def markdown(report, limit=12):
                                               for p, n in list(entry["packages"].items())[:limit]))
             lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+if __name__ == "__main__":
+    # A module, not a command: say how it is used instead of doing nothing at all.
+    print(__doc__, file=sys.stderr)
+    raise SystemExit(2)

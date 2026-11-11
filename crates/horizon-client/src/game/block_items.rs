@@ -47,8 +47,9 @@ fn clone_item<'a>(name: &str, block_item: &'a str) -> &'a str {
         "minecraft:kelp_plant" => "minecraft:kelp",
         "minecraft:twisting_vines_plant" => "minecraft:twisting_vines",
         "minecraft:weeping_vines_plant" => "minecraft:weeping_vines",
-        // CandleCakeBlock: new ItemStack(Blocks.CAKE), for every colour.
-        _ if name.ends_with("_candle_cake") => "minecraft:cake",
+        // CandleCakeBlock: new ItemStack(Blocks.CAKE), for every colour and
+        // the plain `minecraft:candle_cake`, whose own item is air.
+        _ if name == "minecraft:candle_cake" || name.ends_with("_candle_cake") => "minecraft:cake",
         _ => block_item,
     }
 }
@@ -323,6 +324,8 @@ impl Game<'_> {
     ) {
         let key = (pos[0], pos[1], pos[2]);
         self.pending.banner.remove(&pos);
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        self.sculk_place_entity(state);
         let Some(saved) = self.saved_block_entity(key) else {
             return;
         };
@@ -422,6 +425,7 @@ mod tests {
             ("minecraft:kelp_plant", "minecraft:kelp"),
             ("minecraft:twisting_vines_plant", "minecraft:twisting_vines"),
             ("minecraft:weeping_vines_plant", "minecraft:weeping_vines"),
+            ("minecraft:candle_cake", "minecraft:cake"),
             ("minecraft:white_candle_cake", "minecraft:cake"),
             ("minecraft:light_blue_candle_cake", "minecraft:cake"),
         ] {

@@ -304,11 +304,10 @@ impl Game<'_> {
             self.post_attack(index);
             return;
         };
-        let weapon = self
-            .res
-            .items()
-            .get(&stack.item)
-            .and_then(|i| i.weapon_damage.map(|d| (d, i.max_damage)));
+        let items = self.res.items();
+        let weapon = items
+            .weapon_damage(&stack)
+            .map(|damage| (damage, items.get(&stack.item).map_or(0, |i| i.max_damage)));
         self.native_hurt_enemy_event(&stack, index);
         let smash = self.smash_attack();
         if smash {
@@ -327,11 +326,10 @@ impl Game<'_> {
     /// `ItemStack.postHurtEnemy`: `hurtAndBreak(weapon.itemDamagePerAttack)` of
     /// the weapon in the acting hand.
     pub(super) fn weapon_wear(&mut self, stack: &ItemStack) {
-        let weapon = self
-            .res
-            .items()
-            .get(&stack.item)
-            .and_then(|i| i.weapon_damage.map(|d| (d, i.max_damage)));
+        let items = self.res.items();
+        let weapon = items
+            .weapon_damage(stack)
+            .map(|damage| (damage, items.get(&stack.item).map_or(0, |i| i.max_damage)));
         if let Some((per_attack, max)) = weapon
             && max > 0
             && !self.creative
@@ -392,12 +390,7 @@ impl Game<'_> {
         if smash {
             self.mace_smash_self(victim_on_ground);
         }
-        if self
-            .res
-            .items()
-            .get(&stack.item)
-            .is_some_and(|i| i.weapon_damage.is_some())
-        {
+        if self.res.items().weapon_damage(&stack).is_some() {
             self.award_stat("used", &stack.item, 1);
         }
         self.post_attack_bursts(&stack, "minecraft:player");
@@ -421,12 +414,7 @@ impl Game<'_> {
         {
             self.smash_knockback(center, Spared::Stand(id), fall);
         }
-        if self
-            .res
-            .items()
-            .get(&stack.item)
-            .is_some_and(|i| i.weapon_damage.is_some())
-        {
+        if self.res.items().weapon_damage(&stack).is_some() {
             self.award_stat("used", &stack.item, 1);
         }
         self.post_attack_bursts(&stack, "minecraft:armor_stand");
@@ -601,13 +589,13 @@ impl Game<'_> {
                 let Some(i) = self.armor_stands.iter().position(|s| s.id == id) else {
                     continue;
                 };
-                // knockback(0.4, ..) follows a hurtServer that landed, on a
+                // knockback(0.4F, ..) follows a hurtServer that landed, on a
                 // stand that is still there (LivingEntity.knockback).
                 if !self.punch_armor_stand(i) {
                     continue;
                 }
                 let mut knock = horizon_client::health::Knock {
-                    strength: 0.4,
+                    strength: f64::from(0.4_f32),
                     x: xd,
                     z: zd,
                 };
@@ -657,7 +645,7 @@ impl Game<'_> {
                 if old_health > 0.0 && !self.mobs[i].alive() {
                     self.native_kill_event(i);
                 }
-                self.mobs[i].knockback(0.4, xd, zd, &source);
+                self.mobs[i].knockback(f64::from(0.4_f32), xd, zd, &source);
                 self.last_hurt_by_player
                     .insert(self.mobs[i].id, self.lan_acting);
                 self.post_attack(i);

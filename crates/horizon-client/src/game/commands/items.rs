@@ -535,6 +535,15 @@ impl Game<'_> {
         let Some(stack) = stack.filter(|s| &*s.item != "minecraft:air" && s.count > 0) else {
             return true;
         };
+        // SulfurCube.getEquipmentSlotForItem: a swallowable item is a body item.
+        if let Slot::Mob(id, "body") = s
+            && self.mobs.iter().find(|m| m.id == *id).is_some_and(|m| {
+                m.species() == horizon_client::mobs::Species::SulfurCube
+                    && horizon_client::mobs::sulfur_cube::swallowable(m, &stack.item)
+            })
+        {
+            return true;
+        }
         self.items()
             .get(&stack.item)
             .is_some_and(|info| info.equip_slot.as_deref() == Some(name))
@@ -855,7 +864,7 @@ impl Game<'_> {
     /// One item modifier (a typed object, a list or a datapack reference)
     /// applied to a stack; `None` when the stack ends up empty.
     fn apply_item_modifier(
-        &self,
+        &mut self,
         m: &serde_json::Value,
         stack: Option<ItemStack>,
         rng: &mut horizon_core::random::LegacyRandom,
@@ -885,8 +894,8 @@ impl Game<'_> {
             Value::Array(list) => list.iter().fold(stack, |s, f| {
                 self.apply_item_modifier(f, s, rng, this, origin, depth + 1)
             }),
-            Value::String(id) => match self.fns.store.item_modifiers.get(id) {
-                Some(f) => self.apply_item_modifier(f, stack, rng, this, origin, depth + 1),
+            Value::String(id) => match self.fns.store.item_modifiers.get(id).cloned() {
+                Some(f) => self.apply_item_modifier(&f, stack, rng, this, origin, depth + 1),
                 None => stack,
             },
             Value::Object(_) => {
@@ -906,6 +915,14 @@ impl Game<'_> {
                             .fold(Some(stack), |s, f| {
                                 self.apply_item_modifier(f, s, rng, this, origin, depth + 1)
                             });
+                    }
+                    "minecraft:exploration_map" => {
+                        if stack.count > 0 {
+                            let map = horizon_world::loot::ExplorationMap::from_json(m);
+                            // A failed command search keeps the input; pending loot's
+                            // caller owns its separate filtered/drop policy.
+                            self.materialize_exploration_map(&mut stack, &map, origin);
+                        }
                     }
                     "minecraft:set_count" => {
                         let n = int(&m["count"], rng);
@@ -1407,6 +1424,13 @@ impl Game<'_> {
             }
             let h = self.owner_holder(o);
             tracker.track(&h, changed);
+            // EntityItemAccessor: a player whose slots changed gets
+            // `containerMenu.broadcastChanges` at once, so InventoryChangeTrigger
+            // (and its announcement) comes before the command's message.
+            if changed > 0 && matches!(o, Owner::Entity(Target::Player)) && self.player.is_some() {
+                self.check_inventory_trigger();
+                self.cmds.broadcast_announced = self.adv.announced.len();
+            }
         }
         if selected == 0 {
             return Err(
@@ -1486,6 +1510,24 @@ impl Game<'_> {
         let Some(Arg::Str(slot_name)) = c.get("slots").cloned() else {
             return Ok((false, 0));
         };
+        // SlotSourceArgument keeps literal ranges ahead of registered holders.
+        // Only condition reads resolve named definitions here: the item write
+        // candidate adapters retain their existing supported scope.
+        let registered = if slot_name.starts_with('{')
+            || slot_name.starts_with('[')
+            || horizon_client::command::args::slot_ranges()
+                .iter()
+                .any(|(name, _)| name == &slot_name)
+        {
+            None
+        } else {
+            let id = if slot_name.contains(':') {
+                slot_name.clone()
+            } else {
+                format!("minecraft:{slot_name}")
+            };
+            self.fns.store.slot_sources.get(&id).cloned()
+        };
         let predicate = match c.get("item_predicate") {
             Some(Arg::Item(p)) => Some(p.clone()),
             _ => None,
@@ -1500,7 +1542,10 @@ impl Game<'_> {
                     &[&p[0], &p[1], &p[2]],
                 ));
             }
-            let slots = self.command_slots(&o, &slot_name);
+            let slots = match &registered {
+                Some(source) => self.inline_slots(&o, source),
+                None => self.command_slots(&o, &slot_name),
+            };
             if predicate.is_none() {
                 count += slots.len() as i32;
                 continue;
@@ -1547,35 +1592,147 @@ fn merge_compound(into: &mut Tag, from: &Tag) {
     }
 }
 /// `ListOperation.apply` (`mode`: replace_all, replace_section, insert,
-/// append) with a 256-entry limit.
+/// append) with a 256-entry limit (`SetLoreFunction`'s). An append, insert or section
+/// replacement that cannot be done, an offset past the end or a result over the limit, gives
+/// the old list back unchanged, as vanilla does (it logs an error). `replace_all` is the new
+/// list as it is in vanilla, whose `ItemLore` then refuses more than 256 lines; here it is cut.
 fn list_operation(m: &serde_json::Value, old: Vec<Tag>, new: Vec<Tag>) -> Vec<Tag> {
+    const LIMIT: usize = 256;
     let offset = m["offset"].as_u64().unwrap_or(0) as usize;
-    let mut out = match m["mode"].as_str().unwrap_or("") {
-        "replace_all" => new,
+    match m["mode"].as_str().unwrap_or("") {
+        "replace_all" => {
+            let mut out = new;
+            out.truncate(LIMIT);
+            out
+        }
         "insert" => {
-            let at = offset.min(old.len());
-            let mut out = old[..at].to_vec();
+            if offset > old.len() || old.len() + new.len() > LIMIT {
+                return old;
+            }
+            let mut out = old[..offset].to_vec();
             out.extend(new);
-            out.extend_from_slice(&old[at..]);
+            out.extend_from_slice(&old[offset..]);
             out
         }
         "replace_section" => {
-            let at = offset.min(old.len());
+            if offset > old.len() {
+                return old;
+            }
             let size = m["size"].as_u64().map_or(new.len(), |s| s as usize);
-            let mut out = old[..at].to_vec();
+            let mut out = old[..offset].to_vec();
             out.extend(new);
-            let end = (at + size).min(old.len());
-            out.extend_from_slice(&old[end..]);
+            let end = offset.saturating_add(size);
+            if end < old.len() {
+                out.extend_from_slice(&old[end..]);
+            }
+            if out.len() > LIMIT {
+                return old;
+            }
             out
         }
         _ => {
+            if old.len() + new.len() > LIMIT {
+                return old;
+            }
             let mut out = old;
             out.extend(new);
             out
         }
-    };
-    out.truncate(256);
-    out
+    }
+}
+
+/// `ListOperation.Append/Insert/ReplaceSection.apply` with `/item modify`'s lore limit of 256
+/// (`SetLoreFunction` passes 256): an operation that cannot be done logs an error in vanilla and
+/// gives the old list back unchanged. The expected lists are worked out from the vanilla bytecode
+/// (see the pull request), not from the code under test.
+#[cfg(test)]
+mod list_operation_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn ints(range: std::ops::Range<i32>) -> Vec<Tag> {
+        range.map(Tag::Int).collect()
+    }
+
+    #[test]
+    fn an_append_that_would_pass_256_entries_changes_nothing() {
+        let old = ints(0..250);
+        let m = json!({"mode": "append"});
+        // 250 + 7 = 257 is over the limit: the old list, whole.
+        assert_eq!(list_operation(&m, old.clone(), ints(1000..1007)), old);
+        // 250 + 6 = 256 is exactly the limit: all of it.
+        let mut full = old.clone();
+        full.extend(ints(1000..1006));
+        assert_eq!(list_operation(&m, old, ints(1000..1006)), full);
+    }
+
+    #[test]
+    fn an_insert_past_the_end_or_over_the_limit_changes_nothing() {
+        let old = ints(0..3);
+        let at = |offset| json!({"mode": "insert", "offset": offset});
+        // Offset 4 is past the end of three entries.
+        assert_eq!(list_operation(&at(4), old.clone(), ints(9..10)), old);
+        // Offset 3 is the end: an insert there is an append.
+        assert_eq!(
+            list_operation(&at(3), old.clone(), ints(9..11)),
+            [0, 1, 2, 9, 10].map(Tag::Int)
+        );
+        // Offset 1 in the middle.
+        assert_eq!(
+            list_operation(&at(1), old, ints(9..11)),
+            [0, 9, 10, 1, 2].map(Tag::Int)
+        );
+        // 255 + 2 = 257 is over the limit, at any offset.
+        let big = ints(0..255);
+        assert_eq!(list_operation(&at(0), big.clone(), ints(9..11)), big);
+    }
+
+    #[test]
+    fn a_section_replaced_past_the_end_or_over_the_limit_changes_nothing() {
+        let old = ints(0..4);
+        let section = |offset, size: Option<u64>| {
+            let mut m = json!({"mode": "replace_section", "offset": offset});
+            if let Some(size) = size {
+                m["size"] = json!(size);
+            }
+            m
+        };
+        // Offset 5 is past the end of four entries.
+        assert_eq!(
+            list_operation(&section(5, None), old.clone(), ints(9..10)),
+            old
+        );
+        // Offset 4 is the end: nothing to replace, the new entries go after.
+        assert_eq!(
+            list_operation(&section(4, None), old.clone(), ints(9..10)),
+            [0, 1, 2, 3, 9].map(Tag::Int)
+        );
+        // Entries 1 and 2 (size 2) become one entry.
+        assert_eq!(
+            list_operation(&section(1, Some(2)), old.clone(), ints(9..10)),
+            [0, 9, 3].map(Tag::Int)
+        );
+        // No size: as many entries as the new ones.
+        assert_eq!(
+            list_operation(&section(0, None), ints(0..3), ints(7..9)),
+            [7, 8, 2].map(Tag::Int)
+        );
+        // 256 entries, one replaced by two: 257 is over the limit.
+        let full = ints(0..256);
+        assert_eq!(
+            list_operation(&section(0, Some(1)), full.clone(), ints(9..11)),
+            full
+        );
+    }
+
+    #[test]
+    fn replacing_everything_gives_the_new_list() {
+        let m = json!({"mode": "replace_all"});
+        assert_eq!(
+            list_operation(&m, ints(0..3), ints(7..9)),
+            [7, 8].map(Tag::Int)
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1948,6 +2105,31 @@ mod mob_equipment_command_tests {
                 assert!(game.run_command(&format!("item replace entity {uuid} saddle with air")));
                 assert!(game.slot_get(&Slot::Mob(id, "saddle")).is_none());
             }
+        });
+    }
+    /// `SulfurCube.getEquipmentSlotForItem`: a `#sulfur_cube_swallowable`
+    /// item is a body item, so the body's `SlotAccess` takes it (#12038).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_sulfur_cubes_body_takes_a_swallowable_block() {
+        with_game(|game| {
+            assert!(game.run_command("summon sulfur_cube 4.5 200 4.5 {NoAI:1b,Tags:[\"cube\"]}"));
+            let body = |game: &Game<'_>| {
+                let m = game
+                    .mobs
+                    .iter()
+                    .find(|m| m.kind.id == "minecraft:sulfur_cube");
+                m.and_then(|m| m.extra.body.clone())
+            };
+            let replace = "item replace entity @e[tag=cube,limit=1] armor.body with";
+            assert!(game.run_command(&format!("{replace} white_wool")));
+            assert_eq!(body(game).as_deref(), Some("minecraft:white_wool"));
+            // An item outside the tag stays out, and the body stays on.
+            assert!(!game.run_command(&format!("{replace} diamond")));
+            assert_eq!(body(game).as_deref(), Some("minecraft:white_wool"));
+            // An empty stack always fits: the body comes off.
+            assert!(game.run_command(&format!("{replace} air")));
+            assert_eq!(body(game), None);
         });
     }
     #[test]
@@ -2435,5 +2617,201 @@ mod builtin_component_delivery_tests {
             failures.is_empty(),
             "actual command -> network_stack -> full protocol packet missing builtin components: {failures:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod registered_slot_source_read_tests {
+    use super::*;
+    #[test]
+    #[ignore = "needs prepared resources and isolated homes/cwd"]
+    fn registered_first_three_reads_match_inline_and_keep_the_chest() {
+        let mut game = crate::game::native_machines::tests::server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("registered-slot-read-world");
+        assert!(!root.exists());
+        let pack = root.join("datapacks/parity");
+        std::fs::create_dir_all(pack.join("data/parity/slot_source")).unwrap();
+        let meta = r#"{"pack":{"description":"parity slots","pack_format":121,"min_format":[121,0],"max_format":[121,0]}}"#;
+        let definition = r#"{"type":"minecraft:limit_slots","limit":3,"slot_source":{"type":"minecraft:slot_range","slots":"container.*"}}"#;
+        std::fs::write(pack.join("pack.mcmeta"), meta).unwrap();
+        std::fs::write(
+            pack.join("data/parity/slot_source/first_three.json"),
+            definition,
+        )
+        .unwrap();
+        game.world_root = root;
+        game.ensure_datapacks();
+        assert_eq!(
+            game.fns
+                .pack_file("data/parity/slot_source/first_three.json")
+                .unwrap(),
+            definition.as_bytes()
+        );
+        assert!(
+            game.ui
+                .registries
+                .datapacks_enabled
+                .iter()
+                .any(|p| p == "file/parity")
+        );
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("setblock 0 100 0 minecraft:chest{Items:[{Slot:0b,id:\"minecraft:stone\",count:5},{Slot:1b,id:\"minecraft:dirt\",count:2},{Slot:3b,id:\"minecraft:stone\",count:7},{Slot:4b,id:\"minecraft:shulker_box\",count:1,components:{\"minecraft:container\":[{slot:0,item:{id:\"minecraft:stone\",count:9}},{slot:2,item:{id:\"minecraft:dirt\",count:1}}]}}]}"));
+        let before = game.block_entity_nbt([0, 100, 0]).unwrap();
+        for (slot, item, count) in [
+            (0, "minecraft:stone", 5),
+            (1, "minecraft:dirt", 2),
+            (3, "minecraft:stone", 7),
+            (4, "minecraft:shulker_box", 1),
+        ] {
+            let actual = game.slot_get(&Slot::Block([0, 100, 0], slot)).unwrap();
+            assert_eq!((&*actual.item, actual.count), (item, count));
+        }
+        assert!(game.run_command("scoreboard objectives add slotprobe dummy"));
+        let clock = game.world.game_time;
+        let inline =
+            r#"{type:"limit_slots",limit:3,slot_source:{type:"slot_range",slots:"container.*"}}"#;
+        let mut failures = Vec::new();
+        for source in [inline, "parity:first_three"] {
+            for (kind, suffix, count) in [
+                ("items", " minecraft:stone", 5),
+                ("items", " *", 7),
+                ("slots", "", 3),
+            ] {
+                assert!(game.run_command("scoreboard players set #r slotprobe -99"));
+                assert!(game.run_command("scoreboard players set #s slotprobe -99"));
+                let command = format!(
+                    "execute store result score #r slotprobe store success score #s slotprobe run execute if {kind} block 0 100 0 {source}{suffix}"
+                );
+                let ok = game.run_command(&command);
+                let result = game.score.board.score("#r", "slotprobe").unwrap().value;
+                let success = game.score.board.score("#s", "slotprobe").unwrap().value;
+                println!("{command}: accepted={ok}, result={result}, success={success}");
+                if (ok, result, success) != (true, count, 1) {
+                    failures.push((command, ok, result, success));
+                }
+                assert_eq!(game.block_entity_nbt([0, 100, 0]).as_ref(), Some(&before));
+                assert_eq!(game.world.game_time, clock);
+            }
+        }
+        for name in ["#r", "#s"] {
+            assert!(game.run_command(&format!("scoreboard players set {name} slotprobe -99")));
+        }
+        assert!(!game.run_command("execute store result score #r slotprobe store success score #s slotprobe run execute if slots block 0 100 0 parity:missing"));
+        for name in ["#r", "#s"] {
+            assert_eq!(
+                game.score.board.score(name, "slotprobe").unwrap().value,
+                -99
+            );
+        }
+        assert_eq!(game.block_entity_nbt([0, 100, 0]).as_ref(), Some(&before));
+        assert_eq!(game.world.game_time, clock);
+        assert!(
+            failures.is_empty(),
+            "registered real-pack reads must match inline: {failures:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod registered_slot_source_preservation_tests {
+    use super::*;
+
+    fn scene(name: &str) -> (Game<'static>, std::path::PathBuf) {
+        let mut game = crate::game::native_machines::tests::server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let root = std::env::current_dir().unwrap().join(name);
+        assert!(!root.exists());
+        let mut high = std::path::PathBuf::new();
+        for (pack, limit) in [("a-low", 1), ("parity", 3)] {
+            let dir = root.join("datapacks").join(pack);
+            std::fs::create_dir_all(dir.join("data/parity/slot_source")).unwrap();
+            std::fs::write(dir.join("pack.mcmeta"), r#"{"pack":{"description":"slot snapshot","pack_format":121,"min_format":[121,0],"max_format":[121,0]}}"#).unwrap();
+            let path = dir.join("data/parity/slot_source/first_three.json");
+            std::fs::write(&path, serde_json::json!({"type":"minecraft:limit_slots","limit":limit,"slot_source":{"type":"minecraft:slot_range","slots":"container.*"}}).to_string()).unwrap();
+            high = path;
+        }
+        game.world_root = root;
+        game.ensure_datapacks();
+        assert!(game.run_command("setblock 0 100 0 chest{Items:[{Slot:0b,id:\"stone\",count:5},{Slot:1b,id:\"dirt\",count:2},{Slot:3b,id:\"stone\",count:7}]}"));
+        assert!(game.run_command("scoreboard objectives add slotprobe dummy"));
+        (game, high)
+    }
+
+    fn count(game: &mut Game<'_>, expected: i32) {
+        assert!(game.run_command("execute store result score #r slotprobe run execute if slots block 0 100 0 parity:first_three"));
+        assert_eq!(
+            game.score.board.score("#r", "slotprobe").unwrap().value,
+            expected
+        );
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources and isolated homes/cwd"]
+    fn loaded_snapshot_changes_only_on_existing_reload_with_pack_precedence() {
+        let (mut game, file) = scene("slot-source-snapshot-world");
+        let before = game.block_entity_nbt([0, 100, 0]).unwrap();
+        let clock = game.world.game_time;
+        count(&mut game, 3); // Higher-priority pack overrides the same id.
+        std::fs::write(&file, r#"{"type":"minecraft:limit_slots","limit":2,"slot_source":{"type":"minecraft:slot_range","slots":"container.*"}}"#).unwrap();
+        count(&mut game, 3); // Disk edits do not change the loaded snapshot.
+        game.reload_datapacks(true);
+        count(&mut game, 2);
+        std::fs::write(file, "{").unwrap();
+        game.reload_datapacks(true);
+        count(&mut game, 1); // Existing policy: invalid higher JSON is skipped.
+        assert!(!game.run_command("execute if slots block 0 100 0 first_three"));
+        assert_eq!(game.block_entity_nbt([0, 100, 0]).as_ref(), Some(&before));
+        assert_eq!(game.world.game_time, clock);
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources and isolated homes/cwd"]
+    fn admitted_item_arguments_still_fail_without_writing_or_player_fallback() {
+        let (mut game, _) = scene("slot-source-unsupported-world");
+        let before = game.block_entity_nbt([0, 100, 0]).unwrap();
+        let clock = game.world.game_time;
+        count(&mut game, 3);
+        let player_was_present = game.player.is_some();
+        println!("unsupported registered item routes: actual Player present={player_was_present}");
+        let mut commands = vec![
+            "item modify block 0 100 0 parity:first_three {type:\"minecraft:set_count\",count:1}"
+                .to_owned(),
+        ];
+        for mode in ["replace", "fill", "override"] {
+            commands.push(format!(
+                "item {mode} block 0 100 0 parity:first_three with diamond"
+            ));
+            commands.push(format!(
+                "item {mode} block 0 100 0 container.0 from block 0 100 0 parity:first_three"
+            ));
+        }
+        for command in commands {
+            let dispatcher = horizon_client::command::vanilla::game_dispatcher_with_features(
+                &game.level.enabled_features,
+            );
+            assert!(
+                dispatcher
+                    .parse(&command, &game.ui.registries)
+                    .executable()
+                    .is_ok(),
+                "registered argument must be admitted: {command}"
+            );
+            assert!(
+                !game.run_command(&command),
+                "unsupported registered write must fail: {command}"
+            );
+            assert_eq!(
+                game.block_entity_nbt([0, 100, 0]).as_ref(),
+                Some(&before),
+                "{command}"
+            );
+            assert_eq!(game.player.is_some(), player_was_present);
+            assert_eq!(game.world.game_time, clock);
+        }
     }
 }

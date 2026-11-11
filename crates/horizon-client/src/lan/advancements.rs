@@ -15,6 +15,7 @@ use std::{
     path::Path,
 };
 
+#[derive(Clone)]
 pub struct ServerAdvancements {
     tree: std::sync::Arc<Tree>,
     kids: Vec<Vec<usize>>,
@@ -378,6 +379,11 @@ impl ServerAdvancements {
         id: &str,
         sync: &SyncData,
     ) -> Option<horizon_protocol::packets::recipes::RecipeDisplay> {
+        // A recipe with several displays has no ghost here (PlaceRecipe is
+        // not this change's): only a single-display recipe's entry is used.
+        if self.displays.display_ids(id).len() != 1 {
+            return None;
+        }
         let bytes = self.book_entries(id, sync, 0).into_iter().next()?;
         let mut r = horizon_protocol::buf::Reader::new(&bytes);
         horizon_protocol::packets::recipes::RecipeBookEntry::read(&mut r)
@@ -389,10 +395,6 @@ impl ServerAdvancements {
     /// highlighted, and with a notification unless the recipe turns it off.
     fn book_entries(&self, id: &str, sync: &SyncData, flags: i8) -> Vec<Vec<u8>> {
         let ids = self.displays.display_ids(id);
-        if ids.len() != 1 {
-            // Special recipes have no display; transmutations aren't unlocked on joining.
-            return Vec::new();
-        }
         let Some(r) = self
             .recipes
             .get(id)
@@ -401,6 +403,15 @@ impl ServerAdvancements {
             return Vec::new();
         };
         let r = &r;
+        if r["type"].as_str() == Some("minecraft:crafting_transmute") {
+            return self
+                .transmute_entries(r, ids, sync, flags)
+                .unwrap_or_default();
+        }
+        if ids.len() != 1 {
+            // Special recipes have no display.
+            return Vec::new();
+        }
         let kind = r["type"].as_str().unwrap_or("");
         let item = |n: &str| sync.id("minecraft:item", n);
         let slot = |n: &str| sync.id("minecraft:slot_display", n).unwrap_or(0);
@@ -493,9 +504,87 @@ impl ServerAdvancements {
                 w.f32(r["experience"].as_f64().unwrap_or(0.0) as f32);
                 (cooking_category(kind, r), vec![&r["ingredient"]])
             }
+            // DyeRecipe.display: the target, then the dyes kept to those with
+            // the DYE component, shown as the demo of dyeing that target.
+            // Its placement is the target and the dye.
+            "minecraft:crafting_dye" => {
+                let Some(dye_component) = sync.id("minecraft:data_component_type", "minecraft:dye")
+                else {
+                    return Vec::new();
+                };
+                let (target, dye) = (&r["target"], &r["dye"]);
+                w.varint(
+                    sync.id("minecraft:recipe_display", "minecraft:crafting_shapeless")
+                        .unwrap_or(0),
+                );
+                w.varint(2);
+                w.varint(slot("minecraft:tag"));
+                holder_set(&mut w, target, &item);
+                w.varint(slot("minecraft:only_with_component"));
+                w.varint(slot("minecraft:tag"));
+                holder_set(&mut w, dye, &item);
+                w.varint(dye_component);
+                w.varint(slot("minecraft:dyed"));
+                w.varint(slot("minecraft:only_with_component"));
+                w.varint(slot("minecraft:tag"));
+                holder_set(&mut w, dye, &item);
+                w.varint(dye_component);
+                w.varint(slot("minecraft:tag"));
+                holder_set(&mut w, target, &item);
+                station(&mut w, "minecraft:crafting_table");
+                (
+                    crafting_category(r["category"].as_str().unwrap_or("")).name(),
+                    vec![target, dye],
+                )
+            }
+            // ImbueRecipe.display: four materials, the source kept to any
+            // potion, four materials again, and the potion-wrapped result.
+            // Its placement names the source in the middle cell.
+            "minecraft:crafting_imbue" => {
+                let (source, material) = (&r["source"], &r["material"]);
+                w.varint(
+                    sync.id("minecraft:recipe_display", "minecraft:crafting_shaped")
+                        .unwrap_or(0),
+                );
+                w.varint(3);
+                w.varint(3);
+                w.varint(9);
+                for cell in 0..9 {
+                    if cell == 4 {
+                        w.varint(slot("minecraft:with_any_potion"));
+                    }
+                    w.varint(slot("minecraft:tag"));
+                    holder_set(&mut w, if cell == 4 { source } else { material }, &item);
+                }
+                w.varint(slot("minecraft:with_any_potion"));
+                result(&mut w);
+                station(&mut w, "minecraft:crafting_table");
+                (
+                    crafting_category(r["category"].as_str().unwrap_or("")).name(),
+                    vec![
+                        material, material, material, material, source, material, material,
+                        material, material,
+                    ],
+                )
+            }
             _ => return Vec::new(),
         };
-        // The group, the recipe book category and the placement's ingredients.
+        self.entry_tail(&mut w, r, sync, category, &placed, flags);
+        vec![w.data]
+    }
+
+    /// An entry's end: the group, the recipe book category, the placement's
+    /// ingredients and the flags.
+    fn entry_tail(
+        &self,
+        w: &mut Writer,
+        r: &Value,
+        sync: &SyncData,
+        category: &str,
+        placed: &[&Value],
+        flags: i8,
+    ) {
+        let item = |n: &str| sync.id("minecraft:item", n);
         match r["group"].as_str().and_then(|g| self.groups.get(g)) {
             Some(g) => w.varint(g + 1),
             None => w.varint(0),
@@ -508,12 +597,113 @@ impl ServerAdvancements {
         w.bool(true);
         w.varint(placed.len() as i32);
         for v in placed {
-            holder_set(&mut w, v, &item);
+            holder_set(w, v, &item);
         }
         // The notification only where the recipe shows one.
         let notify = r["show_notification"].as_bool().unwrap_or(true);
         w.i8(if notify { flags } else { flags & !1 });
-        vec![w.data]
+    }
+
+    /// `TransmuteRecipe.display`: one `ShapelessCraftingRecipeDisplay` per
+    /// material count from the recipe's minimum to its maximum, the input
+    /// then that many materials, its `resultDisplay`, the crafting table; the
+    /// placement (`placementInfo`) is the input and the most materials. All
+    /// or nothing: a form this cannot write, or a count that is not the
+    /// recipe's display ids, gives no entry at all.
+    fn transmute_entries(
+        &self,
+        r: &Value,
+        ids: std::ops::Range<i32>,
+        sync: &SyncData,
+        flags: i8,
+    ) -> Option<Vec<Vec<u8>>> {
+        let (min, max) = crate::crafting::transmute_material_bounds(r.get("material_count"));
+        if (max + 1).checked_sub(min)? != ids.len() {
+            return None;
+        }
+        let item = |n: &str| sync.id("minecraft:item", n);
+        let slot = |n: &str| sync.id("minecraft:slot_display", n);
+        let (input, material) = (&r["input"], &r["material"]);
+        let holder = |v: &Value| matches!(v, Value::String(_));
+        if !holder(input) || !holder(material) {
+            return None;
+        }
+        // TransmuteResult: an item (or none: the input's own items), a count
+        // (1) and components, which this does not write.
+        let result = &r["result"];
+        if result
+            .get("components")
+            .is_some_and(|c| !c.as_object().is_some_and(|o| o.is_empty()))
+        {
+            return None;
+        }
+        let base = result["count"].as_i64().unwrap_or(1) as i32;
+        let add = r["add_material_count_to_result"].as_bool().unwrap_or(false);
+        let result_items: Vec<i32> = match result["id"].as_str() {
+            Some(id) => vec![item(id)?],
+            // Composite over the input's items, in the order clients get the tag.
+            None => match input.as_str()? {
+                tag if tag.starts_with('#') => {
+                    let name = &tag[1..];
+                    sync.tags
+                        .registries
+                        .iter()
+                        .find(|t| t.registry == "minecraft:item")?
+                        .tags
+                        .iter()
+                        .find(|t| t.name == name)?
+                        .ids
+                        .clone()
+                }
+                one => vec![item(one)?],
+            },
+        };
+        let (shapeless, tag, empty_stack) = (
+            sync.id("minecraft:recipe_display", "minecraft:crafting_shapeless")?,
+            slot("minecraft:tag")?,
+            slot("minecraft:item_stack")?,
+        );
+        let (composite, item_slot) = (slot("minecraft:composite")?, slot("minecraft:item")?);
+        let table = item("minecraft:crafting_table")?;
+        let category = crafting_category(r["category"].as_str().unwrap_or("")).name();
+        let placed: Vec<&Value> = std::iter::once(input)
+            .chain(std::iter::repeat_n(material, max))
+            .collect();
+        let mut entries = Vec::with_capacity(ids.len());
+        for (n, id) in (min..=max).zip(ids) {
+            let mut w = Writer::new();
+            w.varint(id);
+            w.varint(shapeless);
+            w.varint(n as i32 + 1);
+            for v in std::iter::once(input).chain(std::iter::repeat_n(material, n)) {
+                w.varint(tag);
+                holder_set(&mut w, v, &item);
+            }
+            // computeResultSize: the materials added to the count, or not.
+            let count = if add { n as i32 + base } else { base };
+            let stack = |w: &mut Writer, id: i32| {
+                w.varint(empty_stack);
+                w.varint(id);
+                w.varint(count);
+                w.varint(0);
+                w.varint(0);
+            };
+            match result["id"].as_str() {
+                Some(_) => stack(&mut w, result_items[0]),
+                None => {
+                    w.varint(composite);
+                    w.varint(result_items.len() as i32);
+                    for &id in &result_items {
+                        stack(&mut w, id);
+                    }
+                }
+            }
+            w.varint(item_slot);
+            w.varint(table);
+            self.entry_tail(&mut w, r, sync, category, &placed, flags);
+            entries.push(w.data);
+        }
+        Some(entries)
     }
 }
 
@@ -629,7 +819,15 @@ mod tests {
         "minecraft:redstone_ore": {"protocol_id": 2},
         "minecraft:redstone": {"protocol_id": 3},
         "minecraft:furnace": {"protocol_id": 4},
-        "minecraft:blast_furnace": {"protocol_id": 5}
+        "minecraft:blast_furnace": {"protocol_id": 5},
+        "minecraft:leather_helmet": {"protocol_id": 6},
+        "minecraft:crafting_table": {"protocol_id": 7},
+        "minecraft:arrow": {"protocol_id": 8},
+        "minecraft:lingering_potion": {"protocol_id": 9},
+        "minecraft:tipped_arrow": {"protocol_id": 10}
+      }},
+      "minecraft:data_component_type": {"entries": {
+        "minecraft:dye": {"protocol_id": 46}
       }},
       "minecraft:slot_display": {"entries": {
         "minecraft:empty": {"protocol_id": 0},
@@ -835,6 +1033,105 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    /// DyeRecipe.display: the target, then the dyes kept to what carries the
+    /// DYE component, the demo of dyeing the target with one, a crafting
+    /// table; its placement is the target and the dye.
+    #[test]
+    fn a_dye_recipe_reaches_the_book_as_its_dyed_demo() {
+        let root = resources(
+            "dye_recipe",
+            &[(
+                "leather_helmet_dyed",
+                r##"{"type":"minecraft:crafting_dye","dye":"#minecraft:dyes",
+                "group":"dyed_armor","result":{"id":"minecraft:leather_helmet"},
+                "target":"minecraft:leather_helmet"}"##,
+            )],
+        );
+        let (sync, e) = entry(&root, "minecraft:leather_helmet_dyed");
+        let item = |n: &str| sync.id("minecraft:item", n).unwrap();
+        let leather = item("minecraft:leather_helmet");
+        let dye = SlotDisplay::OnlyWithComponent(
+            Box::new(SlotDisplay::Tag(HolderSet::Tag("minecraft:dyes".into()))),
+            sync.id("minecraft:data_component_type", "minecraft:dye")
+                .unwrap(),
+        );
+        assert_eq!(
+            e.display,
+            RecipeDisplay::Shapeless {
+                ingredients: vec![
+                    SlotDisplay::Tag(HolderSet::Items(vec![leather])),
+                    dye.clone(),
+                ],
+                result: SlotDisplay::Dyed {
+                    dye: Box::new(dye),
+                    target: Box::new(SlotDisplay::Tag(HolderSet::Items(vec![leather]))),
+                },
+                station: SlotDisplay::Item(item("minecraft:crafting_table")),
+            }
+        );
+        assert_eq!(
+            e.requirements,
+            Some(vec![
+                HolderSet::Items(vec![leather]),
+                HolderSet::Tag("minecraft:dyes".into()),
+            ])
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ImbueRecipe.display: a 3×3 of four materials, the source kept to any
+    /// potion, four materials again; the result is potion-wrapped, and the
+    /// source sits in the middle of the placement.
+    #[test]
+    fn an_imbue_recipe_reaches_the_book_with_any_potion() {
+        let root = resources(
+            "imbue_recipe",
+            &[(
+                "tipped_arrow",
+                r#"{"type":"minecraft:crafting_imbue","material":"minecraft:arrow",
+                "result":{"count":8,"id":"minecraft:tipped_arrow"},
+                "source":"minecraft:lingering_potion"}"#,
+            )],
+        );
+        let (sync, e) = entry(&root, "minecraft:tipped_arrow");
+        let item = |n: &str| sync.id("minecraft:item", n).unwrap();
+        let material = SlotDisplay::Tag(HolderSet::Items(vec![item("minecraft:arrow")]));
+        let source = SlotDisplay::Tag(HolderSet::Items(vec![item("minecraft:lingering_potion")]));
+        let mut cells = vec![material.clone(); 4];
+        cells.push(SlotDisplay::WithAnyPotion(Box::new(source.clone())));
+        cells.extend(std::iter::repeat_n(material, 4));
+        assert_eq!(
+            e.display,
+            RecipeDisplay::Shaped {
+                width: 3,
+                height: 3,
+                ingredients: cells,
+                result: SlotDisplay::WithAnyPotion(Box::new(SlotDisplay::ItemStack(Stack::new(
+                    item("minecraft:tipped_arrow"),
+                    8,
+                )))),
+                station: SlotDisplay::Item(item("minecraft:crafting_table")),
+            }
+        );
+        let arrow = HolderSet::Items(vec![item("minecraft:arrow")]);
+        let potion = HolderSet::Items(vec![item("minecraft:lingering_potion")]);
+        assert_eq!(
+            e.requirements,
+            Some(vec![
+                arrow.clone(),
+                arrow.clone(),
+                arrow.clone(),
+                arrow.clone(),
+                potion,
+                arrow.clone(),
+                arrow.clone(),
+                arrow.clone(),
+                arrow,
+            ])
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_recipe_with_an_unknown_ingredient_kind_stays_out_of_the_book() {
         let root = resources(
@@ -959,6 +1256,33 @@ mod tests {
                 vec![item("minecraft:raw_copper")]
             ]
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A world's own load over the data its packs gave (`SyncData::load_over`, which keeps
+    /// that data's recipes) sends what a full read of the same packs sends: their recipes too.
+    #[test]
+    fn a_world_load_over_its_packs_data_sends_what_a_full_read_does() {
+        let cut = |input: &str| {
+            format!(
+                r#"{{"type":"minecraft:stonecutting","ingredient":"{input}",
+                "result":{{"id":"minecraft:copper_ingot"}}}}"#
+            )
+        };
+        let vanilla_cut = cut("minecraft:raw_copper");
+        let root = resources("load_over", &[("z_cut", vanilla_cut.as_str())]);
+        let packs = [(
+            "recipe/pack:a_cut".to_owned(),
+            vec![cut("minecraft:redstone").into_bytes()],
+        )];
+        let overlay = horizon_world::loot::PackOverlay { files: &packs };
+        let vanilla = SyncData::load(&root, &horizon_world::loot::PackOverlay::NONE).unwrap();
+        let packed = SyncData::load(&root, &overlay).unwrap();
+        let over = SyncData::load_over(&root, &overlay, None, &packed).unwrap();
+        let full = SyncData::load_with_kept(&root, &overlay, None, Some(&packed)).unwrap();
+        assert_ne!(full.recipes, vanilla.recipes, "the pack's recipe is sent");
+        assert_eq!(over.recipes, full.recipes);
+        assert_eq!(over.advancements.recipes, full.advancements.recipes);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1145,5 +1469,82 @@ mod tests {
         assert_eq!(duration, 200);
         assert_eq!(experience, 0.7);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Every recipe the game has, as a Horizon server sends it to a Horizon
+    /// client: the client's own book keeps its entries, none is taken from the
+    /// packet (a regression of parity with Horizon on both sides otherwise).
+    /// Needs the prepared resources (`HORIZON_TEST_RESOURCES`, or the checkout's
+    /// `.local`); passes without them.
+    #[test]
+    fn a_horizon_server_of_the_real_recipes_leaves_the_clients_book_as_it_is() {
+        use crate::{
+            crafting::Recipes,
+            items::Items,
+            recipe_book::{Book, PacketNames, RecipeIndex},
+        };
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+            });
+        if !root.join("registries.json").exists() {
+            return;
+        }
+        let none = &horizon_world::loot::PackOverlay::NONE;
+        let sync = SyncData::load(&root, none).unwrap();
+        let items = Items::catalog(&root, none).unwrap();
+        let recipes = Recipes::load(&root, &items, none).unwrap();
+        let mut book = Book::build(&recipes, &items);
+        book.set_display_ids(&RecipeIndex::load(&root, none));
+        let before: Vec<(String, i32, Option<String>)> = book
+            .entries
+            .iter()
+            .map(|e| (e.id.clone(), e.display_id, e.group.clone()))
+            .collect();
+        let mut sent = Vec::new();
+        for id in sync.advancements.recipes.keys() {
+            for bytes in sync.advancements.book_entries(id, &sync, 0) {
+                sent.push(RecipeBookEntry::read(&mut Reader::new(&bytes)).unwrap());
+            }
+        }
+        assert!(sent.len() > 1000, "{} entries sent", sent.len());
+        let item = |id: i32| {
+            sync.builtin
+                .get("minecraft:item")
+                .and_then(|i| i.name(id))
+                .map(str::to_owned)
+        };
+        let category = |id: i32| {
+            sync.builtin
+                .get("minecraft:recipe_book_category")
+                .and_then(|i| i.name(id))
+                .map(str::to_owned)
+        };
+        let tag = |name: &str| items.item_tag_order.get(name).cloned().unwrap_or_default();
+        book.use_server_entries(
+            &sent,
+            &PacketNames {
+                item: &item,
+                category: &category,
+                tag: &tag,
+            },
+        );
+        let after: Vec<(String, i32, Option<String>)> = book
+            .entries
+            .iter()
+            .map(|e| (e.id.clone(), e.display_id, e.group.clone()))
+            .collect();
+        let changed: Vec<_> = before
+            .iter()
+            .zip(&after)
+            .filter(|(b, a)| b != a)
+            .take(10)
+            .collect();
+        assert_eq!(after.len(), before.len(), "entries were added");
+        assert!(changed.is_empty(), "entries changed: {changed:?}");
+        assert!(book.server_requirements.is_empty());
     }
 }

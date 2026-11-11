@@ -1,0 +1,19 @@
+{
+  "hooks": [
+    {
+      "name": "permission_groups",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_permission_groups",
+      "side": "server",
+      "mod_api": {
+        "contract": "collect",
+        "out": "groups"
+      }
+    }
+  ],
+  "helpers": [
+    {"name": "primary_group", "target": "horizon_client::game::native_permissions::Game<'_>::native_primary_group"}
+  ],
+  "rust_summary": "permission groups: the groups a permissions mod names for a player (`native_permission_groups`) and the first of them, the primary group (`native_primary_group`).",
+  "doc_summary": "`native_permission_groups(player, groups)` lets each mod name the groups a player belongs to (LuckPerms' groups, a team's ranks), adding to a list the mods share, for a player on the server or not; `primary_group(player)` gives the first name the mods gave, or None. Asked through `&self`, so a provider reads and changes nothing. Bundles need \"hooks\": @API:permission_groups@.",
+  "comments": ["crates/horizon-client/src/game/native_permissions.rs"]
+}

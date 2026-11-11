@@ -4,7 +4,7 @@
 //! uniform (set 1) that the vertex inputs read. `gbuffers_skytextured` draws the frame's sun and
 //! moon quads, textured from the shared atlas.
 
-use std::ops::Range;
+use std::{ops::Range, sync::Mutex};
 
 use wgpu::util::DeviceExt;
 
@@ -102,9 +102,12 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
         // depth. Its fragments read their own depth, as in Iris.
         after: String::new(),
         alpha_test: None,
+        parts: None,
         item_id_declared: false,
         far_depth: true,
         paged_maps: false,
+        water_mask: false,
+        water_patches: false,
     }
 }
 
@@ -130,9 +133,12 @@ pub fn celestial_inputs() -> horizon_shaders::GbuffersInputs {
         ],
         after: String::new(),
         alpha_test: None,
+        parts: None,
         item_id_declared: false,
         far_depth: true,
         paged_maps: false,
+        water_mask: false,
+        water_patches: false,
     }
 }
 
@@ -223,6 +229,7 @@ pub(super) struct PackSky {
     uniform: wgpu::Buffer,
     pub layout: wgpu::BindGroupLayout,
     group: wgpu::BindGroup,
+    celestial_scratch: Mutex<Vec<Celestial>>,
     /// Vertex ranges of the sky disc, the sunset fan, the stars, the void and the End's fan.
     ranges: [Range<u32>; 5],
 }
@@ -302,6 +309,7 @@ impl PackSky {
             uniform,
             layout,
             group,
+            celestial_scratch: Mutex::new(Vec::new()),
             ranges: [sky, sunset, stars, void, end_fan],
         }
     }
@@ -359,15 +367,21 @@ impl PackSky {
             .0
             .iter()
             .take(CELESTIAL_QUADS);
-        let triangles: Vec<Celestial> = quads
-            .clone()
-            .flat_map(|q| [0, 1, 2, 0, 2, 3].map(|i| q[i]))
-            .map(|v| Celestial {
-                pos: turn.transform_vector3(v.pos.into()).into(),
-                uv: v.uv,
-                color: v.color,
-            })
-            .collect();
+        let mut triangles = self
+            .celestial_scratch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        triangles.clear();
+        triangles.extend(
+            quads
+                .clone()
+                .flat_map(|q| [0, 1, 2, 0, 2, 3].map(|i| q[i]))
+                .map(|v| Celestial {
+                    pos: turn.transform_vector3(v.pos.into()).into(),
+                    uv: v.uv,
+                    color: v.color,
+                }),
+        );
         queue.write_buffer(&self.celestial, 0, bytemuck::cast_slice(&triangles));
         let [sky, sunset, stars, void, fan] = self.ranges.clone();
         let part = |stage, textured, range| Part {

@@ -122,10 +122,17 @@ pub fn holder_state(w: &MobWorld, holder: Holder) -> Option<HolderState> {
         }
     }
 }
-/// `Entity.yRot(angle)` on a vector (rotation about the Y axis).
+/// A rotation about the Y axis with exact trigonometry (the leash pull uses
+/// `turn_y`, vanilla's `Vec3.yRot`).
+#[cfg(test)]
 fn rot_y(v: [f64; 3], angle: f64) -> [f64; 3] {
     let (s, c) = (angle.sin(), angle.cos());
     [v[0] * c + v[2] * s, v[1], v[2] * c - v[0] * s]
+}
+/// `Vec3.yRot(float)`: Mth's float cosine and sine of a float angle, widened.
+fn turn_y(v: [f64; 3], angle: f64) -> [f64; 3] {
+    let v = Vec3::new(v[0], v[1], v[2]).rotate_y(angle as f32);
+    [v.x, v.y, v.z]
 }
 /// `Leashable.computeDampenedSpringInteraction` for the single attachment
 /// of a mob (0, 0.5, 0.5 of its box) and its holder (0, 0.5, 0): the force
@@ -138,13 +145,13 @@ pub fn spring(
     own_motion: Vec3,
 ) -> Option<([f64; 3], f64)> {
     let (w, h) = size;
-    let lever = rot_y([0.0, 0.5 * h, 0.5 * w], -f64::from(yaw.to_radians()));
+    let lever = turn_y([0.0, 0.5 * h, 0.5 * w], -f64::from(yaw.to_radians()));
     let object = [
         position.x + lever[0],
         position.y + lever[1],
         position.z + lever[2],
     ];
-    let arm = rot_y(
+    let arm = turn_y(
         [0.0, 0.5 * holder.height, 0.0],
         -f64::from(holder.yaw.to_radians()),
     );
@@ -212,16 +219,9 @@ fn elastic_pull_with_distance(
     } else {
         (&OWN, &THEIRS)
     };
-    // Vec3.yRot takes a float angle and widens Mth's float lookup results.
-    // Bound the repair to quad attachment physics; retain the single spring.
-    let rotate = |v: [f64; 3], angle: f64| {
-        if quad {
-            let v = Vec3::new(v[0], v[1], v[2]).rotate_y(angle as f32);
-            [v.x, v.y, v.z]
-        } else {
-            rot_y(v, angle)
-        }
-    };
+    // Vec3.yRot takes a float angle and widens Mth's float lookup results,
+    // for every attachment point (computeElasticInteraction), single or quad.
+    let rotate = turn_y;
     let (w, h) = size;
     let own_yaw = f64::from(yaw.to_radians());
     let holder_yaw = f64::from(holder.yaw.to_radians());
@@ -290,7 +290,7 @@ fn elastic_pull_with_distance(
     Some((force, torque))
 }
 /// `Entity.checkFallDistanceAccumulation`.
-fn check_fall_distance(m: &mut Mob) {
+pub(super) fn check_fall_distance(m: &mut Mob) {
     if m.velocity.y > -0.5 && m.fall_distance > 1.0 {
         m.fall_distance = 1.0;
     }
@@ -433,10 +433,12 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                 state.velocity.y - m.velocity.y,
                 state.velocity.z - m.velocity.z,
             );
+            // addDeltaMovement(force.multiply(AXIS_SPECIFIC_ELASTICITY)
+            // .add(relativeVelocityToLeasher.scale(0.11))): the push is one sum.
             m.velocity = Vec3::new(
-                m.velocity.x + force[0] * 0.8 + rel.x * 0.11,
-                m.velocity.y + force[1] * 0.2 + rel.y * 0.11,
-                m.velocity.z + force[2] * 0.8 + rel.z * 0.11,
+                m.velocity.x + (force[0] * 0.8 + rel.x * 0.11),
+                m.velocity.y + (force[1] * 0.2 + rel.y * 0.11),
+                m.velocity.z + (force[2] * 0.8 + rel.z * 0.11),
             );
             check_fall_distance(m);
             super::equine::on_elastic_leash_pull(m, w, events);

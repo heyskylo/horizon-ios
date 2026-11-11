@@ -45,7 +45,7 @@ FLEET_SHARED = Path.home() / "code" / "horizon-parity" / "shared-local" / "parit
 if "PARITY_SHARED" not in os.environ and not (ROOT / ".local" / "minecraft").exists() and FLEET_SHARED.is_dir():
     # A fleet worktree without vanilla data still knows each harness's dependencies.
     os.environ["PARITY_SHARED"] = str(FLEET_SHARED)
-from tools import parity, release_train  # noqa: E402
+from tools import parity, process_tree, release_train  # noqa: E402
 from tools.ci import rust_changes  # noqa: E402
 
 RBUILD = Path.home() / "fleet" / "rbuild"
@@ -370,6 +370,10 @@ def plan(args, base, changed, crates_of, libraries, dependencies):
     steps = [
         Step("Cargo.lock", where="git"),
         Step("Public tree", "python3 tools/check_public_tree.py", where="here"),
+        # docs/layers.md: a crate depends only on its own layer or a lower one, and the exceptions only shrink.
+        Step("Layers", f"python3 tools/check_layers.py --base {shlex.quote(base)}", where="here"),
+        Step("Addresses", f"python3 tools/check_addresses.py --base {shlex.quote(base)}", where="here"),
+        Step("File size", f"python3 tools/check_file_size.py --base {shlex.quote(base)}", where="here"),
         # Always, as in CI: some read the crates, the roadmap or the workflows.
         Step("Python tests", "python3 -m unittest discover -s tests", where="here", summary=unittest_passed),
         Step("rustfmt", "cargo fmt --all -- --check", skip=None if rust else no_rust),
@@ -463,7 +467,8 @@ def run_script(steps, host, verbose):
 
 
 def run_windows(steps, verbose):
-    """Run local checks directly on Windows without requiring a Unix shell."""
+    """Run local checks directly on Windows without requiring a Unix shell. Each runs in its own job
+    (tools/process_tree.py): what a check starts, a harness's game say, ends with it, or with this process."""
     for step in steps:
         command = shlex.split(step.command)
         cwd = ROOT
@@ -471,6 +476,12 @@ def run_windows(steps, verbose):
         env["PYTHONUTF8"] = "1"
         if step.name == "Public tree":
             command = [sys.executable, "tools/check_public_tree.py"]
+        elif step.name == "Layers":
+            command = [sys.executable, "tools/check_layers.py", *command[2:]]
+        elif step.name == "Addresses":
+            command = [sys.executable, "tools/check_addresses.py", *command[2:]]
+        elif step.name == "File size":
+            command = [sys.executable, "tools/check_file_size.py", *command[2:]]
         elif step.name == "Python tests":
             command = [sys.executable, "-m", "unittest", "discover", "-s", "tests"]
         elif step.name == "rustfmt":
@@ -503,13 +514,21 @@ def run_windows(steps, verbose):
         print(f"  {step.name}...", file=sys.stderr, flush=True)
         started = time.monotonic()
         try:
-            with subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, text=True, errors="replace") as process:
+            with process_tree.popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True, errors="replace") as process:
+                def release(process):
+                    # The check's exit ends what it left running, which would otherwise hold the output open.
+                    process.wait()
+                    process_tree.ended(process)
+                # A daemon: interrupted, this process exits at once, and its jobs end the checks with it.
+                reaper = threading.Thread(target=release, args=(process,), daemon=True)
+                reaper.start()
                 for line in process.stdout:
                     step.output += line
                     if verbose:
                         print("    " + line, end="", file=sys.stderr)
-                status = process.wait()
+                reaper.join()
+                status = process.returncode
             step.status = "pass" if status == 0 else "fail"
         except OSError as error:
             step.status, step.detail = "fail", str(error)

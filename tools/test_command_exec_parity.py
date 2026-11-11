@@ -180,6 +180,7 @@ def main():
     parser.add_argument('--mob-health-boost-raw-diagnostic', action='store_true', help='add each mob\'s whole entity data')
     parser.add_argument('--sulfur-body-attributes-fixture', action='store_true', help='a sulfur cube\'s body archetype attribute modifiers through /attribute')
     parser.add_argument('--sulfur-body-replace-fixture', action='store_true', help='a sulfur cube\'s body replaced and removed through /data')
+    parser.add_argument('--sulfur-body-item-fixture', action='store_true', help='/item replace on a sulfur cube\'s armor.body')
     parser.add_argument('--sulfur-body-attributes-raw-diagnostic', action='store_true', help='add the whole attributes lists and entity data')
     parser.add_argument('--mob-absorption-fixture', action='store_true', help='a mob\'s Absorption effect once the absorption is used up')
     parser.add_argument('--mob-absorption-infinite-fixture', action='store_true', help='infinite Absorption used up, kept, and beside another infinite effect')
@@ -191,6 +192,8 @@ def main():
     parser.add_argument('--potion-effect-icon-fixture', action='store_true')
     parser.add_argument('--unsynced-randoms', action='store_true',
                         help='leave out the sync_randoms steps: the control in which their fields differ run to run')
+    parser.add_argument('--groups-file', type=Path,
+                        help='run these generated [name, ops] groups after the common setup instead of the corpus')
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -224,6 +227,10 @@ def main():
         groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_FUNCTION_FEEDBACK]
     if not args.only:
         groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_JUKEBOX_CLOCK]
+        groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_GUEST_CLOSE]
+        groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_ITEM_COUNT]
+        groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_SHULKER_LOCK]
+        groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_POT_HOPPER]
     if args.vehicle_container_diagnostic:
         try:
             from .vehicle_container_corpus import vehicle_containers
@@ -394,7 +401,9 @@ def main():
     if args.pufferfish_contact_fixture:
         from pufferfish_contact_corpus import contact_fixture
         groups = [("pufferfish player contact", contact_fixture(args.pufferfish_body_diagnostic))]
-    if args.only:
+    if args.only in ('hopper pot saved slot', 'shulker external lock drop'):
+        groups = [g for g in groups if g[0] == args.only]
+    elif args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
     if args.only in corpus_module.ISOLATED_BOAT_TREE:
         groups = [g for g in groups if g[0] == args.only]
@@ -411,11 +420,19 @@ def main():
     if args.vehicle_kill_diagnostic:
         from vehicle_kill_corpus import vehicle_kill_contents
         groups = [('setup', corpus_module.group_setup()), ('vehicle kill contents', vehicle_kill_contents(corpus_module.cmd, True))]
+    if args.only in corpus_module.ISOLATED_ITEM_COUNT:
+        groups = [g for g in groups if g[0] == args.only]
     if args.slot_codec_diagnostic:
         groups.append(('slot source codec diagnostic', [corpus_module.cmd(
             '/item fill block 4 200 4 {type:"minecraft:slot_range",slots:"container.99"} with diamond')]))
     if any(name in corpus_module.ISOLATED_JUKEBOX_CLOCK for name, _ in groups) and len(groups) != 1:
         parser.error('jukebox clock fixture requires --only with its exact group')
+    if any(name in corpus_module.ISOLATED_ITEM_COUNT for name, _ in groups) and len(groups) != 1:
+        parser.error('item count fixture requires --only with its exact group')
+    if any(name in corpus_module.ISOLATED_SHULKER_LOCK for name, _ in groups) and len(groups) != 1:
+        parser.error('shulker lock fixture requires --only with its exact group')
+    if any(name in corpus_module.ISOLATED_POT_HOPPER for name, _ in groups) and len(groups) != 1:
+        parser.error('pot hopper fixture requires --only with its exact group')
     if any(name in isolated_reinforcements for name, _ in groups) and sum(name != 'setup' for name, _ in groups) != 1:
         parser.error('reinforcement fixtures require --only with one exact group')
     if any(name in isolated_recipes for name, _ in groups) and sum(name != 'setup' for name, _ in groups) != 1:
@@ -459,6 +476,9 @@ def main():
     if args.sulfur_body_replace_fixture:
         from sulfur_body_attributes_corpus import sulfur_body_replace
         groups = [('setup', corpus_module.group_setup()), ('sulfur body replace', sulfur_body_replace())]
+    if args.sulfur_body_item_fixture:
+        from sulfur_body_attributes_corpus import sulfur_body_item_replace
+        groups = [('setup', corpus_module.group_setup()), ('sulfur body item replace', sulfur_body_item_replace())]
     if args.mob_absorption_fixture:
         from mob_absorption_corpus import mob_absorption
         groups = [('setup', corpus_module.group_setup()), ('mob depleted absorption', mob_absorption(args.mob_absorption_raw_diagnostic))]
@@ -480,9 +500,11 @@ def main():
     if args.merchant_gate_fixture:
         from merchant_gate_corpus import cases
         groups = [('setup', [corpus_module.cmd('/tick freeze', False), *corpus_module.group_setup()]), ('merchant reputation AI gate', cases())]
-    script = []
-    for _, lines in groups:
-        script.extend(op for op in lines if not (args.unsynced_randoms and op['op'] == 'sync_randoms'))
+    if args.groups_file:
+        # Generated scripts (tools/parity_fuzz.py): the common setup, then the file's [name, ops] groups only.
+        groups = [('setup', corpus_module.group_setup()),
+                  *[(name, ops) for name, ops in json.loads(args.groups_file.read_text(encoding='utf-8'))]]
+    script = assemble(groups, args.unsynced_randoms)
     # docs/parity-workflow.md "Randoms that repeat": both engines' unseeded randoms repeat for a script that syncs them.
     synced = any(op['op'] == 'sync_randoms' for op in script)
     script_path = build / 'script.jsonl'
@@ -693,6 +715,16 @@ def main():
     print(f'Command execution parity report: {report_path}')
 
 
+def assemble(groups, unsynced_randoms=False):
+    """The script: the groups in order, with corpus_module.group_cleanup() between two groups."""
+    script = []
+    for index, (name, lines) in enumerate(groups):
+        if index and groups[index - 1][0] != 'setup' and name not in corpus_module.CONTINUES_PREVIOUS:
+            script.extend(corpus_module.group_cleanup())
+        script.extend(op for op in lines if not (unsynced_randoms and op['op'] == 'sync_randoms'))
+    return script
+
+
 def require_anger_reference(op, record):
     """Validate independent live-clock expectations, retaining raw absolute ends."""
     expected = op.get('expect_anger')
@@ -715,10 +747,109 @@ MASKS = [
     (re.compile(r'Average time per tick: [0-9.]+ms'), 'Average time per tick: <ms>'),
     (re.compile(r'P50: [0-9.]+ms P95: [0-9.]+ms P99: [0-9.]+ms'), 'P50: <ms> P95: <ms> P99: <ms>'),
     (re.compile(r'debug/client-[0-9_.-]+\.(jfr|json)'), 'debug/client-<time>'),
+    # BaseCommandBlock.sendSystemMessage stamps the last output with the wall clock.
+    (re.compile(r'\[\d\d:\d\d:\d\d\] '), '[<time>] '),
 ]
 
 
 GAMERULES = re.compile(r'/gamerule \(([^)]*)\)')
+
+
+ATTRIBUTES_LIST = re.compile(r'attributes: \[')
+
+
+def unordered_attributes(record):
+    """Sort only the root attributes list in full `/data get entity` feedback.
+
+    `AttributeMap.pack` lists the instances in the iteration order of an `Object2ObjectOpenHashMap` keyed by
+    `Holder.Reference`, which keeps `Object.hashCode`: an identity hash, so the order changes with the JVM's
+    startup (the same script gives another order under another main class). Each entry keeps its text and
+    styles; only the entries' order is normalised. parity_fuzz compares these lists unordered too."""
+    out = json.loads(json.dumps(record))
+    if not re.fullmatch(r'/data get entity \S+', out.get('cmd', '')):
+        return out
+    for line in out.get('messages') or []:
+        if not isinstance(line, list) or not all(isinstance(span, list) and len(span) == 2
+                                               and isinstance(span[0], str) for span in line):
+            continue
+        chars = [(ch, span[1]) for span in line for ch in span[0]]
+        text = ''.join(ch for ch, _ in chars)
+        prefix = ' has the following entity data: '
+        body = text.find(prefix)
+        if body < 0 or text[body + len(prefix):body + len(prefix) + 1] != '{':
+            continue
+        # Find actual root keys, not quoted text, suffixes of other keys or nested custom data.
+        root = body + len(prefix)
+        stack, quote, matches = [], None, []
+        i = root
+        while i < len(text):
+            ch = text[i]
+            if quote:
+                if ch == '\\':
+                    i += 1
+                elif ch == quote:
+                    quote = None
+            elif ch in ('"', "'"):
+                quote = ch
+            elif ch in '[{':
+                stack.append(']' if ch == '[' else '}')
+            elif ch in ']}':
+                if not stack or stack.pop() != ch:
+                    break
+                if not stack:
+                    i += 1
+                    break
+            elif stack == ['}'] and (i == root + 1 or text[i - 2:i] == ', '):
+                match = ATTRIBUTES_LIST.match(text, i)
+                if match:
+                    matches.append(match)
+            i += 1
+        # Malformed or truncated SNBT stays exact, rather than being repaired by sorting.
+        if i != len(text) or stack or quote or not matches:
+            continue
+        for match in reversed(matches):
+            start = i = match.end()
+            depth, quoted, cuts = 0, None, [start]
+            while i < len(text):
+                ch = text[i]
+                if quoted:
+                    if ch == '\\':
+                        i += 1
+                    elif ch == quoted:
+                        quoted = None
+                elif ch in ('"', "'"):
+                    quoted = ch
+                elif ch in '[{':
+                    depth += 1
+                elif ch in ']}':
+                    if depth == 0:
+                        break
+                    depth -= 1
+                elif ch == ',' and depth == 0 and text[i + 1:i + 2] == ' ':
+                    cuts += [i, i + 2]
+                    i += 1
+                i += 1
+            if len(cuts) == 1:
+                continue
+            cuts.append(i)
+            entries = [chars[a:b] for a, b in zip(cuts[0::2], cuts[1::2])]
+            if not all(entry and entry[0][0] == '{' and entry[-1][0] == '}' for entry in entries):
+                continue
+            separators = [chars[a:b] for a, b in zip(cuts[1::2], cuts[2::2])]
+            ordered = sorted(entries, key=lambda e: json.dumps(e))
+            joined = ordered[0]
+            for separator, entry in zip(separators, ordered[1:]):
+                joined = joined + separator + entry
+            chars[start:i] = joined
+            text = ''.join(ch for ch, _ in chars)
+        spans = []
+        for ch, style in chars:
+            if spans and spans[-1][1] == style:
+                spans[-1][0] += ch
+            else:
+                spans.append([ch, style])
+        line[:] = spans
+    return out
 
 
 def masked(record):

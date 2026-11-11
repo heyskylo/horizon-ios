@@ -125,7 +125,7 @@ requires `verify` for everyone, and Ludovic's review for the files `.github/CODE
 and ships releases). Branches don't have to be up to date with main: main's own `checks` run catches the rare
 semantic conflict.
 
-**Who merges.** The Horizon Team (GitHub team `horizon-team`: kacpherek, levzzz5154, rdbtCVS, Online5277) and
+**Who merges.** The Horizon Team (GitHub team `horizon-team`: kacpherek, levzzz5154, rdbtCVS, Online5277, dezer-x) and
 Ludovic. The orchestrator's agents prove only the risky pull requests (below), so a contributor's ordinary pull
 request doesn't wait for them.
 
@@ -170,15 +170,17 @@ which runs them on main a batch of merges at a time, on the Mac mini's runner:
 
 - It starts on every push to main, one run at a time (`concurrency: parity-main`). A run that started always
   finishes; merges that land while it goes on wait in one pending run: GitHub keeps only the newest and cancels the
-  others, so the next run takes them all. The many `cancelled` runs in the list are those pending ones, plus runs
-  whose bisect outgrew the job's 240 minutes.
+  others, so the next run takes them all. The many `cancelled` runs in the list are those pending ones.
 - `tools/parity_main.py base` gives the newest commit main contains whose parity-main passed (else the last
   merge's parent), and the run is `tools/parity.py --changed <that commit>`: the union of the harnesses every merge
   since then can affect, once, with every earlier pass reused.
 - On a failure, `tools/parity_main.py bisect` checks out the batch's first-parent merges by halves and runs only
   the failing harnesses, names the first merge they fail on in the run's summary and comments on its pull request
   (`🤖 Agent: parity-main found that this merge breaks ...`). Fix it with a pull request as usual; the next
-  run checks from the last green commit again.
+  run checks from the last green commit again. The search has 90 minutes (`--budget`): after that it says between
+  which merges each harness broke, and the next run goes on from there (`.local/parity-runner/bisect.json`, kept
+  while the base is the same), without commenting again on a merge it already named. Before 2026-11-11 a search
+  over many merges ran into the job's 240 minutes and said nothing.
 - Nightlies build only on a commit both `checks` and `parity-main` passed on (`tools/release_train.py`,
   `tools/ci/nightly.py`, see below), so a broken merge holds them instead of reaching players. They take the
   newest such commit even when a later batch failed: that failure is in merges the green commit doesn't contain, so
@@ -575,9 +577,9 @@ time, on the Mac mini's runner, after preparing the resources again if the prepa
 `tools/ci/parity_issues.py` then compares the results with the previous audit
 (`.local/parity-runner/audit.json` in the runner's checkout):
 
-- a harness that passed last night and fails now gets an issue labelled `parity-regression`, titled
-  `Parity regression: <harness>`, with the commit, the run and the end of its log (one issue per harness: an open
-  one gets a comment instead);
+- a harness that fails now and passed last night, or is in its first audit, gets an issue labelled
+  `parity-regression`, titled `Parity regression: <harness>`, with the commit, the run and the end of its log (one
+  issue per harness: an open one gets a comment instead);
 - a harness with an open issue that passes again gets its issue closed.
 
 The bugs session picks the issues up. The audit's logs are the run's `nightly-parity-logs` artifact; harnesses
@@ -589,7 +591,7 @@ listed `linux_only` are skipped there (see above). By hand: `gh workflow run "ni
 Releases ship often, so nothing they leave behind may grow without bound.
 
 - **Artifacts:** every upload keeps 3 days (nightly parity logs 7); a release's assets live on the release itself.
-- **Mac runners:** `tools/ci/runner-gc.sh` runs every 6 hours from launchd on the Mac mini, as a copy taken from main
+- **Mac runners:** `tools/ci/runner-gc.sh` runs every 30 minutes from launchd (`StartInterval` 1800) on the Mac mini, as a copy taken from main
   (`~/.actions-runners/runner-gc.sh`, plist `dev.horizon.runner-gc`), never from a pull request's checkout. It skips a
   runner in a job, removes a checkout's cargo build folders past 12 GB (`MAX_TARGET_GB`) and harness work folders
   under `.local/` untouched for 3 days (`STALE_DAYS`), and keeps the 2 newest shared preparations (`KEEP_PREPARED`)
@@ -597,5 +599,9 @@ Releases ship often, so nothing they leave behind may grow without bound.
   (`ORPHAN_HOURS`): parent gone, command line under a runner's checkout or a worktree's `.local/`. `tools/parity.py`
   stops its own harnesses on SIGTERM and SIGHUP (a cancelled job), so these come only from a SIGKILL or a harness run
   by hand. Runner builds go through the machine's sccache (`tools/ci/runner-env.sh`), so what it removes
-  comes back from the cache. Update the copy after changing the script:
-  `ssh macmini 'curl -fsSL https://raw.githubusercontent.com/horizon-rust/horizon/main/tools/ci/runner-gc.sh -o ~/.actions-runners/runner-gc.sh'`.
+  comes back from the cache. It also runs `tools/ci/git-slim.sh` on each idle runner's checkout (the nightly runner's
+  too): actions/checkout switches git's gc off in a persistent checkout and fetches into it at every job, so packs
+  pile up (1051 of them, 111 GB, in one desktop checkout on 2026-11-09). git-slim removes the leftovers of cut-short
+  fetches, collects a `.git` over 5 GB (`MAX_GIT_MB`) with `git gc --prune=now` and folds more than 40 packs
+  (`MAX_PACKS`) into few. Update the copies after changing the scripts (git-slim.sh goes beside runner-gc.sh):
+  `ssh macmini 'cd ~/.actions-runners && for f in runner-gc.sh git-slim.sh; do curl -fsSL https://raw.githubusercontent.com/horizon-rust/horizon/main/tools/ci/$f -o $f; done'`.

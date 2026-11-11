@@ -165,7 +165,7 @@ pub struct Context {
     pub spectator: bool,
     /// `isSteppingCarefully` (sneaking).
     pub stepping_carefully: bool,
-    /// `dampensVibrations` (a warden).
+    /// `dampensVibrations` (a warden or a wool item).
     pub dampens: bool,
     /// The source is a living entity wardens may target.
     pub targetable: bool,
@@ -187,11 +187,10 @@ pub fn valid_vibration(listens: bool, event: &str, ctx: &Context) -> bool {
         if ctx.stepping_carefully && ignored_when_sneaking(event) {
             return false;
         }
-        if ctx.dampens {
-            return false;
-        }
     }
-    !ctx.dampening_state
+    // Nonliving sources have no Who handle, but ItemEntity still carries its
+    // stack's dampensVibrations flag (including after Entity.kill removes it).
+    !ctx.dampens && !ctx.dampening_state
 }
 
 impl Selector {
@@ -233,6 +232,8 @@ impl Selector {
 pub struct Tick {
     /// A vibration was chosen: its travel time (the particle starts).
     pub started: Option<(Info, i32)>,
+    /// A vibration was reloaded from save: particle resumes from interpolated pos.
+    pub resumed: Option<(Info, i32)>,
     /// A vibration arrived.
     pub received: Option<Info>,
     /// `onDataChanged`.
@@ -262,6 +263,10 @@ impl Data {
             self.selector.start_over();
         }
         if let Some(info) = self.current {
+            if self.reload_particle {
+                self.reload_particle = false;
+                out.resumed = Some((info, self.travel));
+            }
             let mut changed = self.travel > 0;
             self.travel = (self.travel - 1).max(0);
             if self.travel <= 0 {
@@ -294,8 +299,11 @@ impl Data {
         Tag::compound(entries)
     }
     pub fn from_nbt(tag: &Tag) -> Self {
+        let current = tag.get("event").and_then(info_from_nbt);
+        let reload_particle = current.is_some();
         let mut data = Self {
-            current: tag.get("event").and_then(info_from_nbt),
+            current,
+            reload_particle,
             ..Self::default()
         };
         if let Some(Tag::Int(t)) = tag.get("event_delay") {
@@ -979,5 +987,31 @@ mod tests {
         assert_eq!(back.spreader, e.spreader);
         assert_eq!(back.spreader.cursors[0].charge, 1000);
         assert_eq!(back.spreader.cursors[1].charge, 500);
+    }
+
+    #[test]
+    fn vibration_reloads_particle() {
+        let tag = Tag::compound([
+            (
+                "event",
+                Tag::compound([
+                    ("game_event", Tag::String("minecraft:step".into())),
+                    ("distance", Tag::Float(4.0f32.to_bits())),
+                    (
+                        "pos",
+                        Tag::List(vec![
+                            Tag::Double(1.0f64.to_bits()),
+                            Tag::Double(0),
+                            Tag::Double(0),
+                        ]),
+                    ),
+                ]),
+            ),
+            ("event_delay", Tag::Int(3)),
+        ]);
+        let mut d = Data::from_nbt(&tag);
+        assert!(d.reload_particle && d.current.is_some());
+        let tick = d.tick(10, true, true, |dist| dist as i32);
+        assert!(tick.resumed.is_some() && !d.reload_particle);
     }
 }

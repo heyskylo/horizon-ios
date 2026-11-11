@@ -29,6 +29,109 @@ pub fn worker_count() -> usize {
     })
 }
 
+/// `HORIZON_SERIAL_TICK=all`: every [`par_chunks_mut`] keeps its chunks on the
+/// calling thread, in order — the serial reference a parallel phase of the
+/// tick is checked against, tick by tick (#8158).
+fn serial_tick_all() -> bool {
+    static ALL: OnceLock<bool> = OnceLock::new();
+    *ALL.get_or_init(|| {
+        std::env::var("HORIZON_SERIAL_TICK").is_ok_and(|v| v.eq_ignore_ascii_case("all"))
+    })
+}
+
+/// Runs `f` over `items` in chunks of `chunk`, in place. Helper threads take
+/// the next chunk as they finish one under a scope, the calling thread working
+/// too; a helper the system refuses to start leaves its chunks to the others,
+/// and the calling thread does all of it at worst (the region writer's
+/// `share_out` shape). A chunk runs on whatever thread takes it, so `f` must
+/// not depend on the order; nothing is shared out while one chunk is the
+/// whole slice, or while [`serial_tick_all`] holds the tick serial. The
+/// thread-locals the tick relies on do not follow a helper: set them in `f`,
+/// as `block_contact::in_level` wraps a level's own.
+pub fn par_chunks_mut<T: Send>(items: &mut [T], chunk: usize, f: impl Fn(&mut [T]) + Send + Sync) {
+    par_chunks_mut_with(items, chunk, f, !serial_tick_all());
+}
+
+/// [`par_chunks_mut`] with whether the work is shared out (its test).
+pub fn par_chunks_mut_with<T: Send>(
+    items: &mut [T],
+    chunk: usize,
+    f: impl Fn(&mut [T]) + Send + Sync,
+    parallel: bool,
+) {
+    let chunk = chunk.max(1);
+    let count = items.len().div_ceil(chunk);
+    if !parallel || count < 2 {
+        for slice in items.chunks_mut(chunk) {
+            f(slice);
+        }
+        return;
+    }
+    // A helper takes a chunk whole, so no thread sees another's half of one;
+    // the lock is only held while a chunk is taken, never while it runs.
+    let pending: std::sync::Mutex<Vec<&mut [T]>> =
+        std::sync::Mutex::new(items.chunks_mut(chunk).collect());
+    let work = || {
+        while let Some(slice) = pending.lock().unwrap_or_else(|e| e.into_inner()).pop() {
+            f(slice);
+        }
+    };
+    std::thread::scope(|scope| {
+        let helpers = worker_count().saturating_sub(1).clamp(1, count - 1);
+        let threads: Vec<_> = (0..helpers)
+            .filter_map(|_| std::thread::Builder::new().spawn_scoped(scope, work).ok())
+            .collect();
+        work();
+        for t in threads {
+            t.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
+        }
+    });
+}
+
+#[cfg(test)]
+mod par_chunks_tests {
+    use super::par_chunks_mut_with;
+
+    /// Every item is visited exactly once, in parallel and on the caller
+    /// alone: each adds one to itself, whatever thread its chunk ran on.
+    #[test]
+    fn every_item_runs_once_shared_out_or_not() {
+        for parallel in [true, false] {
+            let mut items: Vec<usize> = (0..10_000).collect();
+            par_chunks_mut_with(
+                &mut items,
+                16,
+                |chunk| {
+                    for i in chunk {
+                        *i += 1;
+                    }
+                },
+                parallel,
+            );
+            assert_eq!(items, (1..=10_000).collect::<Vec<_>>(), "{parallel}");
+        }
+    }
+
+    /// A slice one chunk long never starts a helper, whichever way it is
+    /// asked for.
+    #[test]
+    fn one_chunk_stays_whole() {
+        let mut items = vec![0usize; 3];
+        par_chunks_mut_with(
+            &mut items,
+            16,
+            |chunk| {
+                assert_eq!(chunk.len(), 3);
+                for i in chunk {
+                    *i = 7;
+                }
+            },
+            true,
+        );
+        assert_eq!(items, vec![7, 7, 7]);
+    }
+}
+
 /// The chunk worker pool's automatic size (`jobs::default_threads`, Graphics > Worker
 /// threads on Auto): every core but one, as vanilla's `Util.maxAllowedExecutorThreads`,
 /// counting on Apple silicon only its performance cores. Its efficiency cores are slower,
@@ -47,8 +150,10 @@ fn workers_for(cores: usize, performance: impl FnOnce() -> Option<usize>) -> usi
     cores.min(fast).saturating_sub(1).max(1)
 }
 
-/// The machine's performance cores (`hw.perflevel0.physicalcpu`), where it has more than one
-/// kind of core: Apple silicon. `None` where the OS doesn't say (an Intel Mac).
+/// The machine's performance cores:
+/// - on Apple silicon via `hw.perflevel0.physicalcpu`
+/// - on Linux by comparing max frequencies in `/sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq`
+///   (Intel Alder Lake, Raptor Lake, Meteor Lake, big.LITTLE ARM)
 #[cfg(target_vendor = "apple")]
 fn performance_cores() -> Option<usize> {
     let mut count: libc::c_int = 0;
@@ -66,7 +171,44 @@ fn performance_cores() -> Option<usize> {
     (read == 0 && count > 0).then_some(count as usize)
 }
 
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(target_os = "linux")]
+fn performance_cores() -> Option<usize> {
+    // Read max frequencies across CPUs from sysfs
+    let mut max_freq = 0u64;
+    let mut freqs = Vec::new();
+    let mut cpu_idx = 0;
+    loop {
+        let path = format!("/sys/devices/system/cpu/cpu{cpu_idx}/cpufreq/cpuinfo_max_freq");
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                if let Ok(freq) = content.trim().parse::<u64>() {
+                    max_freq = max_freq.max(freq);
+                    freqs.push(freq);
+                }
+                cpu_idx += 1;
+            }
+            Err(_) => break,
+        }
+    }
+
+    if freqs.is_empty() {
+        return None;
+    }
+
+    // Check if there is frequency disparity indicating asymmetric cores (hybrid architecture)
+    let min_freq = *freqs.iter().min()?;
+    if min_freq < max_freq {
+        // Count performance cores (within 5% of max frequency)
+        let threshold = max_freq.saturating_sub(max_freq / 20);
+        let p_threads = freqs.iter().filter(|&&f| f >= threshold).count();
+        if p_threads > 0 && p_threads < freqs.len() {
+            return Some(p_threads);
+        }
+    }
+    None
+}
+
+#[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
 fn performance_cores() -> Option<usize> {
     None
 }
@@ -150,6 +292,31 @@ pub fn thread_cpu() -> Option<std::time::Duration> {
 #[cfg(not(all(windows, target_arch = "x86_64")))]
 pub fn thread_cpu() -> Option<std::time::Duration> {
     None
+}
+
+/// Clones the file or the whole folder `from` as `to`, which must not exist, in one call
+/// that shares the data (APFS `clonefile`, folders included). `Unsupported` where there is
+/// no such call: the caller copies the files itself.
+pub fn clone_tree(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(target_vendor = "apple")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let path = |p: &std::path::Path| {
+            std::ffi::CString::new(p.as_os_str().as_bytes())
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
+        };
+        let (from, to) = (path(from)?, path(to)?);
+        // SAFETY: both paths are NUL-terminated strings that outlive the call.
+        if unsafe { libc::clonefile(from.as_ptr(), to.as_ptr(), 0) } == 0 {
+            return Ok(());
+        }
+        Err(std::io::Error::last_os_error())
+    }
+    #[cfg(not(target_vendor = "apple"))]
+    {
+        let _ = (from, to);
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
 }
 
 /// Set once as the game starts, before its helper threads do: they then go
@@ -568,11 +735,11 @@ mod tests {
         assert_eq!(workers_for(2, || Some(1)), 1);
     }
 
-    /// Off Apple the machine is never asked: the count is the one the pool always had.
+    /// Platforms without asymmetric core detection (Windows, etc.) are unchanged: the count is the one the pool always had.
     #[test]
-    fn default_workers_are_unchanged_off_apple() {
+    fn default_workers_are_unchanged_on_uniform_systems() {
         let before = super::worker_count().saturating_sub(1).max(1);
-        if cfg!(target_vendor = "apple") {
+        if cfg!(any(target_vendor = "apple", target_os = "linux")) {
             assert!((1..=before).contains(&super::default_workers()));
         } else {
             assert_eq!(super::performance_cores(), None);

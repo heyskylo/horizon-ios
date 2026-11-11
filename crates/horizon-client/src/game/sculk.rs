@@ -359,12 +359,19 @@ impl Game<'_> {
             self.sculk.tracker = WardenSpawnTracker::from_nbt(tag);
         }
     }
-    /// Write the tracker into the player data being saved.
+    /// The tracker as saved, once it has been loaded.
+    pub(super) fn warden_tracker_tag(&self) -> Option<horizon_world::nbt::Tag> {
+        self.sculk
+            .tracker_loaded
+            .then(|| self.sculk.tracker.to_nbt())
+    }
+    /// Write the tracker into the player data being saved. With a LAN owner,
+    /// `store_owner` rewrites that from the owner's guest, so it puts the
+    /// tracker there as well (`playerdata::with_warden`).
     pub(super) fn save_warden_tracker(&mut self) {
-        if !self.sculk.tracker_loaded {
+        let Some(tag) = self.warden_tracker_tag() else {
             return;
-        }
-        let tag = self.sculk.tracker.to_nbt();
+        };
         let extra = self
             .level
             .player_extra
@@ -474,6 +481,21 @@ impl Game<'_> {
             }
             self.sculk.known = loaded;
         }
+        self.sculk_sync_writes();
+    }
+
+    /// `LevelChunk.setBlockState`: finish sculk placement before a command
+    /// or `BlockItem.updateCustomBlockEntityTag` loads saved entity fields.
+    pub(super) fn sculk_place_entity(&mut self, state: BlockStateId) -> bool {
+        self.sculk_prepare();
+        if self.kind_of_state(state.0) == 0 {
+            return false;
+        }
+        self.sculk_sync_writes();
+        true
+    }
+
+    fn sculk_sync_writes(&mut self) {
         let writes = std::mem::take(&mut self.world.watched_writes);
         for (key, old, new) in writes {
             let (old_kind, new_kind) = (self.kind_of_state(old), self.kind_of_state(new));
@@ -764,6 +786,19 @@ impl Game<'_> {
         }
         if self.mobs[index].species() == Species::Allay && self.mobs[index].alive() {
             self.allay_listen(index, event, pos, ctx);
+            // Allay.JukeboxListener, its own listener beside the vibrations'.
+            let playing = match event {
+                "minecraft:jukebox_play" => Some(true),
+                "minecraft:jukebox_stop_play" => Some(false),
+                _ => None,
+            };
+            let m = &mut self.mobs[index];
+            if let Some(playing) = playing
+                && allay::hears_jukebox(m, pos)
+            {
+                let at = pos.map(|v| v.floor() as i32);
+                allay::set_jukebox_playing(m, at, playing);
+            }
         }
     }
     /// A game event at a block (`Level.gameEvent(source, event, pos)`).
@@ -1065,6 +1100,23 @@ impl Game<'_> {
                 if let Some((info, travel)) = tick.started {
                     let source = PositionSource::Block([key.0, key.1, key.2]);
                     self.vibration_particle(source, info.pos, center(key), travel);
+                }
+                if let Some((info, travel)) = tick.resumed {
+                    let source = PositionSource::Block([key.0, key.1, key.2]);
+                    let dest = center(key);
+                    let initial = info.distance.floor() as i32;
+                    // `tryReloadVibrationParticle` works in doubles.
+                    let alpha = if initial > 0 {
+                        1.0 - f64::from(travel) / f64::from(initial)
+                    } else {
+                        0.0
+                    };
+                    let current_pos = [
+                        info.pos[0] + (dest[0] - info.pos[0]) * alpha,
+                        info.pos[1] + (dest[1] - info.pos[1]) * alpha,
+                        info.pos[2] + (dest[2] - info.pos[2]) * alpha,
+                    ];
+                    self.vibration_particle(source, current_pos, dest, travel);
                 }
                 if let Some(info) = tick.received {
                     self.sculk_receive(key, info)?;
@@ -2208,8 +2260,9 @@ impl Game<'_> {
             == horizon_client::blocks::Fluid::Water
     }
     /// `Entity.checkSupportingBlock`: the block under this box closest to the
-    /// entity. Everything but the player works it out when it asks.
-    fn supporting_block(&self, position: Vec3, bounds: Aabb) -> Option<BlockPos> {
+    /// entity. Everything but the player works it out when it asks (`Breeze`'s
+    /// ground dust too).
+    pub(super) fn supporting_block(&self, position: Vec3, bounds: Aabb) -> Option<BlockPos> {
         let (min, max) = (bounds.min_position(), bounds.max_position());
         let foot = Aabb::new(
             Vec3::new(min.x, min.y - 1.0e-6, min.z),
@@ -2366,12 +2419,56 @@ impl Game<'_> {
     /// `ArmorStand.kill`, `VehicleEntity.destroy`): removed, then
     /// `gameEvent(ENTITY_DIE, attributedTo != null ? attributedTo : this)` at
     /// the entity's position. `by_player`: the player's hit killed it, so the
-    /// player is the source. Otherwise the source is the entity itself (or a
-    /// bolt), which no listener tells apart from none: it is not living,
-    /// sneaking, a spectator or a warden.
+    /// player is the source. Nonliving self sources have no Who handle;
+    /// their listener facts are represented by the default context.
     pub(super) fn entity_killed_event(&mut self, at: [f64; 3], by_player: bool) {
-        let ctx = self.who_context(by_player.then_some(Who::Player), None);
-        self.post_game_event("minecraft:entity_die", at, ctx);
+        self.entity_killed_event_by(at, by_player.then_some(super::commands::Target::Player));
+    }
+    /// `BlockAttachedEntity.kill` / `ArmorStand.kill` with DamageSource.getEntity.
+    pub(super) fn entity_killed_event_by(
+        &mut self,
+        at: [f64; 3],
+        source: Option<super::commands::Target>,
+    ) {
+        self.entity_event_by("minecraft:entity_die", at, source);
+    }
+    /// `Entity.gameEvent(event, attributedTo)` at `at`, attributed to `source`
+    /// (a LAN guest posts as that player), else to the entity itself.
+    pub(super) fn entity_event_by(
+        &mut self,
+        event: &'static str,
+        at: [f64; 3],
+        source: Option<super::commands::Target>,
+    ) {
+        use super::commands::Target;
+        if let Some(Target::Guest(conn)) = source {
+            if self.lan_acting == Some(conn) {
+                let ctx = self.player_context(None);
+                self.post_game_event(event, at, ctx);
+                return;
+            }
+            if let Some(mut host) = self.lan.take() {
+                let posted = self
+                    .as_guest(&mut host, conn, |g| {
+                        let ctx = g.player_context(None);
+                        g.post_game_event(event, at, ctx);
+                    })
+                    .is_some();
+                self.lan = Some(host);
+                if posted {
+                    return;
+                }
+            }
+        }
+        let who = match source {
+            Some(Target::Player) => Some(Who::Player),
+            Some(Target::Mob(id)) => Some(Who::Mob(id)),
+            _ => None,
+        };
+        let mut ctx = self.who_context(who, None);
+        // A stand is living, but Warden.canTargetEntity explicitly excludes it.
+        ctx.living |= matches!(source, Some(Target::Stand(_)));
+        self.post_game_event(event, at, ctx);
     }
 }
 
@@ -2854,3 +2951,8 @@ mod shriek_capture_tests {
         }
     }
 }
+
+// Milking and shearing farm animals; lives here for `TEST_POSTED_EVENTS`.
+#[cfg(test)]
+#[path = "farm_animal_interaction_tests.rs"]
+mod farm_animal_interaction_tests;

@@ -168,9 +168,14 @@ jobs:
       - name: ALSA and udev headers
         if: runner.os == 'Linux' && !matrix.musl
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
-      - name: Build the client, horizon-ctl, horizon-prepare and horizon-server
+      - name: Build the official game, horizon-ctl, horizon-prepare and horizon-server
         if: ${{ !matrix.musl }}
-        run: cargo build --release --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }} -p horizon-client -p horizon-client-lib --bin horizon-client --bin horizon-ctl -p horizon-prepare --bin horizon-prepare -p horizon-server --bin horizon-server
+        run: cargo build --release --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }} -p horizon-official --bin horizon-official -p horizon-client-lib --bin horizon-ctl -p horizon-prepare --bin horizon-prepare -p horizon-server --bin horizon-server
+      - name: The official game is the game players get, under its name
+        # horizon-official: horizon-client's game with Horizon's own parts plugged in (docs/layers.md, "How a
+        # Horizon crate plugs in"). Everything below, the launcher and players know it as horizon-client.
+        if: ${{ !matrix.musl }}
+        run: cp -f "$BIN/horizon-official${{ matrix.exe }}" "$BIN/horizon-client${{ matrix.exe }}"
       - name: Every program the release folder takes was built
         if: ${{ !matrix.musl }}
         run: |
@@ -291,6 +296,11 @@ jobs:
         run: |
           set -euo pipefail
           cargo run --locked -p xtask -- package "$BIN/horizon-client${{ matrix.exe }}" "dist/${{ matrix.dir }}"
+          # Windows x64: Microsoft's DXC, pinned and checksummed, which DirectX 12 uses on integrated GPUs
+          # (gfx/dx12_compiler.rs), with its licence. ARM64 keeps FXC (THIRD_PARTY_NOTICES.md says why).
+          if [[ "${{ matrix.name }}" == windows ]]; then
+            python tools/ci/fetch_dxc.py "dist/${{ matrix.dir }}"
+          fi
           cd dist
           rm -f "${{ matrix.asset }}"
           case "${{ matrix.asset }}" in

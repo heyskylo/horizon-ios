@@ -1,0 +1,31 @@
+[package]
+name = "horizon-platform"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The platform's public API: what the Horizon layer and mods may use of the engine (docs/layers.md#platform)"
+
+[features]
+# Each part of the engine a Horizon crate may reach, so a crate builds only the engine it uses.
+# level.dat, servers.dat and region files: NBT, compression, region read and write.
+world = ["dep:horizon-world"]
+# A server's address after its SRV record, the offline-mode UUID of a name, and servers.dat.
+protocol = ["world", "dep:horizon-protocol"]
+# Preparing the game's files from the player's own Minecraft install.
+prepare = ["dep:horizon-prepare"]
+# A server's own files: server.properties, the op, white and ban lists, the user cache.
+server-files = ["dep:horizon-server-files"]
+
+[dependencies]
+horizon-core = { path = "../horizon-core" }
+horizon-system = { path = "../horizon-system" }
+horizon-world = { path = "../horizon-world", optional = true }
+horizon-protocol = { path = "../horizon-protocol", optional = true }
+horizon-prepare = { path = "../horizon-prepare", optional = true }
+horizon-server-files = { path = "../horizon-server-files", optional = true }
+# The game's extension points, re-exported as `hooks`.
+horizon-hooks = { path = "../horizon-hooks" }
+
+[lints]
+workspace = true

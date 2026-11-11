@@ -14,6 +14,8 @@ pub enum PistonPart {
     Entity,
     State,
     Properties,
+    /// Any other block entity's whole compound (`BlockEntity.saveWithFullMetadata`).
+    BlockEntity,
 }
 
 struct Pretty {
@@ -255,6 +257,20 @@ fn piston_hash_order(
             entries.sort_by_key(|(k, _)| (hash_bucket(c.len(), k), std::cmp::Reverse(*k)));
         }
         PistonPart::State => return java_hash_order(c),
+        PistonPart::BlockEntity => {
+            // saveAdditional's fields, then `components`, then saveMetadata's
+            // id and position; the fields keep the default order among them.
+            const METADATA: [&str; 5] = ["components", "id", "x", "y", "z"];
+            let mut entries = java_hash_order(c);
+            entries.sort_by_key(|(k, _)| {
+                let key = string_of(k);
+                (
+                    hash_bucket(c.len(), k),
+                    METADATA.iter().position(|m| *m == key).map_or(0, |i| i + 1),
+                )
+            });
+            return entries;
+        }
     }
     entries
 }
@@ -304,7 +320,12 @@ pub fn java_hash_order(
         "FallFlying",
         "sleeping_pos",
         "Brain",
+        "last_hurt_by_player",
+        "last_hurt_by_player_memory_time",
+        "last_hurt_by_mob",
+        "ticks_since_last_hurt_by_mob",
         "equipment",
+        "locator_bar_icon",
         // ArmorStand.
         "Invisible",
         "Small",
@@ -313,6 +334,20 @@ pub fn java_hash_order(
         "NoBasePlate",
         "Marker",
         "Pose",
+        // Mannequin.addAdditionalSaveData.
+        "profile",
+        "hidden_layers",
+        "main_hand",
+        "pose",
+        "immovable",
+        "description",
+        "hide_description",
+        // Interaction.addAdditionalSaveData.
+        "width",
+        "height",
+        "attack",
+        "interaction",
+        "response",
     ];
     // BlockEntity.saveMetadata writes the position after the entity's data.
     const AFTER: &[&str] = &["x", "y", "z"];
@@ -397,6 +432,35 @@ mod tests {
         assert_eq!(pretty(&tag).plain(), ordinary);
     }
     #[test]
+    fn mannequin_compound_orders_pose_before_immovable_in_shared_bucket() {
+        let tag = parse_snbt(
+            r#"{AbsorptionAmount:0.0f,Air:300s,Brain:{memories:{}},DeathTime:0s,FallFlying:0b,Fire:0s,Health:20.0f,HurtTime:0s,Invulnerable:0b,Motion:[0.0d,0.0d,0.0d],OnGround:0b,PortalCooldown:0,Pos:[2.5d,100.0d,2.5d],Rotation:[0.0f,0.0f],UUID:[I;369,0,0,1],attributes:[],current_impulse_context_reset_grace_time:0,description:{text:"Guard"},hide_description:1b,immovable:1b,pose:"crouching",profile:{name:"alex"}}"#,
+        )
+        .unwrap()
+        .0;
+        let rendered = pretty(&tag).plain();
+        let pose_idx = rendered.find("pose: \"crouching\"").unwrap();
+        let immovable_idx = rendered.find("immovable: 1b").unwrap();
+        assert!(
+            pose_idx < immovable_idx,
+            "expected `pose` before `immovable` in bucket 5, got: {rendered}"
+        );
+    }
+    #[test]
+    fn interaction_compound_orders_width_before_interaction_in_shared_bucket() {
+        // `width` and `interaction` share a bucket at every table size;
+        // `Interaction.addAdditionalSaveData` writes `width` first.
+        let tag = parse_snbt(
+            r#"{Air:300s,Fire:0s,Invulnerable:0b,Motion:[0.0d,0.0d,0.0d],OnGround:0b,PortalCooldown:0,Pos:[4.5d,100.0d,4.5d],Rotation:[0.0f,0.0f],UUID:[I;66,0,0,1],fall_distance:0.0d,height:1.25f,interaction:{player:[I;1,2,3,4],timestamp:9L},response:0b,width:1.0f}"#,
+        )
+        .unwrap()
+        .0;
+        assert_eq!(
+            pretty(&tag).plain(),
+            "{Motion: [0.0d, 0.0d, 0.0d], Invulnerable: 0b, fall_distance: 0.0d, Air: 300s, OnGround: 0b, PortalCooldown: 0, Rotation: [0.0f, 0.0f], Pos: [4.5d, 100.0d, 4.5d], response: 0b, Fire: 0s, width: 1.0f, interaction: {player: [I; 1, 2, 3, 4], timestamp: 9L}, UUID: [I; 66, 0, 0, 1], height: 1.25f}",
+        );
+    }
+    #[test]
     fn compact_form_matches_vanilla() {
         assert_eq!(
             rt("{b:1b,a:\"x\",c:[1,2],d:1.5f,e:2d,f:3L,g:4s}"),
@@ -440,5 +504,19 @@ mod tests {
         assert!(colors.contains(&text::GOLD));
         let long = parse_snbt("{l:[{a:1},{b:2}]}").unwrap().0;
         assert_eq!(pretty(&long).plain(), "{l: [{a: 1}, {b: 2}]}");
+    }
+    #[test]
+    fn block_entity_metadata_follows_its_fields() {
+        // A conduit's `/data get block`, as vanilla 26.3 printed it: `Target`
+        // and `components` share a bucket, and saveAdditional wrote `Target` first.
+        let tag = parse_snbt(
+            r#"{id:"minecraft:conduit",x:4098,y:300,z:4098,components:{},Target:[I;1,2,3,4]}"#,
+        )
+        .unwrap()
+        .0;
+        assert_eq!(
+            pretty_piston(&tag, PistonPart::BlockEntity).plain(),
+            r#"{Target: [I; 1, 2, 3, 4], components: {}, x: 4098, y: 300, z: 4098, id: "minecraft:conduit"}"#,
+        );
     }
 }

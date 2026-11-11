@@ -9,8 +9,9 @@ The design: [hdr-linear-light.md](../design/hdr-linear-light.md).
 
 ## Colour
 
-Every colour a 0.2 stage reads or returns is **linear light**: BT.709 (sRGB) primaries, scene-referred, 1.0 is
-vanilla's white at paper white, more is brighter. Horizon decodes vanilla's values with a 2.2 power (vanilla's, not
+Every colour a 0.2 stage reads or returns is **linear light**: BT.709 (sRGB) primaries by default, scene-referred,
+1.0 is vanilla's white at paper white, more is brighter. A pack may ask for BT.2020 primaries, which hold colours
+outside sRGB, with `[frame] primaries` (below). Horizon decodes vanilla's values with a 2.2 power (vanilla's, not
 the piecewise sRGB curve), replacing negatives and NaN with 0 first, and encodes a stage's result the same way where
 the frame stores gamma (`[frame] blend`, below).
 
@@ -23,13 +24,29 @@ the frame stores gamma (`[frame] blend`, below).
 - **`[[lights]]` and `[[particle_lights]]` colours** are written as in 0.1, in vanilla's gamma, and Horizon decodes
   them: `block_light_color` and `colored_light` are linear. `block_light_colors` holds them as written; read it through
   `block_light_color`.
-- **Alpha is coverage only.** A post pass's alpha is ignored.
+- **Alpha is coverage only**, never light: brightness is in rgb alone. A post pass's alpha is ignored.
+
+## Room to grow
+
+`Frame`, the stage inputs (`SkyInput`, `VertexInput`, `MaterialInput`, `DisplacementInput`, `WeatherInput`,
+`PostInput`, `TonemapInput`) and `surface_at`'s `SurfaceData` may gain fields in later releases. Read their fields and
+pass them along, but don't construct them: `horizon-shader check` refuses `PostInput(...)` and the like. `Surface` is
+yours to construct and keeps its one field; later material outputs come as helpers.
+
+**New names reach a stage only if the pack asked for them.** A later release puts a new name before your files (a
+helper, a struct, a resource, a constant) only under a manifest key the pack sets, or in a stage added later, whose
+prelude is its own. A stage a pack has today keeps the names it has today, so a name of your own that is free now
+stays yours: an addition doesn't break a pack that didn't ask for it. Names starting with `horizon_` are Horizon's
+already, and new fields can't collide, since you don't construct those structs.
 
 ## The display
 
-`frame.hdr`, `headroom`, `paper_white`, `peak` and `black_level` describe the display. Until HDR output is served for
-0.2 packs (a later step), a 0.2 pack sees SDR values with HDR on too: `hdr` 0, `headroom` 1, `paper_white` and `peak`
-80, `black_level` 0, and its picture is shown at paper white with nothing lifted.
+`frame.hdr`, `headroom`, `paper_white`, `peak` and `black_level` describe the display, read again every frame. With HDR
+on, where the device keeps the HUD on a layer of its own, a 0.2 pack sees the display's: `hdr` 1, `paper_white` and
+`peak` in nits, `headroom` the peak over paper white (at least 1) and `black_level` the display's black in nits.
+Otherwise it sees SDR: `hdr` 0, `headroom` 1, `paper_white` and `peak` 80, `black_level` 0, and its picture ends on an
+8-bit frame, clipped at white, before the camera overlays and the HUD draw. Horizon lifts the shadows onto
+`black_level` after `[tonemap]`: read it, but don't apply it.
 
 ## `[frame] blend`
 
@@ -37,6 +54,14 @@ the frame stores gamma (`[frame] blend`, below).
 sky and weather stages' results before they are stored and blended, so glass, water, clouds and particles blend as
 vanilla's. `blend = "linear"` stores linear light, so see-through draws blend as light does. A stage sees the same
 values either way. `"linear"` passes the check; the game doesn't serve it yet.
+
+## `[frame] primaries`
+
+`primaries = "bt709"` (the default) is the rule above. With `primaries = "bt2020"` every colour a stage reads or
+returns is in BT.2020 primaries instead (D65 white, 1.0 still vanilla's white at paper white, values never negative).
+It needs `blend = "linear"`, since a change of primaries is only right in linear light. `frame.primaries` says which
+space the pack's colours are in, and `frame.luminance` holds that space's luminance weights: compute luminance as
+`dot(color, frame.luminance)` and it is right in either. `"bt2020"` passes the check; the game doesn't serve it yet.
 
 A stage is a function your WGSL defines, with the signature below; Horizon puts the prelude (these structs, the
 resources and helpers) before your files and calls the function from its own pass. Your files declare no
@@ -136,7 +161,7 @@ What `material` returns. Vanilla's own is `albedo * tint * vec4(lightmap, 1.0)`;
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `color` | `vec4<f32>` | The lit colour, linear light (more than 1 is brighter than white), with its alpha. |
+| `color` | `vec4<f32>` | The lit colour: rgb linear light, 0 or more and unbounded (more than 1 is brighter than white); alpha its coverage. |
 
 Under `[displacement]` the stage also defines `fn displacement(input: DisplacementInput) -> f32`, called for each corner of the grid the faces near the camera are cut into; the corner moves along the face's normal by the depth it gives at the point's height less the depth at the texture's mean height, pinned at the face's edges and easing out over the last quarter of the distance.
 
@@ -264,12 +289,12 @@ pass reads a blank one in place of the target it writes).
 
 ### `TonemapInput`
 
-One pixel of the window, for `fn tonemap(input: TonemapInput) -> vec3<f32>`, which returns its colour for the display: linear light, 1.0 at paper white, from 0 to `frame.headroom` (Horizon clamps it there).
+One pixel of an output (the window), for `fn tonemap(input: TonemapInput) -> vec3<f32>`, which returns its colour for the output `frame` describes: linear light, 1.0 at paper white, from 0 to `frame.headroom` (Horizon clamps it there).
 
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `uv` | `vec2<f32>` | Where the pixel is, 0..1 from the top left. |
-| `pixel` | `vec2<f32>` | The pixel's centre, in pixels from the top left of the window. |
+| `pixel` | `vec2<f32>` | The pixel's centre, in pixels from the top left of the output (the window). |
 | `color` | `vec3<f32>` | The post chain's picture here (the world's without one), linear light, never negative or NaN. |
 
 Resources (bind group 3):
@@ -281,9 +306,15 @@ Resources (bind group 3):
 | 4 | `var linear_sampler: sampler` | Bilinear filtering, clamped to the edges. |
 | 5 | `var nearest_sampler: sampler` | Nearest texel, clamped to the edges. |
 
-It runs once per pixel at the window's size, after the post chain and before the camera overlays and
-the HUD. A pack without it gets Horizon's: a clip at white in SDR, a roll-off into the headroom in HDR.
-Horizon holds the result to 0 to `frame.headroom`.
+It is a pure mapping from the scene's light to the output its `frame` describes, run once per pixel of
+each output, after the post chain and before the camera overlays and the HUD. Today the display is the
+only output; Horizon may add others for the same frame, such as an SDR screenshot or icon, where `frame`'s
+display fields describe SDR (`hdr` 0, `headroom` 1, `paper_white` and `peak` 80, `black_level` 0). Its
+only output is the colour it returns, so nothing carries from one call to the next. A pack without it gets
+Horizon's: a clip at white in SDR, and in HDR the curve Horizon uses without a pack, which keeps light up
+to 60% of the peak as it is and rolls it off into the peak above. Either runs once: Horizon doesn't map a pack's
+result again. Horizon holds the result to 0 to `frame.headroom`, then lifts the shadows onto
+`frame.black_level`.
 
 ## The frame
 
@@ -347,6 +378,8 @@ The frame, as `frame` in every stage. Positions and directions are in world axes
 | `paper_white` | `f32` | 760 | Paper white in nits; a nominal 80 in SDR. |
 | `peak` | `f32` | 764 | The peak brightness in nits; a nominal 80 in SDR, as `paper_white`. |
 | `black_level` | `f32` | 768 | The display's black in nits (HDR's Black Level); 0 in SDR. |
+| `primaries` | `u32` | 772 | The primaries of this pack's colours (`[frame] primaries`): 0 BT.709, 1 BT.2020. |
+| `luminance` | `vec3<f32>` | 784 | The weights that give a colour's luminance in those primaries, `dot(c, frame.luminance)`: (0.2126, 0.7152, 0.0722) for BT.709, (0.2627, 0.6780, 0.0593) for BT.2020. |
 
 ## Anti-aliasing
 

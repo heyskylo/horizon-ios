@@ -14,7 +14,7 @@
 //! Whatever has no faithful 26.3 form is kept as it is and listed in the
 //! report.
 mod density;
-mod features;
+pub(crate) mod features;
 mod noise;
 mod registries;
 mod settings;
@@ -433,6 +433,16 @@ mod tests {
     }
 
     #[test]
+    fn a_spline_without_its_spline_is_ported_not_a_panic() {
+        // A cache over a spline function the pack left without its "spline" field.
+        let (v, _) = up(
+            "data/x/worldgen/density_function/f.json",
+            json!({"type": "minecraft:flat_cache", "argument": {"type": "minecraft:spline"}}),
+        );
+        assert!(v.is_object(), "{v}");
+    }
+
+    #[test]
     fn density_arguments_and_removed_types() {
         let (v, _) = up(
             "data/x/worldgen/density_function/f.json",
@@ -552,6 +562,22 @@ mod tests {
         assert_eq!(
             s["noise_router"]["final_density"]["right"],
             json!({"type": "minecraft:beardifier"})
+        );
+    }
+
+    /// A world pack's 1.21.1 `lithostitched:weighted_selector` (Regions
+    /// Unexplored's tree groups) comes out as 26.3's weighted selector.
+    #[test]
+    fn world_pack_weighted_selectors_are_vanillas() {
+        let old = json!({"type": "lithostitched:weighted_selector", "config": {"features": [
+            {"data": {"feature": "ru:tree/oak", "placement": []}, "weight": 2},
+            {"feature": "ru:tree/big_oak", "placement": []}]}});
+        let new = features::feature(&old, &mut Report::default());
+        assert_eq!(new["type"], "minecraft:weighted_random_selector");
+        assert_eq!(new["features"][0]["weight"], 2);
+        assert_eq!(
+            new["features"][1],
+            json!({"data": {"feature": "ru:tree/big_oak", "placement": []}, "weight": 1})
         );
     }
 

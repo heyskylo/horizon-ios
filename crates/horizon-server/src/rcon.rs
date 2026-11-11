@@ -7,15 +7,14 @@
 //! Where it differs from vanilla, on purpose: a packet is read from the stream (vanilla takes one `read` for
 //! one packet, so a command that TCP splits closes the connection), the password is compared in constant time,
 //! and a connection that hasn't logged in within [`LOGIN_WITHIN`] is closed, with at most [`MAX_CLIENTS`] open
-//! at once (vanilla has neither limit). A reply is cut in packets of 4096 characters, where vanilla cuts at
-//! 4096 UTF-16 units.
+//! at once (vanilla has neither limit).
 
 use crate::{
     api::{Phase, Shared, same_token},
     engine,
     supervisor::note,
 };
-use horizon_server_files::properties::{ServerProperties, SystemEntropy};
+use horizon_platform::server_files::properties::{ServerProperties, SystemEntropy};
 use serde_json::Value;
 use std::{
     io::{self, Read, Write},
@@ -41,12 +40,15 @@ const RESPONSE: i32 = 0;
 const AUTH_FAILURE: i32 = -1;
 /// `RconClient.buf`: the most a request takes, the length included.
 const MAX_REQUEST: usize = 1460;
-/// The characters of a reply in one packet (`sendCmdResponse`).
+/// The UTF-16 units of a reply in one packet (`sendCmdResponse`).
 const CHUNK: usize = 4096;
 /// How long a connection may take to log in.
 const LOGIN_WITHIN: Duration = Duration::from_secs(30);
 /// The connections open at once.
 const MAX_CLIENTS: usize = 16;
+/// The connections one address may hold of them: one client can't take every place, idle, and keep
+/// the operator's own RCON client out.
+const PER_ADDRESS: usize = 4;
 /// How long a refused login waits before its connection closes: one guess per connection, and a
 /// connection's place stays taken meanwhile, so the most connections at once also bound how fast
 /// passwords can be tried.
@@ -182,11 +184,51 @@ struct Limits {
 }
 
 /// Frees a connection's place when its thread ends.
-struct Place(Arc<AtomicUsize>);
+/// A connection's place: one of the [`Limits::clients`], and one of its address's [`PER_ADDRESS`].
+struct Place {
+    open: Arc<AtomicUsize>,
+    per_address: Arc<std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, usize>>>,
+    address: std::net::IpAddr,
+}
+
+impl Place {
+    fn take(
+        open: &Arc<AtomicUsize>,
+        per_address: &Arc<std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, usize>>>,
+        address: std::net::IpAddr,
+        clients: usize,
+    ) -> Option<Self> {
+        let mut per = per_address.lock().unwrap_or_else(|e| e.into_inner());
+        let mine = per.entry(address).or_default();
+        if *mine >= PER_ADDRESS {
+            return None;
+        }
+        if open.fetch_add(1, Ordering::SeqCst) >= clients {
+            open.fetch_sub(1, Ordering::SeqCst);
+            if *mine == 0 {
+                per.remove(&address);
+            }
+            return None;
+        }
+        *mine += 1;
+        Some(Self {
+            open: open.clone(),
+            per_address: per_address.clone(),
+            address,
+        })
+    }
+}
 
 impl Drop for Place {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
+        self.open.fetch_sub(1, Ordering::SeqCst);
+        let mut per = self.per_address.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = per.get_mut(&self.address) {
+            *n -= 1;
+            if *n == 0 {
+                per.remove(&self.address);
+            }
+        }
     }
 }
 
@@ -200,13 +242,15 @@ fn serve(
 ) -> io::Result<()> {
     let (password, run, warn) = (Arc::new(password), Arc::new(run), Arc::new(warn));
     let open = Arc::new(AtomicUsize::new(0));
+    let per_address = Arc::default();
     thread::Builder::new().name("rcon".into()).spawn(move || {
         for stream in listener.incoming().flatten() {
-            if open.fetch_add(1, Ordering::SeqCst) >= limits.clients {
-                open.fetch_sub(1, Ordering::SeqCst);
+            let address = stream
+                .peer_addr()
+                .map_or(std::net::IpAddr::from([0, 0, 0, 0]), |a| a.ip());
+            let Some(place) = Place::take(&open, &per_address, address, limits.clients) else {
                 continue;
-            }
-            let place = Place(open.clone());
+            };
             let (password, run, warn) = (password.clone(), run.clone(), warn.clone());
             let (login, refused) = (limits.login, limits.refused);
             let _ = thread::Builder::new()
@@ -348,15 +392,19 @@ fn send(stream: &mut TcpStream, id: i32, kind: i32, text: &str) -> io::Result<()
     stream.write_all(&encode(id, kind, text))
 }
 
-/// A command's output in packets of [`CHUNK`] characters: `sendCmdResponse` sends one, even when it is empty.
+/// A command's output in packets of [`CHUNK`] UTF-16 units: `sendCmdResponse` cuts the Java string
+/// with `substring`, so a character outside the BMP (two units) can straddle a cut, and
+/// `String.getBytes(UTF_8)` then writes each lone half as `?`. It sends one packet, even when the
+/// output is empty.
 fn send_output(stream: &mut TcpStream, id: i32, output: &str) -> io::Result<()> {
-    let mut rest = output;
+    let units: Vec<u16> = output.encode_utf16().collect();
+    let mut rest = units.as_slice();
     loop {
-        let end = rest
-            .char_indices()
-            .nth(CHUNK)
-            .map_or(rest.len(), |(i, _)| i);
-        send(stream, id, RESPONSE, &rest[..end])?;
+        let end = rest.len().min(CHUNK);
+        let text: String = char::decode_utf16(rest[..end].iter().copied())
+            .map(|unit| unit.unwrap_or('?'))
+            .collect();
+        send(stream, id, RESPONSE, &text)?;
         rest = &rest[end..];
         if rest.is_empty() {
             return Ok(());
@@ -399,6 +447,8 @@ mod tests {
             |line| match line {
                 "boom" => Err("it blew up".into()),
                 "long" => Ok("é".repeat(CHUNK + 5)),
+                // 4095 units, then a pair (a non-BMP character is two UTF-16 units), then one more.
+                "emoji" => Ok(format!("{}😀b", "a".repeat(CHUNK - 1))),
                 "silent" => Ok(String::new()),
                 line => Ok(format!("echo:{line}")),
             },
@@ -518,6 +568,21 @@ mod tests {
         assert_eq!((second.0, second.2.chars().count()), (2, 5));
     }
 
+    /// `sendCmdResponse` cuts the output with `String.substring` at 4096 UTF-16 units, so a pair that
+    /// straddles the cut is split, and `String.getBytes(UTF_8)` writes each lone half as `?`.
+    #[test]
+    fn an_output_is_cut_at_4096_utf16_units_and_a_split_pair_becomes_question_marks() {
+        let (address, _) = server(limits());
+        let mut rcon = connect(address);
+        rcon.write_all(&encode(1, AUTH, "hunter2")).unwrap();
+        reply(&mut rcon);
+        rcon.write_all(&encode(2, EXEC, "emoji")).unwrap();
+        let first = reply(&mut rcon);
+        let second = reply(&mut rcon);
+        assert_eq!(first, (2, RESPONSE, format!("{}?", "a".repeat(4095))));
+        assert_eq!(second, (2, RESPONSE, "?b".to_owned()));
+    }
+
     #[test]
     fn a_packet_split_by_tcp_is_one_request() {
         let (address, _) = server(limits());
@@ -578,6 +643,39 @@ mod tests {
         let mut again = connect(address);
         again.write_all(&encode(1, AUTH, "hunter2")).unwrap();
         assert_eq!(reply(&mut again).0, 1);
+    }
+
+    #[test]
+    fn one_address_takes_only_its_share_of_places() {
+        let open = Arc::new(AtomicUsize::new(0));
+        let per_address = Arc::default();
+        let (a, b) = (
+            std::net::IpAddr::from([198, 51, 100, 1]),
+            std::net::IpAddr::from([198, 51, 100, 2]),
+        );
+        let held: Vec<_> = (0..10)
+            .filter_map(|_| Place::take(&open, &per_address, a, MAX_CLIENTS))
+            .collect();
+        assert_eq!(held.len(), PER_ADDRESS);
+        assert!(
+            Place::take(&open, &per_address, b, MAX_CLIENTS).is_some(),
+            "another address"
+        );
+        drop(held);
+        assert_eq!(open.load(Ordering::SeqCst), 0);
+        assert!(per_address.lock().unwrap().is_empty());
+        // The global cap still holds across addresses.
+        let many: Vec<_> = (0..40u8)
+            .filter_map(|n| {
+                Place::take(
+                    &open,
+                    &per_address,
+                    std::net::IpAddr::from([10, 0, 0, n]),
+                    3,
+                )
+            })
+            .collect();
+        assert_eq!(many.len(), 3);
     }
 
     fn scratch(name: &str) -> std::path::PathBuf {

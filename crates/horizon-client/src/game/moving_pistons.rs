@@ -67,9 +67,11 @@ impl Game<'_> {
     /// Whether the chunk mesh doesn't show the blocks at `p` yet (edited,
     /// meshing, or waiting for its upload).
     pub(super) fn section_mesh_pending(&self, p: [i32; 3]) -> bool {
-        let Some(section) = self.section_of(p) else {
-            return false;
-        };
+        self.section_of(p)
+            .is_some_and(|section| self.section_mesh_pending_in(section))
+    }
+    /// [`Self::section_mesh_pending`] for a section already found.
+    pub(super) fn section_mesh_pending_in(&self, section: (i32, i32, i32)) -> bool {
         self.world.dirty_sections.contains(&section)
             || self.streaming.is_meshing(section)
             || self.section_upload_pending(section)

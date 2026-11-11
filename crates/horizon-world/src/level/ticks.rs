@@ -2,6 +2,7 @@
 //! in-flight neighbour-update queue and the random-tick position generator.
 use super::{states::BlockId, update::NeighborUpdater};
 use crate::fluid::FluidKind;
+use horizon_core::fast_hash::FxHashMap;
 use horizon_core::{
     position::{BlockPos, ChunkPos},
     ticks::{
@@ -29,6 +30,8 @@ pub struct Ticks {
     /// Moving-piston block entities in ticker order (render and collide
     /// moving blocks from these; see `piston_shape`).
     pub moving_pistons: Vec<(BlockPos, super::pistons::MovingPiston)>,
+    /// Position to id hint for `moving_pistons`, see `moving_piston_slot`.
+    pub(crate) moving_piston_ids: FxHashMap<BlockPos, u64>,
     /// The pushes this tick's moving-piston block entities asked for: each
     /// piston with the progress it is about to reach, in the order they ticked
     /// (`PistonMovingBlockEntity.tick`'s `moveCollidedEntities` call). The
@@ -70,6 +73,7 @@ impl Ticks {
             comparator_outputs: Default::default(),
             torch_toggles: Vec::new(),
             moving_pistons: Vec::new(),
+            moving_piston_ids: FxHashMap::default(),
             piston_pushes: Vec::new(),
             next_block_entity_id: 0,
             block_events: Vec::new(),
@@ -88,11 +92,48 @@ impl Ticks {
         self.fluids.add_chunk(pos, fluids)
     }
     /// A moving-piston block entity loaded with its chunk, as a new ticker.
-    pub fn load_moving_piston(&mut self, pos: BlockPos, mut piston: super::pistons::MovingPiston) {
-        self.moving_pistons.retain(|(p, _)| *p != pos);
+    pub fn load_moving_piston(&mut self, pos: BlockPos, piston: super::pistons::MovingPiston) {
+        self.add_moving_piston(pos, piston);
+    }
+    /// Replaces the ticker at `pos` (if any) by `piston`, as a new block entity
+    /// with the next id, at the end of the ticker order.
+    pub(crate) fn add_moving_piston(
+        &mut self,
+        pos: BlockPos,
+        mut piston: super::pistons::MovingPiston,
+    ) {
+        self.take_moving_piston(pos);
         self.next_block_entity_id += 1;
         piston.id = self.next_block_entity_id;
         self.moving_pistons.push((pos, piston));
+        self.moving_piston_ids.insert(pos, piston.id);
+    }
+    /// Removes the ticker at `pos`; the other tickers keep their order.
+    pub(crate) fn take_moving_piston(
+        &mut self,
+        pos: BlockPos,
+    ) -> Option<super::pistons::MovingPiston> {
+        let slot = self.moving_piston_slot(pos)?;
+        self.moving_piston_ids.remove(&pos);
+        Some(self.moving_pistons.remove(slot).1)
+    }
+    /// Slot of the ticker at `pos` in `moving_pistons`. Every in-crate writer
+    /// appends a new, higher id, so the Vec is sorted by id and the hint finds
+    /// the slot by binary search. The hint is trusted only when that slot
+    /// holds `pos`; a Vec edited from outside falls back to a scan.
+    pub(crate) fn moving_piston_slot(&self, pos: BlockPos) -> Option<usize> {
+        if let Some(&id) = self.moving_piston_ids.get(&pos)
+            && let Ok(slot) = self.moving_pistons.binary_search_by_key(&id, |(_, m)| m.id)
+            && self.moving_pistons[slot].0 == pos
+        {
+            return Some(slot);
+        }
+        self.moving_pistons.iter().position(|(p, _)| *p == pos)
+    }
+    /// Whether the ticker `id` is still the one at `pos`.
+    pub(crate) fn moving_piston_has(&self, pos: BlockPos, id: u64) -> bool {
+        self.moving_piston_slot(pos)
+            .is_some_and(|slot| self.moving_pistons[slot].1.id == id)
     }
     /// Register a chunk without saved ticks.
     pub fn add_empty_chunk(&mut self, pos: ChunkPos) -> Result<(), TickError> {
@@ -143,14 +184,14 @@ impl Ticks {
         if let Some(captured) = &mut self.capture {
             captured.push(CapturedTick {
                 fluid: true,
-                kind: fluid as u32,
+                kind: fluid.index() as u32,
                 pos,
                 delay,
             });
             return ScheduleResult::Added;
         }
         let tick = ScheduledTick {
-            kind: TickTypeId(fluid as u32),
+            kind: TickTypeId(fluid.index() as u32),
             pos,
             trigger_tick: game_time.wrapping_add(i64::from(delay)),
             priority: TickPriority::Normal,
@@ -178,5 +219,79 @@ impl Ticks {
             y + ((value >> 16) & y_mask),
             z + ((value >> 8) & 15),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Ticks;
+    use crate::{level::pistons::MovingPiston, registry::BlockStateId};
+    use horizon_core::{geometry::Direction, position::BlockPos};
+
+    fn piston(progress: f32) -> MovingPiston {
+        MovingPiston {
+            moved_state: BlockStateId(1),
+            direction: Direction::East,
+            extending: true,
+            source: false,
+            progress,
+            progress_o: 0.0,
+            last_ticked: 0,
+            death_ticks: 0,
+            id: 0,
+        }
+    }
+
+    fn at(i: i32) -> BlockPos {
+        BlockPos::new(i, 64, -i)
+    }
+
+    /// The linear scan the index replaces: the answer must always match it.
+    fn scan(ticks: &Ticks, pos: BlockPos) -> Option<usize> {
+        ticks.moving_pistons.iter().position(|(p, _)| *p == pos)
+    }
+
+    fn assert_index_matches_scan(ticks: &Ticks) {
+        for i in 0..1000 {
+            assert_eq!(
+                ticks.moving_piston_slot(at(i)),
+                scan(ticks, at(i)),
+                "pos {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn moving_piston_index_matches_a_scan_through_writes_and_external_edits() {
+        let mut ticks = Ticks::default();
+        for i in 0..500 {
+            ticks.load_moving_piston(at(i), piston(0.5));
+        }
+        for i in (0..500).step_by(3) {
+            ticks.add_moving_piston(at(i), piston(0.0));
+        }
+        for i in (0..500).step_by(7) {
+            assert!(ticks.take_moving_piston(at(i)).is_some());
+        }
+        assert_index_matches_scan(&ticks);
+        assert!(ticks.take_moving_piston(at(999)).is_none());
+        // Tickers stay in ascending id order, the order the tick loop walks.
+        assert!(
+            ticks
+                .moving_pistons
+                .windows(2)
+                .all(|w| w[0].1.id < w[1].1.id)
+        );
+
+        // Edits from outside the index (a direct push, a reversed Vec) must
+        // still resolve to the scan's answer.
+        ticks.moving_pistons.push((at(900), piston(0.0)));
+        assert_index_matches_scan(&ticks);
+        ticks.moving_pistons.reverse();
+        assert_index_matches_scan(&ticks);
+        assert!(ticks.moving_piston_has(at(900), 0));
+        let id = ticks.moving_pistons[scan(&ticks, at(2)).unwrap()].1.id;
+        assert!(ticks.moving_piston_has(at(2), id));
+        assert!(!ticks.moving_piston_has(at(2), id + 1));
     }
 }

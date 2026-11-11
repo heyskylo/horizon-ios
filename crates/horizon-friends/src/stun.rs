@@ -7,10 +7,9 @@ use std::{
     time::Duration,
 };
 
-/// Two independent operators, so one outage doesn't break discovery; both
-/// run free public STUN for WebRTC at a global scale. Configurable with
-/// `HORIZON_STUN_SERVERS` (a comma list; `none` turns STUN off).
-pub const DEFAULT_SERVERS: &[&str] = &["stun.cloudflare.com:3478", "stun.l.google.com:19302"];
+/// [`horizon_addresses::STUN_SERVERS`]. Configurable with `HORIZON_STUN_SERVERS` (a comma list;
+/// `none` turns STUN off).
+pub const DEFAULT_SERVERS: &[&str] = horizon_addresses::STUN_SERVERS;
 
 const MAGIC: u32 = 0x2112_A442;
 
@@ -108,7 +107,15 @@ pub fn query(server: &str, timeout: Duration) -> io::Result<SocketAddr> {
     let mut buf = [0u8; 576];
     for _ in 0..3 {
         socket.send_to(&request(&id), target)?;
+        // One deadline an attempt: the read timeout alone restarts with every datagram, and a
+        // socket kept fed would hold the query (and the host's setup waiting on it) for good.
+        let until = std::time::Instant::now() + timeout / 3;
         loop {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            socket.set_read_timeout(Some(left))?;
             match socket.recv_from(&mut buf) {
                 Ok((n, from)) if from == target => {
                     if let Some(a) = parse_response(&buf[..n], &id) {
@@ -134,6 +141,29 @@ pub fn public_ip(servers: &[String], timeout: Duration) -> Option<IpAddr> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// A server that never answers the query but keeps the socket fed with other datagrams.
+    #[test]
+    fn a_query_kept_fed_with_noise_still_ends() {
+        let silent = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let server = silent.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 576];
+            if let Ok((_, from)) = silent.recv_from(&mut buf) {
+                for _ in 0..200 {
+                    let _ = silent.send_to(b"noise", from);
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        });
+        let started = std::time::Instant::now();
+        assert!(query(&server.to_string(), Duration::from_millis(300)).is_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+    }
 
     /// A STUN server answering with XOR-MAPPED-ADDRESS = `answer`.
     pub(crate) fn mock(answer: SocketAddr) -> SocketAddr {

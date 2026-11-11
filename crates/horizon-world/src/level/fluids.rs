@@ -6,7 +6,7 @@ use super::{
     update::{HORIZONTAL, above, below, rel},
 };
 use crate::{
-    fluid::{FluidKind, FluidState},
+    fluid::{FluidKind, FluidState, FluidTemplate},
     registry::BlockStateId,
 };
 use horizon_core::{
@@ -24,22 +24,22 @@ const POSSIBLE_FLOW_DIRECTIONS: [Direction; 5] = [
     Direction::West,
 ];
 
+/// Whether a fluid behaves as water: its template, so a fluid copying water
+/// meets lava, waterlogs and drips as water does.
 fn is_water(kind: FluidKind) -> bool {
-    matches!(kind, FluidKind::Water | FluidKind::FlowingWater)
+    kind.template() == FluidTemplate::Water
+}
+/// Vanilla's lava, flowing or not: only it is `LavaFluid`, with lava's
+/// overrides (water to stone, the random slowdown, fizzing). A mod fluid
+/// copying lava is a `BaseFlowingFluid` with lava's numbers, not lava.
+fn is_vanilla_lava(kind: FluidKind) -> bool {
+    kind.source() == FluidKind::Lava
 }
 fn source_of(kind: FluidKind) -> FluidKind {
-    if is_water(kind) {
-        FluidKind::Water
-    } else {
-        FluidKind::Lava
-    }
+    kind.source()
 }
 fn flowing_of(kind: FluidKind) -> FluidKind {
-    if is_water(kind) {
-        FluidKind::FlowingWater
-    } else {
-        FluidKind::FlowingLava
-    }
+    kind.flowing()
 }
 
 /// `FlowingFluid.SpreadContext`: per-spread caches keyed by horizontal offset.
@@ -107,12 +107,16 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     fn fast_lava(&self) -> bool {
         self.level.dimension_type().fast_lava
     }
-    /// `Fluid.getTickDelay`.
+    /// `Fluid.getTickDelay`: the fluid's own number, else its template's
+    /// (lava's is faster in an ultrawarm dimension).
     pub(crate) fn fluid_tick_delay(&self, kind: FluidKind) -> i32 {
-        match kind {
-            FluidKind::Empty => 0,
-            FluidKind::Water | FluidKind::FlowingWater => 5,
-            _ => {
+        if let Some(delay) = kind.numbers().tick_delay {
+            return delay;
+        }
+        match kind.template() {
+            FluidTemplate::Empty => 0,
+            FluidTemplate::Water => 5,
+            FluidTemplate::Lava => {
                 if self.fast_lava() {
                     10
                 } else {
@@ -121,21 +125,33 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             }
         }
     }
+    /// `FlowingFluid.getDropOff`.
     fn drop_off(&self, kind: FluidKind) -> i32 {
+        if let Some(drop) = kind.numbers().drop_off {
+            return drop;
+        }
         if is_water(kind) || self.fast_lava() {
             1
         } else {
             2
         }
     }
+    /// `FlowingFluid.getSlopeFindDistance`.
     fn slope_find_distance(&self, kind: FluidKind) -> i32 {
+        if let Some(distance) = kind.numbers().slope_find_distance {
+            return distance;
+        }
         if is_water(kind) || self.fast_lava() {
             4
         } else {
             2
         }
     }
+    /// `FlowingFluid.canConvertToSource`: the template's game rule.
     fn can_convert_to_source(&self, kind: FluidKind) -> bool {
+        if let Some(convert) = kind.numbers().convert_to_source {
+            return convert;
+        }
         let rules = self.level.game_rules();
         if is_water(kind) {
             rules.water_source_conversion
@@ -161,12 +177,15 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         other: FluidKind,
         direction: Direction,
     ) -> bool {
-        match fluid.kind() {
-            FluidKind::Empty => true,
-            FluidKind::Water | FluidKind::FlowingWater => {
-                direction == Direction::Down && !is_water(other)
-            }
-            _ => self.fluid_height(fluid, pos) >= 0.444_444_45 && is_water(other),
+        let kind = fluid.kind();
+        if kind == FluidKind::Empty {
+            return true;
+        }
+        match kind.source() {
+            FluidKind::Water => direction == Direction::Down && !is_water(other),
+            FluidKind::Lava => self.fluid_height(fluid, pos) >= 0.444_444_45 && is_water(other),
+            // `BaseFlowingFluid.canBeReplacedWith`: a mod fluid is never replaced by another.
+            _ => false,
         }
     }
 
@@ -278,6 +297,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     pitch: 1.0,
                 });
             }
+            // `CampfireBlock.douse` and `AbstractCandleBlock.extinguish` both
+            // end with `level.gameEvent(null, GameEvent.BLOCK_CHANGE, pos)`,
+            // before `placeLiquid` sets the waterlogged block.
+            self.game_event(pos, "minecraft:block_change");
         }
         self.set_block_and_update(pos, next);
         let delay = self.fluid_tick_delay(fluid.kind());
@@ -549,7 +572,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         {
             return;
         }
-        if !is_water(kind)
+        if is_vanilla_lava(kind)
             && direction == Direction::Down
             && b.is_water_fluid(self.fluid_at(pos).kind())
         {
@@ -563,10 +586,12 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             self.place_liquid(pos, state, target, false);
         } else {
             if !b.is_air(state) {
-                if is_water(kind) {
-                    self.drop_resources(state, pos);
-                } else {
+                // `beforeDestroyingBlock`: lava fizzes; water and mod fluids
+                // (`BaseFlowingFluid`) drop the block's resources.
+                if is_vanilla_lava(kind) {
                     self.level_event(1501, pos, 0);
+                } else {
+                    self.drop_resources(state, pos);
                 }
             }
             let legacy = b.legacy_block(target);
@@ -628,10 +653,12 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             let new_fluid = self.new_liquid(kind, pos, state);
             let delay = self.spread_delay(kind, pos, fluid, new_fluid);
             if new_fluid != fluid {
-                let name = match kind {
-                    FluidKind::Water | FluidKind::FlowingWater => "water",
-                    FluidKind::Lava | FluidKind::FlowingLava => "lava",
+                // Vanilla's by their short names, a mod fluid by its id.
+                let name = match kind.source() {
+                    FluidKind::Water => "water",
+                    FluidKind::Lava => "lava",
                     FluidKind::Empty => return,
+                    source => source.name(),
                 };
                 if !self.level.allow_fluid_level_change(
                     pos,
@@ -663,7 +690,8 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         new: FluidState,
     ) -> i32 {
         let delay = self.fluid_tick_delay(kind);
-        if is_water(kind) {
+        // `LavaFluid.getSpreadDelay`'s random slowdown is lava's own.
+        if !is_vanilla_lava(kind) {
             return delay;
         }
         if old.kind() != FluidKind::Empty

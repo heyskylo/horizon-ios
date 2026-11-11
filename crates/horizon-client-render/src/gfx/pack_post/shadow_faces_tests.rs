@@ -44,9 +44,12 @@ fn pack() -> Post {
     let (properties, _) = horizon_shaders::read_properties(&pack, &mut macros);
     let inputs = horizon_shaders::GameInputs {
         terrain: Some(horizon_shaders::GbuffersInputs {
+            parts: None,
             item_id_declared: false,
             far_depth: false,
             paged_maps: false,
+            water_mask: false,
+            water_patches: false,
             declarations: "layout(location=0)in vec3 fixture_position;\n".into(),
             body: "hz_Vertex=vec4(fixture_position,1.0);hz_Color=vec4(1.0);\
                    hz_MultiTexCoord0=vec4(0.0);hz_MultiTexCoord1=vec4(240.0);\
