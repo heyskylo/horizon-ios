@@ -1,7 +1,9 @@
 # Horizon: a map for agents
 
 Minecraft: Java Edition 26.3 rewritten in Rust (wgpu). Vanilla is the specification wherever it has the
-feature. Read [CONTRIBUTING.md](CONTRIBUTING.md) once; this page tells you where things are.
+feature; performance work may differ inside as long as it stays compatible with vanilla
+([CONTRIBUTING.md](CONTRIBUTING.md#when-it-doesnt-have-to-be-11)). Read [CONTRIBUTING.md](CONTRIBUTING.md) once;
+this page tells you where things are.
 Feature → files → harness for the most-changed areas: [docs/architecture.md](docs/architecture.md).
 
 ## Rules that bite
@@ -42,7 +44,6 @@ Feature → files → harness for the most-changed areas: [docs/architecture.md]
 - Small PRs (< ~500 lines). Labels: `feature` (players get something new), `skip-release` (they see no
   change), none for a fix. Agents never add `release-now`: the maintainer decides it. Merges ship in batches of 5, or after
   6 hours ([docs/release-flow.md](docs/release-flow.md)).
-- Contributors first: `gh pr list --state open --search <area>` before you start; never duplicate theirs.
 - **No hardcoded user-facing strings.** Keep UI translation-ready from the start. In the launcher (`launcher/`), wrap visible text with `tr("...")` or `trf("... {arg} ...", &[("arg", &val)])` from `crate::i18n` instead of raw string literals or `format!`. In the game, use translation keys (`Text::tr`, `lang::get`), never hardcoded English strings.
 - **Claim before you start**: comment `/claim` on the issue (no issue yet: open one, then claim it). An assigned
   issue is taken, and so is one labelled `in progress` (claimed on Discord): pick another. `/unclaim` when you stop;
@@ -53,6 +54,29 @@ Feature → files → harness for the most-changed areas: [docs/architecture.md]
 - **Controllers reach what registers.** Draw controls with a registering helper (`ui::button`, `settings_shell::foot_button`); `graphics_style::button` and `screen_draw::button` only paint, and registering one part of a screen ends its crosshair, so register all of it.
 - **Render passes keep HDR's light.** A pass that reads, filters or redraws the world's picture (upscaling,
   anti-aliasing, sharpening, frame generation, post effects, captures) follows [docs/hdr-passes.md](docs/hdr-passes.md).
+
+## Don't lose time
+
+Where agent time went, measured on sessions and CI in November 2026: reading code, compiling `horizon-client`,
+waiting in loops, and work someone else had already done. Tests were a small part.
+
+- **Check nobody else is on it.** One in three pull requests closed unmerged was a duplicate. Before you write
+  code, look at the issue's linked pull requests and run
+  `gh pr list --state open --search "<issue number, function or file name>"`; then `/claim`.
+- **Find code with the map, not by reading.** Start from the tables below and
+  `python3 tools/port_ledger.py where Class.method`. Read the function you change and its callers, not whole
+  files.
+- **Compile cheaply while you work.** `cargo check -p <crate>` after an edit. Clippy, fmt and tests run once, at
+  the end, through `pr_ready.py`. `cargo clippy -p horizon-client` and `cargo build -p horizon-client` are the
+  slowest commands here: never after every edit, and build the game only when you need to run it.
+- **Don't wait in loops.** Start a long command in the background and carry on, or wait for it once. No
+  `sleep` or `until grep` polling of builds, harnesses or CI.
+- **One test per changed behaviour.** None for a refactor or a file move, none that reads source text, and no
+  harness where vanilla has nothing to compare (Horizon's own features, performance work).
+- **A red check isn't always yours.** When `verify` fails in a test your change can't reach, say so in the pull
+  request and move on; don't hunt it.
+- **Unsure about a rule? Finish the work.** Take the reading that lets you finish, and say in the pull request
+  which one you took. Don't stop, and don't change direction halfway.
 
 ## Crates
 
@@ -103,6 +127,7 @@ reads `README.md`, `launcher/links.json`, `docs/api/`, `roadmap/roadmap.json` an
 - Use independent expected values or a vanilla oracle; do not derive the answer from the code under test.
 - Test outcomes, not only calls to stubs. Use mocks to isolate behavior, not as the behavior itself.
 - Skip tests of trivial constants, derives and getters, or behavior already covered by another test.
+- One test per changed behaviour is enough. A refactor or a move that changes no behaviour gets no new test.
 - Avoid pinning implementation details; a harmless refactor should not break a behavior test.
 - Make slow tests faster without removing cases or weakening their coverage.
 - Never delete parity harnesses or tests that pin vanilla behaviour: they are the spec.
@@ -159,7 +184,8 @@ python3 tools/lang_coverage.py --summary   # the keys each language still misses
 - A harness runs the oracle against the real 26.3 jars and the Rust probe on the same inputs, then compares
   their JSON. Oracle runs are cached by `tools/parity_shim.py`; `--fresh` reruns them.
 - Mirror vanilla's `Math` calls with `horizon_core::jmath`, and vanilla's RNG with `horizon_core::random`:
-  random draws must happen in vanilla's order.
+  random draws must happen in vanilla's order. Performance work may break that order where no player can rely
+  on it; the pull request says so ([CONTRIBUTING.md](CONTRIBUTING.md#when-it-doesnt-have-to-be-11)).
 
 ## horizon-client: where things live
 
@@ -222,7 +248,8 @@ player does (#1514). A window's `Game` never ticks a world itself: the old in-fr
 Open `[server-thread]` issues list the gaps left.
 
 Single player, LAN guests and dedicated servers all run the server code, so a fix there serves all three.
-Test the server thread when you touch player-facing gameplay:
+When you change how the server and its clients talk (packets, tracking, guests, the server thread itself), check
+it there. Other gameplay fixes are covered by their own harness and CI's parity job:
 
 ```sh
 cargo run --profile fast -p horizon-client -- --resources .local/horizon-client/26.3 --world T               # server thread

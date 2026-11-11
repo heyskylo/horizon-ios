@@ -247,6 +247,10 @@ impl Invite {
                     } else {
                         port
                     };
+                    // As `encode` writes them: a crafted code can't make the guest dial thousands.
+                    if endpoints.len() == MAX_ENDPOINTS {
+                        return Err(CodeError::Version);
+                    }
                     endpoints.push(SocketAddr::new(ip, p));
                 }
                 0x10 => {
@@ -300,6 +304,25 @@ pub fn parse(text: &str) -> Option<Parsed> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_code_with_more_endpoints_than_encode_writes_is_refused() {
+        // `bytes` writes at most MAX_ENDPOINTS: built by hand past it, with a valid checksum.
+        let with = |n: usize| {
+            let mut b = vec![VERSION];
+            b.extend_from_slice(b"0123456789");
+            b.extend_from_slice(&25580u16.to_be_bytes());
+            for i in 0..n {
+                b.push(0x04);
+                b.extend_from_slice(&[10, 0, 0, i as u8]);
+            }
+            let sum = checksum(&b);
+            b.extend_from_slice(&sum);
+            Invite::decode(&b)
+        };
+        assert_eq!(with(MAX_ENDPOINTS).unwrap().endpoints.len(), MAX_ENDPOINTS);
+        assert!(with(MAX_ENDPOINTS + 1).is_err());
+    }
 
     fn sample() -> Invite {
         Invite {
