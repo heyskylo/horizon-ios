@@ -2,6 +2,9 @@
 
 > Adopted 2026-11-09 by the founder as his last decision as head of the project. It takes effect when he
 > announces that he is stepping down. From then on only the council changes it, by a 2/3 poll (section 15).
+>
+> Amended 2026-11-10 by the founder (three kinds of action, elections by tier, who may do what, and council poll P41:
+> the mods decide moderation matters). The council can overturn this amendment by poll.
 
 Horizon has no boss. A **council of equals** decides by polls. **Theme groups** do the work in their areas, each
 with a **lead**. The **Horizon Team** reviews and merges code. **Moderators** keep the Discord server and the
@@ -50,19 +53,68 @@ the Horizon Team, for example.
 | Level | What it can do | How you get in | How you leave | 18+ |
 | --- | --- | --- | --- | --- |
 | **Member** | Play, chat, report bugs, suggest ideas, open issues and pull requests, pick group roles | Join the Discord server or the GitHub repo | Leave, or get banned | No |
-| **Contributor** (⛏️ Iron, 🥇 Gold, 💎 Diamond, 🟪 Netherite ranks) | Write in #contributors; `/claim` issues; nominate people for group lead (if active in that group) | One merged pull request in a public horizon-rust repo, linked with `/link-github` and `/verify-github`. Ranks come from merged pull requests: 10, 40, 100 and 200 | Contributor status and ranks stay | No |
-| **Group member** | Read and write in the group's channel; get the group's pings; take part in the group's advisory poll on its lead | Pick the group's role in Channels & Roles, or with `/groups` | Remove the role | No |
-| **🤝 Support** | Answer and close posts in #horizon-support | `/apply`; vote of the mods and the Team (as today) | Resign, 30 days inactive, or removed by the Chief of Mods or the council | No |
-| **🛡️ Moderator** | Time out, delete messages, manage threads, quarantine. No bans | `/apply`, then the selection filter; mods' vote; the council may object within 24 h | Resign, 30 days inactive, suspended by the Chief of Mods, removed by a council poll (simple majority) | **Yes** |
-| **🛡️ Chief of Mods** | A moderator's powers, plus bans; leads the mods; suspends a mod at once pending the council | Council poll (simple majority), from the mods with at least 30 days | Resign, 30 days inactive, council poll (simple majority) | **Yes** |
-| **🧭 Group lead** | Decides inside the group's topic (section 6); manages the group's channel; triage on the group's GitHub issues | Nomination, the filter, a 24 h public discussion with an advisory group poll, then a council poll (simple majority); 30 days probation | Resign, 30 days inactive (automatic), council poll (simple majority); confirmed again every 6 months | **Yes** |
-| **🌌 Horizon Team** | Review and merge pull requests (GitHub `horizon-team`, write access); `/nightly` and triage commands (trusted reviewers); #horizon-team | Nomination, the filter, a 24 h public discussion, then a council poll (2/3); 30 days probation | Resign, 60 days without a merge or review (automatic), council poll (2/3, without the person) | **Yes** |
+| **Contributor** (⛏️ Iron, 🥇 Gold, 💎 Diamond, 🟪 Netherite ranks) | Write in #contributors; `/claim` issues; vote in their group's elections (if active in that group) | One merged pull request in a public horizon-rust repo, linked with `/link-github` and `/verify-github`. Ranks come from merged pull requests: 10, 40, 100 and 200 | Contributor status and ranks stay | No |
+| **Group member** | Read and write in the group's channel; get the group's pings; vote in the group's elections and votes when active | Pick the group's role in Channels & Roles, or with `/groups` | Remove the role | No |
+| **🤝 Support** | Answer and close posts in #horizon-support | Given by any moderator (a free action, section 2.1) | Resign, 30 days inactive, or removed by a moderator, the Chief of Mods or the council | No |
+| **🛡️ Moderator** | Time out, delete messages, manage threads, quarantine. No bans | Elected by the mods (section 5.3); council veto within 24 h | Resign, 30 days inactive, suspended by the Chief of Mods, recalled by the mods, removed by a council poll (simple majority) | **Yes** |
+| **🛡️ Chief of Mods** | A moderator's powers, plus bans; leads the mods; suspends a mod at once pending the council | Elected by the mods, from the mods with at least 30 days (section 5.3); council veto within 24 h | Resign, 30 days inactive, recalled by the mods, council poll (simple majority) | **Yes** |
+| **🧭 Group lead** | Decides inside the group's topic (section 6); manages the group's channel; triage on the group's GitHub issues | Elected by the group's active members and the Team (section 5.3); council veto within 24 h; 30 days probation | Resign, 30 days inactive (automatic), recalled by the same electorate, council poll (simple majority); confirmed again every 6 months | **Yes** |
+| **🌌 Horizon Team** | Review and merge pull requests (GitHub `horizon-team`, write access); `/nightly` and triage commands (trusted reviewers); #horizon-team | Elected by the Team, 2/3 (section 5.3); council veto within 24 h; 30 days probation | Resign, 60 days without a merge or review (automatic), recalled by the Team (2/3), council poll (2/3, without the person) | **Yes** |
 | **🏛️ Council** | Decides everything else by poll (section 4); bans; emergency actions by any 2 members | Nominated by a council member, the filter, a 24 h public discussion, then a council poll (2/3); 30 days probation | Resign, inactivity (section 5.5), council poll (2/3, without the person) | **Yes** |
 
 **The account holder** isn't a level. The founder (Ludovic) still holds the project's accounts (GitHub organisation
 owner, Discord server owner, the Microsoft app approved by Mojang, the domains, Railway, money). He carries out the
 council's decisions on them and hands them over step by step (section 11). As a council member he has one vote,
 like everyone else.
+
+### 2.1 Three kinds of action
+
+Most things need no vote at all. A vote is for power over other people, and for decisions that bind a whole body.
+
+| Kind | What | How |
+| --- | --- | --- |
+| **Free** | Everyday actions inside your own role (the list below, and anything of the same weight) | Just do it. Kira logs the ones she sees in #staff-log. The tier above can reverse it; if people disagree, the tier above votes. A pattern of abuse is a recall |
+| **Body vote** | Giving or taking a role that carries power (an election), or a decision that belongs to one body: the mods, the Team, a group | `/elect` or `/vote body:` in Kira (section 5.3). Any council member can call a veto within 24 hours |
+| **Council poll** | Rules, money, accounts and ownership, the council's own members, vetoes, anything that spans several bodies | `/poll` (section 4) |
+
+Free actions, for example:
+
+- a lead gives or removes their group's helper role (🧩 Horizon Modding Team), through Kira;
+- a moderator gives or removes 🤝 Support, through Kira;
+- a moderator times out, deletes, quarantines, or changes a channel's slowmode or topic; the Chief of Mods bans and
+  unbans;
+- the Team merges and labels;
+- a server operator restarts the official server, or prunes backups and chunks by the written rule;
+- a lead pins, renames or creates threads in their group's channels;
+- Kira's automatic actions.
+
+**The 24-hour rule.** Every vote lasts 24 hours at most, and closes earlier once its result can't change. Only council
+polls on this document, the licence, money and the GitHub organisation's ownership last 48 hours. A veto is called
+within 24 hours of a result.
+
+### 2.2 Who may do what
+
+What each post decides, and what it holds on Discord, on the official server and on GitHub. Anything not listed is a
+council matter.
+
+| Post | Decides | Discord | Official server | GitHub |
+| --- | --- | --- | --- | --- |
+| **Member** | — | Chat, threads, picks group roles | Play | Issues, pull requests, `/claim` |
+| **Group helper** (🧩 Horizon Modding Team) | — | Writes in the group's team channel | — | — |
+| **🤝 Support** | Closes support posts | Manages threads in #horizon-support | — | — |
+| **🛡️ Moderator** | Moderation matters, by the mods' vote (section 7) | Time out, delete messages, manage threads and nicknames, audit log, voice mute and move; quarantine through Kira; the staff channels | In-game op if also elected operator | — |
+| **🛡️ Chief of Mods** | A moderator's, plus bans and unbans; suspends a mod at once; breaks ties in the mods' votes | Plus Ban | As a moderator | — |
+| **Server operator** | In-game moderation by the server rules | — | Op (the server's ops list); no panel, no `server.toml` | — |
+| **🧭 Server & SMP lead** | The server's settings, by the written rules (backup first, warning in game) | As every lead | A panel sub-user once a council accounts poll gives one | As every lead |
+| **🧭 Group lead** | The group's free actions; gives and removes its helper role | In the group's channels: delete messages, manage and pin threads, ping the group; the helper role through Kira | — | Triage on the group's labels through Kira (no repository role) |
+| **🌌 Horizon Team** | Merges; elects Team members | #horizon-team and the staff channels. The role still carries timeout and delete; whether it keeps them is a mod matter | — | `horizon-team`: write on horizon, horizon-mods, horizon-mixins, horizon-native-mod-template and horizon-server; also kira and horizon-site if P37 passes |
+| **🔧 Server Manager** | — | Manage Channels and Manage Roles (the server's layout); given by council poll | — | — |
+| **🏛️ Council** | Council polls, vetoes, emergencies (any 2) | A moderator's permissions plus Ban, mention @everyone and pin; #council | Panel sub-users for two members if P38 passes | The `council` team: code-owner reviews and the release tools' owner powers if P35 passes, security managers if P36 passes; a second organisation owner if P28 passes |
+| **Account holder** (the founder) | Carries out decisions on his accounts (section 11) | Server owner | The panel's owner account | Organisation owner |
+
+Kira applies a passed election everywhere she can: Discord roles herself, GitHub team membership when the council has
+given her a token for it. Whatever she can't do (a panel sub-user, the ops list, a GitHub team without a token) she
+posts as a list of clicks for a named person.
 
 ## 3. Each level in detail
 
@@ -84,13 +136,13 @@ an issue or a pull request on GitHub, or a request for a council poll (any counc
 
 Each theme group (section 6) has a role that anyone can pick and drop. It opens the group's channel and receives the
 group's pings. Picking a role grants no power. A group member counts as **active in the group** when Kira has seen at
-least one counted action in the group's area (section 5.1) in the last 60 days. Only active group members can
-nominate a lead or vote in the group's advisory poll.
+least one counted action in the group's area (section 5.1) in the last 60 days. Active group members vote in the
+group's elections and decisions (section 5.3).
 
 ### 🤝 Support
 
 Unchanged: Support members help players in #horizon-support. They answer every post there and mark posts solved.
-The role carries no permission, so it has no age rule. They join through `/apply`, and the mods and the Team vote.
+The role carries no permission, so it has no age rule. A moderator gives it, and takes it back, through Kira.
 
 ### 🛡️ Moderators and the Chief of Mods
 
@@ -151,7 +203,7 @@ don't go through the filter or a probation. They do make the 18+ declaration (se
 | --- | --- |
 | Who starts one | Any council member, with `/poll` (Kira). Anyone else asks a council member to start it |
 | Where | #polls-and-decisions, in public. Polls about a person (removal, appeals, the age rule) run in #council, and only their result is public |
-| How long | 24 hours. It closes early only if every council member has voted |
+| How long | 24 hours; 48 hours for this document, the licence, money and the GitHub organisation's ownership. It closes early only if every council member has voted |
 | Ballot | Yes, No or Abstain. You can change it until the poll closes |
 | Quorum | At least half of the council votes (Abstain counts). With 6 members, 3 votes |
 | Simple majority | More Yes than No |
@@ -165,20 +217,20 @@ don't go through the filter or a probation. They do make the 18+ declaration (se
 
 | Simple majority | Two-thirds |
 | --- | --- |
-| Day-to-day project decisions: direction, priorities, settling disputes between groups, a public statement | Adding council members and Horizon Team members |
-| Group leads and co-leads: appointing, removing, confirming every 6 months | Removing a council member or a Team member (without the person concerned) |
-| Moderators, the Chief of Mods, Support: confirming, removing | Rules: this document, the server rules, the contributing policy, the licence |
+| Day-to-day project decisions: direction, priorities, settling disputes between groups, a public statement | Adding council members |
+| Vetoing a body's vote or election (section 5.3) | Removing a council member or a Team member (without the person concerned) |
+| Removing a group lead, a moderator, the Chief of Mods or Support (their bodies can also recall them) | Rules: this document, the server rules, the contributing policy, the licence |
 | Ending a probation early | Money (section 12) |
 | Confirming an emergency action | Account handover steps (section 11) |
-| Second-level moderation appeals | Waiving part of the selection filter (section 5.4) |
+| Deciding for a body that has fewer than 3 voters | Waiving part of the selection filter (section 5.4) |
 | Bringing back someone who stepped down for inactivity, within 6 months | Changing the council's size |
 
 **When in doubt, two-thirds.** Any council member can say a poll needs 2/3, and Kira then counts it at 2/3.
 
 ### 4.4 Discussion
 
-Polls that add someone to the council, the Team or a lead post start with a **24-hour public discussion** (section
-5.3). Other polls are discussed in their own thread while they run. A member who wants more time votes No and says
+Polls that add someone to the council start with a **24-hour public discussion**. Other polls, and elections, are
+discussed in their own thread while they run. A member who wants more time votes No and says
 why. A failed poll can come back after 7 days.
 
 ### 4.5 Conflicts of interest
@@ -220,7 +272,7 @@ false age declaration (section 9).
 ## 5. The selection filter
 
 Nobody becomes a lead, a Team member or a council member just because they are well liked or talk a lot. Kira
-measures the work, and only people above a floor can be nominated. The council then decides among them.
+measures the work, and only people above a floor can be nominated. Their body then elects them (section 5.3).
 
 ### 5.1 What Kira measures
 
@@ -254,25 +306,63 @@ A nomination is refused below these floors.
 The numbers are checked again once a year (section 15). They should stay reachable for people who really work on
 Horizon and out of reach for people who don't.
 
-### 5.3 The path to a role
+### 5.3 Elections
 
-1. **Nomination.** Run `/nominate member: role: [group:]` in Kira.
-   - A **group lead** can be nominated by an active member of that group or by a council member. A self-nomination
-     needs a second from another active group member or a council member.
-   - A **Team member** can be nominated by a council or Team member. Someone can also nominate themselves with
-     `/apply`, if a council or Team member sponsors them.
-   - A **council member** can only be nominated by a council member.
-   - **Moderators** apply with `/apply`.
-2. **The filter.** Kira checks the floor and the 18+ declaration. Below the floor, Kira refuses and says which line
-   is short.
-3. **Public discussion, 24 hours.** Kira posts the nomination and the evidence card in a thread of
-   #polls-and-decisions. Contributors and the council can comment. For a lead, Kira also runs an **advisory poll** in
-   the group's channel for the same 24 hours. Only active group members vote in it, and the council sees the result.
-4. **Council poll, 24 hours.** Simple majority for a lead, 2/3 for the Team and the council. For moderators, the mods'
-   vote replaces this step, and any two council members can object within 24 hours; the council then decides by poll.
-5. **Probation, 30 days.** The role is held in full, except for the Team limits in section 3. At day 25, Kira asks the
-   council in #council whether anything is wrong. Probation ends by itself at day 30, unless a council poll (simple
-   majority) ended it earlier.
+The body that works with a person elects them. Kira runs it: `/elect post: member: [group:]`, and `action: remove`
+for a recall.
+
+| Post | Who votes | Passes with | Who can start it |
+| --- | --- | --- | --- |
+| **🛡️ Moderator** | The mods (🛡️ Mod and 🛡️ Chief of Mods) | Simple majority; the Chief of Mods breaks a tie | Any mod, a council member |
+| **🛡️ Chief of Mods** | The mods; candidates are mods for 30 days or more | Simple majority | Any mod, a council member |
+| **Server operator** | The mods and the 🧭 Server lead | Simple majority | The Server lead, the Chief of Mods, a council member |
+| **🧭 Group lead** (a co-lead once the group has 8 active members) | The group's active members, and the Team | Simple majority | The current lead, a Team member, a council member |
+| **🌌 Horizon Team** | The Team | Two thirds, and at least 3 Yes | A Team member, a council member |
+| **🏛️ Council** | The council, by poll after a 24-hour discussion (section 4) | Two thirds, and at least 3 Yes | A council member |
+| 🤝 Support, a group's helper role | Nobody: a free action (section 2.1) | — | A moderator; the group's lead |
+
+An **active group member** has held the group's role for 14 days or more (Kira counts from when she first saw it)
+and has at least one merged pull request or review with the group's label in the last 60 days.
+
+1. **Start.** Kira checks the floor (5.2) and the 18+ declaration. If the candidate falls short, the person starting
+   gets a private "not now", and the candidate a private message saying what is missing. Nothing is posted and no
+   reason is ever shown to anyone else. Kira checks what she can measure (verified GitHub, merged pull requests and
+   reviews, overall and by the group's label, rank, days in the server, Kira level, clean record, the declaration);
+   the voters judge the rest.
+2. **Vote, 24 hours,** in the body's channel, discussed in the vote's thread. Yes, No or Abstain, changeable while it
+   runs. Kira shows how many voted, never who. It closes early once the result can't change.
+3. **Result,** applied at once. Kira gives or takes the Discord role and, with a token, the GitHub team; she lists the
+   rest as clicks for a named person. Only the result is published, never the ballots.
+4. **Veto, 24 hours.** Any council member can call it with the button under the result. A council poll (simple
+   majority, without the people involved) decides; if it passes, Kira undoes the result.
+5. **Probation, 30 days,** for leads and Team members. It ends by itself unless someone who can vote starts a recall.
+
+The council can always remove someone by its own poll. **Body votes** work the same way for a body's own decisions:
+`/vote body:mods`, `body:team` or `body:group`, simple majority, 24 hours, the same veto.
+
+#### Hard cases
+
+| Case | What happens |
+| --- | --- |
+| Fewer than 3 can vote | The council decides by poll |
+| Quorum | A third of the electorate, and at least 3 ballots (Abstain counts). Without it, nothing changes |
+| Tie | Fails, and nothing changes. In the mods' votes, the Chief of Mods' ballot breaks it |
+| The candidate | Doesn't vote on themselves, and can decline (the election ends). The person who started it votes normally |
+| Conflicts | Whoever the vote is about, or who gave or received the moderation action in question, doesn't vote |
+| Several candidates for one seat | Nominations within the first 12 hours join one approval ballot. The seat goes to the most approvals if that is at least half of the voters; otherwise a 24-hour run-off between the top two |
+| A seat that is held | Changes only by a recall or by the 6-month confirmation |
+| The council is already voting on it | No election starts for the same person and post |
+| Cooldown | A failed or vetoed election can't be started again for the same person and post for 30 days. At most 3 elections run at once in a body |
+| Vacancy | When a lead or the Chief of Mods leaves, Kira opens the seat's election herself: 24 hours of nominations, then the vote with everyone nominated. Nobody nominated: the seat stays open, and the tier above acts meanwhile. Kira never picks a candidate |
+| Abuse of a free action | The tier above reverses it; a disagreement goes to its vote. A pattern is a recall |
+| Emergency | Section 4.6. The Chief of Mods can still suspend a mod at once |
+| Kira is down | The body may run the same vote as a Discord poll in its channel for 24 hours; Kira records the result when she is back |
+
+#### Reminders, not nominations
+
+Once a month in a group's channel, Kira says how to propose someone, only when the group has no lead or someone in it
+meets a post's floor. When a seat opens, she posts once in the electorate's channel. Once a month in #council, she
+lists privately the people who meet a floor. These are suggestions: only people start elections.
 
 ### 5.4 Exceptions
 
@@ -299,8 +389,8 @@ holder or an org owner removes GitHub access when the Team role ends.
 
 ### 5.6 Terms
 
-- **Group leads** are confirmed every 6 months by a simple-majority poll. If someone else in the group passes the
-  floor and is nominated, both go on the same poll.
+- **Group leads** are confirmed every 6 months by an election in their group. If someone else in the group passes the
+  floor and is nominated within its first 12 hours, both go on the same ballot.
 - **Council and Team** have no fixed term. They stay as long as they are active and keep the council's trust. Removal
   is always possible (section 4.7).
 
@@ -339,8 +429,9 @@ the design system:
 - technical and design direction inside the area, when vanilla behaviour and the default look don't change;
 - accepting or declining an idea or a proposal in the area. Any two active group members or one council member can
   take that decision to the council;
+- giving and removing the group's helper role, through Kira (a free action);
 - how the group organises itself (threads, meetings, the channel's rules on top of the server's);
-- asking the Team for reviews, adding `needs-proof`, and nominating people.
+- asking the Team for reviews, adding `needs-proof`, and starting elections in the group.
 
 ### 6.4 What goes to the council
 
@@ -356,21 +447,28 @@ the design system:
 
 The work goes on. The Team reviews and merges, and Kira still routes the group's issues and questions to its
 channel. Until a lead is chosen, any council member may take a lead's decision for that group and says so in the
-channel. Kira pins a "lead wanted" note with the floor. **No lead is better than a lead who doesn't do the work:**
+channel. Kira posts once that the seat is open and how to start its election (section 5.3). **No lead is better than a lead who doesn't do the work:**
 nobody is appointed just to fill the seat.
 
 ## 7. Moderation and appeals
 
+- **The mods decide moderation matters** (council poll P41, imposed by the founder on 2026-11-10): who joins or
+  leaves the mod team, the mods' permissions and the staff channels, bans and unbans, and channel settings for
+  moderation. Everyday actions are free (section 2.1). Anything bigger is a mods' vote (`/vote body:mods`, simple
+  majority, 24 hours), and the Chief of Mods breaks ties. **The council keeps a veto:** within 24 hours of a mods'
+  decision, any council member can call a council poll, and a simple majority overturns it.
 - **The server rules** are in #rules. Moderators enforce them, the Chief of Mods leads the mods, and the council can
   change the rules (2/3).
 - **Every action has a mod case**: who acted, what they did, and why. Kira keeps the cases.
 - **First appeal:** within 14 days, through #appeal (for a quarantine) or mod mail. A moderator who wasn't involved,
   or the Chief of Mods, answers within 72 hours.
-- **Second appeal:** for bans, timeouts over 24 hours and quarantines, a council poll in #council (simple majority).
-  Members who were involved don't vote. The answer is final for 90 days.
+- **Second appeal:** for bans, timeouts over 24 hours and quarantines, a mods' vote in #mod-chat. Mods who were
+  involved don't vote, and the council's veto applies. The answer is final for 90 days.
 - **Not appealable here:** actions that Discord's rules or the law require. Those are reported where the law says.
-- **Removing a moderator:** the Chief of Mods can suspend a moderator at once, and the council decides within 72 hours
-  (simple majority). The council removes the Chief of Mods the same way.
+- **Removing a moderator:** the Chief of Mods can suspend a moderator at once, and the mods decide within 72 hours by
+  a recall vote. The mods recall the Chief of Mods the same way. The council can also remove either by poll.
+- **Council members keep the ban permission** for emergencies and when no moderator is around. They log the ban like
+  any other, and the mods can reverse it by vote.
 - **Staff are moderated like everyone.** When a council member is involved, the council decides without them.
 
 ## 8. Conflicts and hard cases
@@ -458,7 +556,9 @@ and the founder carries it out.
 ## 13. Transparency
 
 - **#polls-and-decisions:** every poll and every result, posted by Kira, and the 24-hour discussions of nominations.
-  For polls that aren't about a person, each member's vote is shown once the poll closes.
+  For polls that aren't about a person, each member's vote is shown once the poll closes. The results of elections
+  and body votes are posted there too; for elections, only the result.
+- **#staff-log:** the free actions Kira sees (roles given or taken, bans, unbans), so the tier above can check them.
 - **The decisions log:** Kira keeps an append-only record of every poll, emergency action, appointment and
   step-down, with its date and result. It is public and machine-readable, so the agents can check a decision there.
 - **This document** lives in horizon-rust/horizon as `GOVERNANCE.md`. A short summary is pinned in #rules and in

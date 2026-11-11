@@ -58,6 +58,22 @@ impl Game<'_> {
             self.keys.remove(&key);
         }
     }
+    pub(super) fn update_modifiers(&mut self, state: winit::keyboard::ModifiersState) {
+        self.modifiers = state;
+        horizon_client_input::modifiers::reconcile(
+            self.modifiers,
+            &mut self.physical_keys,
+            &self.settings.keys,
+            &mut self.toggles,
+            [self.settings.toggle_crouch, self.settings.toggle_sprint],
+            [
+                self.pad.holds_action("key.sneak"),
+                self.pad.holds_action("key.sprint"),
+            ],
+        );
+        self.sync_toggle(SNEAK);
+        self.sync_toggle(SPRINT);
+    }
     /// Let a held sneak, sprint or modifier key go when the keyboard reports
     /// its modifier up. A release does not always reach the mapping: a screen
     /// reads presses only, and an unfocused window is given no release at all,
@@ -87,6 +103,16 @@ impl Game<'_> {
         }
         if !control {
             for key in [KeyCode::ControlLeft, KeyCode::ControlRight] {
+                self.physical_keys.remove(&key);
+            }
+        }
+        if !self.modifiers.alt_key() {
+            for key in [KeyCode::AltLeft, KeyCode::AltRight] {
+                self.physical_keys.remove(&key);
+            }
+        }
+        if !self.modifiers.super_key() {
+            for key in [KeyCode::SuperLeft, KeyCode::SuperRight] {
                 self.physical_keys.remove(&key);
             }
         }
