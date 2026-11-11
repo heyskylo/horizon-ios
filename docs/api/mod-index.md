@@ -63,7 +63,7 @@ Level: preview ([stability.md](stability.md)). Schema 1.
 Readers ignore fields they don't know, so an optional field can be added to schema 1. Renaming or removing a field, or
 changing what one means, makes schema 2.
 
-While the index is preview, a reader may rely on the fields above except `downloads`, `stars`, `updated` and `broken_on`: their name and meaning stay for schema 1, an optional one may be absent, and a change to one makes schema 2. Those four are the publish job's, added after the index is built: each may be absent at any time, `downloads` and `stars` are refreshed every hour, and a reader shows or sorts by them but never checks a file against them.
+While the index is preview, a reader may rely on the fields above except `downloads`, `stars`, `updated` and `broken_on`: their name and meaning stay for schema 1, an optional one may be absent, and a change to one makes schema 2. Those four are the publish job's, added after the index is built: each may be absent at any time, and `downloads` and `stars` are refreshed every hour. A reader shows or sorts by `downloads`, `stars` and `updated`. It uses `broken_on` to pick a version: one broken on the Horizon commit the player plays is skipped for an older one that builds, and is never installed silently. Its absence means "not known to be broken", not "checked and fine". None of the four is checked against a downloaded file: that is `file`'s size, SHA-256 and signature.
 
 ## Before a file is installed
 
