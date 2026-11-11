@@ -40,7 +40,7 @@ jobs:
       ${{ vars.SELF_HOSTED_CI != 'off' && vars.SELF_HOSTED_CI != 'light' && (vars.SELF_HOSTED_CI == 'all' ||
       github.event_name == 'pull_request' && (endsWith(format('{0}', github.event.pull_request.number), '0') ||
       endsWith(format('{0}', github.event.pull_request.number), '1'))) &&
-      fromJSON('["self-hosted", "linux", "horizon-checks"]') || 'ubuntu-latest' }}
+      fromJSON('["self-hosted", "linux", "horizon-checks"]') || 'ubuntu-24.04' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
@@ -119,22 +119,22 @@ jobs:
         if: steps.rust.outputs.required != 'false'
         run: |
           cargo +stable fmt --all -- --check
-          cargo +stable clippy --workspace --all-targets -- -D warnings
+          cargo +stable clippy --workspace --all-targets --locked -- -D warnings
           # The server build (released as horizon-engine): the game without sound or controllers.
-          cargo +stable clippy -p horizon-client --all-targets --no-default-features -- -D warnings
+          cargo +stable clippy -p horizon-client --all-targets --locked --no-default-features -- -D warnings
       # Libraries, binaries and integration tests, then doc tests: not the ~275 examples, which clippy above already
       # type-checks and the parity job builds and runs (they were most of this step's build and link time).
-      # cargo test, not nextest: nextest's process per test reloads each binary's shared tables for every test, and on
+      # cargo test --locked, not nextest: nextest's process per test reloads each binary's shared tables for every test, and on
       # these 4-core runners it was no faster (#4978).
       - name: Test Rust core and voxel kernel correctness
         if: steps.rust.outputs.required != 'false'
         run: |
-          cargo +stable test --workspace --lib --bins --tests
+          cargo +stable test --locked --workspace --lib --bins --tests
           # The full content-root tests (#[ignore]d: minutes each on a laptop). The same build as above; they need the
           # prepared vanilla data, so without it they pass at once. Keep the target selection identical to avoid
           # recompiling the workspace with a different dependency graph.
-          cargo +stable test --workspace --lib --bins --tests mod_content::tests:: -- --ignored
-          cargo +stable test --workspace --doc
+          cargo +stable test --locked --workspace --lib --bins --tests mod_content::tests:: -- --ignored
+          cargo +stable test --locked --workspace --doc
   # The launcher is its own workspace (launcher/Cargo.toml), so verify's cargo runs never build it. A pull request that
   # changes it or a crate it builds is checked here, and so is every push to main: two pull requests can each pass
   # alone and break it together (#2059 and the registry ratings did, 2026-10-26).
@@ -143,7 +143,7 @@ jobs:
       ${{ vars.SELF_HOSTED_CI != 'off' && vars.SELF_HOSTED_CI != 'light' && (vars.SELF_HOSTED_CI == 'all' ||
       github.event_name == 'pull_request' && (endsWith(format('{0}', github.event.pull_request.number), '0') ||
       endsWith(format('{0}', github.event.pull_request.number), '1'))) &&
-      fromJSON('["self-hosted", "linux", "horizon-checks"]') || 'ubuntu-latest' }}
+      fromJSON('["self-hosted", "linux", "horizon-checks"]') || 'ubuntu-24.04' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
@@ -314,358 +314,8 @@ jobs:
       head: ${{ github.event.pull_request.head.sha }}
       full: ${{ contains(github.event.pull_request.labels.*.name, 'full-parity') }}
       frame_identity: ${{ contains(github.event.pull_request.labels.*.name, 'frame-identity') }}
-  # Horizon never downloads the game. These jobs need a self-hosted Linux runner
-  # (label horizon-game) holding the maintainer's own copy: the official launcher's
-  # game directory in HORIZON_MINECRAFT_DIR and the pinned server jar in
-  # HORIZON_SERVER_JAR. Start them by hand: gh workflow run checks --ref <branch>.
-  vanilla-parity:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: [self-hosted, linux, horizon-game]
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-      - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
-      - uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: '25'
-      - name: Compare Rust foundations with pinned vanilla client and server bytecode
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_rust_parity.py --prepare
-      - name: Check Rust world-data interoperability with pinned vanilla client and server
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_world_parity.py
-      - name: Compare scheduled ticks and saved tick data with pinned vanilla client and server
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_tick_parity.py
-      - name: Compare simulation geometry and cached block collision shapes
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: |
-          python tools/test_geometry_parity.py
-          python tools/test_collision_parity.py
-      - name: Compare noise samplers and density kernels with pinned vanilla client and server
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_noise_parity.py
-      - name: Compare compiled density samplers with pinned vanilla client and server
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_density_parity.py
-      - name: Compare world-generation JSON codecs with pinned vanilla client and server
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_worldgen_parity.py
-      - name: Compare heightmap predicates and chunk mutations with pinned vanilla client and server
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_heightmap_parity.py
-      - name: Compare pre-light chunk status transitions and block writes
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_chunk_stage_parity.py
-      - name: Compare feature placement into resident neighboring chunks
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_feature_region_parity.py
-      - name: Compare nested feature selectors and sequences
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_feature_graph_parity.py
-      - name: Compare named feature holders and placed-feature tags
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_feature_catalog_parity.py
-      - name: Compare configured fill-layer block placement
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_fill_layer_parity.py
-      - name: Compare replacement-rule codecs and evaluation
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_rule_test_parity.py
-      - name: Compare simple-block placement and feature composition
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_simple_block_parity.py
-      - name: Compare block-column sampling and obstruction
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_block_column_parity.py
-      - name: Compare vertical pillars and cap feature placement
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_pillar_parity.py
-      - name: Compare exactly-one-neighbor feature spreading
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_neighbor_spread_parity.py
-      - name: Compare block-pile support and placement
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_block_pile_parity.py
-      - name: Compare disk replacement and postprocessing
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_disk_parity.py
-      - name: Compare block-blob support search and geometry
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_block_blob_parity.py
-      - name: Compare spring placement and fluid tick scheduling
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_spring_parity.py
-      - name: Compare vine attachment priority and placement
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_vines_parity.py
-      - name: Compare underwater magma floor scans and occlusion
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_underwater_magma_parity.py
-      - name: Compare blue-ice seeding and growth attempts
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_blue_ice_parity.py
-      - name: Compare spike geometry and discontinuous roots
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_spike_parity.py
-      - name: Compare End podium construction and destruction requests
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_end_podium_parity.py
-      - name: Rust End gateway parity
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_end_gateway_parity.py
-      - name: Compare bonus chest placement and conditional loot seeding
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_bonus_chest_parity.py
-      - name: Compare recursive chorus generation and connection refreshes
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_chorus_plant_parity.py
-      - name: Compare small speleothem patches and waterlogged points
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_speleothem_parity.py
-      - name: Compare replacement blob search and Manhattan shells
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_replace_blobs_parity.py
-      - name: Compare bamboo stalks, podzol patches and leafy caps
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_bamboo_parity.py
-      - name: Compare Nether delta rims and shifted contents
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_delta_parity.py
-      - name: Compare biome freezing and snow eligibility
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_biome_weather_parity.py
-      - name: Compare frozen top layers and snowy ground updates
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_snow_freeze_parity.py
-      - name: Compare generation-stage tick storage and routing
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_generation_tick_parity.py
-      - name: Compare below-zero upgrade metadata codecs
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_retrogen_data_parity.py
-      - name: Compare below-zero upgrade lifecycle and block transformations
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_retrogen_chunk_parity.py
-      - name: Compare chunk-status metadata, ordering and codecs
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_chunk_status_parity.py
-      - name: Compare proto-chunk block-entity storage and coordinates
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_block_entity_storage_parity.py
-      - name: Compare ordered single-block replacement features
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_replace_block_parity.py
-      - name: Compare scattered ore placement and air-exposure checks
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_scattered_ore_parity.py
-      - name: Compare resident bulk-section access and raw writes
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_bulk_section_parity.py
-      - name: Compare biome feature ordering and cycle detection
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_feature_sort_parity.py
-      - name: Compare world-generation random wrappers and seeding
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_worldgen_random_parity.py
-      - name: Compare biome filtering and top-level feature context
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_biome_placement_parity.py
-      - name: Compare biome decoration feature scheduling and seeding
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_decoration_parity.py
-      - name: Compare decoration against resident biome and terrain sections
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_decoration_region_parity.py
-      - name: Compare block-state provider choices and rotation
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_state_provider_parity.py
-      - name: Compare contained fluids and height queries with pinned vanilla client and server
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_fluid_parity.py
-      - name: Compare entity obstruction with pinned vanilla client and server
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_entity_obstruction_parity.py
-      - name: Compare block solidity and replaceability with pinned vanilla client and server
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_block_properties_parity.py
-      - name: Compare face slicing and block support with pinned vanilla client and server
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_face_support_parity.py
-      - name: Compare cached block support with pinned vanilla client and server
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_block_support_parity.py
-      - name: Compare dynamic block support with pinned vanilla client and server
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_dynamic_support_parity.py
-      - name: Compare moving-piston collision and interpolation with pinned vanilla
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_piston_shape_parity.py
-      - name: Compare supported block survival rules with pinned vanilla
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_block_survival_parity.py
-      - name: Compare noise-stage chunk filling with pinned vanilla client and server
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_terrain_parity.py
-      - name: Compare structure terrain-adaptation density with pinned vanilla client and server
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_structure_density_parity.py
-      - name: Compare seeded material bands and surface queries with pinned vanilla client and server
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_material_surface_parity.py
-      - name: Compare material condition codecs and rule evaluation with pinned vanilla client and server
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_material_condition_parity.py
-      - name: Compare biome temperatures and cache behavior with pinned vanilla client and server
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_biome_temperature_parity.py
-      - name: Compare badlands and frozen-ocean extensions with pinned vanilla
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_material_extension_parity.py
-      - name: Compare bundled material-rule libraries with pinned vanilla client and server
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_material_rule_library_parity.py
-      - name: Compare fixed, checkerboard and End biome sources with pinned vanilla
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_biome_source_parity.py
-      - name: Compare seeded cave paths and failure state with pinned vanilla
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_cave_carver_parity.py
-      - name: Compare seeded canyon paths and width factors with pinned vanilla
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_canyon_carver_parity.py
-      - name: Compare initial block-writing feature algorithms with pinned vanilla
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_basic_feature_parity.py
-      - name: Compare feature placement chains with pinned vanilla
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_feature_placement_parity.py
-      - name: Compare feature placement primitives with pinned vanilla
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_placement_parity.py
-      - name: Compare anchored height providers with pinned vanilla
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_height_provider_parity.py
-      - name: Compare scalar value providers with pinned vanilla
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_value_provider_parity.py
-      - name: Compare cave and canyon geometric primitives with pinned vanilla
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_carving_geometry_parity.py
-      - name: Compare carving-mask traversal and callback mutations with pinned vanilla
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_carving_mask_parity.py
-      - name: Compare registry-bound biome-source codecs with pinned vanilla
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_biome_source_codec_parity.py
-      - name: Compare all four biome-source kinds in chunk generation with pinned vanilla
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_biome_generation_parity.py
-      - name: Compare chunk biome filling and failure state with pinned vanilla
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_biome_chunk_parity.py
-      - name: Compare biome zoom and seed obfuscation with pinned vanilla
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_biome_zoom_parity.py
-      - name: Compare surface-stage chunks with pinned vanilla client and server
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_material_stage_parity.py
-      - name: Compare block-state JSON codecs with pinned vanilla client and server
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_block_state_codec_parity.py
-      - name: Compare vertical anchors with pinned vanilla client and server
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_anchor_parity.py
-      - name: Compare float logarithms at domain and rounding boundaries
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: python tools/test_float_log_parity.py
+  # JFR analysis uses JDK-generated fixture recordings on the self-hosted Linux runner.
+  # Start a manual checks dispatch with: gh workflow run checks --ref <branch>.
   jfr-analysis:
     if: github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, linux, horizon-game]
