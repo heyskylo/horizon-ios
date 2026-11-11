@@ -27,6 +27,8 @@ use horizon_world::{
 };
 use std::collections::HashMap;
 
+mod respawn_attributes;
+
 /// `Player.getDimensionChangingDelay`.
 pub(super) const PLAYER_DELAY: i32 = 10;
 
@@ -105,6 +107,8 @@ pub(super) struct Portals {
     dirty: bool,
     /// Per-chunk portal palette masks, kept across ticks (portal_sections).
     pub(super) sections: horizon_client::portal_sections::PortalSections,
+    /// The attributes a respawn hands from the old player to the new one.
+    pub(super) respawn_attributes: respawn_attributes::RespawnAttributes,
 }
 
 fn rotate_y(v: Vec3, degrees: f32) -> Vec3 {
