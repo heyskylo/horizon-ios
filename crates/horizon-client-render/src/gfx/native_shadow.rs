@@ -516,7 +516,7 @@ fn shader_source(
                 + section(TERRAIN, "struct Globals {", "// Sky (SkyRenderer)")),
             PREFIX
         ),
-        super::native_post::line_helpers(api)
+        super::native_post::line_helpers(api, false)
     )
 }
 

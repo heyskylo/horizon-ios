@@ -11,7 +11,8 @@ impl Game<'_> {
         let Some(stack) = self.held().cloned() else {
             return false;
         };
-        if info.consumable.is_none()
+        let consumable = self.consumable(&stack);
+        if consumable.is_none()
             || (info.food.is_some()
                 && (self.player.is_none() || !self.can_eat(&stack, info.can_always_eat)))
         {
@@ -19,7 +20,7 @@ impl Game<'_> {
         }
         // as Consumable.startConsuming does, no time is eaten at once, without a use
         // (the server's eating reaches a client through the inventory).
-        if let Some(consumable) = info.consumable.as_ref()
+        if let Some(consumable) = consumable.as_ref()
             && item_use::consumes_at_once(consumable.ticks())
         {
             if self.remote.is_none() {
@@ -171,7 +172,7 @@ impl Game<'_> {
             self.tick_mod_use(slot, ticks, &stack);
             return;
         }
-        let Some(consumable) = info.consumable.as_ref() else {
+        let Some(consumable) = self.consumable(&stack) else {
             self.using = None;
             return;
         };
@@ -181,7 +182,7 @@ impl Game<'_> {
         // Start and Tick left it.
         let remaining = self.use_duration - ticks as i32;
         if consumable.should_emit(remaining) {
-            self.emit_consume(consumable, &stack, 5);
+            self.emit_consume(&consumable, &stack, 5);
         }
         self.item_on_use_tick(&stack, ticks);
         match item_use::count_down(ticks, self.use_duration) {
