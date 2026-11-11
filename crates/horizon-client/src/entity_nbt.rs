@@ -2916,22 +2916,22 @@ pub fn entity_base_tag(
     .tag(raw)
 }
 
-/// `ItemEntity.readAdditionalSaveData`: Health uses NumericTag's short conversion;
+/// `ItemEntity.readAdditionalSaveData`: `getShortOr` (floored, then narrowed) for three;
 /// Owner and Thrower use the numeric UUID codec.
 pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemEntity> {
     let stack = item_from_nbt(tag.get("Item")?)?;
     let position = position(tag)?;
+    let short = |key, default| match tag.get(key) {
+        Some(Tag::Float(v)) => f32::from_bits(*v).floor() as i32 as i16,
+        Some(Tag::Double(v)) => f64::from_bits(*v).floor() as i32 as i16,
+        other => number(other).unwrap_or(default) as i16,
+    };
     Some(ItemEntity {
         rotation: rotation(tag),
         join: Default::default(),
         no_gravity: flag(tag, "NoGravity"),
-        // getShortOr floors floating values to int before short narrowing.
-        health: i32::from(match tag.get("Health") {
-            Some(Tag::Float(v)) => f32::from_bits(*v).floor() as i32 as i16,
-            Some(Tag::Double(v)) => f64::from_bits(*v).floor() as i32 as i16,
-            other => number(other).unwrap_or(5) as i16,
-        }),
-        fire_ticks: number(tag.get("Fire")).unwrap_or(0) as i32,
+        health: i32::from(short("Health", 5)),
+        fire_ticks: i32::from(short("Fire", 0)),
         id,
         stack,
         thrower: item_uuid_from_tag(tag.get("Thrower")),
@@ -2944,8 +2944,8 @@ pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemE
         horizontal_collision: false,
         // Entity.load: getDoubleOr, any number widened.
         fall_distance: float(tag.get("fall_distance")).unwrap_or(0.0),
-        age: number(tag.get("Age")).unwrap_or(0) as i32,
-        pickup_delay: number(tag.get("PickupDelay")).unwrap_or(0),
+        age: i32::from(short("Age", 0)),
+        pickup_delay: i64::from(short("PickupDelay", 0)),
         bob_offset,
         ticks: 0,
         needs_sync: false,
@@ -4315,6 +4315,55 @@ mod spell_ticks_nbt_tests;
 
 #[cfg(test)]
 mod tests {
+    /// `ItemEntity.readAdditionalSaveData` reads `Age` and `PickupDelay` with
+    /// `getShortOr`: an int tag is narrowed (`IntTag.shortValue`,
+    /// `(short)(value & 65535)`), so 40000 is -25536 and 65536 is 0.
+    #[test]
+    fn an_item_narrows_its_age_and_pickup_delay_to_a_short() {
+        let load = |fields: &str| {
+            let snbt =
+                format!("{{Pos:[0d,0d,0d],Item:{{id:\"minecraft:stone\",count:1}},{fields}}}");
+            let tag = horizon_world::nbt::parse_snbt(&snbt).unwrap().0;
+            let item = super::item_entity_from_nbt(&tag, 1, 0.0).unwrap();
+            (item.age, item.pickup_delay)
+        };
+        assert_eq!(load("Age:40000,PickupDelay:65546"), (-25536, 10));
+        assert_eq!(load("Age:65536,PickupDelay:40000"), (0, -25536));
+        // What vanilla writes itself reads back as it was.
+        assert_eq!(load("Age:-32768s,PickupDelay:32767s"), (-32768, 32767));
+        assert_eq!(load("Age:5999s,PickupDelay:10s"), (5999, 10));
+        // A float or double floors first (`Mth.floor`), as `Health` does.
+        assert_eq!(load("Age:-0.5f,PickupDelay:9.9d"), (-1, 9));
+        // The sentinels `ItemEntity.tick` tests for (`age != -32768`: never
+        // ages; `pickupDelay != 32767`: never counts down), given as ints,
+        // and the ints that narrow onto them.
+        assert_eq!(load("Age:-32768,PickupDelay:32767"), (-32768, 32767));
+        assert_eq!(load("Age:32768,PickupDelay:98303"), (-32768, 32767));
+        // `Entity.load` reads the item's `Fire` with `getShortOr` as well.
+        let fire = |fields: &str| {
+            let snbt =
+                format!("{{Pos:[0d,0d,0d],Item:{{id:\"minecraft:stone\",count:1}},{fields}}}");
+            let tag = horizon_world::nbt::parse_snbt(&snbt).unwrap().0;
+            super::item_entity_from_nbt(&tag, 1, 0.0)
+                .unwrap()
+                .fire_ticks
+        };
+        assert_eq!(
+            [fire("Fire:40000"), fire("Fire:60s"), fire("Age:1s")],
+            [-25536, 60, 0]
+        );
+        // They save as the shorts vanilla writes.
+        let tag = horizon_world::nbt::parse_snbt(
+            "{Pos:[0d,0d,0d],Item:{id:\"minecraft:stone\",count:1},Age:32768,PickupDelay:98303}",
+        )
+        .unwrap()
+        .0;
+        let item = super::item_entity_from_nbt(&tag, 1, 0.0).unwrap();
+        let saved = super::item_entity_to_nbt(&item, [1; 4], None);
+        assert_eq!(saved.get("Age"), Some(&super::Tag::Short(i16::MIN)));
+        assert_eq!(saved.get("PickupDelay"), Some(&super::Tag::Short(i16::MAX)));
+    }
+
     // Added after the actual old Game proof: live mutation and a fresh absent
     // load cannot inherit a predicate from a contradictory saved compound.
     #[test]
