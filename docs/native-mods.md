@@ -2213,6 +2213,10 @@ shared knockback path; direct velocity pushes (explosions, Punch arrows, hoglin 
 `LivingEntity.knockback` and do not fire it. The fragment assigns the new API number when
 stamped; the existing hook stays version 1.
 
+### Server settings (draft)
+
+`native_online_mode()` is the dedicated server's `online-mode`: true when its players sign in with their accounts. `native_server_port()` is the port it listens on, `server-port` of server.properties or the `--port` it started with. `native_proxy_forwarding()` is `"velocity"` when the server takes its players from a Velocity proxy (`forwarding.secret` beside server.properties, offline mode only) and `"none"` otherwise; the secret itself is never returned. All three are read from the server's live network config, so they match what it does. They are None off a dedicated server (a single player's or LAN world's) and before it listens. The `enforce-secure-profile` and `hardcore` settings are not exposed here.
+
 ### Reading server blocks (draft)
 
 A native server tick hook can call `native_server_block` with its context, a dimension id and a block position. It returns the block name and state properties from a loaded chunk. It does not load a chunk or open a dimension. Reads outside that hook, from a stale context, from unavailable dimensions or outside the world bounds return an error.
@@ -3039,6 +3043,12 @@ console (which waits for the next tick and does nothing inside a player's hook).
   `eject`). `native_entity_mount` may refuse each. Inside a player's hook only the acting player and mobs are reached.
   True when it rides, got off, or one got off; false otherwise and on a client. Server-side. Bundles need
   `"hooks": @API:mount@`.
+- Helpers **`native_vehicle_of(entity)`** and **`native_passengers_of(entity)`** (`host.vehicle_of`, `host.passengers_of`),
+  by entity id in the level in place: the boat, minecart or mob a server player or mob sits on (Bukkit's `getVehicle`), and
+  the server players and mobs riding a boat, minecart or mob, in vanilla's `getPassengers` order (the controlling
+  passenger first; players, then mobs). Read-only: they change nothing. None or empty when nothing rides, for an entity
+  not reached (inside another player's hook only the acting player and mobs are), and on a client. Server-side. Bundles
+  need `"hooks": @API:riding_getters@`.
 - Helper **`native_set_flight(uuid, allow, flying)`** (`host.set_flight`): lets a server player fly in any game mode
   (`allow`) or not, and sets whether they fly now (`flying`), as Bukkit's `Player.setAllowFlight` and `setFlying`
   (`Abilities.mayfly` and `flying`); their client is told, and the server's flying check no longer kicks them. A player
@@ -3926,6 +3936,17 @@ instead; Horizon's sort buttons (the extras) use it too.
 
 Each read is a `Host` method too (`host.entity_position(entity)`): a helper whose catalog entry names a `receiver`
 (`entity`, `level`) also becomes a method of that handle.
+
+`host.has_line_of_sight(from_entity, to_entity)` (server, `native_has_line_of_sight`, API @API:line_of_sight@) is vanilla's
+`LivingEntity.hasLineOfSight`, the test guards and tab-list mods use: whether the entity `from_entity` sees `to_entity`,
+both given by the id the events carry. The ray runs from the eyes of the first to the eyes of the second (`Entity.getEyeY`),
+against `ClipContext.Block.COLLIDER` block shapes (a bottom slab under the eye line does not block, a stone wall does),
+with no fluids (water does not block), in the collision context of the first entity; it is false for two entities in
+different levels, for more than 128 blocks between the eyes, for an unknown entity and on a client. The shapes are the
+ones mobs use for their own sight. `host.clear_between(dimension, from, to)` (`native_clear_between`) is the same
+COLLIDER ray between two points with no entity (`Level.clip` missing: `true` when it meets no collider). Both answer only
+for the level being ticked on the server: another dimension gives `false`, and a mod asks in the level it runs in.
+Bundles need `"hooks": @API:line_of_sight@`.
 
 ### Entities a client sees
 
