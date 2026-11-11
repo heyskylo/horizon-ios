@@ -36,6 +36,12 @@ thread_local! {
     static THREAD: Cell<(u32, u16)> = const { Cell::new((0, 0)) };
     static BOUNDS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
     static SAMPLED: Cell<u64> = const { Cell::new(0) };
+    static IGNORED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Never samples the calling thread's allocations: the profiler's own threads call it so their buffers stay out of the profile.
+pub fn ignore_this_thread() {
+    IGNORED.set(true);
 }
 
 /// mimalloc, sampling allocations while a [`Session`] runs.
@@ -147,6 +153,11 @@ fn crossed(ptr: usize, size: usize) {
         return;
     }
     let session = SESSION.load(Relaxed);
+    if IGNORED.get() {
+        EPOCH.set(session);
+        LEFT.set(isize::MAX / 2);
+        return;
+    }
     if EPOCH.get() != session {
         EPOCH.set(session);
         let left = draw(interval).saturating_sub(size as isize);

@@ -174,3 +174,60 @@ fn the_weight_counts_a_small_block_as_the_interval_and_a_huge_one_as_itself() {
     assert!(near(weight(16, 1 << 19) as u64, 1 << 19, 0.001));
     assert!(near(weight(64 << 20, 1 << 19) as u64, 64 << 20, 0.001));
 }
+
+fn thread_of(agg: &Aggregate, node: u32) -> Option<String> {
+    agg.path(node).into_iter().find_map(|n| match agg.frame(n) {
+        Frame::Thread(i) => agg.threads.get(usize::from(i)).cloned(),
+        _ => None,
+    })
+}
+
+#[test]
+fn live_samples_carry_the_thread_that_allocated_them() {
+    let _serial = serial();
+    let s = session(4);
+    let block = std::thread::Builder::new()
+        .name("heap-owner".into())
+        // SAFETY: a nonzero layout; a 4 MiB block is sampled at a 4 KiB interval all but surely.
+        .spawn(|| unsafe { SamplingAllocator.alloc(layout(4 << 20)) } as usize)
+        .unwrap()
+        .join()
+        .unwrap();
+    let snap = s.snapshot().unwrap();
+    let held: Vec<_> = snap
+        .agg
+        .counts
+        .keys()
+        .filter(|k| k.state == State::Live)
+        .map(|k| thread_of(&snap.agg, k.node))
+        .collect();
+    assert_eq!(held, [Some("heap-owner".to_owned())]);
+    // SAFETY: allocated by this allocator with this layout.
+    unsafe { SamplingAllocator.dealloc(block as *mut u8, layout(4 << 20)) };
+    drop(s);
+}
+
+#[test]
+fn an_ignored_thread_is_never_sampled_but_its_frees_still_count() {
+    let _serial = serial();
+    let s = session(4);
+    // SAFETY: a nonzero layout, sampled all but surely at this interval.
+    let theirs = unsafe { SamplingAllocator.alloc(layout(4 << 20)) } as usize;
+    let mine = std::thread::spawn(move || {
+        ignore_this_thread();
+        // SAFETY: nonzero layouts; `theirs` was allocated by this allocator with this layout.
+        unsafe {
+            let mine = SamplingAllocator.alloc(layout(8 << 20)) as usize;
+            SamplingAllocator.dealloc(theirs as *mut u8, layout(4 << 20));
+            mine
+        }
+    })
+    .join()
+    .unwrap();
+    let profile = s.stop().unwrap();
+    assert_eq!(profile.live_samples, 0);
+    assert!(near(profile.bytes(State::Alloc), 4 << 20, 0.01));
+    assert!(near(profile.freed, 4 << 20, 0.01));
+    // SAFETY: allocated by this allocator with this layout.
+    unsafe { SamplingAllocator.dealloc(mine as *mut u8, layout(8 << 20)) };
+}

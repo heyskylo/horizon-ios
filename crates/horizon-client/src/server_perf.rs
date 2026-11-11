@@ -360,7 +360,7 @@ impl ServerPerf {
             Some(path) => (files::create_at(path)?, path.clone()),
             None => files::create(dir, now_ms.div_euclid(1000))?,
         };
-        let writer = WriterThread::spawn(file)?;
+        let writer = WriterThread::spawn_with(file, profiler_thread)?;
         let tx = writer.sender();
         self.open(t, t, Some(writer), tx, path.clone(), dir, options);
         Ok(path)
@@ -505,7 +505,10 @@ impl ServerPerf {
         } else {
             let worker = thread::Builder::new()
                 .name("horizon-perf-finish".into())
-                .spawn(move || session.finish(stopped, stop_t, reason, overhead));
+                .spawn(move || {
+                    profiler_thread();
+                    session.finish(stopped, stop_t, reason, overhead)
+                });
             match worker {
                 Ok(handle) => Ending::Running(handle),
                 Err(e) => Ending::Done(Err(e)),
@@ -824,4 +827,10 @@ fn unix_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as i64)
+}
+
+/// Keeps the calling thread's allocations out of the heap samples: it is one of the profiler's own.
+pub(crate) fn profiler_thread() {
+    #[cfg(target_os = "linux")]
+    horizon_threads::heap_sample::ignore_this_thread();
 }
