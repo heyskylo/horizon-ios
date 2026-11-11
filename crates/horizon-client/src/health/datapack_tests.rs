@@ -56,7 +56,7 @@ fn datapack_damage_initial_snapshot_uses_the_prepared_worlds_features() {
     fs::create_dir_all(pack.join("data/demo/damage_type")).unwrap();
     fs::write(
         pack.join("pack.mcmeta"),
-        r#"{"features":{"enabled":["minecraft:trade_rebalance"]}}"#,
+        r#"{"pack":{"description":""},"features":{"enabled":["minecraft:trade_rebalance"]}}"#,
     )
     .unwrap();
     fs::write(
