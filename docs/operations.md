@@ -12,11 +12,10 @@ How decisions are made is in [GOVERNANCE.md](../GOVERNANCE.md); how a change rea
 | **Horizon Team** (GitHub team `horizon-team`, write access) | Review, label and merge pull requests; approve a fork's workflow runs; re-run failed jobs; start workflows by hand (`gh workflow run`); add `release-blocker` to an issue; merge in horizon-mods (form pull requests too) and upload its `staging` files |
 | **Trusted reviewers** (`.github/trusted-reviewers.txt`) | `/nightly`, `/close`, `/reopen`, `/label`, `/unlabel`, `/unclaim` by comment ([release-flow.md](release-flow.md#trusted-reviewers)) |
 | **Council** (🏛️ Council on Discord) | Decide by poll (`/vote`, `/poll start`); emergency actions (GOVERNANCE.md 4.6) |
-| **Organisation owners** (today: Ludovic only) | Repository variables and secrets (`SELF_HOSTED_CI`, `RELEASES_PAUSED`), branch protection, adding people to GitHub teams, merging past a missing review, the security advisories |
-| **Code owners** (`.github/CODEOWNERS`, today: Ludovic only) | Approve pull requests that touch `.github/`, `tools/ci/`, the release, signing and update code |
+| **Organisation owners** (Ludovic and rdbtCVS since 2026-11-11, council poll P28) | Repository variables and secrets (`SELF_HOSTED_CI`, `RELEASES_PAUSED`), branch protection, adding people to GitHub teams, merging past a missing review, the security advisories |
+| **Code owners** (`.github/CODEOWNERS`: the team `horizon-rust/council`, P35) | Approve pull requests that touch `.github/`, `tools/ci/`, the release, signing and update code |
 
-The council's first poll gives the organisation a second owner (GOVERNANCE.md section 11). Until then, anything in
-the last two rows waits for Ludovic.
+The organisation has two owners since the council's poll P28, so the last two rows no longer wait for one person.
 
 ## Merging a pull request
 
