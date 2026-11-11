@@ -1,0 +1,10 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "has_line_of_sight", "target": "horizon_client::game::native_entity_refs::Game<'_>::native_has_line_of_sight"},
+    {"name": "clear_between", "target": "horizon_client::game::native_entity_refs::Game<'_>::native_clear_between"}
+  ],
+  "rust_summary": "line of sight between two entities (`native_has_line_of_sight`, `LivingEntity.hasLineOfSight`) and a COLLIDER block ray with no entity (`native_clear_between`, `Level.clip` missing) in the level being ticked.",
+  "doc_summary": "`host.has_line_of_sight(from_entity, to_entity)` is `LivingEntity.hasLineOfSight`: the eyes of the first entity to the eyes of the second, against COLLIDER block shapes and no fluids, within 128 blocks and in one level; `host.clear_between(dimension, from, to)` is the same COLLIDER ray between two points, true when it meets no collider. Both answer for the level being ticked on a server. Bundles need \"hooks\": @API:line_of_sight@.",
+  "comments": ["crates/horizon-client/src/game/native_entity_refs.rs"]
+}
