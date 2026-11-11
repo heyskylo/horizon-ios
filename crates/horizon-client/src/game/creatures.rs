@@ -8942,7 +8942,7 @@ mod chorus_projectile_drop_tests {
                 assert_eq!(items.block_loot_sequence(registry, state).is_some(), named);
                 source(game, 4, 4, "gravel");
                 game.level.seed = 116;
-                game.world.random = horizon_core::random::LegacyRandom::new(116);
+                game.world.random.set_seed(116);
                 game.rand_sequences = Default::default();
                 game.with_level(|b, level, ticks| {
                     level.items = items;
@@ -9197,7 +9197,7 @@ mod h169_glide_travel_tests {
     use super::*;
     use crate::game::{Audio, Options, Progress, Settings, load_resources};
     use horizon_client::{chunk::Chunk, motion::PlayerMotion};
-    use horizon_core::{geometry::Vec3, position::ChunkPos, random::LegacyRandom};
+    use horizon_core::{geometry::Vec3, position::ChunkPos, random::RandomSource};
     use std::sync::Arc;
     fn with_game(test: impl FnOnce(&mut Game<'_>)) {
         with_role_game(
@@ -9267,7 +9267,7 @@ mod h169_glide_travel_tests {
         game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
         game.creative = true;
         assert!(game.run_command("fill 0 199 0 31 199 31 stone"));
-        game.world.random = LegacyRandom::new(169);
+        game.world.random.set_seed(169);
         game.update_chunk_tickets();
         assert!(crate::game::ticking_chunk(&game.world, 0, 0));
         assert!(game.tickets.levels().block_ticking(0, 0));

@@ -1198,7 +1198,7 @@ mod tests {
                     let seed = (0..10_000)
                         .find(|&seed| LegacyRandom::new(seed).next_int_bound(50).unwrap() == 0)
                         .unwrap();
-                    m.random = LegacyRandom::new(seed);
+                    m.random.set_seed(seed);
                     let mut expected = m.random.clone();
                     assert_eq!(expected.next_int_bound(50).unwrap(), 0);
                     expected.next_int_bound(max).unwrap();

@@ -3460,7 +3460,7 @@ mod poison_effect_tests {
             let mut pig = Mob::new(2, pig_kind.clone(), Vec3::new(0.0, 4.0, 0.0), 0.0);
             pig.extra.effects.push(("minecraft:poison", 25, 0));
             pig.extra.effects.push(("minecraft:infested", -1, 0));
-            pig.random = horizon_core::random::LegacyRandom::new(seed);
+            pig.random.set_seed(seed);
             tick_effects(&mut pig, None, &mut |_| {});
             pig.outbox
                 .iter()
@@ -6131,7 +6131,7 @@ mod hurt_teleport_contact_tests {
         let kind = Arc::new(types.types["minecraft:enderman"].clone());
         let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
         register(&mut m);
-        m.random = LegacyRandom::new(seed);
+        m.random.set_seed(seed);
         m.on_ground = true;
         m.stuck_multiplier = Vec3::ZERO;
         m
