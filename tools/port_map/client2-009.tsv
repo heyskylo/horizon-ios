@@ -97,7 +97,7 @@ AbstractContainerWidget.setFocused	port	crates/horizon-client-render/src/pack_sc
 AbstractContainerWidget.mouseClicked	port	crates/horizon-client-render/src/ui.rs::Scroll::press	gap: minor: child click dispatch is per screen; only the scrollbar press is here
 AbstractScrollArea.isOverScrollbar	inline	crates/horizon-client-render/src/ui.rs::Scroll::press	scrollbar column test folded into the press
 AbstractScrollArea.scrollBarY	port	crates/horizon-client-render/src/ui.rs::scrollbar_thumb	thumb top
-AbstractScrollArea.extractScrollbar	port	crates/horizon-client-render/src/ui.rs::scrollbar	gap: minor: no disabled-scroller sprite and no cursor request
+AbstractScrollArea.extractScrollbar	port	crates/horizon-client-render/src/ui.rs::scrollbar	the pack screen's bars ask for the hand, and RESIZE_NS while held (PackScreen::draw); the disabled-scroller sprite is still unported
 AbstractScrollArea.defaultSettings	skip:java		settings record builder; the sizes are constants in ui.rs
 AbstractSelectionList.swap	port	crates/horizon-client/src/multiplayer.rs::Screen::click	gap: minor: mouse move up or down works; keyboard Shift+arrow reorder is not ported
 AbstractSelectionList.scrollBarX	port	crates/horizon-client/src/social_screen.rs::scrollbar_x	the rows' right edge + 6 + 2; the social list's draw passes it to ui::scrollbar

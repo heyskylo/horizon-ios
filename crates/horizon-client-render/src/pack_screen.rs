@@ -1718,6 +1718,19 @@ impl PackScreen {
             [32, 2],
         );
         if l.scrollable() {
+            // AbstractScrollArea.extractScrollbar: over the bar, the pointer
+            // points, or resizes while the bar is held.
+            let over_bar = mouse.0 >= l.scroll_bar_x()
+                && mouse.0 < l.scroll_bar_x() + 6
+                && mouse.1 >= l.y
+                && mouse.1 < l.bottom();
+            if over_bar {
+                crate::widgets::request_cursor(if l.held.is_some() {
+                    crate::widgets::Cursor::ResizeNs
+                } else {
+                    crate::widgets::Cursor::PointingHand
+                });
+            }
             let sh = l.scroller_height().clamp(32, l.height - 8);
             let sy = (l.scroll as i32 * (l.height - sh) / l.max_scroll() + l.y).max(l.y);
             d::sprite(
@@ -2197,6 +2210,29 @@ mod icon_slot_tests {
 
     /// Only the available list has packs: one row of 36 for each of `count` icons fits in a
     /// window `height` high.
+    /// `AbstractScrollArea.extractScrollbar`: over a held pack list's bar the
+    /// pointer asks to resize vertically, at rest it points.
+    #[test]
+    fn the_pack_scrollbar_asks_for_its_cursor() {
+        let atlas = atlas();
+        let m = Measure(&atlas.font);
+        let mut screen = screen(&m, 30, 200);
+        let l = &screen.lists[0];
+        assert!(l.scrollable());
+        let at = (l.scroll_bar_x() + 2, l.y + 8);
+        let _ = crate::widgets::take_cursor();
+        screen.draw(&m, at, 0, 0);
+        assert_eq!(
+            crate::widgets::take_cursor(),
+            crate::widgets::Cursor::PointingHand
+        );
+        screen.lists[0].held = Some(f64::from(at.1));
+        screen.draw(&m, at, 0, 0);
+        assert_eq!(
+            crate::widgets::take_cursor(),
+            crate::widgets::Cursor::ResizeNs
+        );
+    }
     fn screen(m: &Measure, count: usize, height: i32) -> PackScreen {
         PackScreen::new(
             m,
