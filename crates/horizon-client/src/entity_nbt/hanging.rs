@@ -98,7 +98,8 @@ pub fn item_frame_from_nbt(tag: &Tag, id: u32) -> Option<ItemFrame> {
             .get("Item")
             .and_then(item_from_nbt)
             .map(|s| crate::items::ItemStack { count: 1, ..s }),
-        rotation: (number(tag.get("ItemRotation")).unwrap_or(0) % 8) as i8,
+        // `TagValueInput.getByteOr` narrows before `ItemFrame.setRotation`'s remainder.
+        rotation: (tag.get("ItemRotation").and_then(int_value).unwrap_or(0) as i8) % 8,
         drop_chance: float(tag.get("ItemDropChance")).map_or(1.0, |v| v as f32),
         fixed: flag(tag, "Fixed"),
         invisible: flag(tag, "Invisible"),

@@ -8076,6 +8076,45 @@ mod fireball_nbt_tests {
     }
 
     #[test]
+    fn frame_rotation_uses_signed_byte_value_and_round_trips() {
+        // `ItemFrame.readAdditionalSaveData`: getByteOr, then setRotation's `% 8`.
+        for kind in ["minecraft:item_frame", "minecraft:glow_item_frame"] {
+            for (rotation, expected) in [
+                (Some(Tag::Byte(-1)), -1),
+                (Some(Tag::Byte(-9)), -1),
+                (Some(Tag::Byte(-128)), 0),
+                (Some(Tag::Byte(0)), 0),
+                (Some(Tag::Byte(7)), 7),
+                (Some(Tag::Byte(8)), 0),
+                (Some(Tag::Byte(127)), 7),
+                (Some(Tag::Short(255)), -1),
+                (Some(Tag::Int(129)), -7),
+                (Some(Tag::Int(-129)), 7),
+                (Some(Tag::Long(255)), -1),
+                (Some(Tag::Float((-0.5_f32).to_bits())), -1),
+                (Some(Tag::Double((-9.5_f64).to_bits())), -2),
+                (Some(string("-1")), 0),
+                (None, 0),
+            ] {
+                let mut tag = Tag::compound([
+                    ("id", string(kind)),
+                    ("block_pos", Tag::IntArray(vec![4, 102, 6])),
+                ]);
+                if let Some(rotation) = rotation {
+                    put(&mut tag, "ItemRotation", rotation);
+                }
+                let frame = item_frame_from_nbt(&tag, 17).unwrap();
+                assert_eq!(frame.rotation, expected, "{kind}: {tag:?}");
+                for raw in [None, Some(&tag)] {
+                    let saved = item_frame_to_nbt(&frame, [1, 2, 3, 4], raw);
+                    assert_eq!(saved.get("ItemRotation"), Some(&Tag::Byte(expected)));
+                    assert_eq!(item_frame_from_nbt(&saved, 17).unwrap().rotation, expected);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_named_frame_drops_with_its_custom_name() {
         // `ItemFrame.getFrameItemStackWithData`: the frame item, then
         // `DataComponents.CUSTOM_NAME` from `getCustomName`. Glow frames
