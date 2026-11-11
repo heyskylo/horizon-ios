@@ -21,9 +21,7 @@ use crate::{
     models::catalog::BakedFace,
 };
 use horizon_assets::model::Direction as ModelDirection;
-use horizon_core::{
-    biome::BiomeZoom, geometry::Direction, position::BlockPos, random::position_seed,
-};
+use horizon_core::{biome::BiomeZoom, geometry::Direction, position::BlockPos};
 use horizon_optifine::ctm::connect::{Axes as CtmAxes, Face as CtmFace};
 use horizon_world::{
     block_render::FaceVisibility,
@@ -927,19 +925,7 @@ impl MeshTables {
                 || (matches!(name, "sculk_sensor" | "calibrated_sculk_sensor")
                     && props.get("sculk_sensor_phase").map(String::as_str) == Some("active"));
             // OffsetType.XZ/XYZ with getMaxHorizontalOffset/getMaxVerticalOffset.
-            let offset = s.random_offset.then(|| {
-                let horizontal = if s.has_class("SpeleothemBlock") {
-                    0.125
-                } else {
-                    0.25
-                };
-                let vertical = match name {
-                    "small_dripleaf" => 0.1,
-                    "short_grass" | "fern" | "short_dry_grass" | "tall_dry_grass" => 0.2,
-                    _ => 0.0,
-                };
-                (horizontal, vertical)
-            });
+            let offset = s.max_offset();
             let mut face = [0u8; 6];
             let mut cover = [0f32; 6];
             // A server's visibility knows no state (`FaceVisibility::empty`):
@@ -1223,15 +1209,7 @@ impl MeshTables {
 }
 /// `OffsetType.XZ`/`XYZ`: a per-column jitter from `Mth.getSeed(x, 0, z)`.
 fn offset(info: &Info, x: i32, z: i32) -> Option<[f64; 3]> {
-    let (horizontal, vertical) = info.offset?;
-    let seed = position_seed(BlockPos::new(x, 0, z));
-    let nibble = |shift: u32| ((seed >> shift) & 15) as f32 / 15.0;
-    let h = f64::from(horizontal);
-    Some([
-        ((f64::from(nibble(0)) - 0.5) * 0.5).clamp(-h, h),
-        (f64::from(nibble(4)) - 1.0) * f64::from(vertical),
-        ((f64::from(nibble(8)) - 0.5) * 0.5).clamp(-h, h),
-    ])
+    Some(horizon_items::blocks::column_offset(info.offset?, x, z))
 }
 /// Border width: smooth lighting samples up to two blocks out along a face normal.
 const B: i32 = 2;
