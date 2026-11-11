@@ -8,9 +8,12 @@ use super::commands;
 #[cfg(test)]
 #[path = "revenge_home_tests.rs"]
 mod revenge_home_tests;
+#[cfg(test)]
+#[path = "zombie_ignite_tests.rs"]
+mod zombie_ignite_tests;
 use horizon_client::{
     health::HealthEvent,
-    mobs::{Mob, Species},
+    mobs::{Mob, Species, Who},
     motion::MotionEvent,
     particles::{ParticleOptions, ParticleType},
     text::Text,
@@ -118,6 +121,11 @@ pub(super) struct CombatTracker {
     /// it the attacker is the mob nearest to where the hit came from, which
     /// walks every mob.
     pub(super) melee_mob: Option<u32>,
+    /// The attack event handled last hurt its target (`doHurtTarget` returned
+    /// true). The events of one blow read it: `Zombie.doHurtTarget` burns only
+    /// once `super.doHurtTarget` did (`MobEvent::ZombieIgnite` follows the
+    /// attack it rides).
+    pub(super) hit_landed: bool,
     /// A firework rocket's burst is hurting the player now: the rocket is
     /// the direct entity (`rocket_hurt_player`).
     pub(super) rocket_hit: bool,
@@ -222,6 +230,29 @@ impl CombatTracker {
     }
 }
 impl Game<'_> {
+    /// `Entity.igniteForSeconds`: `seconds * 20` ticks of fire, scaled by the
+    /// target's burning-time attribute.
+    pub(super) fn ignite_entity(
+        &mut self,
+        target: Who,
+        seconds: i32,
+    ) -> horizon_client::Result<()> {
+        match target {
+            Who::Player => {
+                if !self.creative
+                    && let Some(p) = self.player.as_mut()
+                {
+                    p.ignite_for_ticks(seconds * 20)?;
+                }
+            }
+            Who::Mob(id) => {
+                if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+                    m.ignite_for_ticks(seconds * 20);
+                }
+            }
+        }
+        Ok(())
+    }
     /// `LivingEntity.makeDrownParticles`: eight bubbles around the entity,
     /// moving with it.
     pub(super) fn drown_particles(&mut self, at: [f64; 3], velocity: [f64; 3]) {
@@ -392,14 +423,10 @@ impl Game<'_> {
                 .get(self.world.block(c.x, c.y, c.z))
                 .name
                 .clone();
-            Some(match &*name {
-                "minecraft:ladder" => "ladder",
-                "minecraft:vine" => "vines",
-                "minecraft:weeping_vines" | "minecraft:weeping_vines_plant" => "weeping_vines",
-                "minecraft:twisting_vines" | "minecraft:twisting_vines_plant" => "twisting_vines",
-                "minecraft:scaffolding" => "scaffolding",
-                _ => "other_climbable",
-            })
+            let trapdoor = (self.res.items().block_tags)
+                .get("minecraft:trapdoors")
+                .is_some_and(|tag| tag.contains(&*name));
+            Some(fall_location_of(&name, trapdoor))
         } else {
             let f = self.res.facts().get(self.world.block(
                 p.position.x.floor() as i32,
@@ -735,6 +762,46 @@ fn mob_name(m: &Mob) -> Text {
 /// (#11339).
 fn damage_taken_award(amount: f32) -> Option<i32> {
     (amount < 3.402_823_5e37).then(|| horizon_core::jmath::round_f32(amount * 10.0))
+}
+
+/// `FallLocation.blockToFallLocation`: what a climbable block stands for in a fall's death message.
+/// `trapdoor` is whether the block is in `#minecraft:trapdoors`, which counts as a ladder.
+fn fall_location_of(name: &str, trapdoor: bool) -> &'static str {
+    match name {
+        _ if trapdoor => "ladder",
+        "minecraft:ladder" => "ladder",
+        "minecraft:vine" => "vines",
+        "minecraft:weeping_vines" | "minecraft:weeping_vines_plant" => "weeping_vines",
+        "minecraft:twisting_vines" | "minecraft:twisting_vines_plant" => "twisting_vines",
+        "minecraft:scaffolding" => "scaffolding",
+        _ => "other_climbable",
+    }
+}
+
+#[cfg(test)]
+mod fall_location_tests {
+    use super::fall_location_of;
+
+    /// The branches of `blockToFallLocation`: a ladder or a block of `#minecraft:trapdoors` is
+    /// `ladder`, then vine, the weeping and twisting vines (heads and plants), scaffolding, and any
+    /// other climbable (cave vines, here) is `other_climbable`.
+    #[test]
+    fn a_trapdoor_counts_as_a_ladder_and_the_other_climbables_keep_their_own_place() {
+        for (name, trapdoor, want) in [
+            ("minecraft:ladder", false, "ladder"),
+            ("minecraft:oak_trapdoor", true, "ladder"),
+            ("minecraft:iron_trapdoor", true, "ladder"),
+            ("minecraft:vine", false, "vines"),
+            ("minecraft:weeping_vines", false, "weeping_vines"),
+            ("minecraft:weeping_vines_plant", false, "weeping_vines"),
+            ("minecraft:twisting_vines", false, "twisting_vines"),
+            ("minecraft:twisting_vines_plant", false, "twisting_vines"),
+            ("minecraft:scaffolding", false, "scaffolding"),
+            ("minecraft:cave_vines", false, "other_climbable"),
+        ] {
+            assert_eq!(fall_location_of(name, trapdoor), want, "{name}");
+        }
+    }
 }
 
 /// Hits one mob's tick deals another, handled after the mob loop.

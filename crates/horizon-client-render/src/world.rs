@@ -5,7 +5,7 @@ use crate::{
     fast_hash::{FxHashMap, FxHashSet},
     section_mask::SectionMask,
 };
-use horizon_core::random::LegacyRandom;
+use horizon_core::random::{LegacyRandom, LevelRandom};
 use horizon_world::registry::BlockStateId;
 use std::sync::Arc;
 
@@ -69,7 +69,7 @@ pub struct World {
     pub shape: LevelShape,
     pub fast_lava: bool,
     pub chunks: crate::chunk_map::ChunkMap,
-    pub random: LegacyRandom,
+    pub random: LevelRandom,
     pub revision: u64,
     pub health_rules: HealthRules,
     pub air: BlockStateId,
@@ -219,7 +219,7 @@ impl World {
         Self {
             shape: LevelShape::OVERWORLD,
             chunks: Default::default(),
-            random: LegacyRandom::new(seed),
+            random: LevelRandom::for_level(LegacyRandom::new(seed)),
             revision: 0,
             health_rules: HealthRules::default(),
             air,

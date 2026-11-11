@@ -334,6 +334,8 @@ impl Log {
 
 /// How long a game started on another release has to come up before the switch is undone.
 pub const UPDATE_TIMEOUT: Duration = Duration::from_secs(300);
+/// The longest a new release may take to come up: a day.
+pub const MAX_UPDATE_TIMEOUT: Duration = Duration::from_secs(24 * 3600);
 
 /// Updates and rollbacks (update.rs): what the check found, what is under way, how the last one ended.
 #[derive(Default)]
@@ -711,7 +713,8 @@ pub fn route(shared: &Arc<Shared>, request: &Request) -> Response {
             let line = serde_json::from_slice::<Value>(&request.body)
                 .ok()
                 .and_then(|v| v["line"].as_str().map(str::to_owned));
-            let Some(line) = line.filter(|l| !l.trim().is_empty() && !l.contains('\n')) else {
+            let Some(line) = line.filter(|l| !l.trim().is_empty() && !l.contains(['\n', '\r']))
+            else {
                 return Response::error(400, "the body must be {\"line\": \"<one command>\"}");
             };
             if shared.state.lock().unwrap().phase != Phase::Running {
@@ -778,9 +781,9 @@ pub fn route(shared: &Arc<Shared>, request: &Request) -> Response {
         }
         ("POST", "/api/v1/update") => {
             let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
-            let timeout = body["timeout"]
-                .as_u64()
-                .map_or(UPDATE_TIMEOUT, Duration::from_secs);
+            let timeout = body["timeout"].as_u64().map_or(UPDATE_TIMEOUT, |s| {
+                Duration::from_secs(s.max(1)).min(MAX_UPDATE_TIMEOUT)
+            });
             match shared.start_update(body["tag"].as_str().map(str::to_owned), timeout) {
                 Ok(()) => Response::json(200, &json!({ "ok": true })),
                 Err(e) => Response::error(409, &e),

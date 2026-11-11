@@ -22,7 +22,7 @@ fn a_sulfur_cube_sends_its_fuse_at_19_and_from_bucket_at_20() {
     let hub = meta_hub("SulfurCubeMetaTest");
     let meta_of = |m: &Mob| {
         let (mut meta, mut defaults) = (Vec::new(), Vec::new());
-        super::mob_meta(m, &hub, None, 0, &mut meta, &mut defaults);
+        super::mob_meta(m, hub.sync_data(), None, 0, &mut meta, &mut defaults);
         (meta, defaults)
     };
 
