@@ -9,6 +9,10 @@
 //! the mob's own random drives positions, sounds and jumps. `RunOne` and the
 //! other `GateBehavior`s shuffle with a random of their own, seeded with
 //! `Brain::shuffle_seed` when the brain is built.
+mod reputation;
+pub use reputation::murder_witnesses;
+use reputation::targetable;
+
 use super::{
     Mob, MobEvent, MobWorld, Species, Who,
     brain::{Timed, living_near},
@@ -608,17 +612,6 @@ fn sense_living(m: &mut Mob, w: &MobWorld) {
         list,
         cache: Vec::new(),
     });
-}
-/// `Sensor.isEntityTargetable`: `TargetingConditions.forNonCombat()` within
-/// the follow range, in sight.
-fn targetable(m: &mut Mob, w: &MobWorld, who: Who) -> bool {
-    match who {
-        Who::Player => m.can_see_player(w, FOLLOW_RANGE),
-        Who::Mob(id) => {
-            let Some(s) = w.seen(id) else { return false };
-            s.alive && m.distance_sqr(s.position) <= FOLLOW_RANGE * FOLLOW_RANGE && m.sees(w, who)
-        }
-    }
 }
 /// The visible-entities memory's line-of-sight test, cached per memory.
 fn visible_test(m: &mut Mob, w: &MobWorld, who: Who) -> bool {
@@ -4609,3 +4602,6 @@ pub fn seen_memories(
 #[cfg(test)]
 #[path = "villager_trades_tests.rs"]
 mod trades_tests;
+
+#[cfg(test)]
+mod reputation_witness_tests;

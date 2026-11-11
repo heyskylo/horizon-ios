@@ -19,6 +19,7 @@ JigsawBlock.useWithoutItem	port	crates/horizon-world/src/level/interact.rs::Sim:
 JukeboxBlock.setPlacedBy	port	crates/horizon-client/src/game/jukebox.rs::Game::jukebox_placed	the item's block_entity_data RecordItem turns has_record on, after apply_placed_item filled the block entity
 JukeboxBlock.useWithoutItem	port	crates/horizon-client/src/game/jukebox.rs::Game::use_jukebox	takes the disc out through eject_record when one is in
 JukeboxBlock.ownSignal	port	crates/horizon-client/src/game/jukebox.rs::jukebox_signals	15 while a song plays
+TestBlock.ownSignal	port	crates/horizon-client/src/game.rs::Game::block_entity_signal	the block state mode gates the block entity powered flag
 JukeboxBlock.getAnalogOutputSignal	port	crates/horizon-client/src/game/jukebox.rs::jukebox_signals	comparator output of the song
 JukeboxBlock.getTicker	port	crates/horizon-client/src/game/jukebox.rs::Game::tick_jukebox	ticks only while a song plays
 LayeredCauldronBlock.isFull	inline	crates/horizon-client/src/cauldron.rs::interact	the level 3 test that gates bucket filling

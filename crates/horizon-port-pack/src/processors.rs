@@ -113,8 +113,16 @@ pub fn each_list(kind: &str, v: &mut Value, f: &mut dyn FnMut(&mut Value) -> boo
         "processor_list" => f(v),
         "template_pool" => {
             let mut changed = false;
-            for e in v["elements"].as_array_mut().into_iter().flatten() {
-                let element = &mut e["element"];
+            for e in v
+                .get_mut("elements")
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+            {
+                // Indexing would panic on an element that isn't an object.
+                let Some(element) = e.get_mut("element") else {
+                    continue;
+                };
                 if let Some(list) = element.get_mut("elements").and_then(Value::as_array_mut) {
                     for inner in list {
                         if let Some(p) = inner.get_mut("processors") {

@@ -133,6 +133,58 @@ fn a_hoglin_keeps_attacking_its_attacker_beside_another_hit_hoglin() {
     );
 }
 
+fn hurt_time(game: &mut Game<'_>, uuid: &str) -> i32 {
+    let id = mob_id(game, uuid);
+    game.mobs.iter().find(|m| m.id == id).unwrap().hurt_time
+}
+
+/// Vanilla 26.3's hit pen: the hoglin enters the fight activity at the end of
+/// the tick after the hit (`HoglinAi.updateActivity` follows the brain), hits
+/// in the next one, and again 41 ticks later. The pig ticks after the hoglin,
+/// so it reads `HurtTime` 9 on the tick of each hit.
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_hoglin_hits_from_its_second_fighting_tick_every_41_ticks() {
+    let mut game = game();
+    step(&mut game, 40);
+    assert!(game.run_command(&format!("damage {HOGLIN} 1 minecraft:mob_attack by {PIG}")));
+    let mut hits = Vec::new();
+    for tick in 1..=90 {
+        step(&mut game, 1);
+        if hurt_time(&mut game, PIG) == 9 {
+            hits.push(tick);
+        }
+    }
+    assert_eq!(hits, [2, 43, 84]);
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn deferred_stronger_hits_do_not_count_hurt_timers_down_twice() {
+    use horizon_client::mobs::Damage;
+    let mut game = game();
+    let first = mob_id(&mut game, NEAR_HOGLIN);
+    let second = mob_id(&mut game, HOGLIN);
+    let target = mob_id(&mut game, PIG);
+    game.creatures.ticked.extend([first, second, target]);
+    game.creatures.deferred_hits = true;
+    assert!(game.mob_hits_mob(target, 4.0, Damage::mob(first, [0.0; 3])));
+    assert!(game.mob_hits_mob(target, 6.0, Damage::mob(second, [0.0; 3])));
+    let victim = game.mobs.iter().find(|m| m.id == target).unwrap();
+    assert_eq!((victim.hurt_time, victim.invulnerable), (9, 19));
+    assert_eq!(victim.health, 94.0);
+
+    // A stronger hit on the following tick also leaves the already-counted
+    // timers alone rather than decrementing them again.
+    let victim = game.mobs.iter_mut().find(|m| m.id == target).unwrap();
+    victim.hurt_time = 8;
+    victim.invulnerable = 18;
+    assert!(game.mob_hits_mob(target, 8.0, Damage::mob(first, [0.0; 3])));
+    let victim = game.mobs.iter().find(|m| m.id == target).unwrap();
+    assert_eq!((victim.hurt_time, victim.invulnerable), (8, 18));
+    assert_eq!(victim.health, 92.0);
+}
+
 /// Added controls (after the frozen baseline above).
 fn mob_id(game: &mut Game<'_>, uuid: &str) -> u32 {
     match game.target_with_uuid(horizon_client::save::uuid_from_text(uuid).unwrap()) {
