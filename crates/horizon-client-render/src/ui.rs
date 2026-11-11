@@ -1449,7 +1449,7 @@ pub fn append_field(
         batch.text(atlas, value, x, y, color, shadow);
         cursor_x += HudBatch::text_width(atlas, value) + 1.0;
     }
-    let insert = char_len(value) >= max_chars;
+    let insert = utf16_len(value) >= max_chars;
     if insert {
         cursor_x -= 1.0;
     }
@@ -1471,6 +1471,29 @@ fn byte_index(s: &str, chars: usize) -> usize {
 }
 pub fn char_len(s: &str) -> usize {
     s.chars().count()
+}
+/// Java's `String.length()`: UTF-16 code units, the unit `EditBox.maxLength`
+/// counts. A character outside the BMP — an emoji, say — is two of them, so
+/// a box with room for one more character takes an `a` and rejects a `😀`.
+pub fn utf16_len(s: &str) -> usize {
+    s.encode_utf16().count()
+}
+/// The longest prefix of `s` that fits `max` UTF-16 code units without
+/// splitting a character. `EditBox.insertText` drops the half surrogate it
+/// would otherwise keep, so this is what vanilla inserts; Rust strings cannot
+/// hold the lone surrogate that `setValue`'s unguarded `substring` may leave,
+/// so a value too long by half a character keeps the whole characters before
+/// the cut.
+pub fn utf16_prefix(s: &str, max: usize) -> String {
+    let mut units = 0;
+    for (i, c) in s.char_indices() {
+        let n = c.len_utf16();
+        if units + n > max {
+            return s[..i].to_owned();
+        }
+        units += n;
+    }
+    s.to_owned()
 }
 /// `EditBox.getWordPosition(dir, from)`: the character index `dir` words away
 /// from `from`. Forward, past the rest of the word and its spaces; backward,
@@ -1613,7 +1636,7 @@ impl EditBox {
         self.focused && (self.focused_at.elapsed().as_millis() / 300).is_multiple_of(2)
     }
     pub fn set_value(&mut self, value: &str) {
-        self.value = value.chars().take(self.max_length).collect();
+        self.value = utf16_prefix(value, self.max_length);
         self.move_cursor_to_end(false);
     }
     fn selected(&self) -> (usize, usize) {
@@ -1626,7 +1649,9 @@ impl EditBox {
         let (a, b) = self.selected();
         self.value.chars().skip(a).take(b - a).collect()
     }
-    /// EditBox.insertText: replace the selection, respecting the maximum length.
+    /// EditBox.insertText: replace the selection, respecting the maximum
+    /// length. The limit is in UTF-16 code units, as Java's `String.length()`
+    /// counts them.
     pub fn insert_text(&mut self, text: &str) {
         // `EditBox.charTyped` only inserts through `canConsumeInput`, which a
         // read-only box fails; the screens here hand typed text to this method
@@ -1636,10 +1661,17 @@ impl EditBox {
         }
         let (a, b) = self.selected();
         let filtered = crate::clipboard::filter_text(text, self.multiline);
+        let selected_units: usize = self
+            .value
+            .chars()
+            .skip(a)
+            .take(b - a)
+            .map(char::len_utf16)
+            .sum();
         let room = self
             .max_length
-            .saturating_sub(char_len(&self.value) - (b - a));
-        let insert: String = filtered.chars().take(room).collect();
+            .saturating_sub(utf16_len(&self.value) - selected_units);
+        let insert = utf16_prefix(&filtered, room);
         let (ba, bb) = (byte_index(&self.value, a), byte_index(&self.value, b));
         self.value.replace_range(ba..bb, &insert);
         let pos = a + char_len(&insert);
@@ -1917,8 +1949,10 @@ impl EditBox {
             batch.text_styled(atlas, &t, draw_x, ty, color, true);
             draw_x += atlas.font.width_text(&t) + 1.0;
         }
+        // EditBox.extractWidgetRenderState: `value.length() >= maxLength`
+        // is Java's length, so the caret turns into a bar at the unit count.
         let insert =
-            self.cursor < char_len(&self.value) || char_len(&self.value) >= self.max_length;
+            self.cursor < char_len(&self.value) || utf16_len(&self.value) >= self.max_length;
         let mut cursor_x = draw_x;
         if !on_screen {
             cursor_x = if rel_cursor > 0 { tx + self.width } else { tx };
@@ -2689,6 +2723,31 @@ mod tests {
             menu_tooltip_position(screen, (100, 200), [100, 200, 150, 20], size),
             (112, 180)
         );
+    }
+
+    /// `EditBox.maxLength` counts Java `String.length()`: UTF-16 code units.
+    /// A pasted emoji takes two of them and is never split (vanilla's
+    /// `Character.isHighSurrogate` guard drops the half it would keep).
+    #[test]
+    fn an_edit_box_maximum_counts_utf16_units() {
+        assert_eq!(utf16_len("ab😀"), 4);
+        assert_eq!(utf16_prefix("ab😀", 3), "ab");
+        assert_eq!(utf16_prefix("ab😀", 4), "ab😀");
+        let mut edit = EditBox::new(0.0, 0.0, 200.0, 20.0);
+        edit.max_length = 3;
+        edit.insert_text("ab😀");
+        assert_eq!(edit.value, "ab", "three units: a, b and one of the emoji's");
+        edit.set_value("");
+        edit.max_length = 4;
+        edit.insert_text("ab😀");
+        assert_eq!(edit.value, "ab😀", "four units, both of the emoji's");
+        // The selection's own units give their room back: with "ab"
+        // selected there are two units left, enough for the emoji, not
+        // for the emoji and the x.
+        edit.set_cursor(0, false);
+        edit.set_cursor(2, true);
+        edit.insert_text("😀x");
+        assert_eq!(edit.value, "😀😀");
     }
 
     /// `EditBox.setInvertHighlightedTextColor`: a selection inverts its text
