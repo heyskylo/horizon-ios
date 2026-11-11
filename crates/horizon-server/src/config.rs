@@ -524,7 +524,14 @@ impl Config {
                 DIFFICULTIES.join(", ")
             ));
         }
-        if w.name.is_empty() || w.name.contains(['/', '\\']) || w.name == ".." {
+        // Not the server folder itself, nor one of the supervisor's own folders in it.
+        if w.name.is_empty()
+            || w.name.contains(['/', '\\'])
+            || matches!(
+                w.name.as_str(),
+                "." | ".." | "backups" | "logs" | ".horizon"
+            )
+        {
             return Err(format!(
                 "world.name \"{}\" must be a folder name, without slashes",
                 w.name
@@ -980,6 +987,10 @@ mod tests {
         assert!(Config::parse("[server]\nprot = 1\n").is_err());
         assert!(Config::parse("[properties]\nmotd = \"x\"\n").is_err());
         assert!(Config::parse("[world]\nname = \"../x\"\n").is_err());
+        for folder in [".", "..", "backups", "logs", ".horizon"] {
+            let text = format!("[world]\nname = \"{folder}\"\n");
+            assert!(Config::parse(&text).is_err(), "{folder}");
+        }
     }
 
     #[test]

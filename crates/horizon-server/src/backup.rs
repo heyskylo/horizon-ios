@@ -91,7 +91,15 @@ pub fn create(dir: &Path, config: &Config, file_name: &str) -> Result<PathBuf, S
     let path = backups.join(file_name);
     let part = backups.join(format!("{file_name}.part"));
     let result = (|| {
-        let file = File::create(&part).map_err(|e| format!("{}: {e}", part.display()))?;
+        // Owner only: a backup holds server.toml and server.properties, with the API token, the
+        // RCON password and the management secret.
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let file = options
+            .open(&part)
+            .map_err(|e| format!("{}: {e}", part.display()))?;
         let mut zip = ZipWriter::new(BufWriter::new(file));
         let world = dir.join(&config.world.name);
         if world.is_dir() {
@@ -147,11 +155,15 @@ pub fn list(dir: &Path) -> Vec<Backup> {
 }
 
 /// Deletes the oldest automatic backups beyond `keep`. Backups made by hand are never deleted.
+/// The length of a backup name's time stamp, `2026-11-11_13-15-00`.
+const STAMP_LEN: usize = "0000-00-00_00-00-00".len();
+
 pub fn prune(dir: &Path, keep: usize) -> Vec<String> {
     let auto_suffix = format!("-{AUTO}.zip");
     list(dir)
         .into_iter()
-        .filter(|b| b.name.ends_with(&auto_suffix))
+        // Only `<stamp>-auto.zip`: a backup labelled by hand `nightly-auto` is not automatic.
+        .filter(|b| b.name.len() == STAMP_LEN + auto_suffix.len() && b.name.ends_with(&auto_suffix))
         .skip(keep)
         .filter(|b| std::fs::remove_file(dir.join(DIR).join(&b.name)).is_ok())
         .map(|b| b.name)
@@ -355,7 +367,9 @@ pub fn interval(every: &str) -> Result<Option<std::time::Duration>, String> {
     if every == "0" || every.is_empty() {
         return Ok(None);
     }
-    let (number, unit) = every.split_at(every.len() - 1);
+    // The last character, whatever its width: `split_at(len - 1)` panicked on "6é".
+    let unit_at = every.char_indices().last().map_or(0, |(i, _)| i);
+    let (number, unit) = every.split_at(unit_at);
     let n: u64 = number.trim().parse().map_err(|_| {
         format!("backups.every is {every:?}: use a number and m, h or d, like \"6h\"")
     })?;
@@ -369,7 +383,10 @@ pub fn interval(every: &str) -> Result<Option<std::time::Duration>, String> {
             ));
         }
     };
-    Ok((n > 0).then(|| std::time::Duration::from_secs(n * secs)))
+    let total = n
+        .checked_mul(secs)
+        .ok_or_else(|| format!("backups.every is {every:?}: too long"))?;
+    Ok((n > 0).then(|| std::time::Duration::from_secs(total)))
 }
 
 #[cfg(test)]
@@ -399,6 +416,44 @@ mod tests {
         );
         assert_eq!(interval("0").unwrap(), None);
         assert!(interval("6 hours").is_err());
+        // Not a panic: a wide last character, and a number too large for the unit.
+        assert!(interval("6é").is_err());
+        assert!(interval("é").is_err());
+        assert!(interval(&format!("{}d", u64::MAX)).is_err());
+    }
+
+    #[test]
+    fn prune_keeps_backups_labelled_by_hand_whatever_their_label() {
+        let dir = std::env::temp_dir().join(format!("horizon-server-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(DIR)).unwrap();
+        let t = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let names = [
+            auto_name(t),
+            auto_name(t + std::time::Duration::from_secs(60)),
+            file_name(t, Some("nightly-auto")).unwrap(),
+        ];
+        for name in &names {
+            std::fs::write(dir.join(DIR).join(name), b"zip").unwrap();
+        }
+        assert_eq!(prune(&dir, 0).len(), 2);
+        assert!(dir.join(DIR).join(&names[2]).exists(), "kept: made by hand");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_backup_is_readable_by_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("horizon-server-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("world")).unwrap();
+        std::fs::write(dir.join("world/level.dat"), b"x").unwrap();
+        std::fs::write(dir.join("server.toml"), crate::config::TEMPLATE).unwrap();
+        let path = create(&dir, &Config::default(), "b.zip").unwrap();
+        let mode = std::fs::metadata(path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "{mode:o}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
