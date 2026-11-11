@@ -37,6 +37,7 @@ mod image_parameters;
 mod integer_bounds;
 mod interface_blocks;
 mod ordering;
+mod reachability;
 mod rewrite;
 mod scan;
 mod varyings;
@@ -304,19 +305,10 @@ fn translate(
     } else {
         GBUFFERS_MATRICES.to_owned()
     };
-    // Struct types without a name get one (`anonymous_structs`), interface blocks travel
-    // as plain varyings (`interface_blocks`), and buffer vectors that atomic functions use by
-    // component become arrays (`atomic_vectors`).
-    let flat = |pp: &Preprocessed| {
-        let named = anonymous_structs::name(&pp.code);
-        let code = named.as_deref().unwrap_or(&pp.code);
-        let flat = interface_blocks::flatten(code)
-            .or(named)
-            .map(|code| Preprocessed { code, ..pp.clone() });
-        let split = atomic_vectors::rewrite(flat.as_ref().unwrap_or(pp));
-        split.or(flat)
-    };
-    let (vertex_flat, fragment_flat) = (flat(vertex), flat(fragment));
+    let (vertex_flat, fragment_flat) = (
+        reachability::prepare(vertex),
+        reachability::prepare(fragment),
+    );
     let vertex = vertex_flat.as_ref().unwrap_or(vertex);
     let fragment = fragment_flat.as_ref().unwrap_or(fragment);
     // A `bool` member of a storage buffer travels as a `uint` (`buffer_bools`).
@@ -610,28 +602,28 @@ fn translate(
     }
     // Inside a boat's water patch (`GbuffersInputs::water_patches`): each box is a corner and
     // its y range, then its two horizontal edges; water there, a little below and above (waves),
-    // casts nothing.
+    // casts nothing. Direct unrolled checks avoid local array allocations and spilling (#14782).
     if patches {
-        let boxes: Vec<String> = (0..2 * WATER_PATCHES)
-            .map(|k| format!("horizonWaterPatch{k}"))
-            .collect();
-        writeln!(
-            fragment_main,
-            "    vec4 hz_patches[{}] = vec4[{}]({});\n    \
-             for (int hz_i = 0; hz_i < {WATER_PATCHES}; hz_i++) {{\n        \
-             if (hz_i >= horizonWaterPatchCount) {{ break; }}\n        \
-             vec4 hz_a = hz_patches[2 * hz_i];\n        vec4 hz_b = hz_patches[2 * hz_i + 1];\n        \
-             vec2 hz_d = horizonPatchPos.xz - hz_a.xy;\n        \
-             float hz_s = dot(hz_d, hz_b.xy) / max(dot(hz_b.xy, hz_b.xy), 1e-6);\n        \
-             float hz_t = dot(hz_d, hz_b.zw) / max(dot(hz_b.zw, hz_b.zw), 1e-6);\n        \
-             if (hz_s >= 0.0 && hz_s <= 1.0 && hz_t >= 0.0 && hz_t <= 1.0\n            \
-             && horizonPatchPos.y >= hz_a.z - 0.5 && horizonPatchPos.y <= hz_a.w + 0.25) {{ discard; }}\n    \
-             }}",
-            2 * WATER_PATCHES,
-            2 * WATER_PATCHES,
-            boxes.join(", ")
-        )
-        .unwrap();
+        fragment_main.push_str("    if (horizonWaterPatchCount > 0) {\n        vec2 hz_p = horizonPatchPos.xz;\n        float hz_y = horizonPatchPos.y;\n");
+        for k in 0..WATER_PATCHES {
+            let (a, b) = (2 * k, 2 * k + 1);
+            let prefix = if k == 0 {
+                String::new()
+            } else {
+                format!("if (horizonWaterPatchCount > {k}) ")
+            };
+            writeln!(
+                fragment_main,
+                "        {prefix}{{\n            \
+                 vec2 hz_d = hz_p - horizonWaterPatch{a}.xy;\n            \
+                 float hz_s = dot(hz_d, horizonWaterPatch{b}.xy) / max(dot(horizonWaterPatch{b}.xy, horizonWaterPatch{b}.xy), 1e-6);\n            \
+                 float hz_t = dot(hz_d, horizonWaterPatch{b}.zw) / max(dot(horizonWaterPatch{b}.zw, horizonWaterPatch{b}.zw), 1e-6);\n            \
+                 if (hz_s >= 0.0 && hz_s <= 1.0 && hz_t >= 0.0 && hz_t <= 1.0\n                \
+                 && hz_y >= horizonWaterPatch{a}.z - 0.5 && hz_y <= horizonWaterPatch{a}.w + 0.25) {{ discard; }}\n        }}"
+            )
+            .unwrap();
+        }
+        fragment_main.push_str("    }\n");
     }
     // Behind a boat's water patch, within 3% of its distance (the water's surface lies at the
     // patch, and packs wave it): no water there. Depth 1 is no patch.
