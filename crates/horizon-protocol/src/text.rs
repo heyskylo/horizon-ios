@@ -20,24 +20,44 @@ fn get<'t>(tag: &'t Tag, key: &str) -> Option<&'t Tag> {
     }
 }
 
-/// Flatten a component to text.
+/// The longest text [`plain`] and [`format_java`] build; the rest is dropped. A disconnect screen
+/// needs a few hundred bytes, and a server's `fallback` template is any text it likes: one that
+/// repeats `%1$s` thousands of times, with an argument built the same way a few levels down,
+/// asked for terabytes, and the client aborted.
+pub const MAX_TEXT: usize = 1 << 20;
+
+/// `s` appended to `out` as far as [`MAX_TEXT`] allows, cut at a character boundary.
+pub fn push_capped(out: &mut String, s: &str) {
+    let room = MAX_TEXT.saturating_sub(out.len());
+    if s.len() <= room {
+        out.push_str(s);
+    } else {
+        let mut end = room;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        out.push_str(&s[..end]);
+    }
+}
+
+/// Flatten a component to text, at most [`MAX_TEXT`] bytes of it.
 pub fn plain(tag: &Tag, lang: &Language) -> String {
     let mut out = String::new();
     append(tag, lang, &mut out, 0);
     out
 }
 fn append(tag: &Tag, lang: &Language, out: &mut String, depth: usize) {
-    if depth > 32 {
+    if depth > 32 || out.len() >= MAX_TEXT {
         return;
     }
     match tag {
-        Tag::String(s) => out.push_str(&s.to_string_lossy()),
-        Tag::Byte(v) => out.push_str(&v.to_string()),
-        Tag::Short(v) => out.push_str(&v.to_string()),
-        Tag::Int(v) => out.push_str(&v.to_string()),
-        Tag::Long(v) => out.push_str(&v.to_string()),
-        Tag::Float(v) => out.push_str(&f32::from_bits(*v).to_string()),
-        Tag::Double(v) => out.push_str(&f64::from_bits(*v).to_string()),
+        Tag::String(s) => push_capped(out, &s.to_string_lossy()),
+        Tag::Byte(v) => push_capped(out, &v.to_string()),
+        Tag::Short(v) => push_capped(out, &v.to_string()),
+        Tag::Int(v) => push_capped(out, &v.to_string()),
+        Tag::Long(v) => push_capped(out, &v.to_string()),
+        Tag::Float(v) => push_capped(out, &f32::from_bits(*v).to_string()),
+        Tag::Double(v) => push_capped(out, &f64::from_bits(*v).to_string()),
         // A list is its first element with the rest appended as siblings.
         Tag::List(items) => {
             for item in items {
@@ -46,7 +66,7 @@ fn append(tag: &Tag, lang: &Language, out: &mut String, depth: usize) {
         }
         Tag::Compound(_) => {
             if let Some(text) = get(tag, "text").and_then(string) {
-                out.push_str(&text);
+                push_capped(out, &text);
             } else if let Some(value) = get(tag, "") {
                 // NbtOps' wrapper for a bare value in a mixed list (a
                 // translation's number and string arguments).
@@ -68,15 +88,15 @@ fn append(tag: &Tag, lang: &Language, out: &mut String, depth: usize) {
                     .cloned()
                     .or_else(|| get(tag, "fallback").and_then(string))
                     .unwrap_or_else(|| key.clone());
-                out.push_str(&format_java(&pattern, &args));
+                push_capped(out, &format_java(&pattern, &args));
             } else if let Some(key) = get(tag, "keybind").and_then(string) {
-                out.push_str(lang.get(&key).map_or(key.as_str(), String::as_str));
+                push_capped(out, lang.get(&key).map_or(key.as_str(), String::as_str));
             } else if let Some(selector) = get(tag, "selector").and_then(string) {
-                out.push_str(&selector);
+                push_capped(out, &selector);
             } else if let Some(score) = get(tag, "score")
                 && let Some(name) = get(score, "name").and_then(string)
             {
-                out.push_str(&name);
+                push_capped(out, &name);
             }
             if let Some(Tag::List(extra)) = get(tag, "extra") {
                 for e in extra {
@@ -88,12 +108,15 @@ fn append(tag: &Tag, lang: &Language, out: &mut String, depth: usize) {
     }
 }
 
-/// TranslatableContents.decomposeTemplate: `%s`, `%n$s` and `%%`.
+/// TranslatableContents.decomposeTemplate: `%s`, `%n$s` and `%%`, at most [`MAX_TEXT`] bytes.
 pub fn format_java(pattern: &str, args: &[String]) -> String {
     let mut out = String::new();
     let mut next = 0usize;
     let mut chars = pattern.char_indices().peekable();
     while let Some((_, c)) = chars.next() {
+        if out.len() >= MAX_TEXT {
+            break;
+        }
         if c != '%' {
             out.push(c);
             continue;
@@ -112,16 +135,16 @@ pub fn format_java(pattern: &str, args: &[String]) -> String {
             Some((_, '$')) if !digits.is_empty() => {
                 if chars.next().map(|(_, c)| c) == Some('s') {
                     let i = digits.parse::<usize>().unwrap_or(1).saturating_sub(1);
-                    out.push_str(args.get(i).map_or("", String::as_str));
+                    push_capped(&mut out, args.get(i).map_or("", String::as_str));
                 }
             }
             Some((_, 's')) if digits.is_empty() => {
-                out.push_str(args.get(next).map_or("", String::as_str));
+                push_capped(&mut out, args.get(next).map_or("", String::as_str));
                 next += 1;
             }
             Some((_, other)) => {
                 out.push('%');
-                out.push_str(&digits);
+                push_capped(&mut out, &digits);
                 out.push(other);
             }
             None => out.push('%'),
@@ -146,6 +169,40 @@ pub fn translatable(key: &str, args: &[&str]) -> Tag {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_fallback_repeating_its_argument_stays_bounded() {
+        // 16 000 references to the argument, nested three deep: 4e12 bytes asked for.
+        let pattern = "%1$s".repeat(16_000);
+        let mut tag = literal("A");
+        for _ in 0..3 {
+            tag = Tag::compound(vec![
+                ("translate", Tag::String(JavaString::from("x.unknown"))),
+                ("fallback", Tag::String(JavaString::from(pattern.as_str()))),
+                ("with", Tag::List(vec![tag])),
+            ]);
+        }
+        let started = std::time::Instant::now();
+        let text = plain(&tag, &Language::new());
+        assert!(text.len() <= MAX_TEXT);
+        assert!(
+            text.len() > MAX_TEXT - 4,
+            "filled up to the cap: {}",
+            text.len()
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        // A cut never splits a character.
+        let mut out = "x".repeat(MAX_TEXT - 1);
+        push_capped(&mut out, "é");
+        assert_eq!(out.len(), MAX_TEXT - 1);
+        // An ordinary fallback still formats.
+        let ok = Tag::compound(vec![
+            ("translate", Tag::String(JavaString::from("x.unknown"))),
+            ("fallback", Tag::String(JavaString::from("%1$s and %1$s"))),
+            ("with", Tag::List(vec![literal("A")])),
+        ]);
+        assert_eq!(plain(&ok, &Language::new()), "A and A");
+    }
 
     #[test]
     fn formats_like_translatable_contents() {
