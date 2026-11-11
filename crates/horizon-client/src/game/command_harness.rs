@@ -399,7 +399,7 @@ impl Game<'_> {
                         let (mut meta, mut defaults) = (Vec::new(), Vec::new());
                         super::lan::mob_meta(
                             m,
-                            hub,
+                            hub.sync_data(),
                             None,
                             g.world.game_time,
                             &mut meta,
