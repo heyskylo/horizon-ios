@@ -65,12 +65,15 @@ def cases():
         action('open', uuid=uuid)
         window += 1
         def state(label, uses, pay, result, carried=None):
-            ops.append({'op': 'merchant_state', 'label': f'{n}-{label}', 'expect_merchant': {
+            ops.append({'op': 'merchant_state', 'label': f'{n}-{label}', 'offer_packets': True, 'expect_merchant': {
                 'window': window, 'merchant': [101, 1, 0, n+1], 'player': OWNER,
                 'slots': [['minecraft:emerald', pay] if pay else None, None,
                           [f'minecraft:{item}', output] if result else None],
                 'carried': carried, 'xp': 20+uses,
-                'offers': [{'uses': uses, 'special': 0, 'cost': 4}]}})
+                # With the world frozen, notifyTrade updates the offer but the
+                # deferred AI reputation event has not sent another packet.
+                'sent_offers': [{'uses': 0, 'special': 0, 'demand': 0, 'cost': 4}],
+                'offers': [{'uses': uses, 'special': 0, 'demand': 0, 'cost': 4}]}})
         state('open', 0, 0, False)
         action('select', index=0)
         state('selected', 0, payment, payment >= 4)
