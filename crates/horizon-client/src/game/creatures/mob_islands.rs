@@ -481,9 +481,31 @@ fn union_box(a: Aabb, b: Aabb) -> Aabb {
     Aabb::new(Vec3::new(x0, y0, z0), Vec3::new(x1, y1, z1))
 }
 
+/// `MoveControl.tick` sets speed from attributes before `LivingEntity.travel` accelerates:
+/// initial velocity alone cannot bound a command-modified mob, even when it starts at rest.
+/// Keep non-default locomotion serial until the reach includes its whole-turn acceleration.
+/// Check effects separately: a slowing effect can expire during the turn and expose a speed
+/// increase that the current effective value hides. No initial role or NoAI state exempts it.
+fn default_locomotion(m: &Mob) -> bool {
+    use horizon_client::mobs::finalize::{Attr, value};
+    m.attrs.speed == m.kind.speed
+        && m.movement_speed() == m.kind.speed
+        && m.attrs.jump_strength == m.kind.jump_strength
+        && value(m, Attr::FlyingSpeed) == m.kind.flying_speed
+        && !m.extra.effects.iter().any(|(effect, ..)| {
+            matches!(
+                *effect,
+                "minecraft:speed"
+                    | "minecraft:slowness"
+                    | "minecraft:jump_boost"
+                    | "minecraft:dolphins_grace"
+            )
+        })
+}
+
 /// Each mob's reach; None when one reaches the whole level, has an unbounded owner destination,
-/// or stands nowhere. Changes to movement, reads or cross-mob writes require a conservative
-/// reach or serial fallback and a behavioral regression; optional verification is no safety net.
+/// has unsupported locomotion, or stands nowhere. Changes to movement, reads or cross-mob writes
+/// require a conservative reach or serial fallback and a behavioral regression; verify is no safety net.
 fn reaches(mobs: &[Mob], snapshot: &[Seen], turns: &Turns) -> Option<Vec<Reach>> {
     if mobs.len() != snapshot.len() {
         return None;
@@ -495,7 +517,9 @@ fn reaches(mobs: &[Mob], snapshot: &[Seen], turns: &Turns) -> Option<Vec<Reach>>
             // distance. Until the plan covers those destinations and their reads, keep every
             // owned mob serial, regardless of species, current role or sitting/leash state.
             || m.extra.owner.is_some()
+            || !default_locomotion(m)
             || !(m.position.x.is_finite() && m.position.y.is_finite() && m.position.z.is_finite())
+            || !(m.velocity.x.is_finite() && m.velocity.y.is_finite() && m.velocity.z.is_finite())
         {
             return None;
         }
@@ -1294,6 +1318,32 @@ mod tests {
         mobs[0].extra.owner = Some([0; 4]);
         assert!(reaches(&mobs, &snapshot, &turns).is_none());
         mobs[0].extra.owner = None;
+        let unchanged = mobs[0].clone();
+        // Locomotion attributes and effects can change acceleration even from rest and with
+        // NoAI at the start. Use the actual reach conversion rather than a helper-only check.
+        for attr in [
+            horizon_client::mobs::finalize::Attr::MovementSpeed,
+            horizon_client::mobs::finalize::Attr::FlyingSpeed,
+            horizon_client::mobs::finalize::Attr::JumpStrength,
+        ] {
+            horizon_client::mobs::finalize::set_base(&mut mobs[0], attr, 32.0);
+            mobs[0].no_ai = true;
+            assert!(reaches(&mobs, &snapshot, &turns).is_none(), "{attr:?}");
+            mobs[0] = unchanged.clone();
+        }
+        for effect in [
+            "minecraft:speed",
+            "minecraft:slowness",
+            "minecraft:jump_boost",
+            "minecraft:dolphins_grace",
+        ] {
+            mobs[0].extra.effects.push((effect, 1, 1));
+            assert!(reaches(&mobs, &snapshot, &turns).is_none(), "{effect}");
+            mobs[0] = unchanged.clone();
+        }
+        mobs[0].velocity.x = f64::NAN;
+        assert!(reaches(&mobs, &snapshot, &turns).is_none());
+        mobs[0] = unchanged;
         mobs[0].position.y = f64::NAN;
         assert!(reaches(&mobs, &snapshot, &turns).is_none());
         assert!(reaches(&mobs, &snapshot[..399], &turns).is_none());
@@ -1738,6 +1788,98 @@ mod tests {
                 } else {
                     expected = Some(result);
                 }
+            }
+        }
+    }
+
+    /// MoveControl can accelerate a stationary mob beyond its initial-velocity reach. A
+    /// destination herd must still observe its pushes, without a grouped diagnostic copy.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn stationary_fast_mob_reaches_another_herd_serially() {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                LANES.with(|l| l.set(None));
+                VERIFY.with(|v| v.set(false));
+            }
+        }
+        let _reset = Reset;
+        let mut game = separated_herds_game();
+        for m in &mut game.mobs {
+            m.no_ai = true;
+            m.position.y = 65.0;
+            m.on_ground = true;
+            m.velocity = Vec3::ZERO;
+        }
+        // Establish that the same world normally takes the actual grouped entry point.
+        LANES.with(|l| l.set(Some(3)));
+        VERIFY.with(|v| v.set(true));
+        RAN.with(|r| r.set(0));
+        CHECK.with(|c| c.set((0, 0)));
+        game.tick_creature_entities().unwrap();
+        let grouped = lanes() > 1;
+        assert_eq!(RAN.with(|r| r.get() > 1), grouped);
+        assert_eq!(CHECK.with(Cell::get), (usize::from(grouped), 0));
+        game.spawn_mob("minecraft:cow", [2.5, 65.0, 2.5], true)
+            .unwrap();
+        let mut fast = game.mobs.pop().unwrap();
+        fast.on_ground = true;
+        fast.velocity = Vec3::ZERO;
+        fast.yaw = -90.0;
+        fast.ai.goals = Default::default();
+        fast.ai.targets = Default::default();
+        fast.ai.mov.set_wanted(110.0, 65.0, 2.5, 1.0);
+        horizon_client::mobs::finalize::set_base(
+            &mut fast,
+            horizon_client::mobs::finalize::Attr::MovementSpeed,
+            96.0,
+        );
+        // Destination mobs come later, so the serial loop applies these pushes at their turn.
+        game.mobs.insert(0, fast);
+        let initial = game.mobs.clone();
+        let random = game.world.random.clone();
+        let died = game.died.clone();
+        let mut expected = None;
+        let mut seeds = None;
+        for (requested, verify) in [(1, false), (3, false), (3, true)] {
+            game.mobs = initial.clone();
+            game.world.random = random.clone();
+            game.died = died.clone();
+            LANES.with(|l| l.set(Some(requested)));
+            VERIFY.with(|v| v.set(verify));
+            RAN.with(|r| r.set(0));
+            CHECK.with(|c| c.set((0, 0)));
+            let tick = || game.tick_creature_entities().unwrap();
+            if requested == 1 {
+                seeds = Some(horizon_client::random_source::record_seeds(tick).1);
+            } else {
+                let seeds = seeds.as_ref().unwrap();
+                horizon_client::random_source::replay_seeds(Arc::clone(seeds), tick);
+                assert!(seeds.complete());
+            }
+            let fast = &game.mobs[0];
+            assert!(
+                fast.position.x > 96.0 && fast.position.x < 110.0,
+                "a stationary mob really accelerated into the destination herd: {:?}",
+                fast.position
+            );
+            assert_eq!(RAN.with(Cell::get), 0, "unsupported motion stays serial");
+            assert_eq!(CHECK.with(Cell::get), (0, 0), "no diagnostic clone runs");
+            let mobs: Vec<_> = game
+                .mobs
+                .iter()
+                .map(|m| {
+                    let mut m = m.clone();
+                    m.extra.section_seq = 0;
+                    format!("{m:?}")
+                })
+                .collect();
+            let result = (mobs, format!("{:?}", game.world.random), game.died.clone());
+            if let Some(expected) = &expected {
+                assert_eq!(&result, expected, "fast-mob fallback matches serial");
+            } else {
+                expected = Some(result);
             }
         }
     }

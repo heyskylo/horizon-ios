@@ -12,8 +12,8 @@ after movement or teleportation, nearby queries at those positions, pushes, and 
 An initial resting, unloaded, sitting or leashed state is not proof of independence: earlier
 turns can change another mob before its turn.
 
-When changing a mob's movement, teleportation, query range, remembered entity references, or
-cross-mob writes:
+When changing a mob's movement, locomotion attributes or effects, teleportation, query range,
+remembered entity references, or cross-mob writes:
 
 1. Audit `reaches`, `jump`, `reads_villages`, ID links and the production fallback checks.
 2. Extend the conservative bounds, or retain a serial fallback for every affected tick until
@@ -26,6 +26,30 @@ cross-mob writes:
 
 Verify logs discrepancies and retains the grouped result. It is diagnostic coverage, not a
 production recovery mechanism or a substitute for the reach audit.
+
+## Acceleration and locomotion settings
+
+Initial velocity does not bound a mob's movement during its turn. `MoveControl.tick` sets
+speed from movement or flying attributes before `LivingEntity.travel` adds acceleration.
+A stationary cow with movement speed 96 can move into a herd 96 blocks away in one turn,
+then query and push its neighbors outside the old initial-velocity envelope.
+
+The current local envelope is therefore restricted to default locomotion. Any mob whose
+cached or effective movement speed, jump strength, or effective flying speed differs from
+its type's default keeps the entire phase serial in production and verify, without a cloned
+reference tick. Speed, Slowness, Jump Boost and Dolphin's Grace also force this fallback:
+an effect can expire during the turn, so a currently slowed speed is not a sufficient bound.
+The checks apply to every initial role and NoAI state. Non-finite velocity also forces serial.
+
+The `2 * initial_velocity_magnitude + 2` term and local teleport margins are not a bound for
+arbitrary locomotion settings. Narrowing this fallback requires conservative bounds for
+within-turn acceleration, impulses and every subsequent query, with behavioral regressions.
+
+The resource-backed regression first proves ordinary separated herds actually group on
+available hardware. A stationary fast cow then moves into a destination herd through the
+real mob-phase entry point. Production and verify must both stay serial, execute no cloned
+reference, and match the serial mob and complete level-RNG outcomes. Reach conversion also
+checks changed movement, flying and jump attributes, movement effects and non-finite velocity.
 
 ## Owner teleports
 
