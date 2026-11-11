@@ -18,6 +18,10 @@ use crate::{
     ui,
 };
 
+#[path = "options_ui_values.rs"]
+mod values;
+pub(crate) use values::{chat_delay_label, chat_px, generic, on_off, percent};
+
 mod shell_pages;
 
 #[path = "options_ui_wheel.rs"]
@@ -34,18 +38,6 @@ fn tr(key: &str) -> Text {
 pub static HORIZON_EXTRAS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 fn horizon_extras() -> bool {
     HORIZON_EXTRAS.load(std::sync::atomic::Ordering::Relaxed)
-}
-fn generic(caption: &str, value: Text) -> Text {
-    Text::translate("options.generic_value", &[tr(caption), value])
-}
-fn percent(caption: &str, value: f32) -> Text {
-    Text::translate(
-        "options.percent_value",
-        &[
-            tr(caption),
-            Text::literal(((f64::from(value) * 100.0) as i32).to_string()),
-        ],
-    )
 }
 /// `text` cut into lines of at most `width` characters, at spaces where it has them.
 fn wrap(text: &str, width: usize) -> Vec<String> {
@@ -71,19 +63,10 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     }
     lines
 }
-fn on_off(v: bool) -> Text {
-    tr(if v { "options.on" } else { "options.off" })
-}
 /// A music track's name as its row shows it: the file, without its folder
 /// (`minecraft:music/game/calm1` -> `calm1`; the group names the situation).
 fn track_name(id: &str) -> &str {
     id.rsplit('/').next().unwrap_or(id)
-}
-fn chat_px(caption: &str, px: f32) -> Text {
-    Text::translate(
-        "options.pixel_value",
-        &[tr(caption), Text::literal((px as i32).to_string())],
-    )
 }
 pub(crate) enum Kind {
     /// Slider position 0..1.
@@ -353,6 +336,7 @@ impl Opt {
     pub(crate) fn kind(self, s: &Settings) -> Kind {
         let unit = |v: f32, lo: f32, hi: f32| Kind::Slider(((v - lo) / (hi - lo)).clamp(0.0, 1.0));
         match self {
+            Opt::ChatDelay => values::kind(s.file.double("chatDelay")),
             Opt::FovEffects | Opt::DarknessPulsing => {
                 Kind::Slider(s.file.double(self.file_key().unwrap()).sqrt() as f32)
             }
@@ -461,6 +445,7 @@ impl Opt {
     /// The discrete step count for stepped sliders, or `None` if continuous.
     pub fn slider_steps(self) -> Option<u32> {
         match self {
+            Opt::ChatDelay => Some(60),
             Opt::Fov => Some(80),
             Opt::RenderDistance => Some((crate::options_file::MAX_RENDER_DISTANCE - 2) as u32),
             Opt::SimulationDistance => Some(27),
@@ -511,7 +496,7 @@ impl Opt {
     pub fn label(self, s: &Settings) -> Text {
         let c = self.caption();
         match self {
-            Opt::ChatDelay => tr("options.chat.delay_none"),
+            Opt::ChatDelay => chat_delay_label(s),
             Opt::FovEffects
             | Opt::DarknessPulsing
             | Opt::DistortionEffects
@@ -716,7 +701,7 @@ impl Opt {
             } else {
                 "options.narrator.notavailable"
             }),
-            Opt::ChatDelay => tr("options.chat.delay_none"),
+            Opt::ChatDelay => chat_delay_label(s),
             Opt::HideLightningFlashes => on_off(s.file.bool("hideLightningFlashes")),
             Opt::MonochromeLogo => on_off(s.file.bool("darkMojangStudiosBackground")),
             Opt::HideSplashTexts => on_off(s.file.bool("hideSplashTexts")),
@@ -901,6 +886,7 @@ impl Opt {
         let v = v.clamp(0.0, 1.0);
         let step = |lo: f32, hi: f32| (lo + v * (hi - lo)).round();
         match self {
+            Opt::ChatDelay => values::set(s, v),
             Opt::FovEffects | Opt::DarknessPulsing => s.file.set(
                 self.file_key().unwrap(),
                 crate::options_file::V::Double(f64::from(v).powi(2)),
