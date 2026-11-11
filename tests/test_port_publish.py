@@ -1,7 +1,11 @@
 import json
 from pathlib import Path
+import subprocess
+import sys
 import unittest
 from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
 
 from tools import port_publish as publish
 
@@ -103,6 +107,16 @@ class PublishTests(unittest.TestCase):
         with mock.patch.object(publish.subprocess, "run", side_effect=run):
             self.assertEqual(json.loads(publish.gh("issue", "view"))["body"], "a → b")
             self.assertEqual(publish.kira("board_list", {})["body"], "a → b")
+
+
+class UsedThroughVersionPortTests(unittest.TestCase):
+    """The module is used through `tools/version_port.py`; run on its own it says so."""
+
+    def test_it_says_how_it_is_used(self):
+        result = subprocess.run([sys.executable, str(ROOT / "tools/port_publish.py"), "--help"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("version_port.py", result.stdout + result.stderr)
 
 
 if __name__ == "__main__":
