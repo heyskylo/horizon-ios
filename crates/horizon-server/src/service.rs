@@ -67,6 +67,18 @@ fn through_current(exe: &Path) -> PathBuf {
     current.unwrap_or_else(|| exe.to_path_buf())
 }
 
+/// The account a `--system` unit runs the server as: the one that ran `sudo` (sudo resets `USER`
+/// to root), else `USER`, never root. The server faces the network, and as root any remote bug in it
+/// would run with root's rights, and it would leave root-owned files in the operator's folder.
+fn system_user(sudo_user: Option<String>, user: Option<String>) -> Result<String, String> {
+    let named = |u: &Option<String>| u.clone().filter(|u| !u.is_empty() && u != "root");
+    named(&sudo_user).or_else(|| named(&user)).ok_or_else(|| {
+        "--system runs the server as the account that ran sudo: run it with sudo from that \
+         account, not from a root shell"
+            .to_owned()
+    })
+}
+
 /// A systemd unit: a user unit, or with `user` a system unit running as that user.
 pub fn systemd_unit(program: &Path, dir: &Path, user: Option<&str>) -> String {
     let (run_as, wanted_by) = match user {
@@ -278,7 +290,14 @@ fn definition(dir: &Path, system: bool) -> Result<(PathBuf, String), String> {
                 .into(),
         )
     } else {
-        let user = system.then(|| std::env::var("USER").unwrap_or_else(|_| "root".into()));
+        let user = if system {
+            Some(system_user(
+                std::env::var("SUDO_USER").ok(),
+                std::env::var("USER").ok(),
+            )?)
+        } else {
+            None
+        };
         Ok((
             systemd_path(&name(dir), system)?,
             systemd_unit(&program, dir, user.as_deref()),
@@ -441,6 +460,18 @@ fn uninstall(dir: &Path, service: &str, system: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_system_unit_runs_as_the_account_that_ran_sudo() {
+        let some = |s: &str| Some(s.to_owned());
+        // `sudo` sets USER to root and SUDO_USER to the operator.
+        assert_eq!(system_user(some("ana"), some("root")).unwrap(), "ana");
+        assert_eq!(system_user(None, some("ana")).unwrap(), "ana");
+        // A root shell (or `sudo` from root): no account to run as.
+        assert!(system_user(None, some("root")).is_err());
+        assert!(system_user(some("root"), some("root")).is_err());
+        assert!(system_user(some(""), None).is_err());
+    }
 
     #[test]
     fn names_follow_the_folder() {

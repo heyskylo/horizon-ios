@@ -90,6 +90,8 @@ pub struct Ai {
     pub target: Option<Who>,
     pub last_hurt_by: Option<Who>,
     pub last_hurt_by_time: i32,
+    /// The bare UUID of an unresolved `lastHurtByMob` (see `hurt_by`).
+    pub last_hurt_by_ref: Option<[i32; 4]>,
     /// Ticks left during which kills count as player kills.
     pub last_hurt_by_player: i32,
     pub no_action_time: i32,
@@ -624,7 +626,7 @@ fn drop_invalid_player_target(m: &mut Mob, w: &MobWorld) {
         m.ai.target = None;
         if matches!(m.species(), Species::ZombifiedPiglin | Species::IronGolem) {
             super::neutral_anger::stop(m);
-            m.ai.last_hurt_by = None;
+            m.ai.forget_hurt_by(m.ai.last_hurt_by_time);
         }
     }
 }
@@ -1357,12 +1359,7 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
     if matches!(m.species(), Species::Evoker | Species::Illusioner) {
         super::illager::cast_particles(m, events);
     }
-    if m.hurt_time > 0 {
-        m.hurt_time -= 1;
-    }
-    if m.invulnerable > 0 {
-        m.invulnerable -= 1;
-    }
+    super::hurt_by::base_tick(m, w);
     // LivingEntity.baseTick runs tickEffects after the timers count down.
     tick_effects(m, w.mod_effects, &mut |m| hurt_teleports(m, w, events));
     // Entity.applyEffectsFromBlocks runs in LivingEntity.aiStep, after
@@ -2957,8 +2954,7 @@ pub fn forgive_dead_player(m: &mut Mob) {
         // is the player who died, the last hurt by with it.
         Species::Enderman | Species::ZombifiedPiglin => {
             if m.ai.target == Some(Who::Player) {
-                m.ai.last_hurt_by = None;
-                m.ai.last_hurt_by_time = m.age as i32;
+                m.ai.forget_hurt_by(m.age as i32);
                 m.ai.target = None;
             }
         }
@@ -3052,6 +3048,7 @@ fn tick_effects(
     // a totem adds its effects to it). An effect a tick appends ticks from
     // the next tick on.
     let first = m.extra.effects.len();
+    let old_max_absorption = super::armor::max_absorption(m);
     let old_boost_amp = m
         .extra
         .effects
@@ -3144,17 +3141,13 @@ fn tick_effects(
         }
         i += 1;
     }
-    let absorption_gone = m
-        .extra
-        .effects
-        .iter()
-        .any(|e| e.0 == "minecraft:absorption" && e.1 <= 0 && e.1 != -1);
     m.extra.effects.retain(|e| e.1 > 0 || e.1 == -1);
-    // LivingEntity.onEffectsRemoved -> refreshDirtyAttributes ->
-    // onAttributeUpdated(MAX_ABSORPTION): the amount is clamped to the
-    // maximum left without the effect's modifier.
-    if absorption_gone {
-        m.absorption = m.absorption.min(super::armor::max_absorption(m));
+    // LivingEntity.onEffectsRemoved, or onEffectUpdated for a promoted hidden
+    // instance (a weaker Absorption) -> refreshDirtyAttributes ->
+    // onAttributeUpdated(MAX_ABSORPTION): the amount is clamped to the new max.
+    let max_absorption = super::armor::max_absorption(m);
+    if max_absorption != old_max_absorption {
+        m.absorption = m.absorption.min(max_absorption);
     }
     // LivingEntity.onEffectsRemoved / onEffectUpdated -> refreshDirtyAttributes.
     let new_boost_amp = m
@@ -6174,6 +6167,37 @@ mod hurt_teleport_contact_tests {
                 assert!(teleported > 0, "some seed teleports");
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod hidden_absorption_promotion_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// #11384: a promoted hidden instance goes through `onEffectUpdated(effect,
+    /// true)`, whose `refreshDirtyAttributes` clamps the absorption amount to the
+    /// weaker effect's `max_absorption` (Absorption II's 8 down to I's 4).
+    #[test]
+    fn a_promoted_weaker_absorption_clamps_the_amount() {
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.id = "minecraft:pig".into();
+        kind.species = Species::Pig;
+        let mut m = Mob::new(203, Arc::new(kind), Vec3::ZERO, 0.0);
+        m.add_effect("absorption", 600, 0);
+        m.add_effect("absorption", 2, 1);
+        assert_eq!(m.extra.effect_fallbacks.len(), 1, "Absorption I waits");
+        assert_eq!(
+            (m.absorption, super::super::armor::max_absorption(&m)),
+            (8.0, 8.0)
+        );
+        for _ in 0..3 {
+            tick_effects(&mut m, None, &mut |_| {});
+        }
+        assert_eq!(m.extra.effects.len(), 1);
+        assert_eq!(m.extra.effects[0].2, 0, "Absorption I took over");
+        assert_eq!(super::super::armor::max_absorption(&m), 4.0);
+        assert_eq!(m.absorption, 4.0);
     }
 }
 

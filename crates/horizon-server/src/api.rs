@@ -528,16 +528,38 @@ impl Shared {
             }
         };
         if let Some(game) = game.as_mut() {
-            for command in ["console save-off", "console save-all flush"] {
-                game.ask(command)
-                    .map_err(|e| format!("the game didn't save: {e}"))?;
+            let saved = game.ask("console save-off").and_then(|_| {
+                // A big world's flush can take longer than an ordinary reply.
+                game.set_reply_timeout(FLUSH_TIMEOUT)?;
+                let flushed = game.ask("console save-all flush");
+                let _ = game.set_reply_timeout(engine::REPLY_TIMEOUT);
+                flushed
+            });
+            if let Err(e) = saved {
+                // Saving may be off already (a save-off whose reply was lost counts): it goes back
+                // on, or the game would run without autosaving until the next backup.
+                save_on(&self.dir, None);
+                return Err(format!("the game didn't save: {e}"));
             }
         }
         let result = backup::create(&self.dir, &config, file_name);
         if let Some(game) = game.as_mut() {
-            let _ = game.ask("console save-on");
+            save_on(&self.dir, Some(game));
         }
         result
+    }
+}
+
+/// How long a backup waits for the game's `save-all flush`.
+const FLUSH_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Saving back on after a backup: over `game` when it is still in step, else (or when that
+/// fails) over a connection of its own, since a reply that timed out leaves the old one out of
+/// step.
+fn save_on(dir: &std::path::Path, game: Option<&mut engine::Control>) {
+    let sent = game.is_some_and(|g| g.ask("console save-on").is_ok());
+    if !sent {
+        let _ = engine::Control::connect(dir).and_then(|mut g| g.ask("console save-on"));
     }
 }
 
@@ -581,7 +603,10 @@ pub fn random_token() -> String {
 }
 
 pub fn same_token(a: &str, b: &str) -> bool {
-    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
+    // Digests of a fixed length: not even the token's length shows in the time taken.
+    use sha2::{Digest, Sha256};
+    let (x, y) = (Sha256::digest(a.as_bytes()), Sha256::digest(b.as_bytes()));
+    x.iter().zip(y.iter()).fold(0u8, |d, (p, q)| d | (p ^ q)) == 0
 }
 
 /// Writes a file only its owner can read: through a private temporary file renamed over it
@@ -1003,6 +1028,14 @@ impl Client {
 mod tests {
     use super::*;
 
+    #[test]
+    fn tokens_compare_whole() {
+        assert!(same_token("abc123", "abc123"));
+        assert!(!same_token("abc123", "abc124"));
+        assert!(!same_token("abc123", "abc1234"));
+        assert!(!same_token("", "a"));
+    }
+
     fn wire_reply(
         address: SocketAddr,
         method: &str,
@@ -1332,6 +1365,61 @@ mod tests {
         assert_eq!(a.len(), 32);
         assert!(a.bytes().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn a_backup_whose_flush_fails_turns_saving_back_on() {
+        let dir = std::env::temp_dir().join(format!("horizon-server-flush-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".horizon")).unwrap();
+        std::fs::write(dir.join(crate::config::FILE), crate::config::TEMPLATE).unwrap();
+        // A game that answers everything but drops the connection on the flush, as a reply that
+        // timed out leaves it.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::fs::write(
+            engine::control_path(&dir),
+            json!({"port": port, "token": "t"}).to_string(),
+        )
+        .unwrap();
+        let asked = Arc::new(Mutex::new(Vec::<String>::new()));
+        let heard = asked.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut writer = stream;
+                let mut line = String::new();
+                while std::io::BufRead::read_line(&mut reader, &mut line).unwrap_or(0) > 0 {
+                    let asked = line.trim().to_owned();
+                    line.clear();
+                    heard.lock().unwrap().push(asked.clone());
+                    if asked == "console save-all flush" {
+                        break;
+                    }
+                    let _ = std::io::Write::write_all(&mut writer, b"{\"ok\":true}\n");
+                }
+            }
+        });
+        let shared = Shared::new(&dir);
+        shared.set_phase(Phase::Running);
+        let said = shared.back_up("test.zip").unwrap_err();
+        assert!(said.contains("didn't save"), "{said}");
+        let asked = asked.lock().unwrap().clone();
+        let commands: Vec<&str> = asked
+            .iter()
+            .filter(|l| !l.starts_with("auth "))
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            commands,
+            [
+                "console save-off",
+                "console save-all flush",
+                "console save-on"
+            ],
+            "saving goes back on, over a connection of its own"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
