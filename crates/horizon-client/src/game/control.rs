@@ -441,6 +441,15 @@ impl Game<'_> {
                 }
                 Ok(Some(json!({ "ok": true, "flat": r.flat_draws() })))
             }
+            "section-layout" => {
+                let r = self.renderer.as_mut().ok_or("no renderer")?;
+                let compact = match words.get(1).copied() {
+                    Some("compact") => r.set_packed_layout(true),
+                    Some("wide") => r.set_packed_layout(false),
+                    _ => return Err("section-layout compact|wide".into()),
+                };
+                Ok(Some(json!({ "ok": true, "compact": compact })))
+            }
             "section-cull" => {
                 let r = self.renderer.as_mut().ok_or("no renderer")?;
                 match words.get(1).copied() {

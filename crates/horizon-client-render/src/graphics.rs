@@ -30,8 +30,9 @@ fn marker_driver(text: &str) -> &str {
 pub struct Reported {
     pub paper_white: u32,
     pub peak: u32,
-    /// The peak is the display's own claim (DXGI's `MaxLuminance`, mostly its EDID figure),
-    /// which often runs high: Auto still uses it, but the HDR page asks to calibrate.
+    /// The peak is the system's own figure (DXGI's `MaxLuminance`): the display's, or a
+    /// calibration profile's (Windows HDR Calibration), which Horizon can't tell apart. Auto
+    /// uses it, and the HDR page offers calibration.
     pub peak_guessed: bool,
 }
 
@@ -40,7 +41,7 @@ pub struct Reported {
 pub enum HdrSetup {
     /// The system says nothing: the player calibrates.
     Unknown,
-    /// The system says, but only guesses the peak: the player calibrates.
+    /// The system says, but not where its peak comes from: the page offers calibration.
     Guessed,
     /// Peak Brightness and Paper White follow the system.
     Automatic,
@@ -1355,7 +1356,7 @@ mod tests {
     }
 
     #[test]
-    fn hdr_setup_asks_to_calibrate_where_the_peak_is_guessed() {
+    fn hdr_setup_offers_calibration_where_the_peaks_source_is_unknown() {
         let wayland = Reported {
             paper_white: 203,
             peak: 1015,
@@ -1370,7 +1371,7 @@ mod tests {
         assert_eq!(g.hdr_setup(None), HdrSetup::Unknown);
         assert_eq!(g.hdr_setup(Some(wayland)), HdrSetup::Automatic);
         assert_eq!(g.hdr_setup(Some(windows)), HdrSetup::Guessed);
-        // Auto still takes the guess, over the 1000-nit default.
+        // Auto still takes the reported peak, over the 1000-nit default.
         assert_eq!(g.peak_nits(Some(windows)), 1000);
         assert_eq!(g.paper_white_nits(Some(windows)), 400);
         for (peak, paper_white) in [(800, 0), (0, 240)] {
@@ -1896,10 +1897,12 @@ mod tests {
         let g = Graphics::default();
         assert_eq!(g.workers, 0);
         let cores = horizon_threads::worker_count();
+        // Vanilla's bound: one core is always left for the render and server threads.
         assert!((1..=cores.saturating_sub(1).max(1)).contains(&g.worker_threads()));
-        if !cfg!(target_vendor = "apple") {
-            assert_eq!(g.worker_threads(), cores.saturating_sub(1).max(1));
-        }
+        // The count itself is `horizon_threads::default_workers`, which is one less than
+        // the *smaller* of the machine's cores and its performance cores (a Linux hybrid
+        // CPU reports fewer of the latter), so it is not always `cores - 1`.
+        assert_eq!(g.worker_threads(), horizon_threads::default_workers());
         // A manual count is the player's own choice, kept as asked.
         let manual = Graphics { workers: 3, ..g };
         assert_eq!(manual.worker_threads(), 3);

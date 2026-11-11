@@ -177,8 +177,22 @@ impl Game<'_> {
         );
     }
     pub(super) fn social_click(&mut self) {
+        let size = self.gui_size();
+        let cursor = self.cursor;
         let view = self.social_view();
-        let Some(action) = social_screen::click(self.gui_size(), self.cursor, &view) else {
+        let Some(kind) = social_screen::click_kind(size, cursor, &view) else {
+            return;
+        };
+        // The widget first: the search box's `onClick` puts the caret under the
+        // pointer, before any list button is considered.
+        if let social_screen::Click::Search = kind {
+            let shift = self.has_shift_down();
+            self.social
+                .search
+                .click(&self.gui.atlas, cursor.0, shift, false);
+            return;
+        }
+        let social_screen::Click::Action(action) = kind else {
             return;
         };
         self.audio.play_button_click();

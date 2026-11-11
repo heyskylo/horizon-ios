@@ -539,6 +539,7 @@ pub struct Data {
     pub current: Option<Info>,
     pub travel: i32,
     pub selector: Selector,
+    pub reload_particle: bool,
 }
 /// Which sculk block entity this is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
