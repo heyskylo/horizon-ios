@@ -113,8 +113,7 @@ impl Game<'_> {
         // `player.getUUID()`: the acting player, a server's guest included.
         let starter = Some(self.acting_player_uuid());
         let time = zombie_villager::WAIT_MIN
-            + self
-                .world
+            + self.mobs[index]
                 .random
                 .next_int_bound(zombie_villager::WAIT_SPREAD)
                 .unwrap_or(0);

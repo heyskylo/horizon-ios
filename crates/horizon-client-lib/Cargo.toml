@@ -39,8 +39,6 @@ horizon-server-files = { path = "../horizon-server-files" }
 getrandom = "0.3"
 # The dedicated server's anticheat, off unless server.toml's [anticheat] turns it on (docs/anticheat.md).
 horizon-anticheat = { path = "../horizon-anticheat" }
-# The dedicated server's chat filter: [chat_filter], the slur list, mutes (docs/chat-filter.md).
-horizon-chat-filter = { path = "../horizon-chat-filter" }
 # Shader packs: reading them and turning their GLSL into naga modules.
 horizon-shaders = { path = "../horizon-shaders" }
 # Horizon's own shader packs: the format, the stages and the check (docs/shaders.md).

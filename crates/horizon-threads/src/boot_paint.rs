@@ -206,9 +206,11 @@ pub fn paint(hwnd: isize, semibold: &'static [u8], mono: &'static [u8], logs: &[
             y -= height as f32;
             drawn += rows;
         }
+        // The DC's own font back: old_tagline is `mark` and old_console is `tagline`, so restoring
+        // them in turn left `tagline` selected, and DeleteObject refuses a selected font (one
+        // leaked a paint).
+        let _ = (old_tagline, old_console);
         SelectObject(hdc, old_mark);
-        SelectObject(hdc, old_tagline);
-        SelectObject(hdc, old_console);
         let _ = DeleteObject(mark);
         let _ = DeleteObject(tagline);
         let _ = DeleteObject(console);
