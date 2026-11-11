@@ -2,6 +2,8 @@
 //! Controls, Key Binds, Mouse Settings, Chat Settings, Accessibility,
 //! Language and Resource Packs, laid out like vanilla's HeaderAndFooter /
 //! OptionsList screens and drawn with the shared widgets.
+mod pack_drop;
+
 use std::time::Instant;
 
 pub use crate::settings::Opt;
@@ -1415,6 +1417,8 @@ fn matches_focus(id: &FocusId, i: usize, wd: &Widget) -> bool {
 /// What the game must do after an interaction.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
+    /// Dropped resource packs accepted on the confirmation screen.
+    ImportPacks(Vec<std::path::PathBuf>),
     /// The Pack Options page closed with changes: the player's choices of its entries, the
     /// ones that differ from their defaults (the others went back to theirs).
     PackOptions {
@@ -1966,23 +1970,6 @@ impl OptionsUi {
                 self.page(),
                 Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser
             )
-    }
-    /// Whether the resource pack screen is open (not Create World's data packs on the same
-    /// page).
-    pub fn resource_packs_open(&self) -> bool {
-        self.page() == Page::Packs && self.data_pack_dir.is_none()
-    }
-    /// The packs in `resourcepacks/` changed while the pack screen is open
-    /// (`PackSelectionScreen`'s directory watcher): the screen is made again over
-    /// `infos`, keeping the selection made on it so far.
-    pub fn update_pack_infos(&mut self, infos: Vec<crate::pack_screen::PackInfo>) {
-        if let Some(p) = self.pack_screen.take()
-            && p.changed
-        {
-            self.pack_selection = p.commit();
-            self.pack_reselected = true;
-        }
-        self.pack_infos = infos;
     }
     pub fn page(&self) -> Page {
         *self.stack.last().unwrap_or(&Page::Main)
@@ -3833,6 +3820,7 @@ impl OptionsUi {
                 self.pack_focus = Instant::now();
             }
             match action {
+                crate::pack_screen::Action::Import(paths) => events.push(Event::ImportPacks(paths)),
                 crate::pack_screen::Action::OpenFolder => events.push(match &self.data_pack_dir {
                     Some(dir) => Event::OpenDataPackFolder(dir.clone()),
                     None => Event::OpenPackFolder,
