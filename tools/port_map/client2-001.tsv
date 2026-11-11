@@ -15,10 +15,10 @@ DebugCrosshairRenderer.<init>	skip:debug		F3 3D axis gizmo at the view; Horizon 
 DynamicGpuData.reset	skip:other		GPU per-frame ring reset; wgpu staging in Horizon's Uploads belt
 DynamicGpuData.close	skip:other		GPU buffer release; Rust drops the wgpu buffers
 DynamicGpuData.writeTransform	skip:other		per-draw uniform staging; Horizon writes its uniforms directly with queue writes
-DynamicGpuData.writeChunkSections	port	crates/horizon-client-render/src/gfx.rs::section_instance	gap: player: section fade-in (vanilla default 0.75 s) is not sent; Horizon writes a fixed fourth value
-DynamicGpuData.writeChunkSectionsInstanced	port	crates/horizon-client-render/src/gfx.rs::section_instance	gap: player: section fade-in (vanilla default 0.75 s) is not sent; same instance record as writeChunkSections
+DynamicGpuData.writeChunkSections	port	crates/horizon-client-render/src/gfx/section_fade.rs::section_instance	gap: player: section fade-in (vanilla default 0.75 s) is not sent; Horizon writes a fixed fourth value
+DynamicGpuData.writeChunkSectionsInstanced	port	crates/horizon-client-render/src/gfx/section_fade.rs::section_instance	gap: player: section fade-in (vanilla default 0.75 s) is not sent; same instance record as writeChunkSections
 DynamicGpuData.writeChunkSectionCommands	port	crates/horizon-client-render/src/gfx.rs::Renderer::draw_frame	IndexedDraw records built and uploaded into the indirect buffer
-DynamicGpuData.ChunkSectionInfo.write	port	crates/horizon-client-render/src/gfx.rs::section_instance	gap: player: packs origin only; the fade-in visibility float (default 0.75 s) is not in the record
+DynamicGpuData.ChunkSectionInfo.write	port	crates/horizon-client-render/src/gfx/section_fade.rs::section_instance	gap: player: packs origin only; the fade-in visibility float (default 0.75 s) is not in the record
 DynamicGpuData.IndexedDraw.write	skip:other		indirect draw args; Horizon keeps them as [u32;5] words uploaded in one copy
 DynamicGpuData.TerrainTransform.write	skip:other		terrain UBO layout; Horizon's terrain pass uses its own uniforms
 DynamicGpuData.Transform.write	skip:other		std140 layout of the transform UBO; wgpu bindings in Horizon

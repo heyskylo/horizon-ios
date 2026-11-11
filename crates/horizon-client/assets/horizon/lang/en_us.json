@@ -1,4 +1,13 @@
 {
+  "horizon.no_resources.title": "No prepared game files",
+  "horizon.no_resources.prepare": "Prepare them with horizon-prepare --prepare, or pass --resources <folder>.",
+  "horizon.no_resources.looked_in": "No prepared game files in %s",
+  "horizon.no_resources.quit": "Quit",
+  "horizon.get_the_game.title": "Start Horizon from the launcher",
+  "horizon.get_the_game.about": "This is the game the Horizon launcher installs and starts. On its own it has none of Minecraft's files, so it can't start.",
+  "horizon.get_the_game.minecraft": "Horizon needs your own copy of Minecraft: Java Edition. The launcher signs you in and prepares the game files from it.",
+  "horizon.get_the_game.download": "Download the launcher at %s, then press Play there.",
+  "horizon.get_the_game.button": "Download the launcher",
   "horizon.extras.header.world": "World",
   "horizon.extras.pregen": "Chunk pregeneration",
   "horizon.extras.pregen.tooltip": "Enables /pregen in your single-player and LAN worlds. With cheats enabled, use /pregen start to generate an area before exploring it. Does not enable the command on servers you join.",
