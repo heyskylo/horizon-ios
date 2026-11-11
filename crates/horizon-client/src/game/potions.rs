@@ -3269,3 +3269,159 @@ mod depleted_absorption_tests {
         });
     }
 }
+
+#[cfg(test)]
+mod arrow_contents {
+    //! Actual in-memory Game potion paths. No run loop, world load or server startup.
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, execution_role, load_resources};
+    use horizon_client::chunk::Chunk;
+    use serde_json::{Value, json};
+    use std::{path::PathBuf, sync::Arc, time::Instant};
+
+    fn stack(row: &Value) -> ItemStack {
+        let mut stack = ItemStack::new("minecraft:tipped_arrow", 1);
+        if let Some(potion) = row["potion"].as_str() {
+            stack = stack.with_potion(&format!("minecraft:{potion}"));
+        }
+        let effects = row["custom"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                Tag::compound([
+                    (
+                        "id",
+                        Tag::String(
+                            format!("minecraft:{}", e["id"].as_str().unwrap())
+                                .as_str()
+                                .into(),
+                        ),
+                    ),
+                    ("duration", Tag::Int(e["duration"].as_i64().unwrap() as i32)),
+                    ("amplifier", Tag::Int(e["amp"].as_i64().unwrap() as i32)),
+                    (
+                        "ambient",
+                        Tag::Byte(i8::from(e["ambient"].as_bool().unwrap())),
+                    ),
+                    (
+                        "show_particles",
+                        Tag::Byte(i8::from(e["visible"].as_bool().unwrap())),
+                    ),
+                ])
+            })
+            .collect();
+        stack
+            .data_mut()
+            .potion_extra
+            .push(("custom_effects".into(), Tag::List(effects)));
+        if let Some(color) = row["color"].as_i64() {
+            stack
+                .data_mut()
+                .potion_extra
+                .push(("custom_color".into(), Tag::Int(color as i32)));
+        }
+        if let Some(name) = row["name"].as_str() {
+            stack
+                .data_mut()
+                .potion_extra
+                .push(("custom_name".into(), Tag::String(name.into())));
+        }
+        stack
+    }
+    #[test]
+    #[ignore = "explicit HORIZON_TEST_RESOURCES and isolated potion oracle input/output"]
+    fn actual_arrow_contents_match_pinned_methods() {
+        let root =
+            PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").expect("explicit resources"));
+        let input =
+            PathBuf::from(std::env::var_os("HORIZON_POTION_INPUT").expect("explicit input"));
+        let output =
+            PathBuf::from(std::env::var_os("HORIZON_POTION_OUTPUT").expect("explicit output"));
+        let expected: Vec<Value> = serde_json::from_slice(
+            &std::fs::read(
+                std::env::var_os("HORIZON_POTION_EXPECTED").expect("pinned method output"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let rows: Vec<Value> = serde_json::from_slice(&std::fs::read(input).unwrap()).unwrap();
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(std::env::current_dir().unwrap());
+        options.execution_role = execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        game.world.set(0, 64, 0, stone).unwrap();
+        assert_eq!(rows.len(), 5, "all five arrow cases must execute");
+        let mut results = Vec::new();
+        for (index, row) in rows.iter().enumerate() {
+            let id = row["id"].clone();
+            let mut arrow = Projectile::new(
+                ProjectileKind::Arrow {
+                    base_damage: 2.,
+                    critical: false,
+                    effect: None,
+                },
+                Vec3::new(0.5, 64.5, 0.5),
+                None,
+            );
+            let st = arrow.arrow.as_mut().unwrap();
+            st.pickup_item = stack(row);
+            st.in_ground = true;
+            st.in_ground_time = 598;
+            st.last_state = Some(stone);
+            arrow.stuck = true;
+            let rain = |_| false;
+            let scene = game.arrow_scene(&rain);
+            horizon_client::arrows::tick(&mut arrow, &scene, &[]);
+            let st = arrow.arrow.as_ref().unwrap();
+            let item599 = st
+                .pickup_item
+                .item
+                .trim_start_matches("minecraft:")
+                .to_owned();
+            let color599 = st.potion_color().map_or(-1, |v| v as i32);
+            horizon_client::arrows::tick(&mut arrow, &scene, &[]);
+            let st = arrow.arrow.as_ref().unwrap();
+            results.push(json!({"id":id,"item599":item599,"color599":color599,"item600":st.pickup_item.item.trim_start_matches("minecraft:"),"color600":st.potion_color().map_or(-1,|v|v as i32)}));
+            assert_eq!(
+                results.last().unwrap(),
+                &expected[index],
+                "actual arrow tick: {}",
+                id
+            );
+        }
+        std::fs::write(output, serde_json::to_vec_pretty(&results).unwrap()).unwrap();
+    }
+}
