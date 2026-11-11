@@ -514,6 +514,34 @@ pub fn name_text(tag: &Tag) -> Text {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_fallback_references_stay_bounded() {
+        // 300 references to the argument, nested three deep: 27 million copies of "A" from a
+        // 4 KB component, which ran a client out of memory.
+        let bomb = |depth: usize, text: &str| {
+            let pattern = "%1$s".repeat(300);
+            let mut v = serde_json::json!({ "text": text });
+            for _ in 0..depth {
+                v = serde_json::json!({"translate": "x.unknown", "fallback": pattern, "with": [v]});
+            }
+            v
+        };
+        let started = std::time::Instant::now();
+        let text = to_text(&bomb(3, "A"), &mut |s| Text::literal(s));
+        assert!(text.spans.len() < 1 << 15, "{} spans", text.spans.len());
+        // One long argument referenced many times multiplies bytes, not spans.
+        let long = "B".repeat(64 << 10);
+        let text = to_text(&bomb(1, &long), &mut |s| Text::literal(s));
+        let bytes: usize = text.spans.iter().map(|s| s.text.len()).sum();
+        assert!(bytes <= 4 << 20, "{bytes} bytes");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        // A real fallback still formats.
+        let ok = serde_json::json!({
+            "translate": "x.unknown", "fallback": "%1$s and %1$s", "with": [{"text": "A"}]
+        });
+        assert_eq!(to_text(&ok, &mut |s| Text::literal(s)).plain(), "A and A");
+    }
     use crate::lang::{self, Language, ResourceSource};
 
     struct Mem(std::collections::HashMap<String, Vec<u8>>);

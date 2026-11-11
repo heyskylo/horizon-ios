@@ -54,6 +54,12 @@ impl Game<'_> {
         }
     }
     fn set_has_record(&mut self, pos: [i32; 3], has: bool) {
+        self.set_has_record_notify(pos, has, true);
+    }
+    /// The state change alone (`level.setBlock` with flag 2); `notify` adds
+    /// `notifyItemChangedInJukebox`'s `block_change`, which
+    /// `JukeboxBlock.setPlacedBy` does not post.
+    fn set_has_record_notify(&mut self, pos: [i32; 3], has: bool, notify: bool) {
         let state = self.world.block(pos[0], pos[1], pos[2]);
         let registry = self.pack.assets.registry;
         let Some(mut s) = registry.state(state).cloned() else {
@@ -68,6 +74,11 @@ impl Game<'_> {
             self.with_level(|b, level, ticks| {
                 b.set_block(level, ticks, p, new, level_flags::UPDATE_CLIENTS)
             });
+            // `JukeboxBlockEntity.notifyItemChangedInJukebox`: the disc coming
+            // or going is a block change the sculk sensors hear.
+            if notify && self.world.block(pos[0], pos[1], pos[2]) != state {
+                self.post_block_game_event("minecraft:block_change", pos, None, Some(new));
+            }
         }
     }
     /// `JukeboxBlock.setPlacedBy`: a jukebox placed from an item whose
@@ -77,7 +88,8 @@ impl Game<'_> {
     /// `updateCustomBlockEntityTag` has filled the block entity.
     pub(super) fn jukebox_placed(&mut self, pos: [i32; 3], stack: &ItemStack) {
         if block_entity_item::carries_record(stack) {
-            self.set_has_record(pos, true);
+            // #15320: no `block_change` here, only the `block_place` after it.
+            self.set_has_record_notify(pos, true, false);
         }
     }
     /// `onSongChanged`: neighbours (the signal) and comparators.
@@ -760,5 +772,82 @@ mod jukebox_component_tests {
             takes(&game, stone),
             "the stack's own component makes it playable"
         );
+    }
+}
+
+#[cfg(test)]
+mod block_change_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use horizon_client::chunk::Chunk;
+    use std::sync::Arc;
+
+    /// `JukeboxBlockEntity.notifyItemChangedInJukebox`: the disc coming or
+    /// going posts `block_change` at the box, so sculk sensors hear it.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_disc_change_posts_block_change() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        let jukebox = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:jukebox")
+            .unwrap();
+        game.world.set(2, 4, 3, jukebox).unwrap();
+        super::super::sculk::TEST_POSTED_EVENTS
+            .with(|events| *events.borrow_mut() = Some(Vec::new()));
+        game.set_has_record([2, 4, 3], true);
+        super::super::sculk::TEST_POSTED_EVENTS.with(|events| {
+            assert!(
+                events.borrow().as_ref().unwrap().contains(&(
+                    "minecraft:block_change",
+                    [2.5, 4.5, 3.5],
+                    None
+                )),
+                "{:?}",
+                events.borrow()
+            );
+        });
+        // #15320: `JukeboxBlock.setPlacedBy` sets the state alone; the
+        // placement's `block_place` is the only event.
+        game.world.set(2, 4, 5, jukebox).unwrap();
+        super::super::sculk::TEST_POSTED_EVENTS
+            .with(|events| *events.borrow_mut() = Some(Vec::new()));
+        game.set_has_record_notify([2, 4, 5], true, false);
+        let with_record = game.world.block(2, 4, 5);
+        assert_ne!(with_record, jukebox, "the state still turns has_record on");
+        super::super::sculk::TEST_POSTED_EVENTS.with(|events| {
+            assert_eq!(events.borrow().as_ref().unwrap(), &[], "nothing posted");
+        });
     }
 }
