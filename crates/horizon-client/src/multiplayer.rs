@@ -2418,6 +2418,16 @@ mod tests {
         out
     }
 
+    /// `ServerData.validateIcon`: a PNG up to 1024x1024 is kept for
+    /// servers.dat, though only a 64x64 one is drawn.
+    #[test]
+    fn an_icon_up_to_1024_square_is_kept() {
+        assert!(valid_icon(&png(64)));
+        assert!(valid_icon(&png(128)));
+        assert!(valid_icon(&png(1024)));
+        assert!(!valid_icon(&png(1025)));
+        assert!(!valid_icon(b"not a png"));
+    }
     #[test]
     fn favicons_are_64_pixel_pngs_behind_the_data_url() {
         let icon = png(64);
