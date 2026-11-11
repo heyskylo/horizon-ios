@@ -221,6 +221,18 @@ pub(super) async fn open_adapter(
         configured,
     })
 }
+/// Logs a sprite split below the CPU's (the GPU's limit), and warns when Metal's arrays grew
+/// past 512 layers (#12155), so a big pack's texture-corruption report ties to it (#8471).
+pub(super) fn log_sprite_split(info: &wgpu::AdapterInfo, split: u32, layers: u32) {
+    if info.backend == wgpu::Backend::Metal && split > 512 {
+        log::warn!(
+            "Horizon: {split}-layer Metal sprite arrays for {layers} on {}",
+            info.name
+        );
+    } else if split < super::sprite_split() {
+        log::info!("Horizon: {split} block textures per array (the GPU's limit)");
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::{AdapterChoice, pick_adapter};

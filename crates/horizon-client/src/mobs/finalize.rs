@@ -1664,12 +1664,7 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
         if g.is_none() {
             let mut effect = None;
             if self.difficulty.hard && self.float() < 0.1 * self.special() {
-                effect = Some(match self.int(5) {
-                    0 | 1 => "minecraft:speed",
-                    2 => "minecraft:strength",
-                    3 => "minecraft:regeneration",
-                    _ => "minecraft:invisibility",
-                });
+                effect = Some(super::spawning::spider_random_effect(self.random));
             }
             g = Some(Group::Spider(effect));
         }
