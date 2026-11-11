@@ -9855,12 +9855,10 @@ impl Game<'_> {
             border,
             game_time: self.world.game_time as f32,
             shader_game_time: ((self.world.game_time % 24000) as f32 + alpha as f32) / 24000.0,
-            crumbling_sprite: self
-                .gui
-                .atlas
-                .sprites
-                .get("block/destroy_stage_0")
-                .map_or([0.0; 4], |r| [r.u0, r.v0, r.u1 - r.u0, r.v1 - r.v0]),
+            crumbling_sprite: frame_geometry::crumbling_sprite(
+                &self.gui.atlas.sprites,
+                self.settings.improved_transparency,
+            ),
             end_portal_sprites: ["environment/end_sky", "entity/end_portal/end_portal"].map(|n| {
                 self.gui
                     .atlas
