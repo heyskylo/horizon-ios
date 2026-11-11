@@ -275,6 +275,28 @@ pub struct Projectile {
     /// charge until [`Projectile::set_item`] gives it another. None for the
     /// kinds that are no `Fireball` (a wither skull, a wind charge).
     pub item: Option<crate::items::ItemStack>,
+    /// `ThrownEgg`'s item `CHICKEN_VARIANT` component, as the chicken variant
+    /// index its hatchlings get; None when no item was recorded.
+    pub egg_variant: Option<u8>,
+}
+/// The chicken variant a thrown egg stack carries: its explicit
+/// `minecraft:chicken/variant` component, else its item's default (egg
+/// temperate, blue egg cold, brown egg warm).
+pub fn egg_chicken_variant(stack: &crate::items::ItemStack) -> u8 {
+    let named = stack
+        .extra
+        .as_ref()
+        .and_then(|d| d.other("minecraft:chicken/variant"))
+        .and_then(|t| match t {
+            horizon_world::nbt::Tag::String(s) => s.to_string().ok(),
+            _ => None,
+        });
+    let name = named.as_deref().unwrap_or(match &*stack.item {
+        "minecraft:blue_egg" => "cold",
+        "minecraft:brown_egg" => "warm",
+        _ => "temperate",
+    });
+    crate::mobs::finalize::variant_index(crate::mobs::Species::Chicken, name)
 }
 /// `ThrownEnderpearl.isAllowedToTeleportOwner(owner, level)` for an owner in
 /// the pearl's own dimension: vanilla reaches
@@ -466,6 +488,7 @@ impl Projectile {
         Self {
             join: Default::default(),
             id: 0,
+            egg_variant: None,
             kind,
             owner,
             owner_uuid: None,
@@ -844,6 +867,12 @@ impl Projectile {
     /// `Fireball.setItem`: the item a fireball is drawn as. An empty stack
     /// puts the default fire charge back, anything else is kept as a single
     /// one (`copyWithCount(1)`); a kind that is no `Fireball` has no item.
+    /// `ThrownEgg`'s item: what its hatchlings' variant comes from.
+    pub fn set_egg_item(&mut self, stack: &crate::items::ItemStack) {
+        if self.kind == ProjectileKind::Egg {
+            self.egg_variant = Some(egg_chicken_variant(stack));
+        }
+    }
     pub fn set_item(&mut self, stack: crate::items::ItemStack) {
         if !self.kind.is_item_fireball() {
             return;
@@ -2767,6 +2796,23 @@ mod render_light_tests {
             shot(ProjectileKind::SmallFireball).entity_type(),
             "minecraft:small_fireball"
         );
+    }
+    /// `ThrownEgg.onHit`: the hatchlings take the variant of the item's
+    /// `CHICKEN_VARIANT` component (egg temperate, blue cold, brown warm).
+    #[test]
+    fn thrown_egg_carries_its_chickens_variant() {
+        use crate::items::ItemStack;
+        let variant = |item: &str| {
+            let mut egg = Projectile::new(ProjectileKind::Egg, Vec3::ZERO, None);
+            egg.set_egg_item(&ItemStack::new(item, 1));
+            egg.egg_variant
+        };
+        assert_eq!(variant("minecraft:egg"), Some(0));
+        assert_eq!(variant("minecraft:brown_egg"), Some(1));
+        assert_eq!(variant("minecraft:blue_egg"), Some(2));
+        let mut snowball = Projectile::new(ProjectileKind::Snowball, Vec3::ZERO, None);
+        snowball.set_egg_item(&ItemStack::new("minecraft:blue_egg", 1));
+        assert_eq!(snowball.egg_variant, None);
     }
 }
 crate::impl_joined!(Projectile);

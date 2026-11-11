@@ -5834,7 +5834,7 @@ impl Game<'_> {
                         if let Some(id) = self.spawn_mob_raw("minecraft:chicken", atp, true)
                             && let Some(c) = self.mobs.iter_mut().find(|m| m.id == id)
                         {
-                            c.extra.age = -24000;
+                            (c.extra.age, c.extra.variant) = (-24000, p.egg_variant.unwrap_or(0));
                         }
                     }
                 }
@@ -7397,12 +7397,12 @@ impl Game<'_> {
         let Some(p) = self.player.as_ref() else {
             return Ok(false);
         };
-        // Projectile.shootFromRotation adds getKnownMovement: what the thrower
-        // last moved, not a velocity the server kept for a guest.
+        // Projectile.shootFromRotation adds getKnownMovement: what the thrower last moved.
         let on_ground = p.ground.on_ground;
         let velocity = self.known_player_movement();
         let start = Vec3::new(eye[0], eye[1] - 0.1, eye[2]);
         let mut proj = Projectile::new(kind.clone(), start, Some(Who::Player));
+        proj.set_egg_item(stack);
         proj.shoot_from_rotation(
             &mut self.world.random,
             self.pitch,
