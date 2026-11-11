@@ -5,10 +5,10 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::io;
 use std::sync::atomic::{
-    AtomicBool, AtomicI32, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize,
+    AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize,
 };
 use std::sync::atomic::{Ordering::*, compiler_fence};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::unwind::{self, MAX_FRAMES, StackBounds};
@@ -281,7 +281,11 @@ struct ThreadState {
     name: &'static str,
     target: os::Target,
     bounds: StackBounds,
-    ring: OnceLock<Ring>,
+    /// The ring samples go to: the last of `rings`, null before the first session.
+    ring: AtomicPtr<Ring>,
+    /// Every ring this thread has had; a replaced one stays allocated, as a late signal's handler may still hold it.
+    #[expect(clippy::vec_box, reason = "`ring` points at a Ring, which must not move")]
+    rings: Mutex<Vec<Box<Ring>>>,
     armed: AtomicBool,
     /// Bytes of stack each sample copies; 0 means the handler walks frame pointers instead.
     copy_bytes: AtomicUsize,
@@ -297,6 +301,23 @@ struct ThreadState {
 }
 
 impl ThreadState {
+    fn ring(&self) -> Option<&Ring> {
+        // SAFETY: a non-null pointer is a box in `rings`, which only grows while self lives.
+        unsafe { self.ring.load(Acquire).as_ref() }
+    }
+
+    /// The ring, made anew when the current one is smaller than `bytes`.
+    fn ring_of(&self, bytes: usize) -> io::Result<&Ring> {
+        if let Some(ring) = self.ring().filter(|r| r.cap >= align8(bytes.max(2 * HDR))) {
+            return Ok(ring);
+        }
+        let ring = Box::new(Ring::new(bytes)?);
+        let at = std::ptr::from_ref(&*ring).cast_mut();
+        self.rings.lock().unwrap().push(ring);
+        self.ring.store(at, Release);
+        Ok(self.ring().unwrap())
+    }
+
     fn disarm(&self) {
         self.armed.store(false, Release);
         for slot in [&self.timer, &self.wall_timer] {
@@ -349,7 +370,7 @@ fn on_sample(regs: Regs, wall: bool) {
     let Some(state) = (unsafe { LOCAL.with(Cell::get).as_ref() }) else {
         return;
     };
-    let Some(ring) = state.ring.get() else { return };
+    let Some(ring) = state.ring() else { return };
     if !state.armed.load(Acquire) {
         return;
     }
@@ -409,7 +430,7 @@ pub fn tick_end(duration_ns: u64) {
     let Some(state) = (unsafe { LOCAL.with(Cell::get).as_ref() }) else {
         return;
     };
-    let Some(ring) = state.ring.get().filter(|_| state.armed.load(Acquire)) else {
+    let Some(ring) = state.ring().filter(|_| state.armed.load(Acquire)) else {
         return;
     };
     // The handler drops its sample, rather than interleave with ours, while busy is set.
@@ -437,7 +458,7 @@ pub enum Unwind {
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
     pub hz: u32,
-    /// Samples the ring of a thread holds, from its first sample run on (it keeps that ring after); 0 is two seconds' worth.
+    /// Samples a thread's ring holds; 0 is two seconds' worth. A session that needs more than the thread's ring holds gets a larger one.
     pub ring_samples: usize,
     pub unwind: Unwind,
     /// Stack bytes copied per sample in stack-copy mode, in KiB (clamped to the thread's stack).
@@ -500,14 +521,7 @@ pub fn start(config: Config, select: impl Fn(&str) -> bool) -> io::Result<Sessio
         .iter()
         .filter(|s| select(s.name) && !s.armed.load(Acquire))
     {
-        let ring = match state.ring.get() {
-            Some(ring) => ring,
-            None => {
-                let _ = state.ring.set(Ring::new(ring_bytes)?);
-                state.ring.get().unwrap()
-            }
-        };
-        ring.clear();
+        state.ring_of(ring_bytes)?.clear();
         state.seen.store(0, Relaxed);
         for counter in [&state.samples, &state.timed, &state.timed_ns] {
             counter.store(0, Relaxed);
@@ -537,7 +551,7 @@ impl Session {
     pub fn drain(&mut self, mut f: impl FnMut(&str, &Record)) {
         let mut refreshed = false;
         for state in &self.threads {
-            state.ring.get().unwrap().drain(|header, payload| {
+            state.ring().unwrap().drain(|header, payload| {
                 let mut record = Record {
                     kind: Kind::Cpu,
                     depth: 0,
@@ -585,7 +599,7 @@ impl Session {
         let timed = sum(|s| s.timed.load(Relaxed));
         Stats {
             samples: sum(|s| s.samples.load(Relaxed)),
-            dropped: sum(|s| s.ring.get().map_or(0, |r| r.dropped.load(Relaxed))),
+            dropped: sum(|s| s.ring().map_or(0, |r| r.dropped.load(Relaxed))),
             handler_ns: (timed > 0)
                 .then(|| sum(|s| s.timed_ns.load(Relaxed)) as f64 / timed as f64),
             unwind_ns: (self.unwound > 0).then(|| self.unwind_ns as f64 / self.unwound as f64),

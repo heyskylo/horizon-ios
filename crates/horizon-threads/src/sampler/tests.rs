@@ -258,6 +258,35 @@ fn a_full_ring_drops_and_counts() {
 }
 
 #[test]
+fn a_session_that_needs_a_larger_ring_than_the_threads_first_gets_one() {
+    let (ready, wait) = mpsc::channel();
+    let (go, work) = mpsc::channel::<()>();
+    let (done, finished) = mpsc::channel::<()>();
+    let worker = thread::spawn(move || {
+        sampled_thread("t-grow");
+        ready.send(()).unwrap();
+        while work.recv().is_ok() {
+            on_deep_stack(|| spin_known(100));
+            done.send(()).unwrap();
+        }
+    });
+    wait.recv().unwrap();
+    let run = |config: Config| {
+        let session = start_session(config, "t-grow");
+        go.send(()).unwrap();
+        finished.recv().unwrap();
+        session.stop(|_, _| {})
+    };
+    let small = run(at_1khz(Unwind::StackCopy, 4));
+    assert!(small.dropped > 20, "{small:?}");
+    let large = run(at_1khz(Unwind::StackCopy, 512));
+    assert_eq!(large.dropped, 0, "{large:?}");
+    assert!(large.samples > 60, "{large:?}");
+    drop(go);
+    worker.join().unwrap();
+}
+
+#[test]
 fn a_stopped_session_leaves_no_timer_and_a_missing_thread_is_an_error() {
     let (ready, wait) = mpsc::channel();
     let (go, work) = mpsc::channel::<()>();
@@ -291,7 +320,7 @@ fn a_stopped_session_leaves_no_timer_and_a_missing_thread_is_an_error() {
         (
             stats.samples,
             state.samples.load(Relaxed),
-            state.ring.get().unwrap().head.load(Relaxed)
+            state.ring().unwrap().head.load(Relaxed)
         ),
         (0, 0, 0)
     );
