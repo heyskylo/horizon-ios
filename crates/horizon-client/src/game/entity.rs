@@ -614,9 +614,11 @@ impl Game<'_> {
         splash: &mut impl FnMut(horizon_client::entities::ItemSplash),
     ) -> (bool, bool) {
         let no_physics = escape_speed.is_some();
+        // Entity.baseTick splashes before moving, except on the first tick, at
+        // the motion before the currents push it.
+        let before = item.velocity;
         let heights = item.push_by_fluid(&self.world, &self.res.motion().fluids);
-        // Entity.baseTick splashes before moving, except on the first tick.
-        item.water_entry(heights.0 > 0.0, item.ticks == 0, splash);
+        item.water_entry(heights.0 > 0.0, item.ticks == 0, before, splash);
         item.lava_fall(heights.1 > 0.0);
         let step = item.tick_move_before_block_effects(
             &self.world,
@@ -665,8 +667,9 @@ impl Game<'_> {
         );
         let alive = item.tick_settle(&self.world, self.res.facts(), no_physics, step);
         // ItemEntity.tick refreshes immersion and splashes on water entry.
+        let before = item.velocity;
         let (water, _) = item.push_by_fluid(&self.world, &self.res.motion().fluids);
-        item.water_entry(water > 0.0, false, splash);
+        item.water_entry(water > 0.0, false, before, splash);
         (alive, false)
     }
 
