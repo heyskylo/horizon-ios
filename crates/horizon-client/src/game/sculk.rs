@@ -1865,6 +1865,55 @@ impl Game<'_> {
         }
         self.post_game_event(event, at, ctx);
     }
+    /// A projectile's own event (`gameEvent(event)`, `Context.of(this, state)`):
+    /// its owner as the projectile's owner, `state` the affected state. A
+    /// guest's projectile posts as theirs, or with no owner once they have left
+    /// (`Projectile.getOwner`), as its shot does.
+    pub(super) fn projectile_own_event(
+        &mut self,
+        event: &'static str,
+        owner: Option<Who>,
+        guest: Option<u32>,
+        at: [f64; 3],
+        state: Option<BlockStateId>,
+    ) {
+        if let Some(conn) = guest.filter(|conn| owner.is_some() && self.lan_acting != Some(*conn)) {
+            let posted = match self.lan.take() {
+                Some(mut host) => {
+                    let ran = self.as_guest(&mut host, conn, |g| {
+                        g.projectile_own_event(event, owner, None, at, state);
+                    });
+                    self.lan = Some(host);
+                    ran.is_some()
+                }
+                None => false,
+            };
+            if !posted {
+                self.projectile_own_event(event, None, None, at, state);
+            }
+            return;
+        }
+        let mut ctx = Context {
+            dampening_state: self.state_dampens(state),
+            ..Context::default()
+        };
+        ctx.owner = owner;
+        ctx.player = owner == Some(Who::Player) || self.rides_player(owner);
+        self.post_game_event(event, at, ctx);
+    }
+    /// The state HIT_GROUND names for an entity of `bounds` landing at
+    /// `position` (`Entity.checkFallDamage`): its supporting block's
+    /// (`mainSupportingBlockPos`), else the block at `getOnPosLegacy`.
+    pub(super) fn landing_state(&self, position: Vec3, bounds: Aabb) -> BlockStateId {
+        let p = self.supporting_block(position, bounds).unwrap_or_else(|| {
+            BlockPos::new(
+                position.x.floor() as i32,
+                (position.y - 0.2).floor() as i32,
+                position.z.floor() as i32,
+            )
+        });
+        self.world.block(p.x, p.y, p.z)
+    }
     /// The player shot or threw something.
     pub(super) fn player_projectile_shot(&mut self) {
         if let Some(p) = self.player.as_ref() {
@@ -1935,15 +1984,7 @@ impl Game<'_> {
             return;
         }
         self.sculk_prepare();
-        // mainSupportingBlockPos, or the block's state at getOnPosLegacy.
-        let state = match self.supporting_block(position, bounds) {
-            Some(support) => self.world.block(support.x, support.y, support.z),
-            None => self.world.block(
-                position.x.floor() as i32,
-                (position.y - 0.2).floor() as i32,
-                position.z.floor() as i32,
-            ),
-        };
+        let state = self.landing_state(position, bounds);
         let mut context = self.who_context(None, Some(state));
         context.living = living;
         self.post_game_event(
@@ -2951,3 +2992,8 @@ mod shriek_capture_tests {
         }
     }
 }
+
+// Milking and shearing farm animals; lives here for `TEST_POSTED_EVENTS`.
+#[cfg(test)]
+#[path = "farm_animal_interaction_tests.rs"]
+mod farm_animal_interaction_tests;

@@ -1079,7 +1079,7 @@ fn dismount_location(
 }
 /// `Entity.getCollisionHorizontalEscapeVector`: out of the vehicle's box
 /// along `yaw`, to the edge of the square it spans.
-fn escape_vector(vehicle_width: f64, passenger_width: f64, yaw: f32) -> Vec3 {
+pub(super) fn escape_vector(vehicle_width: f64, passenger_width: f64, yaw: f32) -> Vec3 {
     // 1.0E-5F: a float literal widened to double.
     let distance = (vehicle_width + passenger_width + f64::from(1.0e-5_f32)) / 2.0;
     let radians = f64::from(yaw * 0.017_453_292);
@@ -1696,7 +1696,8 @@ mod tests {
         let mut m = horizon_client::mobs::Mob::new(id, kind, Vec3::new(at[0], at[1], at[2]), 0.0);
         m.extra.tame = true;
         m.health = m.attrs.max_health;
-        m.random = horizon_core::random::LegacyRandom::new(seed);
+        m.random =
+            horizon_core::random::EntityRandom::own(horizon_core::random::LegacyRandom::new(seed));
         game.mobs.clear();
         game.mobs.push(m);
     }

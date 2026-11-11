@@ -227,7 +227,7 @@ fn entity_state(mob: &mut Mob, species: Species, case: &Value) {
             mob.anim.flap_speed_o = num("flapSpeed");
         }
         Species::Wolf => {
-            mob.extra.sitting = flag("isSitting");
+            mob.extra.sitting_pose = flag("isSitting");
             mob.extra.anger = if flag("isAngry") { 100 } else { 0 };
             mob.anim.v[tame::SHAKE] = num("shakeAnim");
             mob.anim.vo[tame::SHAKE] = num("shakeAnim");
