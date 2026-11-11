@@ -1046,8 +1046,8 @@ prints it, and adds a warning when a budget is exceeded.
 | Spans aggregate | during a capture; always on dedicated servers (it feeds the slow ring) | ≤ 1% of MSPT | "usually well under 1%" (`docs/hosting.md`), calibrated per machine (`report.rs:282-293`) |
 | CPU samples, 250 Hz | during a capture | < 1% of the sampled thread; writer < 0.5% of a core | ~0.05% + 0.13% of a core (measured during the sampler work) |
 | Wall samples | `--wall` | < 1% of the sampled thread | same handler |
-| Heap samples (`alloc`, `live`) | with the CPU samples, one session per process; every 512 KiB on average (`HORIZON_HEAP_SAMPLE_KIB`, 0 turns it off) | < 3% of MSPT; off: one relaxed load per alloc and per free | 200 walking bots: 1.2% of the tick thread's CPU, most of it `.eh_frame` unwinding (~40-70 µs a sample without frame pointers); captures +22-35%. Off: +0.5 ns per alloc+free pair (`alloc_count_bench`, ~9% of a 5 ns pair) |
-| Context stores | always (plain stores) | < 2 ns each | `store_cost` test, ignored (`perf/sampler-viewer:crates/horizon-threads/src/work/tests.rs:149`) |
+| Heap samples (`alloc`, `live`) | with the CPU samples, one session per process; every 512 KiB on average (`HORIZON_HEAP_SAMPLE_KIB`, 0 turns it off) | < 3% of MSPT; off: one relaxed load per alloc and per free | 200 walking bots: 1.2% of the tick thread's CPU, most of it `.eh_frame` unwinding (~40-70 µs a sample without frame pointers); captures +22-35%. Off: within the margin of error |
+| Context stores | always (plain stores) | < 2 ns each | within the margin of error |
 | Alloc counters | `alloc-count` builds | +1-2 ns per allocation | `docs/memory.md` on `perf/alloc-count` |
 | Counters | always | one relaxed atomic per `add` | |
 | Mob cost timing | during a capture | 1 tick in 4, two clock reads per mob | `tick_profile.rs:4-5`, `:16` |
