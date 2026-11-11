@@ -97,29 +97,27 @@ impl Row {
 /// The licence family of an SPDX id or a `mods.toml` licence text.
 pub fn license_kind(license: &str) -> &'static str {
     let l = license.to_ascii_lowercase();
+    // Whole words of the text: "limited" holds "mit", "template" "mpl" and "Discord" "isc".
+    let has = |k: &str| {
+        l.split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|t| t == k)
+    };
     if l.is_empty() || l.starts_with("unknown") {
         "unknown"
     } else if l.contains("-nc") || l.contains("-nd") || l.contains("noncommercial") {
         "restricted"
     } else if l.contains("all-rights-reserved") || l.contains("all rights reserved") || l == "arr" {
         "all-rights-reserved"
-    } else if ["gpl", "mpl", "eupl", "general public"]
+    } else if ["gpl", "lgpl", "agpl", "mpl", "eupl"]
         .iter()
-        .any(|k| l.contains(k))
+        .any(|k| has(k))
+        || l.contains("general public")
     {
         "copyleft"
-    } else if [
-        "mit",
-        "apache",
-        "bsd",
-        "cc0",
-        "cc-by",
-        "unlicense",
-        "isc",
-        "zlib",
-    ]
-    .iter()
-    .any(|k| l.contains(k))
+    } else if ["mit", "apache", "bsd", "cc0", "unlicense", "isc", "zlib"]
+        .iter()
+        .any(|k| has(k))
+        || l.contains("cc-by")
     {
         "permissive"
     } else {
@@ -796,6 +794,13 @@ mod tests {
     #[test]
     fn licence_families() {
         assert_eq!(license_kind("MIT"), "permissive");
+        assert_eq!(license_kind("Apache-2.0"), "permissive");
+        assert_eq!(license_kind("BSD-3-Clause"), "permissive");
+        assert_eq!(license_kind("GPL-3.0-or-later"), "copyleft");
+        // Words that only hold a family's letters.
+        assert_eq!(license_kind("Custom, limited redistribution"), "custom");
+        assert_eq!(license_kind("See the template"), "custom");
+        assert_eq!(license_kind("Ask on Discord"), "custom");
         assert_eq!(license_kind("CC0-1.0"), "permissive");
         assert_eq!(license_kind("LGPL-3.0-only"), "copyleft");
         assert_eq!(
