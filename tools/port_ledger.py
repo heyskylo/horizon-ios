@@ -65,6 +65,11 @@ import subprocess
 import sys
 import tempfile
 
+try:
+    import lab
+except ImportError:
+    from . import lab
+
 ROOT = Path(os.environ.get("PORT_LEDGER_ROOT") or Path(__file__).resolve().parents[1])
 OUT = Path(os.environ.get("PORT_LEDGER_OUT") or ROOT / ".local" / "port-ledger")
 LEDGER = OUT / "ledger.json"
@@ -714,7 +719,7 @@ def parse_class_bytes(item):
 
 def default_jars():
     lock = json.loads((ROOT / "research-lock.json").read_text()) if (ROOT / "research-lock.json").exists() else {}
-    version = str((lock.get("minecraft") or {}).get("version") or lock.get("version") or "26.3")
+    version = str((lock.get("minecraft") or {}).get("version") or lock.get("version") or lab.VERSION)
     home = Path.home()
     candidates = sorted((ROOT / ".local" / "minecraft" / version).glob("*.jar")) + [
         home / "Library/Application Support/minecraft/versions" / version / f"{version}.jar",
@@ -976,7 +981,7 @@ def rust_files():
 
 def default_sources():
     lock = json.loads((ROOT / "research-lock.json").read_text()) if (ROOT / "research-lock.json").exists() else {}
-    version = (lock.get("minecraft") or {}).get("version") or lock.get("version") or "26.3"
+    version = (lock.get("minecraft") or {}).get("version") or lock.get("version") or lab.VERSION
     base = ROOT / ".local" / "minecraft" / str(version) / "sources"
     return [str(base / side) for side in ("client", "server") if (base / side).is_dir()]
 
