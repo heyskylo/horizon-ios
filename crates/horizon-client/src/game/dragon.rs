@@ -3673,9 +3673,9 @@ impl Dragon {
         let mut d = Self::new(position, yaw, seed);
         d.velocity = velocity;
         // Vanilla getFloatOr/getIntOr accept any numeric tag type.
-        if let Some(h) = nbt_value::float(tag.get("Health")) {
-            d.health = h as f32;
-        }
+        d.health = nbt_value::float(tag.get("Health")).map_or(d.health, |h| h as f32);
+        d.sitting_damage =
+            nbt_value::float(tag.get("sitting_damage_received")).unwrap_or(0.0) as f32;
         if let Some(p) = nbt_value::number(tag.get("DragonPhase")) {
             d.phase = Phase::from_id(p as i32);
         }
@@ -5082,6 +5082,25 @@ mod tests {
         let mut d = Dragon::new(Vec3::new(0.0, 70.0, 0.0), 0.0, 1);
         d.phase = phase;
         d
+    }
+
+    /// `EnderDragon.readAdditionalSaveData` reads `sitting_damage_received`
+    /// (`getFloatOr`, 0 when absent); the writer already saved it. Horizon
+    /// only wrote it, so a perched dragon that took a quarter of its health
+    /// but was saved before taking off came back with the damage forgotten.
+    #[test]
+    fn a_perched_dragons_damage_survives_the_chunk_save() {
+        let mut d = dragon(Phase::Flaming { ticks: 0 });
+        d.sitting_damage = 12.5;
+        let tag = d.to_nbt([1, 2, 3, 4], None);
+        let back = Dragon::from_nbt(&tag, 0).unwrap();
+        assert_eq!(back.sitting_damage, 12.5);
+        // No key at all reads as no damage accumulated.
+        let mut bare = tag.clone();
+        if let horizon_world::nbt::Tag::Compound(fields) = &mut bare {
+            fields.remove(&"sitting_damage_received".into());
+        }
+        assert_eq!(Dragon::from_nbt(&bare, 0).unwrap().sitting_damage, 0.0);
     }
     fn flying() -> Phase {
         Phase::Holding {

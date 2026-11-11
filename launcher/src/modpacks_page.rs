@@ -42,7 +42,10 @@ impl Launcher {
             let log = move |line: String| {
                 let _ = lines.send(Msg::PackLine(line));
             };
-            let result = job(&log);
+            // A panic in a step (a pack the port didn't expect) still ends the job: the page
+            // would stay busy, refusing every later step, until the launcher restarts.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&log)))
+                .unwrap_or_else(|_| Err(tr("Something went wrong.").into()));
             let _ = tx.send(Msg::PackDone(result.map(Box::new)));
         });
     }
