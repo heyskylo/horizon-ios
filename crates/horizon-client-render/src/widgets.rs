@@ -16,6 +16,8 @@ pub enum Cursor {
     NotAllowed,
     /// `CursorTypes.RESIZE_NS`: a scroller held vertically (`MerchantScreen`).
     ResizeNs,
+    /// `CursorTypes.RESIZE_EW`: a slider held horizontally.
+    ResizeEw,
 }
 
 thread_local! {
@@ -36,6 +38,19 @@ pub fn widget_cursor(hovered: bool, active: bool) {
             Cursor::PointingHand
         } else {
             Cursor::NotAllowed
+        });
+    }
+}
+/// `AbstractSliderButton.handleCursor`: a dragged slider resizes, a hovered
+/// one points, and an inactive one is not allowed.
+pub fn slider_cursor(hovered: bool, active: bool, dragging: bool) {
+    if hovered {
+        request_cursor(if !active {
+            Cursor::NotAllowed
+        } else if dragging {
+            Cursor::ResizeEw
+        } else {
+            Cursor::PointingHand
         });
     }
 }
