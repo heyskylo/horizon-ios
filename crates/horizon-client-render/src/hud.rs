@@ -99,9 +99,7 @@ pub struct HudAtlas {
     pub glint: (Vec<u8>, u32, u32),
     /// `misc/enchanted_glint_armor`, the armour layers' `GlintSampler`.
     pub glint_armor: (Vec<u8>, u32, u32),
-    /// A resource pack's own `core/text` shader for the GUI's text, translated;
-    /// none draws the text natively.
-    pub text_shader: Option<std::sync::Arc<crate::core_shader::CoreProgram>>,
+    pub text_shaders: crate::gfx::core_text::TextShaders,
     /// A resource pack's own `core/rendertype_lines` shader for the block outline, translated;
     /// none draws the outline natively.
     pub lines_shader: Option<std::sync::Arc<crate::core_shader::CoreProgram>>,
@@ -978,7 +976,7 @@ impl HudAtlas {
             font: crate::font::Font::metrics(root),
             glint: (Vec::new(), 1, 1),
             glint_armor: (Vec::new(), 1, 1),
-            text_shader: None,
+            text_shaders: Default::default(),
             lines_shader: None,
             sky_shader: None,
             stars_shader: None,
@@ -1047,7 +1045,7 @@ impl HudAtlas {
             glint: (vec![0; 4], 1, 1),
             glint_armor: (vec![0; 4], 1, 1),
             white,
-            text_shader: None,
+            text_shaders: Default::default(),
             lines_shader: None,
             sky_shader: None,
             stars_shader: None,
@@ -1584,7 +1582,7 @@ impl HudAtlas {
             sprite_animations,
             glint,
             glint_armor,
-            text_shader: None,
+            text_shaders: Default::default(),
             lines_shader: None,
             sky_shader: None,
             stars_shader: None,

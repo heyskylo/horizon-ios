@@ -86,10 +86,11 @@ pub(super) fn build_renderer(
         .collect();
     renderer
         .hud
-        .set_text_shader(&renderer.device, atlas.text_shader.as_deref());
+        .set_text_shader(&renderer.device, atlas.text_shaders.gui.as_deref());
     pack.item_renderer
         .prepare_glint_atlas(renderer.device.limits().max_texture_dimension_2d, filtering)?;
     renderer.set_lines_shader(atlas.lines_shader.as_deref());
+    renderer.set_world_text_shaders(&atlas.text_shaders);
     renderer.set_sky_shaders(atlas.sky_shader.as_deref(), atlas.stars_shader.as_deref());
     renderer.set_custom_sky(&*pack.custom_sky);
     renderer.set_shared_material_maps(&atlas.material_maps);

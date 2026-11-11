@@ -190,6 +190,7 @@ pub mod capture;
 pub mod compositor;
 pub(crate) mod core_lines;
 pub(crate) mod core_sky;
+pub(crate) mod core_text;
 mod cull;
 mod dx12_compiler;
 mod end_sky;
@@ -1164,6 +1165,7 @@ pub struct Renderer {
     lines_secondary: wgpu::RenderPipeline,
     /// A resource pack's `core/rendertype_lines`, which draws the block outline in their place.
     core_lines: Option<core_lines::CoreLines>,
+    core_text: Option<core_text::CoreText>,
     /// The packs' `core/sky` and `core/stars`, drawn in place of the native sky and stars.
     core_sky: Option<core_sky::CoreSky>,
     /// Gizmo lines: opaque ones (`RenderTypes.lines`, which writes depth),
@@ -5093,6 +5095,7 @@ impl Renderer {
             lines,
             lines_secondary,
             core_lines: None,
+            core_text: None,
             core_sky: None,
             debug_lines_opaque,
             debug_lines,
@@ -9405,6 +9408,8 @@ impl Renderer {
                 &self.entity_atlas,
             )
         };
+        let pack = self.pack_blocks(frame, fog, globals.fog_ends);
+        self.write_core_text(&pack, views.primary(), pose, jitter, fog_color);
         let outline_edges = frame.outline.len().min(MAX_OUTLINE_EDGES as usize);
         if outline_edges > 0 {
             // The same per-line colour and pixel width layout as the gizmo lines. A high
@@ -9438,20 +9443,14 @@ impl Renderer {
             self.uploads
                 .buffer(&mut encoder, &self.outline, 0, bytemuck::cast_slice(lines));
             if let Some(core) = &self.core_lines {
-                let size = [self.config.width, self.config.height];
-                let block = crate::post_chain::Globals {
-                    glint_alpha: frame.glint_alpha,
-                    ..frame.post_effects.globals
-                };
-                let [sky_end, clouds_end, ..] = globals.fog_ends;
                 let data = core_lines::uniforms(
-                    block.bytes(size, frame.post_effects.menu_blur_radius as i32),
+                    pack.globals,
                     views.primary(),
                     pose,
                     jitter,
                     globals.outline_params[3],
                     fog_color,
-                    [fog[0], fog[1], fog[2], fog[3], sky_end, clouds_end],
+                    pack.fog,
                 );
                 self.uploads.buffer(&mut encoder, core.uniform(), 0, &data);
             }
@@ -9461,14 +9460,7 @@ impl Renderer {
         if let Some(core) = &self.core_sky
             && !frame.title
         {
-            let size = [self.config.width, self.config.height];
-            let block = crate::post_chain::Globals {
-                glint_alpha: frame.glint_alpha,
-                ..frame.post_effects.globals
-            }
-            .bytes(size, frame.post_effects.menu_blur_radius as i32);
-            let [sky_end, clouds_end, ..] = globals.fog_ends;
-            let fog = [fog[0], fog[1], fog[2], fog[3], sky_end, clouds_end];
+            let (block, fog) = (pack.globals, pack.fog);
             let view = views.primary();
             // Far enough for the disc's rim, 512 out: the sky draws without a depth test.
             let fov = (2.0 * view.tan_half_fov.atan()).to_degrees();
@@ -11026,7 +11018,7 @@ impl Renderer {
             }
             if text_quads > 0 && !oit_on {
                 pass.set_pipeline(warped.map_or(&self.text_polygon_offset_pipeline, |w| &w.text));
-                pass.set_bind_group(0, &self.entity_group, &[]);
+                self.bind_world_text(&mut pass, warped.is_none(), false);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 pass.draw_indexed(0..text_quads * 6, (entity_quads * 4) as i32, 0..1);
                 pass.set_bind_group(0, &self.group, &[]);
@@ -11584,7 +11576,7 @@ impl Renderer {
             // LevelRenderer.executeSeeThrough, after the rest of the world.
             if see_through_quads > 0 {
                 pass.set_pipeline(&self.see_through_pipeline);
-                pass.set_bind_group(0, &self.entity_group, &[]);
+                self.bind_world_text(&mut pass, true, true);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 pass.draw_indexed(
                     0..see_through_quads * 6,
