@@ -129,13 +129,13 @@ fn a_capture_at_a_path_of_its_own_makes_the_folders_and_replaces_what_was_there(
 }
 
 #[test]
-fn the_saved_line_names_the_path_and_the_address() {
+fn the_saved_line_names_the_file_and_no_address() {
     let line = files::saved_line(Path::new("reports/profile-20251107-143844Z.hzperf"));
     assert!(
         line.contains("reports/profile-20251107-143844Z.hzperf"),
         "{line}"
     );
-    assert!(line.contains(files::PERF_UI_URL), "{line}");
+    assert!(!line.contains("://"), "{line}");
 }
 
 #[test]

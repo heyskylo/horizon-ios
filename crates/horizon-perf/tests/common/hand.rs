@@ -22,7 +22,7 @@ pub const NAMES: [&str; 19] = [
     "process.resident_mb",
     "heap_by_tag_mb[chunk columns]",
     "heap_by_tag_mb[lod]",
-    "client_columns.columns",
+    "columns.columns",
     "streaming.updates",
     "kind",
 ];
@@ -236,7 +236,7 @@ pub fn capture(n: &Names) -> Vec<Field> {
             ("process.resident_mb", 1000.0),
             ("heap_by_tag_mb[chunk columns]", 2000.0),
             ("heap_by_tag_mb[lod]", 400.0),
-            ("client_columns.columns", 100.0),
+            ("columns.columns", 100.0),
         ],
     ));
     f.push(snapshot(
@@ -247,7 +247,7 @@ pub fn capture(n: &Names) -> Vec<Field> {
             ("process.resident_mb", 1100.0),
             ("heap_by_tag_mb[chunk columns]", 2096.0),
             ("heap_by_tag_mb[lod]", 400.0),
-            ("client_columns.columns", 160.0),
+            ("columns.columns", 160.0),
         ],
     ));
     f.push(Field::Net(NetTraffic {

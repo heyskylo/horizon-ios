@@ -11,6 +11,12 @@
 /// memory.
 pub use horizon_system as system;
 
+/// The benchmark report format and its hardware probes (`horizon-bench`).
+pub use horizon_bench as bench;
+
+/// The `.hzperf` capture contract and its files (`horizon-perf-format`).
+pub use horizon_perf_format as perf_format;
+
 /// The pinned Minecraft version: its id, protocol and data version.
 pub use horizon_core::version;
 
@@ -55,7 +61,7 @@ pub mod hooks {
         PlayerModel, PlayerModels, Quad, SpriteStore, Sprites, View,
     };
     pub use horizon_hooks::{
-        Activity, Client, Dimension, GameMode, Hooks, Play, Started, TooLate, register, seat,
+        Activity, Client, Dimension, GameMode, Hooks, Play, Started, TooLate, perf, register, seat,
         tunnel,
     };
 }

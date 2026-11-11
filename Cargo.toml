@@ -39,6 +39,7 @@ members = [
     "crates/horizon-bench",
     "crates/horizon-perf-format",
     "crates/horizon-perf",
+    "crates/horizon-perf-share",
     "crates/horizon-friends",
     "crates/horizon-relay",
     "crates/horizon-mods",

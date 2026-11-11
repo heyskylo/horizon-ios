@@ -6,22 +6,19 @@ use super::integrated::{
 };
 use super::memory::{MEMORY_EVERY_S, flatten_report};
 use super::perf_remote::Served;
+use super::profile_lines::{self as lines, Notice};
 use crate::Result;
 use horizon_client::client_perf::{
     self, ClientPerf,
     request::{
-        self, Failed, GpuSwitch, Marked, ProfileSide, Request, StartOptions, Started, Status,
-        Stopped, Traced,
+        self, Failed, GpuSwitch, Marked, Opened, ProfileSide, Request, Shared, StartOptions,
+        Started, Status, Stopped, Traced,
     },
 };
 use horizon_client::command::{Arg, Dispatcher, PROFILER_GPU, Registries};
-use horizon_client::hud::MARK_SPRITE;
 use horizon_client::perf_net::Link;
 use horizon_client::server_perf::{self, TickDetail, WorldCounts};
 use horizon_client::spans::{self, Span};
-use horizon_client::text::{
-    ClickEvent, DARK_GRAY, GOLD, GRAY, InlineObject, RED, Style, Text, WHITE,
-};
 use horizon_perf_format::{
     files,
     v1::{BenchResult, StopReason, Trigger},
@@ -32,7 +29,10 @@ use std::sync::{
     Arc,
     mpsc::{Receiver, Sender, TryRecvError},
 };
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// How often a progress notice is set again so the action bar keeps it until the work is done.
+const PROGRESS_EVERY: Duration = Duration::from_secs(2);
 
 /// The folder `HORIZON_PROFILE` names; captures go there instead of the game home's `reports/`.
 const ENV_DIR: &str = "HORIZON_PROFILE";
@@ -97,6 +97,25 @@ struct ServerOnly {
     began: f64,
 }
 
+/// An action bar notice that is set again every [`PROGRESS_EVERY`] until its work is done.
+struct Progress {
+    working: Working,
+    due: Instant,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Working {
+    Saving,
+    Uploading,
+}
+
+/// What a player asked of a saved capture, through the captures hook.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Job {
+    Open,
+    Share,
+}
+
 /// The game's capture state: the health history, the running capture and who is waiting on it.
 pub(super) struct Profile {
     /// The server thread's health history and its side of a capture; set on its own Game only.
@@ -111,9 +130,13 @@ pub(super) struct Profile {
     memory_due: Option<(f64, u32)>,
     /// Where the answer to a `/profiler` request that finishes later arrives.
     chat_answer: Option<Receiver<String>>,
-    uploads: VecDeque<PathBuf>,
-    upload: Option<(PathBuf, Receiver<std::result::Result<String, String>>)>,
+    jobs: VecDeque<(PathBuf, Job)>,
+    job: Option<(PathBuf, Job, Receiver<std::result::Result<String, String>>)>,
     last_capture: Option<PathBuf>,
+    /// How long the capture had run when its stop was asked, for the saved line.
+    stopped_after: Option<f64>,
+    /// The action bar notice that stays up until the work it names is done.
+    progress: Option<Progress>,
     /// `profile stop` waits for the file to be whole.
     reply: Option<Sender<String>>,
     spans_were_on: bool,
@@ -148,9 +171,11 @@ impl Profile {
             started_by: Trigger::Unspecified,
             memory_due: None,
             chat_answer: None,
-            uploads: VecDeque::new(),
-            upload: None,
+            jobs: VecDeque::new(),
+            job: None,
             last_capture: None,
+            stopped_after: None,
+            progress: None,
             reply: None,
             spans_were_on: false,
             trace_file: None,
@@ -306,7 +331,7 @@ pub(super) fn reply_text<T: serde::Serialize>(reply: &T) -> String {
 struct ChatAnswer {
     error: Option<String>,
     path: Option<String>,
-    open_at: Option<String>,
+    removed: Option<Vec<String>>,
 }
 
 /// The words after `/profiler` when `command`, without its slash, is that command.
@@ -316,17 +341,51 @@ pub(super) fn profiler_args(command: &str) -> Option<&str> {
         .filter(|rest| rest.is_empty() || rest.starts_with(' '))
 }
 
-/// A command in a chat line that runs when clicked.
-fn command_link(command: &str) -> Text {
-    Text::styled(
-        command,
-        Style {
-            color: Some(GOLD),
-            underlined: Some(true),
-            click: Some(ClickEvent::RunCommand(command.to_owned())),
-            ..Style::default()
-        },
-    )
+fn unavailable() -> String {
+    horizon_client::lang::get("horizon.perf.unavailable")
+}
+
+/// A path a request names, relative to the game's home.
+fn game_path(file: &Path) -> PathBuf {
+    horizon_client::logging::game_home().join(file)
+}
+
+/// Why a `/profiler open` or `share` found no capture.
+#[derive(Debug, PartialEq, Eq)]
+enum Missing {
+    Last,
+    Named(String),
+}
+
+/// The capture `id` names, a capture file in `reports` (this session's `last` one when no id).
+fn resolve_capture(
+    last: Option<&Path>,
+    reports: &Path,
+    id: Option<&str>,
+) -> std::result::Result<PathBuf, Missing> {
+    let Some(id) = id else {
+        return last.map(Path::to_path_buf).ok_or(Missing::Last);
+    };
+    if let Some(last) = last.filter(|p| p.file_stem().is_some_and(|s| s == id)) {
+        return Ok(last.to_path_buf());
+    }
+    let name = format!("{id}.hzperf");
+    let path = reports.join(&name);
+    if files::is_capture_name(&name) && path.is_file() {
+        Ok(path)
+    } else {
+        Err(Missing::Named(id.to_owned()))
+    }
+}
+
+/// The captures hook's answer: the share link for [`Job::Share`], nothing for [`Job::Open`].
+fn run_job(job: Job, file: &Path) -> std::result::Result<String, String> {
+    let captures = horizon_hooks::engine::captures()
+        .ok_or_else(|| horizon_client::lang::get("horizon.perf.unavailable"))?;
+    match job {
+        Job::Open => captures.open(file).map(|()| String::new()),
+        Job::Share => captures.share(file),
+    }
 }
 
 /// A `/profiler` line the tree parsed, as the words `request::parse` reads: `[SIDE] ACTION [--gpu=MODE] [NAME]`.
@@ -346,23 +405,6 @@ fn profiler_words(literals: &[String], name: Option<&str>) -> Vec<String> {
     }));
     words.extend(name.map(str::to_owned));
     words
-}
-
-/// Spark's chat shape: a dim tag round Horizon's mark, then the line in gray.
-fn profiler_line(body: Text, color: u32) -> Text {
-    let mark = Style {
-        color: Some(WHITE),
-        inline_object: Some(InlineObject::Atlas {
-            atlas: "minecraft:gui".into(),
-            sprite: MARK_SPRITE.into(),
-            fallback: "H".into(),
-        }),
-        ..Style::default()
-    };
-    Text::colored("[", DARK_GRAY)
-        .append(Text::styled("\u{fffc}", mark))
-        .append(Text::colored("] ", DARK_GRAY))
-        .append(body.with_style(&Style::color(color)))
 }
 
 impl Game<'_> {
@@ -411,6 +453,28 @@ impl Game<'_> {
                 Ok(None)
             }
             Request::Status => json_of(&self.profile.status()),
+            Request::Open(file) => {
+                let captures = horizon_hooks::engine::captures().ok_or_else(unavailable)?;
+                captures.open(&game_path(&file))?;
+                json_of(&Opened {
+                    ok: true,
+                    viewer: captures.viewer().to_owned(),
+                })
+            }
+            Request::Share(file) => {
+                let file = game_path(&file);
+                let reply = reply.clone();
+                horizon_hooks::engine::captures().ok_or_else(unavailable)?;
+                std::thread::Builder::new()
+                    .name("perf-share".into())
+                    .spawn(move || {
+                        let _ = reply.send(match run_job(Job::Share, &file) {
+                            Ok(url) => reply_text(&Shared { ok: true, url }),
+                            Err(error) => reply_text(&Failed { error }),
+                        });
+                    })?;
+                Ok(None)
+            }
             Request::Mark(name) => {
                 let (client, server) = self.profile.mark(parsed.side, &name);
                 let posted = server.filter(|_| {
@@ -489,6 +553,7 @@ impl Game<'_> {
             trigger
         };
         self.profile.server_only = None;
+        self.profile.stopped_after = None;
         let start = client_perf::start_message(
             self.integrated.is_some(),
             horizon_client::telemetry::gpu_name().as_deref(),
@@ -595,6 +660,9 @@ impl Game<'_> {
             self.take_memory_snapshot("stop");
         }
         let t = self.profile.perf.now();
+        if self.profile.stopped_after.is_none() {
+            self.profile.stopped_after = self.profile.perf.status(t).map(|s| s.elapsed_s);
+        }
         let gpu = self.gpu_readout();
         let server = self.profile.server_live();
         if !self.profile.perf.stop_with(t, reason, gpu, bench) {
@@ -619,164 +687,178 @@ impl Game<'_> {
         let line = format!("profiler{args}");
         let tree = Dispatcher::profiler();
         let parse = tree.parse(&line, &Registries::default());
-        let (literals, name) = match parse.executable() {
+        let (literals, name, id) = match parse.executable() {
             Ok((context, _)) => (
                 context.literals.clone(),
                 match context.get("name") {
                     Some(Arg::Str(name)) => Some(name.clone()),
                     _ => None,
                 },
+                match context.get("id") {
+                    Some(Arg::Str(id)) => Some(id.clone()),
+                    _ => None,
+                },
             ),
             Err(e) => return self.syntax_failure(&e, &line),
         };
-        if literals.get(1).map(String::as_str) == Some("share") {
-            if let Some(path) = self.profile.last_capture.clone() {
-                self.queue_profile_upload(path, true);
-            } else {
-                self.profiler_refused(Text::translate("horizon.perf.share_missing", &[]));
-            }
+        if let Some(job) = match literals.get(1).map(String::as_str) {
+            Some("open") => Some(Job::Open),
+            Some("share") => Some(Job::Share),
+            _ => None,
+        } {
+            self.profiler_job(job, id.as_deref());
             return;
         }
         let owned = profiler_words(&literals, name.as_deref());
         let words: Vec<&str> = owned.iter().map(String::as_str).collect();
         let parsed = match request::parse(&words) {
             Ok(parsed) => parsed,
-            Err(e) => return self.profiler_error(&e.to_string()),
+            Err(e) => return self.notify(lines::error(&e.to_string())),
         };
         let running = self.profile.status().capturing;
-        let refused = match parsed.request {
-            Request::Start(_) if running => Some(Text::translate(
-                "horizon.perf.already",
-                &[command_link("/profiler stop")],
-            )),
-            Request::Stop { .. } if !running => Some(Text::translate(
-                "horizon.perf.nothing",
-                &[command_link("/profiler start")],
-            )),
-            Request::Mark(_) if !running => Some(Text::translate("horizon.perf.mark_idle", &[])),
-            _ => None,
+        let idle_answer = match parsed.request {
+            Request::Start(_) => running,
+            Request::Stop { .. } | Request::Mark(_) => !running,
+            _ => false,
         };
-        if let Some(refused) = refused {
-            self.profiler_refused(refused);
+        if idle_answer {
+            self.profiler_status();
             return;
+        }
+        let stopping = matches!(parsed.request, Request::Stop { .. });
+        if stopping {
+            self.profile.stopped_after = self.profile.status().elapsed_s;
         }
         let (reply, answer) = std::sync::mpsc::channel();
         match self.run_profile(&words, &reply, Trigger::Command) {
             Ok(None) => {
-                if matches!(parsed.request, Request::Stop { .. }) {
-                    self.profiler_say(Text::translate("horizon.perf.saving", &[]));
+                if stopping {
+                    self.profiler_work(Working::Saving);
                 }
                 self.profile.chat_answer = Some(answer);
             }
             Ok(Some(_)) => match parsed.request {
-                Request::Start(_) => self.profiler_started(parsed.side),
+                Request::Start(_) => self.notify(lines::started(parsed.side)),
                 Request::Status => self.profiler_status(),
-                Request::Mark(name) => self.profiler_say(Text::translate(
-                    "horizon.perf.marked",
-                    &[Text::literal(name)],
-                )),
-                Request::Stop { .. } => {}
+                Request::Mark(name) => self.notify(lines::marked(&name)),
+                Request::Stop { .. } | Request::Open(_) | Request::Share(_) => {}
             },
-            Err(e) => self.profiler_error(&e.to_string()),
+            Err(e) => self.notify(lines::error(&e.to_string())),
         }
     }
 
-    fn profiler_say(&mut self, line: Text) {
-        self.system_message(profiler_line(line, GRAY));
+    /// Puts `notice` in the chat history or on the action bar.
+    fn notify(&mut self, notice: Notice) {
+        match notice {
+            Notice::Chat(line) => self.system_message(line),
+            Notice::Bar(line) => self.send_overlay_message(line),
+        }
     }
 
-    fn profiler_refused(&mut self, line: Text) {
-        self.system_message(profiler_line(line, RED));
+    /// Shows the notice for `working` now and again every [`PROGRESS_EVERY`] until [`Game::profiler_done`].
+    fn profiler_work(&mut self, working: Working) {
+        self.profile.progress = Some(Progress {
+            working,
+            due: Instant::now() + PROGRESS_EVERY,
+        });
+        self.notify(Self::progress_notice(working));
     }
 
-    fn profiler_started(&mut self, side: Option<ProfileSide>) {
-        let key = match side {
-            None => "horizon.perf.started",
-            Some(ProfileSide::Client) => "horizon.perf.started.client",
-            Some(ProfileSide::Server) => "horizon.perf.started.server",
+    fn progress_notice(working: Working) -> Notice {
+        match working {
+            Working::Saving => lines::saving(),
+            Working::Uploading => lines::uploading(),
+        }
+    }
+
+    fn profiler_done(&mut self, working: Working) {
+        if self
+            .profile
+            .progress
+            .as_ref()
+            .is_some_and(|p| p.working == working)
+        {
+            self.profile.progress = None;
+        }
+    }
+
+    fn poll_progress(&mut self) {
+        let Some(progress) = &mut self.profile.progress else {
+            return;
         };
-        self.profiler_say(Text::translate(key, &[command_link("/profiler stop")]));
+        if Instant::now() < progress.due {
+            return;
+        }
+        progress.due += PROGRESS_EVERY;
+        let working = progress.working;
+        self.notify(Self::progress_notice(working));
     }
 
     fn profiler_status(&mut self) {
         let status = self.profile.status();
-        let client = status.sides.contains(&ProfileSide::Client);
-        let server = status.sides.contains(&ProfileSide::Server);
-        let line = match status.elapsed_s.filter(|_| status.capturing) {
-            Some(elapsed) => Text::translate(
-                match (client, server) {
-                    (true, false) => "horizon.perf.running.client",
-                    (false, true) => "horizon.perf.running.server",
-                    _ => "horizon.perf.running.both",
-                },
-                &[Text::literal(format!("{elapsed:.0}"))],
-            ),
-            None => Text::translate("horizon.perf.idle", &[command_link("/profiler start")]),
-        };
-        self.profiler_say(line);
-    }
-
-    fn profiler_error(&mut self, error: &str) {
-        self.profiler_refused(Text::translate(
-            "horizon.perf.error",
-            &[Text::literal(error)],
+        self.notify(lines::status(
+            &status.sides,
+            status.elapsed_s.filter(|_| status.capturing),
         ));
     }
 
     /// A capture from chat that asked for both sides, told the server refused to join it.
     pub(super) fn profiler_client_only(&mut self, why: &str) {
         if self.profile.started_by == Trigger::Command {
-            self.profiler_refused(Text::translate(
-                "horizon.perf.client_only",
-                &[Text::literal(why)],
-            ));
+            self.notify(lines::client_only(why));
         }
     }
 
     fn profiler_saved(&mut self, path: &str) {
         let full = horizon_client::logging::game_home().join(path);
         self.profile.last_capture = Some(full.clone());
-        self.queue_profile_upload(full, false);
+        let secs = self.profile.stopped_after.take().unwrap_or_default();
+        let can_open_and_share = horizon_hooks::engine::captures().is_some();
+        self.notify(lines::saved(secs, &full, path, can_open_and_share));
     }
 
-    /// The saved file as a chat link that opens its folder.
-    fn capture_file_link(path: &Path) -> Text {
-        let folder = path.parent().unwrap_or(path).to_string_lossy().into_owned();
-        let home = horizon_client::logging::game_home();
-        let shown = path
-            .strip_prefix(&home)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .into_owned();
-        Text::styled(
-            shown,
-            Style {
-                underlined: Some(true),
-                click: Some(ClickEvent::OpenFile(folder)),
-                ..Style::default()
+    fn capture_named(&self, id: Option<&str>) -> std::result::Result<PathBuf, Notice> {
+        resolve_capture(self.profile.last_capture.as_deref(), &reports_dir(), id).map_err(
+            |missing| match missing {
+                Missing::Last => lines::share_missing(),
+                Missing::Named(id) => lines::not_found(&id),
             },
         )
     }
 
-    /// `announce`: say it starts; a stop already said it uploads.
-    fn queue_profile_upload(&mut self, path: PathBuf, announce: bool) {
-        if !self.profile.uploads.contains(&path)
-            && !self
-                .profile
-                .upload
-                .as_ref()
-                .is_some_and(|(active, _)| *active == path)
-        {
-            self.profile.uploads.push_back(path);
-            if announce {
-                self.profiler_say(Text::translate("horizon.perf.uploading", &[]));
+    /// `/profiler open|share [ID]`: runs the captures hook on a saved capture, off the game thread.
+    fn profiler_job(&mut self, job: Job, id: Option<&str>) {
+        if horizon_hooks::engine::captures().is_none() {
+            return self.notify(lines::unavailable());
+        }
+        match self.capture_named(id) {
+            Ok(path) => self.queue_profile_job(path, job),
+            Err(refused) => self.notify(refused),
+        }
+    }
+
+    fn queue_profile_job(&mut self, path: PathBuf, job: Job) {
+        let queued = self
+            .profile
+            .jobs
+            .iter()
+            .any(|(p, j)| *p == path && *j == job);
+        let active = self
+            .profile
+            .job
+            .as_ref()
+            .is_some_and(|(p, j, _)| *p == path && *j == job);
+        if !queued && !active {
+            self.profile.jobs.push_back((path, job));
+            if job == Job::Share {
+                self.profiler_work(Working::Uploading);
             }
         }
     }
 
-    fn poll_profile_upload(&mut self) {
-        if let Some((file, receiver)) = &self.profile.upload {
-            let file = file.clone();
+    fn poll_profile_job(&mut self) {
+        if let Some((file, job, receiver)) = &self.profile.job {
+            let (file, job) = (file.clone(), *job);
             let result = match receiver.try_recv() {
                 Ok(result) => result,
                 Err(TryRecvError::Empty) => return,
@@ -784,64 +866,43 @@ impl Game<'_> {
                     Err(horizon_client::lang::get("horizon.perf.upload_interrupted"))
                 }
             };
-            self.profile.upload = None;
-            match result {
-                Ok(url) => {
-                    let saved = Text::translate(
-                        "horizon.perf.saved",
-                        &[Text::literal(Self::capture_file_link(&file).plain())],
-                    );
-                    let link = Text::styled(
-                        &url,
-                        Style {
-                            color: Some(GRAY),
-                            underlined: Some(true),
-                            click: Some(ClickEvent::OpenUrl(url.clone())),
-                            hover: Some(Box::new(saved)),
-                            ..Style::default()
-                        },
-                    );
-                    log::info!("Horizon: shared performance capture: {url}");
-                    self.profiler_say(Text::translate("horizon.perf.shared", &[]));
-                    self.system_message(link);
+            self.profile.job = None;
+            let shown = shown(&file);
+            match (job, result) {
+                (Job::Open, Ok(_)) => self.notify(lines::opened()),
+                (Job::Open, Err(error)) => {
+                    self.notify(lines::open_failed(&error, &file, &shown));
                 }
-                Err(error) => self.profiler_refused(Text::translate(
-                    "horizon.perf.upload_failed",
-                    &[
-                        Text::literal(error),
-                        Self::capture_file_link(&file),
-                        command_link("/profiler share"),
-                    ],
-                )),
+                (Job::Share, Ok(url)) => {
+                    self.profiler_done(Working::Uploading);
+                    log::info!("Horizon: shared performance capture: {url}");
+                    self.notify(lines::shared(&url));
+                }
+                (Job::Share, Err(error)) => {
+                    self.profiler_done(Working::Uploading);
+                    self.notify(lines::upload_failed(&error, &file));
+                }
             }
         }
-        if let Some(path) = self.profile.uploads.pop_front() {
-            let endpoint = std::env::var("PERF_UPLOAD_URL")
-                .unwrap_or_else(|_| horizon_perf::sharing::DEFAULT_UPLOAD_URL.to_owned());
+        if let Some((path, job)) = self.profile.jobs.pop_front() {
             let (send, receive) = std::sync::mpsc::channel();
             let file = path.clone();
             match std::thread::Builder::new()
-                .name("perf-upload".into())
+                .name("perf-share".into())
                 .spawn(move || {
-                    let result =
-                        horizon_perf::sharing::share_saved(&endpoint, &file).map(|reply| reply.url);
-                    let _ = send.send(result);
+                    let _ = send.send(run_job(job, &file));
                 }) {
-                Ok(_) => self.profile.upload = Some((path, receive)),
-                Err(error) => self.profiler_refused(Text::translate(
-                    "horizon.perf.upload_failed",
-                    &[
-                        Text::literal(error.to_string()),
-                        Self::capture_file_link(&path),
-                        command_link("/profiler share"),
-                    ],
-                )),
+                Ok(_) => self.profile.job = Some((path, job, receive)),
+                Err(error) => {
+                    self.profiler_done(Working::Uploading);
+                    self.notify(lines::error(&error.to_string()));
+                }
             }
         }
     }
 
     fn take_memory_snapshot(&mut self, label: &str) {
-        let rows = flatten_report(&self.memory_report());
+        let rows = flatten_report(&self.memory_value());
         let t = self.profile.perf.now();
         self.profile.perf.memory_snapshot(t, label, &rows);
     }
@@ -879,18 +940,20 @@ impl Game<'_> {
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => {
                 self.profile.chat_answer = None;
+                self.profiler_done(Working::Saving);
                 return;
             }
         };
         self.profile.chat_answer = None;
+        self.profiler_done(Working::Saving);
         match serde_json::from_str::<ChatAnswer>(&text) {
-            Ok(ChatAnswer { error: Some(e), .. }) => self.profiler_error(&e),
+            Ok(ChatAnswer { error: Some(e), .. }) => self.notify(lines::error(&e)),
             Ok(ChatAnswer {
-                open_at: Some(_),
+                removed: Some(_),
                 path: Some(path),
                 ..
             }) => self.profiler_saved(&path),
-            _ => self.profiler_started(Some(ProfileSide::Server)),
+            _ => self.notify(lines::started(Some(ProfileSide::Server))),
         }
     }
 
@@ -979,11 +1042,12 @@ impl Game<'_> {
     pub(super) fn poll_profile(&mut self) {
         self.poll_server_link();
         self.poll_chat_answer();
+        self.poll_progress();
         self.poll_memory_snapshot();
         for saved in self.profile.perf.take_saved(false) {
             self.profile_saved(saved);
         }
-        self.poll_profile_upload();
+        self.poll_profile_job();
     }
 
     /// Ends the capture a closing game still has, and waits for its file.
@@ -1013,6 +1077,8 @@ impl Game<'_> {
                     log::info!("Horizon: removed the oldest capture {}", path.display());
                 }
                 log::info!("Horizon: {}", files::saved_line(&saved.path));
+                self.profile.last_capture =
+                    Some(horizon_client::logging::game_home().join(shown(&saved.path)));
                 if let Some(reply) = reply {
                     let _ = reply.send(reply_text(&Stopped {
                         ok: true,
@@ -1024,11 +1090,12 @@ impl Game<'_> {
                         .flatten()
                         .collect(),
                         path: shown(&saved.path),
-                        open_at: files::PERF_UI_URL.to_owned(),
+                        open_at: horizon_client::client_perf::request::viewer(),
                         removed: saved.deleted.iter().map(|p| shown(p)).collect(),
                     }));
                 }
                 if in_chat {
+                    self.profiler_done(Working::Saving);
                     self.profiler_saved(&shown(&saved.path));
                 }
             }
@@ -1040,7 +1107,8 @@ impl Game<'_> {
                     }));
                 }
                 if in_chat {
-                    self.profiler_error(&e.to_string());
+                    self.profiler_done(Working::Saving);
+                    self.notify(lines::error(&e.to_string()));
                 }
             }
         }
@@ -1094,6 +1162,25 @@ mod tests {
         ] {
             assert!(chat_request(line).is_err(), "{line}");
         }
+    }
+
+    #[test]
+    fn open_and_share_find_a_named_capture_in_the_reports_folder_or_the_last_one() {
+        let dir = std::env::temp_dir().join(format!("horizon-resolve-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let name = "profile-20251107-143844Z";
+        std::fs::write(dir.join(format!("{name}.hzperf")), b"x").unwrap();
+        std::fs::write(dir.join("notes.hzperf"), b"x").unwrap();
+        let found = |id| resolve_capture(None, &dir, id);
+        assert_eq!(found(Some(name)), Ok(dir.join(format!("{name}.hzperf"))));
+        assert_eq!(found(None), Err(Missing::Last));
+        for id in ["notes", "profile-20251107-000000Z", "..", "../notes"] {
+            assert_eq!(found(Some(id)), Err(Missing::Named(id.into())), "{id}");
+        }
+        let last = dir.join("trace.hzperf");
+        assert_eq!(resolve_capture(Some(&last), &dir, None), Ok(last.clone()));
+        assert_eq!(resolve_capture(Some(&last), &dir, Some("trace")), Ok(last));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn start<'a>(

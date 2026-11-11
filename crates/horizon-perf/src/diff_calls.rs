@@ -52,10 +52,10 @@ pub(crate) fn call_series(
     let mut seen_node = vec![false; nodes];
     let mut kept = 0usize;
     for first in (0..raw).step_by(merge) {
-        // Blocks count when they start inside the window, so the edges sit half a block early.
+        // A window overlapping blocks counts them, so the edges sit a quarter block inside.
         let window = Window {
-            from: first as f64 * width - width / 2.0,
-            to: (first + merge) as f64 * width - width / 2.0,
+            from: (first as f64 + 0.25) * width,
+            to: ((first + merge) as f64 - 0.25) * width,
         };
         let units = samples.units(thread, false, window);
         if units.estimated || units.count == 0 {

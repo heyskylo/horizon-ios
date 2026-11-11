@@ -515,7 +515,7 @@ fn symbols_keep_the_module_offset_and_the_binary_has_names() {
 #[test]
 fn samples_and_ticks_fall_in_the_time_block_current_when_they_were_added() {
     let mut agg = Aggregate::new(50_000_000);
-    for (block, tick) in [(0, 1), (2, 2), (2, 3), (99, 4)] {
+    for (block, tick) in [(0, 1), (2, 2), (2, 3), (5000, 4)] {
         agg.set_time_block(block);
         agg.add("t", &synthetic(Kind::Cpu, tick, 0, &[0x1000]));
         agg.add("t", &synthetic(Kind::Tick, tick, 1_000_000, &[]));
@@ -525,7 +525,10 @@ fn samples_and_ticks_fall_in_the_time_block_current_when_they_were_added() {
     for (key, n) in &agg.counts {
         per_block[key.time_block as usize] += n;
     }
-    assert_eq!((per_block[0], per_block[2], per_block[31]), (1, 2, 1));
+    assert_eq!(
+        (per_block[0], per_block[2], per_block[MAX_TIME_BLOCKS - 1]),
+        (1, 2, 1)
+    );
     assert_eq!(per_block.iter().sum::<u64>(), 4);
     assert_eq!(agg.block_ticks[&0][..3], [1, 0, 2]);
     assert_eq!(agg.block_ticks[&0].len(), MAX_TIME_BLOCKS);
@@ -543,7 +546,7 @@ fn a_live_session_cuts_its_samples_into_blocks_of_block_s() {
         ..config(false)
     };
     let (profile, _) = profiled("p-blocks", config, long_spin);
-    let blocks: std::collections::BTreeSet<u8> =
+    let blocks: std::collections::BTreeSet<u16> =
         profile.agg.counts.keys().map(|k| k.time_block).collect();
     assert!(blocks.len() >= 3, "{blocks:?}");
     assert!(blocks.iter().all(|&b| b <= 6), "{blocks:?}");

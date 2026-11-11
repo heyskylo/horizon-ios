@@ -7,9 +7,10 @@ use horizon_bench::{Frames, Summary};
 use serde::{Deserialize, Serialize};
 
 use crate::wire::{
-    Amount, BoundName, GpuBackendName, GpuFragmentUnitName, GpuModeName, GpuPartsModeName,
-    GpuPassSplitName, GpuSourceName, KindName, MemoryUnit, ModKindName, SampleBy, SeriesUnit,
-    SideName, StopReasonName, SymbolsName, ThreadSelectionName, TriggerName, WarningCodeName,
+    Amount, BoundName, CounterKindName, GpuBackendName, GpuFragmentUnitName, GpuModeName,
+    GpuPartsModeName, GpuPassSplitName, GpuSourceName, KindName, MemoryUnit, ModKindName, SampleBy,
+    SeriesUnit, SideName, StopReasonName, SymbolsName, ThreadSelectionName, TriggerName,
+    WarningCodeName,
 };
 
 /// A row of whichever op answered; each op's rows are all of one kind, except `net`'s first.
@@ -34,6 +35,8 @@ pub enum Row {
     Meta(MetaRow),
     Memory(MemoryRow),
     MemoryDiff(MemoryDiffRow),
+    MemoryLabel(MemoryLabelRow),
+    Counter(CounterRow),
     Warning(WarningRow),
     Mark(MarkRow),
     Hot(HotRow),
@@ -70,6 +73,13 @@ pub struct TickRow {
     pub before_capture: bool,
     pub complete: bool,
     pub spans: Vec<TickSpanRow>,
+    /// `tick` only: the top functions of the time blocks around the tick, from `samples_from` to `samples_to` seconds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hot: Vec<HotRow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub samples_from: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub samples_to: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -503,6 +513,29 @@ pub struct MemoryRow {
     pub path: String,
     pub value: Amount,
     pub unit: MemoryUnit,
+}
+
+/// One memory snapshot of `memory_labels`: its label, when it was taken and how many rows it holds.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryLabelRow {
+    pub label: String,
+    pub t: f64,
+    pub side: SideName,
+    pub rows: usize,
+}
+
+/// One counter of `counters`; `samples` is how many counter samples carry it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CounterRow {
+    pub id: String,
+    pub name: String,
+    pub unit: String,
+    pub kind: CounterKindName,
+    pub labels: BTreeMap<String, String>,
+    pub side: SideName,
+    pub samples: usize,
 }
 
 /// A megabyte path with its value in the first snapshot, the second and the change.

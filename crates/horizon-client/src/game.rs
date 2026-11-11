@@ -385,6 +385,7 @@ mod potions;
 mod powder_snow;
 mod prediction;
 mod profile_capture;
+mod profile_lines;
 mod pumpkin;
 mod pvp;
 mod quick_actions;

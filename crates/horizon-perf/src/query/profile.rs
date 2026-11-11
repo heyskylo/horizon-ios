@@ -9,8 +9,9 @@ use super::{Ctx, QueryError, Reply, Sampled, num};
 use crate::error::side_name;
 use crate::ids::{Id, Kind};
 use crate::samples::{Pick, Samples, Tally, Units, out_unit};
-use crate::view::Window;
+use crate::view::{View, Window};
 use crate::wire::{Candidate, ContextKey, HotBy, SampleBy, Select};
+use horizon_perf_format::v1::Side;
 
 /// One capture's samples, narrowed by the query's filters.
 pub(super) struct Run<'a> {
@@ -29,9 +30,9 @@ impl Run<'_> {
         value / self.units.count.max(1) as f64
     }
 
-    /// The window the query asked for; None when it covered the whole capture.
+    /// The window the weights cover, widened to whole time blocks; None when the query covered the whole capture.
     pub fn window(&self) -> Option<Window> {
-        (self.pick.window != Window::ALL).then_some(self.pick.window)
+        (self.pick.window != Window::ALL).then(|| self.samples.snapped(self.pick.window))
     }
 
     pub fn sampled(&self, samples: u64) -> Sampled {
@@ -127,24 +128,24 @@ fn pct(part: f64, whole: f64) -> f64 {
     }
 }
 
-/// Functions ranked by their own or their inclusive time.
-pub(super) fn hot(ctx: &Ctx) -> Result<Reply, QueryError> {
-    let f = &ctx.q.filters;
-    let run = prepare(ctx, 0, false)?;
+/// The functions of `run`'s pick ranked by their own or their inclusive time, with the times they were ranked from.
+fn hot_rows(
+    run: &Run,
+    by: HotBy,
+    needle: Option<&str>,
+    limit: usize,
+) -> (Vec<HotRow>, crate::samples::FnTimes) {
     let s = &run.samples;
     let t = s.function_times(&run.pick);
     let (own, inclusive) = (&t.own, &t.inclusive);
-    let n = s.functions.len();
-    let by = ctx.q.hot_by.unwrap_or(HotBy::SelfTime);
-    let needle = ctx.q.matching.as_ref().map(|m| m.to_lowercase());
     let key = |at: usize| match by {
         HotBy::SelfTime => own[at].0,
         HotBy::Total => inclusive[at].0,
     };
-    let mut ranked: Vec<usize> = (0..n)
+    let mut ranked: Vec<usize> = (0..s.functions.len())
         .filter(|&at| key(at) > 0.0)
         .filter(|&at| {
-            needle.as_ref().is_none_or(|m| {
+            needle.is_none_or(|m| {
                 s.functions[at].full.to_lowercase().contains(m) || s.functions[at].id == *m
             })
         })
@@ -156,10 +157,10 @@ pub(super) fn hot(ctx: &Ctx) -> Result<Reply, QueryError> {
     });
     let rows = ranked
         .into_iter()
-        .take(f.limit)
+        .take(limit)
         .map(|at| {
             let func = &s.functions[at];
-            Row::Hot(HotRow {
+            HotRow {
                 id: func.id.clone(),
                 name: func.name.clone(),
                 full: func.full.clone(),
@@ -170,14 +171,58 @@ pub(super) fn hot(ctx: &Ctx) -> Result<Reply, QueryError> {
                 self_pct: num(pct(own[at].0, t.grand_ms)),
                 total_pct: num(pct(inclusive[at].0, t.grand_ms)),
                 samples: inclusive[at].1,
-            })
+            }
         })
         .collect();
-    let mut reply = Reply::new(unit_of(&run, f.select, f.slow), rows);
+    (rows, t)
+}
+
+/// Functions ranked by their own or their inclusive time.
+pub(super) fn hot(ctx: &Ctx) -> Result<Reply, QueryError> {
+    let f = &ctx.q.filters;
+    let run = prepare(ctx, 0, false)?;
+    let by = ctx.q.hot_by.unwrap_or(HotBy::SelfTime);
+    let needle = ctx.q.matching.as_ref().map(|m| m.to_lowercase());
+    let (rows, t) = hot_rows(&run, by, needle.as_deref(), f.limit);
+    let mut reply = Reply::new(
+        unit_of(&run, f.select, f.slow),
+        rows.into_iter().map(Row::Hot).collect(),
+    );
     reply.warnings = run.warnings(t.grand_n);
     reply.sampled = Some(run.sampled(t.grand_n));
     reply.window = run.window();
     Ok(reply)
+}
+
+/// What the samples of the time blocks overlapping `[from, to]` say about the main thread: its top functions and the window the blocks cover.
+pub(super) fn hot_around(
+    view: &View,
+    side: Side,
+    from: f64,
+    to: f64,
+    slow: bool,
+    limit: usize,
+) -> Option<(Vec<HotRow>, Window)> {
+    let samples = Samples::new(view, side)?;
+    let thread = samples.thread(None).ok()?;
+    let window = Window { from, to };
+    let pick = Pick {
+        thread: Some(thread),
+        select: Select::Cpu,
+        slow,
+        contexts: None,
+        window,
+    };
+    let units = samples.units(thread, slow, window);
+    let covered = samples.snapped(window);
+    let run = Run {
+        samples,
+        pick,
+        thread,
+        units,
+    };
+    let (rows, _) = hot_rows(&run, HotBy::SelfTime, None, limit);
+    Some((rows, covered))
 }
 
 /// Where a split looks: all weight, or the weight of one id.

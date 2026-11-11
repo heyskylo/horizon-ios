@@ -135,7 +135,7 @@ pub(in crate::game) fn log_saved(perf: &mut ServerPerf, wait: bool) -> Vec<Done>
 }
 
 /// Registry ids for the loose entities a level counts apart from its mobs: items, orbs, projectiles, minecarts, boats.
-const LOOSE_ENTITIES: [&str; 5] = [
+pub(in crate::game) const LOOSE_ENTITIES: [&str; 5] = [
     "minecraft:item",
     "minecraft:experience_orb",
     "horizon:projectile",
@@ -421,7 +421,7 @@ impl Game<'_> {
     }
 
     fn take_server_memory_snapshot(&self, state: &mut super::ServerState, label: &str) {
-        let rows = flatten_report(&self.memory_report());
+        let rows = flatten_report(&self.memory_value());
         let t = state.perf_epoch.elapsed().as_secs_f64();
         state.perf.memory_snapshot(t, label, &rows);
     }

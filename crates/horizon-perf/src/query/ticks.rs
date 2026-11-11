@@ -1,8 +1,10 @@
 use horizon_perf_format::v1::Side;
 
+use super::profile;
 use super::rows::{Row, TickRow, TickSpanRow};
 use super::{Ctx, QueryError, Reply, num};
 use crate::ids;
+use crate::samples::Samples;
 use crate::view::{TickUnit, View};
 use crate::wire::{Candidate, Unit, UnitKind};
 
@@ -19,8 +21,13 @@ fn unit_row(u: &TickUnit) -> Row {
             .iter()
             .map(|s| TickSpanRow(s.name.clone(), s.depth, num(s.wall_ms), num(s.cpu_ms)))
             .collect(),
+        hot: Vec::new(),
+        samples_from: None,
+        samples_to: None,
     })
 }
+
+const TICK_HOT: usize = 30;
 
 fn unit_kind(side: Side) -> UnitKind {
     if side == Side::Client {
@@ -85,7 +92,24 @@ pub(super) fn tick(ctx: &Ctx) -> Result<Reply, QueryError> {
             kept,
         ));
     };
-    let mut reply = Reply::new(unit_label(side), vec![unit_row(found)]);
+    let mut row = unit_row(found);
+    if let (Row::Tick(tick), true) = (&mut row, found.t >= 0.0)
+        && let Some(slow_over_ms) =
+            Samples::new(&ctx.views[0], side).map(|s| f64::from(s.profile.slow_over_ms))
+        && let Some((hot, covered)) = profile::hot_around(
+            &ctx.views[0],
+            side,
+            (found.t - found.wall_ms / 1000.0).max(0.0),
+            found.t,
+            found.wall_ms >= slow_over_ms,
+            TICK_HOT,
+        )
+    {
+        tick.hot = hot;
+        tick.samples_from = Some(num(covered.from));
+        tick.samples_to = Some(num(covered.to));
+    }
+    let mut reply = Reply::new(unit_label(side), vec![row]);
     if !found.complete {
         reply
             .warnings

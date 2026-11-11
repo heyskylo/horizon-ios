@@ -268,7 +268,7 @@ fn memory_lists_the_last_snapshot_and_diffs_two() {
             "heap_by_tag_mb[chunk columns]",
             "process.resident_mb",
             "heap_by_tag_mb[lod]",
-            "client_columns.columns"
+            "columns.columns"
         ]
     );
     assert_eq!(memory_rows(&last)[0].id, "m:heap_by_tag_mb[chunk columns]");
@@ -295,7 +295,7 @@ fn memory_lists_the_last_snapshot_and_diffs_two() {
     assert_eq!(
         row.counts,
         [CountChange(
-            "client_columns.columns".into(),
+            "columns.columns".into(),
             Amount::Int(100),
             Amount::Int(160),
             Amount::Int(60)
@@ -320,7 +320,7 @@ fn memory_diff_reproduces_spec_ds_documented_example() {
         "process.resident_mb",
         "heap_by_tag_mb[lod_reduce]",
         "renderer.cpu.copies_mb",
-        "client_columns.columns",
+        "columns.columns",
         "heap_by_tag_mb[Atlas packing]",
     ];
     let n = common::hand::Names::new(&names);
@@ -342,7 +342,7 @@ fn memory_diff_reproduces_spec_ds_documented_example() {
             ("process.resident_mb", 1410.2),
             ("heap_by_tag_mb[lod_reduce]", 120.4),
             ("renderer.cpu.copies_mb", 80.0),
-            ("client_columns.columns", 1089.0),
+            ("columns.columns", 1089.0),
         ],
     ));
     fields.push(snap(
@@ -352,7 +352,7 @@ fn memory_diff_reproduces_spec_ds_documented_example() {
             ("process.resident_mb", 1688.0),
             ("heap_by_tag_mb[lod_reduce]", 410.2),
             ("renderer.cpu.copies_mb", 0.0),
-            ("client_columns.columns", 1200.0),
+            ("columns.columns", 1200.0),
             ("heap_by_tag_mb[Atlas packing]", 0.5),
         ],
     ));
@@ -383,7 +383,7 @@ fn memory_diff_reproduces_spec_ds_documented_example() {
     assert_eq!(
         row.counts,
         [CountChange(
-            "client_columns.columns".into(),
+            "columns.columns".into(),
             Amount::Int(1089),
             Amount::Int(1200),
             Amount::Int(111)

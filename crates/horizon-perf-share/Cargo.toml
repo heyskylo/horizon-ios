@@ -1,0 +1,21 @@
+[package]
+name = "horizon-perf-share"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Open and Share for saved performance captures: the local viewer link and the upload (docs/perf-platform.md §7)"
+
+[dependencies]
+horizon-addresses = { path = "../horizon-addresses" }
+horizon-platform = { path = "../horizon-platform" }
+getrandom = "0.3"
+log = "0.4"
+open = "5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", default-features = false, features = ["tls"] }
+url = "2"
+
+[lints]
+workspace = true

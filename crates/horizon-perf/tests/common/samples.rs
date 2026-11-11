@@ -335,3 +335,22 @@ pub fn waypoints_in(mut b: Builder, scale: u64) -> Builder {
     b.weight(level, 8 * scale, wall(2));
     b
 }
+
+/// The standard sampled tree plus two ticks ending at 3 s: k:7 slow (200 ms) and k:8 fast (20 ms).
+pub fn waypoints_with_ticks() -> Vec<Field> {
+    let mut fields = waypoints(1, 50).fields();
+    let stop = fields.pop().unwrap();
+    for (counter, wall_ms) in [(7, 200.0), (8, 20.0)] {
+        fields.push(Field::Slow(SlowEvent {
+            side: SERVER,
+            t: 3.0,
+            unit: Unit::Tick as i32,
+            counter,
+            wall_ms,
+            cpu_ms: wall_ms,
+            top: Vec::new(),
+        }));
+    }
+    fields.push(stop);
+    fields
+}

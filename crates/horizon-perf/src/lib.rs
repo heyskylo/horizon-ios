@@ -19,8 +19,6 @@ pub mod query;
 pub mod read;
 pub mod request;
 pub mod samples;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod sharing;
 pub mod stats;
 pub mod summary;
 pub mod view;

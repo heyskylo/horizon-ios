@@ -31,6 +31,12 @@ pub const COSMETICS_API: &str = "https://cosmetics.playhorizon.dev";
 /// "I'm playing" ping, benchmark uploads (`HORIZON_TELEMETRY_URL` overrides it).
 pub const TELEMETRY: &str = "https://telemetry.playhorizon.dev";
 
+/// The performance viewer page a saved capture opens in (`HORIZON_PERF_VIEWER` overrides it).
+pub const PERF_VIEWER: &str = "https://playhorizon.dev/perf";
+
+/// The capture upload API behind Share (`HORIZON_PERF_CAPTURES` overrides it).
+pub const PERF_CAPTURES: &str = "https://playhorizon.dev/api/perf/captures";
+
 /// Public STUN servers for Play with Friends' NAT discovery: two independent operators, so one
 /// outage doesn't break discovery (`HORIZON_STUN_SERVERS` overrides them).
 pub const STUN_SERVERS: &[&str] = &["stun.cloudflare.com:3478", "stun.l.google.com:19302"];

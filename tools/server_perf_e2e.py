@@ -80,7 +80,7 @@ def check(bins, scratch, out):
         while time.time() < deadline and path is None:
             time.sleep(0.5)
             path = capture_file(folder)
-            if path and not any('Open it at' in line for line in server.since(0)):
+            if path and not any('the file stays on your computer' in line for line in server.since(0)):
                 path = None
         if path is None:
             raise Failed('no capture was saved:\n' + '\n'.join(server.since(0)[-15:]))
@@ -114,6 +114,10 @@ def check(bins, scratch, out):
     live = rows(bins, 'hot', path, '--select', 'live')
     if not live or sum(row['self'] for row in live) <= 0:
         raise Failed(f'the capture holds no live heap samples: {live}')
+    snapshot = {row['path']: row['value'] for row in rows(bins, 'memory', path, '--limit', 5000)}
+    missing = [key for key in ('players.count', 'entities.count', 'unattributed_mb') if key not in snapshot]
+    if missing or snapshot['players.count'] != 2 or snapshot['entities.count'] < 1:
+        raise Failed(f'the stop snapshot lacks players, entities or unattributed_mb ({missing}): {sorted(snapshot)[:40]}')
     perf(bins, 'summary', path)
     print(f'read back: {len(spans)} spans, {total["players"]} players, {total["out_bytes"]} bytes out, '
           f'{sum(row["chunks"] for row in world)} chunks, {len(live)} functions holding sampled heap')

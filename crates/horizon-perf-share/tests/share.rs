@@ -1,19 +1,13 @@
-mod common;
-
-use horizon_perf::sharing::share_saved;
-use horizon_perf_format::v1::Kind;
+use horizon_perf_share::share_saved;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 
 #[test]
 fn sharing_retries_the_pin_without_reuploading_or_exposing_the_owner_token() {
-    let dir = common::TempDir::new("share-retry");
-    let path = dir.path().join("capture.hzperf");
-    let bytes = common::write_capture(&[
-        common::start(common::CLIENT, Kind::Client),
-        common::stop(common::CLIENT, 1.0),
-    ])
-    .bytes;
+    let dir = std::env::temp_dir().join(format!("horizon-perf-share-retry-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("capture.hzperf");
+    let bytes = b"\x1f\x8bcapture".to_vec();
     std::fs::write(&path, &bytes).unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
@@ -94,4 +88,5 @@ fn sharing_retries_the_pin_without_reuploading_or_exposing_the_owner_token() {
     assert!(reply.shared);
     assert_eq!(reply.expires_utc, "pinned");
     server.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
 }
