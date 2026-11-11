@@ -19,6 +19,11 @@ pub enum Place {
     /// start a group of their own after the page's. A [`Row::Heading`] starts another group. A
     /// [`Row::Key`] shows its key there, without changing it: give a page of its own to a key.
     Extras,
+    /// The title screen's Friends icon slot (vanilla's `CommonButtons.friends`, beside Language
+    /// and Accessibility): with a page registered here the icon opens the first one as a form of
+    /// its own, as Join a Friend is drawn ([`Row::Field`]). It shows heading, note, text, space,
+    /// field and button rows; the others belong in the options shell.
+    Title,
 }
 
 /// One page. Its values live in the crate (statics, often its settings [`crate::settings::Store`]);
@@ -39,6 +44,11 @@ pub trait Page: Sync {
     /// value. None by default.
     fn tooltip(&self, _row: usize) -> Option<Label> {
         None
+    }
+    /// The label of the button the engine adds to leave a page drawn as its own screen: a
+    /// translation key, `gui.done` by default (`gui.cancel` for a form that does something).
+    fn back(&self) -> &'static str {
+        "gui.done"
     }
 }
 
@@ -85,6 +95,16 @@ pub enum Row {
     /// A key binding, as Key Binds shows one: `key` is its key name (`key.keyboard.z`,
     /// `key.mouse.left`). A press waits for the next key or mouse button ([`Act::Bind`]).
     Key { label: &'static str, key: String },
+    /// A text field ([`Row::field`]) on a page drawn as its own screen, as vanilla's `EditBox`:
+    /// its label above it, focus by click or Tab, typing, the caret keys, selection, copy and
+    /// paste, at most `max` characters. `text` is its value when the page opens; the engine then
+    /// keeps it, and sends each change ([`Act::Edit`]) and Enter ([`Act::Submit`]).
+    #[non_exhaustive]
+    Field {
+        label: &'static str,
+        text: String,
+        max: usize,
+    },
 }
 
 impl Row {
@@ -105,6 +125,23 @@ impl Row {
             quiet: false,
             groups: false,
         }
+    }
+
+    /// A text field starting with `text`, at most 32 characters (`EditBox`'s default).
+    pub fn field(label: &'static str, text: impl Into<String>) -> Self {
+        Self::Field {
+            label,
+            text: text.into(),
+            max: 32,
+        }
+    }
+
+    /// A text field taking at most `chars` characters.
+    pub fn max(mut self, chars: usize) -> Self {
+        if let Self::Field { max, .. } = &mut self {
+            *max = chars;
+        }
+        self
     }
 
     /// A button greyed out (`false`): drawn, never pressed.
@@ -167,6 +204,19 @@ pub enum Act {
     Slide(f32),
     /// A key row got its new key: its key name (`key.keyboard.z`).
     Bind(String),
+    /// A field's text changed: all of it.
+    Edit(String),
+    /// Enter in a field.
+    Submit,
+}
+
+/// The server a page asked to join ([`connect`]).
+static CONNECT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// From a [`Place::Title`] page's [`Page::act`]: join the server at `address` as Direct
+/// Connection does (the engine's addresses, `friend:<code>` among them), once the act returns.
+pub fn connect(address: impl Into<String>) {
+    *CONNECT.lock().unwrap_or_else(|e| e.into_inner()) = Some(address.into());
 }
 
 static PAGES: Registry<dyn Page> = Registry::new();
@@ -184,5 +234,10 @@ pub mod engine {
     /// Every registered page, sealing the list on the first call.
     pub fn all() -> &'static [&'static dyn Page] {
         PAGES.all()
+    }
+
+    /// The server a page asked to join since the last call ([`connect`]).
+    pub fn take_connect() -> Option<String> {
+        CONNECT.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 }

@@ -13,6 +13,7 @@ use horizon_world::nbt::Tag;
 pub(in crate::game) fn potion_cloud_from_nbt(tag: &Tag) -> Option<(Vec3, Breath)> {
     use horizon_client::save::{float, number, text};
     let at = horizon_client::entity_nbt::position(tag)?;
+    let motion = horizon_client::entity_nbt::loaded_motion(tag);
     let int = |key, default| number(tag.get(key)).map_or(default, |v| v as i32);
     let real = |key, default| float(tag.get(key)).map_or(default, |v| v as f32);
     let contents = tag.get("potion_contents");
@@ -55,6 +56,7 @@ pub(in crate::game) fn potion_cloud_from_nbt(tag: &Tag) -> Option<(Vec3, Breath)
         Breath {
             id: 0,
             at: [at.x, at.y, at.z],
+            motion: [motion.x, motion.y, motion.z],
             radius: real("Radius", 3.0).clamp(0.0, 32.0),
             age: int("Age", 0),
             duration: int("Duration", -1),
@@ -94,10 +96,11 @@ pub(in crate::game) fn potion_cloud_to_nbt(c: &Breath, uuid: [i32; 4], raw: Opti
         return Tag::End;
     };
     let at = Vec3::new(c.at[0], c.at[1], c.at[2]);
+    let motion = Vec3::new(c.motion[0], c.motion[1], c.motion[2]);
     let mut tag = horizon_client::entity_nbt::entity_base_tag(
         "minecraft:area_effect_cloud",
         at,
-        Vec3::ZERO,
+        motion,
         [0.0, 0.0],
         uuid,
         raw,

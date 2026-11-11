@@ -439,14 +439,15 @@ impl Game<'_> {
 
     // ---- DefaultDispenseItemBehavior ----
 
-    /// `DispenserBlock.getDispensePosition(source, scale, offset)`.
+    /// `DispenserBlock.getDispensePosition(source, scale, offset)`; vanilla adds
+    /// `scale * step + offset` first, then adds that sum to the block centre.
     fn dispense_position(pos: Pos, facing: Direction, scale: f64, offset: [f64; 3]) -> Vec3 {
         let s = step(facing);
         let c = Self::center(pos);
         Vec3::new(
-            c[0] + scale * f64::from(s[0]) + offset[0],
-            c[1] + scale * f64::from(s[1]) + offset[1],
-            c[2] + scale * f64::from(s[2]) + offset[2],
+            c[0] + (scale * f64::from(s[0]) + offset[0]),
+            c[1] + (scale * f64::from(s[1]) + offset[1]),
+            c[2] + (scale * f64::from(s[2]) + offset[2]),
         )
     }
     /// `DefaultDispenseItemBehavior.spawnItem` at `getDispensePosition`.
@@ -1193,13 +1194,12 @@ impl Game<'_> {
             return;
         }
         // Projectile.shoot spreads the shot with the projectile's own random.
-        let mut own = random_source::entity();
         match item.as_str() {
             "minecraft:experience_bottle"
             | "minecraft:splash_potion"
             | "minecraft:lingering_potion" => {
                 let mut shot = Projectile::new(ProjectileKind::Snowball, at, None);
-                shot.shoot(&mut own, dir, power, uncertainty);
+                shot.shoot(&mut random_source::entity(), dir, power, uncertainty);
                 self.launch_thrown(one, at, shot.velocity, None);
             }
             _ => {
@@ -1246,7 +1246,7 @@ impl Game<'_> {
                     a.set_item(&one);
                     a.pickup = horizon_client::arrows::Pickup::Allowed;
                 }
-                shot.shoot(&mut own, dir, power, uncertainty);
+                shot.shoot_own(dir, power, uncertainty);
                 self.add_projectile(shot);
             }
         }
