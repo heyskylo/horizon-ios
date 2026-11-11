@@ -59,6 +59,16 @@ pub const CULL_BACK: [i8; 4] = [0, 0, 0, 1];
 /// `Vertex::normal.w` of a shaded quad of an `entityCutoutCull` model (the bat): shaded by the
 /// normal like -127, and `entity.wgsl` also discards its back-facing pixels.
 pub const SHADED_CULL_W: i8 = -126;
+/// `Vertex::normal` of a quad of an `entitySolid` model, which culls its back faces: a quad
+/// the shader shades by its normal keeps it ([`SHADED_CULL_W`]), a baked-colour one (no
+/// normal) gets [`CULL_BACK`].
+pub fn cull_back(normal: [i8; 4]) -> [i8; 4] {
+    if normal == [0; 4] {
+        CULL_BACK
+    } else {
+        [normal[0], normal[1], normal[2], SHADED_CULL_W]
+    }
+}
 /// A section vertex: vanilla's `DefaultVertexFormat.BLOCK` (position, colour,
 /// UV0, UV2) with the sprite's array layer beside the light, in 24 bytes
 /// rather than vanilla's 28: the UV is fixed point, which holds model UVs
@@ -142,6 +152,17 @@ impl TerrainVertex {
     /// The UV the GPU samples.
     pub fn uv(&self) -> [f32; 2] {
         self.uv.map(|v| f32::from(v) / UV_STEPS)
+    }
+}
+#[cfg(test)]
+mod cull_back_tests {
+    use super::{CULL_BACK, SHADED_CULL_W, cull_back};
+    /// #15322: a shaded `entitySolid` quad keeps its normal and culls; a baked one has
+    /// no normal and only culls.
+    #[test]
+    fn cull_back_keeps_a_shaded_normal() {
+        assert_eq!(cull_back([0; 4]), CULL_BACK);
+        assert_eq!(cull_back([0, 127, 0, 127]), [0, 127, 0, SHADED_CULL_W]);
     }
 }
 #[cfg(test)]
