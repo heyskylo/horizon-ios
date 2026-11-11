@@ -157,8 +157,11 @@ impl CemModels {
             let mut layer = CemLayer::build(part, jem, name, &rules);
             // A fallback onto another layer (the cat's collar from `cat`) takes the geometry
             // only: the layer keeps its own texture.
-            let keys = layer_keys(name);
-            if !keys.iter().any(|k| layer_suffix(k) == layer_suffix(&key)) {
+            let own_layers = layer_keys(name);
+            if !own_layers
+                .iter()
+                .any(|k| layer_suffix(k) == layer_suffix(&key))
+            {
                 layer.texture = None;
             } else if key == layer_key(name) {
                 own.insert(key.clone(), (name, path));
