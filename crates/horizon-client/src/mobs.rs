@@ -2074,10 +2074,10 @@ pub enum MobEvent {
         mob: u32,
         target: Who,
     },
-    /// `HoglinAi.broadcastAttackTarget` to one visible adult hoglin: its
-    /// `setAttackTargetIfCloserThanCurrent` (`piglin::receive_attack_target`).
+    /// `HoglinAi.broadcastAttackTarget` from hoglin `from` to `mob` (`Game::hoglin_attack_target`).
     HoglinAttackTarget {
         mob: u32,
+        from: u32,
         target: Who,
     },
     /// `StartHuntingHoglin` for a nearby adult piglin: it takes the hoglin as

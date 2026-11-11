@@ -157,6 +157,71 @@ fn guest_view(mut v: PlayerView, uuid: u128, moved: [f64; 3]) -> PlayerView {
 }
 
 impl Game<'_> {
+    /// `HoglinAi.setAttackTargetIfCloserThanCurrent` for the hoglin `mob`, which
+    /// the hoglin `from` broadcast `target` to. `Who::Player` is each mob's own
+    /// player (`mob_player`), so the new target is placed as `from` sees it and
+    /// the current one as `mob` sees it. A receiver that takes another mob's
+    /// player is bound to that player (`LanHost::mob_players`).
+    pub(super) fn hoglin_attack_target(&mut self, mob: u32, from: u32, target: Who) {
+        let Some(i) = self.mobs.iter().position(|m| m.id == mob) else {
+            return;
+        };
+        let (theirs, own) = (self.mob_player(from), self.mob_player(mob));
+        let current_at = self.mobs[i]
+            .ai
+            .target
+            .and_then(|current| self.place_target(current, own));
+        let target_at = self.place_target(target, theirs);
+        let taken = horizon_client::mobs::piglin::receive_attack_target(
+            &mut self.mobs[i],
+            target,
+            current_at,
+            target_at,
+        );
+        if taken
+            && target == Who::Player
+            && theirs != own
+            && let Some(host) = self.lan.as_mut()
+        {
+            match theirs {
+                Some(conn) => host.mob_players.insert(mob, conn),
+                None => host.mob_players.remove(&mob),
+            };
+        }
+    }
+    /// The guest a mob's `Who::Player` is (`LanHost::mob_players`), or `None` for
+    /// the host: bindings count only while a guest is in play here, as in the
+    /// creature tick (`lan_guest_views`).
+    fn mob_player(&self, mob: u32) -> Option<u32> {
+        let host = self.lan.as_ref()?;
+        let in_play = |conn: u32| {
+            host.hub
+                .guests
+                .iter()
+                .any(|g| g.conn == conn && host.hub.here(g) && g.loaded && !g.dead)
+        };
+        host.mob_players
+            .get(&mob)
+            .copied()
+            .filter(|&conn| in_play(conn))
+    }
+    /// Where a target is (`Entity.position`): a live mob's place, or that of the
+    /// player `player` names (`mob_player`). None when it is not in the level.
+    fn place_target(&self, who: Who, player: Option<u32>) -> Option<Vec3> {
+        match (who, player) {
+            (Who::Mob(id), _) => self
+                .mobs
+                .iter()
+                .find(|m| m.id == id && m.alive())
+                .map(|m| m.position),
+            (Who::Player, None) => self.player.as_ref().map(|p| p.position),
+            (Who::Player, Some(conn)) => {
+                let host = self.lan.as_ref()?;
+                let g = host.hub.guests.iter().find(|g| g.conn == conn)?;
+                Some(Vec3::new(g.position[0], g.position[1], g.position[2]))
+            }
+        }
+    }
     /// How mobs see the guest `conn`, as `lan_guest_views` gives each: None
     /// for no such guest in play here, or while the hub is taken out.
     pub(super) fn lan_guest_view(&mut self, conn: u32) -> Option<PlayerView> {
