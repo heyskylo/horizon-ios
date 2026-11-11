@@ -626,7 +626,11 @@ impl Projectile {
     fn fire_tick(&mut self, w: &impl ProjectileWorld, client_side: bool) {
         if !(self.is_thrown()
             || self.kind == ProjectileKind::ExperienceBottle
-            || self.is_fireball())
+            || self.is_fireball()
+            || matches!(
+                self.kind,
+                ProjectileKind::WindCharge | ProjectileKind::BreezeWindCharge
+            ))
         {
             return;
         }
@@ -905,6 +909,33 @@ impl Projectile {
         // aimed along, not from where it was created.
         self.previous_yaw = self.yaw;
         self.previous_pitch = self.pitch;
+    }
+    /// `ProjectileUtil.rotateTowardsMovement`: eases the rotation from the
+    /// previous tick's towards the movement by `t`.
+    fn rotate_towards_movement(&mut self, t: f32) {
+        let v = self.velocity;
+        if v.x * v.x + v.y * v.y + v.z * v.z == 0.0 {
+            return;
+        }
+        let horizontal = (v.x * v.x + v.z * v.z).sqrt();
+        let y_rot = horizon_core::geometry::trig::atan2_degrees(v.z, v.x) + 90.0;
+        let x_rot = horizon_core::geometry::trig::atan2_degrees(horizontal, v.y) - 90.0;
+        // Shift the old angles by whole turns so the lerp takes the shortest
+        // way; the shifted old angles are what rendering interpolates from.
+        while x_rot - self.previous_pitch < -180.0 {
+            self.previous_pitch -= 360.0;
+        }
+        while x_rot - self.previous_pitch >= 180.0 {
+            self.previous_pitch += 360.0;
+        }
+        while y_rot - self.previous_yaw < -180.0 {
+            self.previous_yaw -= 360.0;
+        }
+        while y_rot - self.previous_yaw >= 180.0 {
+            self.previous_yaw += 360.0;
+        }
+        self.pitch = self.previous_pitch + t * (x_rot - self.previous_pitch);
+        self.yaw = self.previous_yaw + t * (y_rot - self.previous_yaw);
     }
     /// The kinds whose tick turns them with `Projectile.updateRotation`: a
     /// `ThrowableProjectile` (the thrown kinds and the experience bottle) and
@@ -1273,6 +1304,12 @@ impl Projectile {
     fn bubble_column_push(&mut self, drag: bool, surface: bool, at: [i32; 3]) {
         if surface {
             self.bubble_surfaces.push(at);
+        } else {
+            // Projectile.onInsideBubbleColumn's resetFallDistance.
+            self.fall_distance = 0.0;
+            if let Some(arrow) = self.arrow.as_mut() {
+                arrow.fall_distance = 0.0;
+            }
         }
         self.velocity.y += match (drag, surface) {
             (true, _) => -0.03,
@@ -1283,7 +1320,7 @@ impl Projectile {
     /// `applyEffectsFromBlocks`' bubble columns (`Entity.checkInsideBlocks`):
     /// the blocks the box swept through from `from`, each once, pushing when
     /// the move was long or the final box (deflated by 1e-5F) is inside it.
-    fn bubble_columns_along(&mut self, w: &impl ProjectileWorld, from: Vec3) {
+    pub fn bubble_columns_along(&mut self, w: &impl ProjectileWorld, from: Vec3) {
         self.bubble_columns_since(from, |p| w.bubble_column(p));
     }
     /// [`bubble_columns_along`](Self::bubble_columns_along) with the bubble
@@ -1591,9 +1628,12 @@ impl Projectile {
             );
         }
         self.position = to;
-        // Wind charges still face their motion at once; vanilla turns every
-        // `AbstractHurtingProjectile` gradually (#14466).
-        if !self.is_fireball() && !self.turns_with_update_rotation() {
+        // Fireballs ease towards the motion (`ProjectileUtil.rotateTowardsMovement`);
+        // wind charges still face their motion at once; the thrown kinds turned
+        // in `tick` above.
+        if self.is_fireball() {
+            self.rotate_towards_movement(0.2);
+        } else if !self.turns_with_update_rotation() {
             self.update_rotation();
         }
         // Entity.baseTick's updateFluidInteraction, after the move: the fluids
@@ -2022,6 +2062,18 @@ mod tests {
         client.synced_fire = server.synced_fire;
         client.tick_remote(&air);
         assert!(client.on_fire());
+    }
+
+    #[test]
+    fn restored_wind_charge_fire_counts_down_and_syncs_visual_fire() {
+        for kind in [ProjectileKind::WindCharge, ProjectileKind::BreezeWindCharge] {
+            let mut p = Projectile::new(kind, Vec3::ZERO, None);
+            p.fire_ticks = 20;
+            p.has_visual_fire = true;
+            p.tick(&Empty(vec![]));
+            assert_eq!(p.fire_ticks, 19, "{:?}", p.kind);
+            assert!(p.synced_fire, "{:?}", p.kind);
+        }
     }
 
     #[test]
@@ -2487,6 +2539,39 @@ mod tests {
         let mut r = LegacyRandom::new(1);
         // ceil(3 * 2) = 6 for a non-critical arrow.
         assert_eq!(p.arrow_damage(&mut r), 6.0);
+    }
+    #[test]
+    fn a_dragon_fireball_turns_towards_its_flight_a_fifth_per_tick() {
+        let mut p = Projectile::new(
+            ProjectileKind::DragonFireball,
+            Vec3::new(8.5, 231.0, 8.5),
+            None,
+        );
+        p.velocity = Vec3::new(0.1, 0.25, -0.3);
+        p.yaw = 0.0;
+        p.pitch = 0.0;
+        for _ in 0..3 {
+            p.tick(&Wall(vec![]));
+        }
+        assert!((p.yaw - 8.996_265).abs() < 4e-6, "yaw {}", p.yaw);
+        assert!((p.pitch + 18.704_494).abs() < 4e-6, "pitch {}", p.pitch);
+    }
+    #[test]
+    fn a_fireball_turns_the_short_way_across_the_wrap_boundary() {
+        let mut p = Projectile::new(
+            ProjectileKind::DragonFireball,
+            Vec3::new(8.5, 231.0, 8.5),
+            None,
+        );
+        // Movement along -z aims at yaw 0 and pitch 0.
+        p.velocity = Vec3::new(0.0, 0.0, -1.0);
+        p.previous_yaw = 350.0;
+        p.previous_pitch = 350.0;
+        p.rotate_towards_movement(0.2);
+        assert!((p.yaw + 8.0).abs() < 1e-3, "yaw {}", p.yaw);
+        assert!((p.pitch + 8.0).abs() < 1e-3, "pitch {}", p.pitch);
+        assert!((p.previous_yaw + 10.0).abs() < 1e-3);
+        assert!((p.previous_pitch + 10.0).abs() < 1e-3);
     }
     #[test]
     fn fireball_accelerates_along_its_direction() {

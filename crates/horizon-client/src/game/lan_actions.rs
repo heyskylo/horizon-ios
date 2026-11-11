@@ -47,8 +47,6 @@ mod crack_feedback_tests;
 /// Per-guest state of the gameplay code that lives outside `Guest`.
 #[derive(Default)]
 pub(super) struct GuestPlay {
-    /// The sign this guest may write on (`SignBlockEntity.playerWhoMayEdit`).
-    pub(super) sign_editing: Option<[i32; 3]>,
     mining: Option<Mining>,
     destroy_delay: u32,
     using: Option<(usize, u32)>,
@@ -3556,13 +3554,9 @@ impl Game<'_> {
                 && self.pvp_land(host, victim, &strike)
             {
                 let on_ground = Self::pvp_victim_on_ground(host, victim);
-                self.as_guest(host, conn, |g| {
-                    g.weapon_hit_player(on_ground);
-                    g.pvp_exhaustion();
-                    if strike.stops_sprint() {
-                        g.stop_sprint_after_extra_knockback();
-                    }
-                });
+                let stops_sprint = strike.stops_sprint();
+                let sent = self.as_guest(host, conn, |g| g.pvp_hit_after(on_ground, stops_sprint));
+                self.send_guest_motion(host, conn, sent.flatten());
             }
             return;
         }
@@ -4377,16 +4371,11 @@ impl Game<'_> {
             // Player.tick: a different main-hand item resets the attack
             // strength, and detectEquipmentUpdates gives the guest its modifiers.
             let g = &host.hub.guests[gi];
-            let held = g
-                .inventory
-                .get(g.selected)
-                .cloned()
-                .flatten()
-                .map(|s| s.item);
+            let held = super::held_items::held_attack_item(&g.inventory, g.selected);
             let play = host.play.entry(conn).or_default();
-            if play.attack_item != held {
+            if play.attack_item.as_ref() != held {
                 play.attack_ticks = 0;
-                play.attack_item = held;
+                play.attack_item = held.cloned();
             }
             self.guest_delayed_destroy(host, conn);
             self.guest_server_tick(host, conn);
@@ -5258,14 +5247,8 @@ impl Game<'_> {
                 w.server_player_pose_tick()
             };
             let mut events = std::mem::take(&mut w.player.events);
-            // LayeredCauldronBlock.handleEntityOnFireInside along those moves.
-            for event in &events {
-                match event {
-                    MotionEvent::CauldronExtinguish { pos } => game.cauldron_extinguish(*pos),
-                    MotionEvent::PowderSnowMelt { pos } => game.powder_snow_melt(*pos),
-                    _ => {}
-                }
-            }
+            // Powder snow and cauldrons put the fire out along those moves.
+            game.block_extinguish_player(&events);
             // Entity.baseTick: rain puts out a burning player.
             game.rain_extinguish_player();
             // WitherRoseBlock.entityInside along those moves.

@@ -675,15 +675,15 @@ pub(super) fn mob_meta(
             defaults.push((19, serializer::BYTE, Value::Byte(0)));
         }
         "minecraft:parrot" => {
-            // TamableAnimal.DATA_FLAGS_ID: sitting 1, tame 4.
-            let flags = i8::from(e.sitting) | if e.tame { 4 } else { 0 };
+            // TamableAnimal.DATA_FLAGS_ID: in the sitting pose 1, tame 4.
+            let flags = i8::from(e.sitting_pose) | if e.tame { 4 } else { 0 };
             if flags != 0 {
                 meta.push((18, serializer::BYTE, Value::Byte(flags)));
             }
         }
         "minecraft:cat" | "minecraft:wolf" => {
-            // TamableAnimal.DATA_FLAGS_ID: sitting 1, tame 4.
-            let flags = i8::from(e.sitting) | if e.tame { 4 } else { 0 };
+            // TamableAnimal.DATA_FLAGS_ID: in the sitting pose 1, tame 4.
+            let flags = i8::from(e.sitting_pose) | if e.tame { 4 } else { 0 };
             if flags != 0 {
                 meta.push((18, serializer::BYTE, Value::Byte(flags)));
             }
