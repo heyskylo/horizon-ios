@@ -21,6 +21,9 @@
 //! (their hooks can touch anything), on a tick a performance report samples, under
 //! `HORIZON_TEST_SEEDS`, with few ticking mobs, with a mob whose reach is the whole level, or when
 //! one island holds most of them, or a mob belongs to a raid (its hurt sequence is shared).
+//! An owned mob also keeps the loop serial: tame pets can teleport to a distant owner, outside
+//! the local motion bounds. Ownership is checked even for resting or sitting mobs.
+//! Reach changes and their behavioral proof follow `docs/mob-islands.md`.
 //!
 //! Whether a mob is loaded and ticking is decided at its turn, as the serial loop decides it, so
 //! every mob is given a ticking mob's reach: one moved before its turn may tick where it was resting.
@@ -478,7 +481,9 @@ fn union_box(a: Aabb, b: Aabb) -> Aabb {
     Aabb::new(Vec3::new(x0, y0, z0), Vec3::new(x1, y1, z1))
 }
 
-/// Each mob's reach; None when one reaches the whole level, or stands nowhere.
+/// Each mob's reach; None when one reaches the whole level, has an unbounded owner destination,
+/// or stands nowhere. Changes to movement, reads or cross-mob writes require a conservative
+/// reach or serial fallback and a behavioral regression; optional verification is no safety net.
 fn reaches(mobs: &[Mob], snapshot: &[Seen], turns: &Turns) -> Option<Vec<Reach>> {
     if mobs.len() != snapshot.len() {
         return None;
@@ -486,6 +491,10 @@ fn reaches(mobs: &[Mob], snapshot: &[Seen], turns: &Turns) -> Option<Vec<Reach>>
     let mut out = Vec::with_capacity(mobs.len());
     for (m, s) in mobs.iter().zip(snapshot) {
         if global(s.species)
+            // TamableAnimal.tryToTeleportToOwner moves around the owner's position, at any
+            // distance. Until the plan covers those destinations and their reads, keep every
+            // owned mob serial, regardless of species, current role or sitting/leash state.
+            || m.extra.owner.is_some()
             || !(m.position.x.is_finite() && m.position.y.is_finite() && m.position.z.is_finite())
         {
             return None;
@@ -1282,6 +1291,9 @@ mod tests {
             assert!(reaches(&mobs, &snapshot, &turns).is_none());
         }
         snapshot[0].species = Species::Cow;
+        mobs[0].extra.owner = Some([0; 4]);
+        assert!(reaches(&mobs, &snapshot, &turns).is_none());
+        mobs[0].extra.owner = None;
         mobs[0].position.y = f64::NAN;
         assert!(reaches(&mobs, &snapshot, &turns).is_none());
         assert!(reaches(&mobs, &snapshot[..399], &turns).is_none());
@@ -1469,21 +1481,7 @@ mod tests {
         assert!(islands(&resting, 2).is_none());
     }
 
-    /// Mob ticks in islands on several threads leave every mob, the level random and the death
-    /// marks as the serial loop does: three herds of animals far apart, packed so they push each
-    /// other, some with brains that draw from the level random (no villagers: their village reads
-    /// reach the next herd).
-    #[test]
-    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-    fn islands_tick_their_mobs_as_one_thread_does() {
-        struct Reset;
-        impl Drop for Reset {
-            fn drop(&mut self) {
-                LANES.with(|l| l.set(None));
-                VERIFY.with(|v| v.set(false));
-            }
-        }
-        let _reset = Reset;
+    fn separated_herds_game() -> Game<'static> {
         let mut game = super::super::super::native_machines::tests::server_game();
         game.build_registries();
         game.set_allow_commands(true);
@@ -1524,6 +1522,25 @@ mod tests {
                 assert!(game.run_command(&format!("summon {kind} {x:.2} 66 {z:.2}")));
             }
         }
+        game
+    }
+
+    /// Mob ticks in islands on several threads leave every mob, the level random and the death
+    /// marks as the serial loop does: three herds of animals far apart, packed so they push each
+    /// other, some with brains that draw from the level random (no villagers: their village reads
+    /// reach the next herd).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn islands_tick_their_mobs_as_one_thread_does() {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                LANES.with(|l| l.set(None));
+                VERIFY.with(|v| v.set(false));
+            }
+        }
+        let _reset = Reset;
+        let mut game = separated_herds_game();
         let (mobs, random, died) = (
             game.mobs.clone(),
             game.world.random.clone(),
@@ -1624,6 +1641,103 @@ mod tests {
                     (0, 0),
                     "no cloned raid reference runs"
                 );
+            }
+        }
+    }
+
+    /// FollowOwnerGoal and TamableAnimalPanicGoal can teleport across otherwise separate
+    /// islands. The real loop must keep these turns serial, including verify's reference copy.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn owned_pets_teleport_between_herds_without_grouping_or_reference_ticks() {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                LANES.with(|l| l.set(None));
+                VERIFY.with(|v| v.set(false));
+            }
+        }
+        let _reset = Reset;
+        let mut game = separated_herds_game();
+        // Keep the neighbors in place while pets cross the 96-block gap.
+        for m in &mut game.mobs {
+            m.no_ai = true;
+        }
+        LANES.with(|l| l.set(Some(3)));
+        VERIFY.with(|v| v.set(true));
+        RAN.with(|r| r.set(0));
+        CHECK.with(|c| c.set((0, 0)));
+        game.tick_creature_entities().unwrap();
+        let grouped = lanes() > 1;
+        assert_eq!(
+            RAN.with(|r| r.get() > 1),
+            grouped,
+            "unowned herds can group"
+        );
+        assert_eq!(CHECK.with(Cell::get), (usize::from(grouped), 0));
+        let herds = game.mobs.clone();
+        let random = game.world.random.clone();
+        let died = game.died.clone();
+        for species in ["wolf", "cat", "parrot"] {
+            game.mobs = herds.clone();
+            game.spawn_mob(&format!("minecraft:{species}"), [2.5, 65.0, 2.5], true)
+                .unwrap();
+            let mut pet = game.mobs.pop().unwrap();
+            horizon_client::mobs::tame::set_tame(&mut pet, true);
+            pet.extra.owner = Some(game.level.player_uuid.unwrap_or_default());
+            pet.random = horizon_core::random::LegacyRandom::new(7);
+            // Its destination neighbors come later, so they must see its moved snapshot.
+            game.mobs.insert(0, pet);
+            let initial = game.mobs.clone();
+            let mut expected = None;
+            let mut seeds = None;
+            for (requested, verify) in [(1, false), (3, false), (3, true)] {
+                game.mobs = initial.clone();
+                game.world.random = random.clone();
+                game.died = died.clone();
+                LANES.with(|l| l.set(Some(requested)));
+                VERIFY.with(|v| v.set(verify));
+                RAN.with(|r| r.set(0));
+                CHECK.with(|c| c.set((0, 0)));
+                let tick = || {
+                    for _ in 0..20 {
+                        game.tick_creature_entities().unwrap();
+                    }
+                };
+                if requested == 1 {
+                    seeds = Some(horizon_client::random_source::record_seeds(tick).1);
+                } else {
+                    let seeds = seeds.as_ref().unwrap();
+                    horizon_client::random_source::replay_seeds(Arc::clone(seeds), tick);
+                    assert!(seeds.complete(), "{species}: the same seeds were consumed");
+                }
+                let pet = &game.mobs[0];
+                assert!(
+                    pet.position.x > 96.0 && pet.position.x < 112.0,
+                    "{species} really teleported from the origin herd: {:?}",
+                    pet.position
+                );
+                assert_eq!(RAN.with(Cell::get), 0, "{species}: owned mobs stay serial");
+                assert_eq!(
+                    CHECK.with(Cell::get),
+                    (0, 0),
+                    "no cloned pet reference runs"
+                );
+                let mobs: Vec<_> = game
+                    .mobs
+                    .iter()
+                    .map(|m| {
+                        let mut m = m.clone();
+                        m.extra.section_seq = 0;
+                        format!("{m:?}")
+                    })
+                    .collect();
+                let result = (mobs, format!("{:?}", game.world.random), game.died.clone());
+                if let Some(expected) = &expected {
+                    assert_eq!(&result, expected, "{species}: fallback matches serial");
+                } else {
+                    expected = Some(result);
+                }
             }
         }
     }
