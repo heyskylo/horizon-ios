@@ -22,6 +22,8 @@ use horizon_world::{
     registry::{BlockRegistry, BlockStateId},
 };
 use std::{collections::HashMap, sync::Arc};
+mod boat_load;
+pub use boat_load::boat_from_nbt;
 mod projectile_fields;
 use projectile_fields::{load_projectile_entity_fields, put_projectile_entity_fields};
 mod saved_attributes;
@@ -3999,9 +4001,6 @@ pub fn vehicle_to_nbt(
         fall_distance: ground.1,
     }
     .tag(raw)
-}
-pub fn boat_from_nbt(tag: &Tag) -> Option<(Vec3, Vec3, f32)> {
-    Some((position(tag)?, motion(tag), rotation(tag)[0]))
 }
 /// `Entity.load`'s `OnGround` (`getBooleanOr`: `byteValue() != 0`) and
 /// `fall_distance` (`getDoubleOr`: any number's `doubleValue`), defaulting to

@@ -195,7 +195,7 @@ impl ColumnLayout {
     }
     /// The index of the section holding block `y`, if the column holds it.
     pub fn section_index(self, y: i32) -> Option<usize> {
-        usize::try_from((y - self.min_y) >> 4)
+        usize::try_from((i64::from(y) - i64::from(self.min_y)) >> 4)
             .ok()
             .filter(|&s| s < self.sections)
     }
@@ -661,7 +661,7 @@ impl Chunk {
     /// The index of the section holding block `y`, if the column holds it.
     #[inline]
     pub fn section_index(&self, y: i32) -> Option<usize> {
-        usize::try_from((y - self.min_y) >> 4)
+        usize::try_from((i64::from(y) - i64::from(self.min_y)) >> 4)
             .ok()
             .filter(|&s| s < self.sections.len())
     }
@@ -918,6 +918,24 @@ pub struct ChunkExtras {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn extreme_y_queries_are_air_and_writes_leave_the_column_unchanged() {
+        for layout in [ColumnLayout::VANILLA, ColumnLayout::new(0, 256).unwrap()] {
+            let mut chunk = Chunk::with_layout(0, 0, layout);
+            chunk.set(0, layout.min_y(), 0, 7);
+            for y in [i32::MIN, i32::MIN + 63, -2_146_769_275, i32::MAX] {
+                assert_eq!(layout.section_index(y), None);
+                assert_eq!(chunk.section_index(y), None);
+                assert_eq!(chunk.get(0, y, 0), 0);
+                assert_eq!(
+                    chunk.light(0, y, 0),
+                    if y < layout.min_y() { 0 } else { 0xf0 }
+                );
+                chunk.set(0, y, 0, 9);
+            }
+            assert_eq!(chunk.get(0, layout.min_y(), 0), 7);
+        }
+    }
     #[test]
     fn each_light_form_keeps_every_value_and_run() {
         // Sky varies alone, block varies alone, both, neither.
