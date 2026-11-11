@@ -28,11 +28,10 @@ impl Game<'_> {
             );
             return;
         }
-        let since = i64::from(m.age) - i64::from(m.ai.last_hurt_by_time);
+        let since = (m.age as i32).wrapping_sub(m.ai.last_hurt_by_time);
         let reference = match m.ai.last_hurt_by {
             Some(Who::Mob(attacker))
-                if (0..=100).contains(&since)
-                    && self.mobs.iter().any(|a| a.id == attacker && a.alive()) =>
+                if since <= 100 && self.mobs.iter().any(|a| a.id == attacker && a.alive()) =>
             {
                 self.persist.uuid_of(attacker)
             }
@@ -41,10 +40,7 @@ impl Game<'_> {
         match reference {
             Some(uuid) => {
                 c.insert("last_hurt_by_mob".into(), Tag::IntArray(uuid.to_vec()));
-                c.insert(
-                    "ticks_since_last_hurt_by_mob".into(),
-                    Tag::Int(since as i32),
-                );
+                c.insert("ticks_since_last_hurt_by_mob".into(), Tag::Int(since));
             }
             None => {
                 c.remove(&JavaString::from("last_hurt_by_mob"));

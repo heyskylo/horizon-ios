@@ -35,7 +35,7 @@ pub(super) fn base_tick(m: &mut Mob, w: &MobWorld) {
     }
     if let Some(who) = m.ai.last_hurt_by
         && let Some(by) = w.target_info(who)
-        && (!by.alive || m.age as i32 - m.ai.last_hurt_by_time > 100)
+        && (!by.alive || (m.age as i32).wrapping_sub(m.ai.last_hurt_by_time) > 100)
     {
         m.ai.forget_hurt_by(m.age as i32);
     }

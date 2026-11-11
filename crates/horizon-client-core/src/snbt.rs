@@ -320,7 +320,12 @@ pub fn java_hash_order(
         "FallFlying",
         "sleeping_pos",
         "Brain",
+        "last_hurt_by_player",
+        "last_hurt_by_player_memory_time",
+        "last_hurt_by_mob",
+        "ticks_since_last_hurt_by_mob",
         "equipment",
+        "locator_bar_icon",
         // ArmorStand.
         "Invisible",
         "Small",

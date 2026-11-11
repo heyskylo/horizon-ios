@@ -243,6 +243,18 @@ fn a_loaded_hurt_by_mob_of_a_dead_attacker_ends_at_the_next_tick() {
 
 #[test]
 #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_saved_hurt_timestamp_uses_java_integer_wrapping() {
+    let mut game = game();
+    let echo = index(&mut game, ECHO);
+    game.mobs[echo].ai.last_hurt_by_time = (game.mobs[echo].age as i32).wrapping_sub(i32::MIN);
+    step(&mut game, 1);
+    let echo = index(&mut game, ECHO);
+    assert!(game.mobs[echo].ai.last_hurt_by.is_some());
+    assert_eq!(fields(&mut game, echo).1, Some(Tag::Int(i32::MIN + 1)));
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
 fn a_loaded_hurt_by_mob_naming_no_entity_stays_until_it_arrives() {
     let mut game = game();
     assert!(game.run_command(
