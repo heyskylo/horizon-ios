@@ -1207,6 +1207,8 @@ fn a_swimming_drowned_is_not_pushed_by_the_current() {
     }
     // A land mob is pushed.
     assert!(mob(Species::Zombie).pushed_by_fluid());
+}
+
 /// `Strider.checkFallDamage`: in lava the fall is reset before the base runs, so
 /// a strider that drops into a lava sea lands with no damage and no dust — and
 /// walks out owing nothing — while a pig in the same lava takes the fall, and a
