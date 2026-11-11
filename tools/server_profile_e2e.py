@@ -40,7 +40,7 @@ def ctl_for(bins, work, env):
         lines = result.stdout.strip().splitlines()
         reply = json.loads(lines[-1]) if lines else {'error': result.stderr.strip()}
         failed = result.returncode != 0 or (isinstance(reply, dict) and 'error' in reply)
-        if failed != expect_error:
+        if expect_error is not None and failed != expect_error:
             raise Failed(f'{" ".join(map(str, words))}: {reply}')
         return reply
 
@@ -141,7 +141,11 @@ def check_horizon(bins, resources, scratch, out):
         if not (folder / timed['path']).exists():
             raise Failed('the timed capture left no file')
 
-        ctl('profile', 'server', 'start')
+        deadline = time.time() + 30
+        while 'error' in ctl('profile', 'server', 'start', expect_error=None):
+            if time.time() > deadline:
+                raise Failed('the timed capture\'s file never finished arriving')
+            time.sleep(0.5)
         ctl('disconnect')
         deadline = time.time() + 30
         while not any(f'{PLAYER} left; their server profile stops' in l for l in server.since(0)):
