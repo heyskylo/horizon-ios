@@ -322,7 +322,9 @@ impl Game<'_> {
         );
         let state = self.world.block(origin.x, origin.y, origin.z);
         let mut used = Vec::new();
-        if let Some(op) = case.get("wind_burst") {
+        if let Some(op) = case.get("special_attack") {
+            used = self.fixture_special_attack(op)?;
+        } else if let Some(op) = case.get("wind_burst") {
             let center = [
                 op["center"][0].as_f64().ok_or("wind center x")?,
                 op["center"][1].as_f64().ok_or("wind center y")?,

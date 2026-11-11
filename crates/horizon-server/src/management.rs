@@ -358,11 +358,19 @@ fn serve(
     std::thread::Builder::new()
         .name("management".into())
         .spawn(move || {
+            // Reachable by remote tools before they authenticate: at most `MAX_OPEN` at once.
+            let open = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             for stream in listener.incoming().flatten() {
+                let Some(slot) = http::Slot::take(&open, http::MAX_OPEN) else {
+                    continue;
+                };
                 let (shared, settings) = (shared.clone(), settings.clone());
                 let _ = std::thread::Builder::new()
                     .name("management-client".into())
-                    .spawn(move || connection(&shared, &settings, &stream));
+                    .spawn(move || {
+                        let _slot = slot;
+                        connection(&shared, &settings, &stream)
+                    });
             }
         })?;
     Ok(())
