@@ -13,6 +13,8 @@ pub enum Cursor {
     #[default]
     Arrow,
     PointingHand,
+    /// `CursorTypes.IBEAM`: over a text field that takes input.
+    Ibeam,
     NotAllowed,
     /// `CursorTypes.RESIZE_NS`: a scroller held vertically (`MerchantScreen`).
     ResizeNs,
@@ -34,6 +36,18 @@ pub fn widget_cursor(hovered: bool, active: bool) {
     if hovered {
         request_cursor(if active {
             Cursor::PointingHand
+        } else {
+            Cursor::NotAllowed
+        });
+    }
+}
+
+/// `EditBox.handleCursor`: a hovered text field shows the I-beam, or the
+/// forbidden sign when it takes no input.
+pub fn text_cursor(hovered: bool, editable: bool) {
+    if hovered {
+        request_cursor(if editable {
+            Cursor::Ibeam
         } else {
             Cursor::NotAllowed
         });
