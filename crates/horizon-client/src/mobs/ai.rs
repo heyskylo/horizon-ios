@@ -2835,13 +2835,13 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
     let power = (m.attrs.attack_knockback as f32 + super::gear::knockback(m) as f32) / 2.0;
     if power > 0.0 {
         use horizon_core::geometry::trig::Mth;
-        let to_rad = std::f32::consts::PI / 180.0;
         cx.events.push(MobEvent::Knockback {
             target: who,
             power: f64::from(power),
-            x: f64::from((m.yaw * to_rad).msin()),
-            z: f64::from(-(m.yaw * to_rad).mcos()),
+            x: f64::from(m.yaw.to_radians().msin()),
+            z: f64::from(-m.yaw.to_radians().mcos()),
             source,
+            apply_blocking: None,
         });
         m.velocity = Vec3::new(m.velocity.x * 0.6, m.velocity.y, m.velocity.z * 0.6);
     }
