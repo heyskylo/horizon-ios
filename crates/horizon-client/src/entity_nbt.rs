@@ -1987,9 +1987,9 @@ pub fn mob_from_nbt_with_random(
     }
     saved_attributes::read_attribute_modifiers(&mut m, tag);
     m.health = float(tag.get("Health")).map_or(m.attrs.max_health, |h| h as f32);
-    m.absorption = float(tag.get("AbsorptionAmount"))
-        .map_or(0.0, |h| h as f32)
-        .max(0.0);
+    // LivingEntity.readAdditionalSaveData: `internalSetAbsorptionAmount`
+    // stores the value as read; only `setAbsorptionAmount` clamps.
+    m.absorption = float(tag.get("AbsorptionAmount")).map_or(0.0, |h| h as f32);
     // LivingEntity.setHealth clamps to the max health: a horse or llama is made
     // with the type's and saved before it drops to the one it rolled. (Only
     // the base is read here, so the clamp would cut a leader zombie's bonus.)
