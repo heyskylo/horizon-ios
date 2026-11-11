@@ -31,6 +31,10 @@ pub mod interaction;
 pub fn pickup_cooldown(m: &Mob) -> Option<i32> {
     m.extra.allay.as_ref()?.pickup_cooldown
 }
+/// `Allay.canPickUpLoot`: a held item and no pickup-cooldown memory.
+pub fn can_pick_up_loot(m: &Mob) -> bool {
+    m.extra.main_hand.is_some() && pickup_cooldown(m).is_none()
+}
 /// Set or erase `ITEM_PICKUP_COOLDOWN_TICKS` (see [`pickup_cooldown`]).
 pub fn set_pickup_cooldown(m: &mut Mob, ticks: Option<i32>) {
     if let Some(state) = m.extra.allay.as_mut() {
