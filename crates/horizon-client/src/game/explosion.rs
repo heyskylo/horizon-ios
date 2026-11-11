@@ -1113,7 +1113,7 @@ impl Game<'_> {
                 Some(conn) => self
                     .command_guest(conn)
                     .is_some_and(|g| !g.creative() && !g.spectator()),
-                None => self.combat.blast_owner.is_some() && !self.creative && !self.spectator(),
+                None => self.combat.blast_owner_player && !self.creative && !self.spectator(),
             };
             self.creaking_heart_broken_by(pos, award);
         }
@@ -1194,9 +1194,12 @@ impl Game<'_> {
             let rot = r.next_double() * f64::from(std::f32::consts::TAU);
             let fuse = r.next_int_bound(20).unwrap_or(0) + 10;
             // TntBlock.wasExploded hands the new TNT the blast's indirect
-            // source, so a chain reaction keeps the player who started it.
+            // source, so a chain reaction keeps the player or mob who started it.
             let (owner, guest) = match &self.combat.blast_owner {
-                Some(_) => (Some(Who::Player), self.combat.blast_guest),
+                Some(_) if self.combat.blast_owner_player => {
+                    (Some(Who::Player), self.combat.blast_guest)
+                }
+                Some((id, _)) => (Some(Who::Mob(*id)), None),
                 None => (None, None),
             };
             self.add_primed_tnt(

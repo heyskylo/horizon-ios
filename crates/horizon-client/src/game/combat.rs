@@ -107,6 +107,9 @@ pub(super) struct CombatTracker {
     /// The guest behind `blast_owner`, when that player is a LAN guest; the
     /// host's own blast leaves it None.
     pub(super) blast_guest: Option<u32>,
+    /// `blast_owner` is a player (`getIndirectSourceEntity() instanceof
+    /// Player`), not a mob whose UUID the TNT's `owner` names.
+    pub(super) blast_owner_player: bool,
     pub(super) projectile_attacker: Option<(u32, Text)>,
     /// The projectile hitting the player now is another player's that
     /// `ServerPlayer.canHarmPlayer` refuses (the `pvp` rule, an ally).
