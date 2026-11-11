@@ -1037,12 +1037,16 @@ impl Game<'_> {
             let Some(name) = self.find(&online, &kick["player"])? else {
                 continue;
             };
+            // The reason ends the control channel's line: a newline in it would be a request of
+            // its own (any console command), which the management protocol never offers.
             let reason = kick.get("message").and_then(component).map(|c| {
                 c["text"]
                     .as_str()
                     .or(c["translate"].as_str())
                     .unwrap_or_default()
-                    .to_owned()
+                    .chars()
+                    .filter(|ch| !ch.is_control())
+                    .collect::<String>()
             });
             let line = match reason {
                 Some(reason) if !reason.is_empty() => format!("kick {name} {reason}"),

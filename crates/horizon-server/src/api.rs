@@ -686,7 +686,8 @@ pub fn route(shared: &Arc<Shared>, request: &Request) -> Response {
             let line = serde_json::from_slice::<Value>(&request.body)
                 .ok()
                 .and_then(|v| v["line"].as_str().map(str::to_owned));
-            let Some(line) = line.filter(|l| !l.trim().is_empty() && !l.contains('\n')) else {
+            let Some(line) = line.filter(|l| !l.trim().is_empty() && !l.contains(['\n', '\r']))
+            else {
                 return Response::error(400, "the body must be {\"line\": \"<one command>\"}");
             };
             if shared.state.lock().unwrap().phase != Phase::Running {
