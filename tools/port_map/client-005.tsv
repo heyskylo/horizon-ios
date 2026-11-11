@@ -9,6 +9,7 @@ WitherBossRenderer.getTextureLocation	port	crates/horizon-client/src/mobs/wither
 WitherBossRenderer.extractRenderState	port	crates/horizon-client/src/mobs/wither.rs::anim	invulnerable clock feeds the texture and scale; the powered glow is render.rs::energy_swirl
 WitherSkullRenderer.createSkullLayer	skip:data		the skull model is baked into entity-models.json
 WitherSkullRenderer.submit	port	crates/horizon-client/src/game/creatures/mob_geometry.rs::Game::mob_geometry	gap: player: the skull is drawn as a flat sprite (Projectile::item_sprite), not the 3D skull model
+WitherSkullRenderer.extractRenderState	port	crates/horizon-client/src/projectiles.rs::Projectile::item_sprite	the dangerous (blue) skull texture is chosen here; gap: player: skull turns are not drawn (sprite only)
 WitherSkullRenderer.extractRenderState	port	crates/horizon-client/src/game/creatures/mob_geometry.rs::Game::mob_geometry	the wither_skull model turned to its flight, with the dangerous (blue) texture
 WolfRenderer.getModelTint	port	crates/horizon-client/src/mobs/tame.rs::tint	wet shade as a vertex colour
 WolfRenderer.extractRenderState	port	crates/horizon-client/src/mobs/tame.rs::anim	tail angle, head roll and shake body roll; texture, collar and armour are read at draw

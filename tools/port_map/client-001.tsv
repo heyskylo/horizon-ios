@@ -97,7 +97,7 @@ ClientLevel.tickPassenger	port	crates/horizon-client/src/game/passengers.rs::Gam
 ClientLevel.update	skip:other		runs the light queue each tick; Horizon relights when changes arrive
 ClientLevel.unload	inline	crates/horizon-client/src/game/remote.rs::Game::handle_packet	minor: the ForgetLevelChunk arm clears block entities and renderer columns; light and entity ticking are not toggled
 ClientLevel.onChunkLoaded	inline	crates/horizon-client/src/game/remote_chunks.rs::Game::remote_chunk	minor: chunks are meshed on arrival; no tint cache to clear and no entity-ticking gate
-ClientLevel.removeEntity	port	crates/horizon-client/src/game/remote.rs::Game::remove_entity	removes the entity and its passengers
+ClientLevel.removeEntity	port	crates/horizon-client/src/game/remote_removal.rs::Game::remove_entity	removes the entity and its passengers
 ClientLevel.getPushableEntities	missing		minor: the client does not push the local player with nearby mobs or boats; the server's position correction moves it
 ClientLevel.disconnect	port	crates/horizon-client/src/game/remote.rs::Game::leave_server	gap: minor: no presence update
 ClientLevel.spawnParticle	port	crates/horizon-client/src/animate_tick.rs::try_spawn_drip	drip particle from a block shape (doAnimateTick)
@@ -114,4 +114,4 @@ ClientLevel.calculateBlockTint	port	crates/horizon-client-render/src/mesher.rs::
 ClientLevel.playBreakingSound	port	crates/horizon-client/src/game/level_particles.rs::Game::breaking_block_effects	the block's hit sound while digging
 ClientLevel.getClientLeafTintColor	port	crates/horizon-client/src/animate_tick.rs::AnimateContext::foliage	leaf tint for tinted leaves particles; the caller is TintedParticleLeavesBlock
 ClientLevel.EntityCallbacks.onTrackingStart	inline	crates/horizon-client/src/game/remote.rs::Game::spawn_entity	minor: ender dragon parts are placed by the dragon module, with no tracked parts list
-ClientLevel.EntityCallbacks.onTrackingEnd	port	crates/horizon-client/src/game/remote.rs::Game::remove_entity	minor: detaches passengers and removes the dragon's parts; the leave-level event is not posted
+ClientLevel.EntityCallbacks.onTrackingEnd	port	crates/horizon-client/src/game/remote_removal.rs::Game::remove_entity	minor: detaches passengers and removes the dragon's parts; the leave-level event is not posted
