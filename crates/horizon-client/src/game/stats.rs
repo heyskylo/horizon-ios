@@ -10,6 +10,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(test)]
+#[path = "phantom_spawn_tests.rs"]
+mod phantom_spawn_tests;
+
 /// `stats[type][key]`, with `type` and `key` namespaced ids.
 #[derive(Default)]
 pub(super) struct Stats {
@@ -460,7 +464,11 @@ impl Game<'_> {
             position.y.floor() as i32,
             position.z.floor() as i32,
         ];
-        if pos[1] < 63 || !self.can_see_sky(pos) {
+        // `playerPos.getY() >= level.getSeaLevel() && level.canSeeSky(playerPos)`:
+        // sky light 15 at the position, whatever stands above it, so a glass
+        // or stained-glass roof still spawns phantoms (`MobWorld` reads the
+        // same rule for the spawn rules and the mob goals).
+        if pos[1] < 63 || !self.mob_world_base(&[]).can_see_sky(pos[0], pos[1], pos[2]) {
             return;
         }
         // `getCurrentDifficultyAt(playerPos).isHarderThan(random * 3)`.
@@ -498,12 +506,6 @@ impl Game<'_> {
                 false,
             );
         }
-    }
-    fn can_see_sky(&self, pos: [i32; 3]) -> bool {
-        (pos[1] + 1..pos[1] + 256).all(|y| {
-            let f = self.res.facts().get(self.world.block(pos[0], y, pos[2]));
-            !f.full_collision && f.fluid == horizon_client::blocks::Fluid::None
-        })
     }
 }
 

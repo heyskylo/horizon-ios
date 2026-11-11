@@ -22,9 +22,25 @@ pub mod interaction;
 // Allay state: `main_hand` the held filter; `State::inventory` the fetched stack,
 // `tame` a liked player, `point` the wanted item (set by the game),
 // `State::noteblock` the liked note block with `ints[2]` its cooldown,
-// `ints[3]` the pickup cooldown, `flag` dancing with `ints[4]` the dance clock,
+// `pickup_cooldown` the pickup cooldown, `flag` dancing with `ints[4]` the dance clock,
 // `egg_time` the duplication cooldown. AnimState slots: holding (0),
 // spinning (1).
+/// `ITEM_PICKUP_COOLDOWN_TICKS`. `CountDownCooldownTicks` counts it down while it is above 0 and
+/// erases it the tick after it reached 0 (`stop`), so a memory at 0 is still
+/// there for a tick, and `Allay.isOnPickupCooldown` is the memory's presence.
+pub fn pickup_cooldown(m: &Mob) -> Option<i32> {
+    m.extra.allay.as_ref()?.pickup_cooldown
+}
+/// `Allay.canPickUpLoot`: a held item and no pickup-cooldown memory.
+pub fn can_pick_up_loot(m: &Mob) -> bool {
+    m.extra.main_hand.is_some() && pickup_cooldown(m).is_none()
+}
+/// Set or erase `ITEM_PICKUP_COOLDOWN_TICKS` (see [`pickup_cooldown`]).
+pub fn set_pickup_cooldown(m: &mut Mob, ticks: Option<i32>) {
+    if let Some(state) = m.extra.allay.as_mut() {
+        state.pickup_cooldown = ticks;
+    }
+}
 pub const HOLD: usize = 0;
 pub const SPIN: usize = 1;
 /// `Allay.isLikedPlayer`: compare the supplied verified player UUID with
@@ -75,11 +91,71 @@ pub fn considers_item_equal(held: &ItemStack, candidate: &ItemStack) -> bool {
     held.item == candidate.item && held.potion() == candidate.potion()
 }
 
-/// `Allay.setDancing` marks an allay dancing only under `isEffectiveAi()`, so
-/// `NoAI` never dances; panicking stops it, and 10 blocks is the jukebox reach
-/// (`distance_sq` to the nearest playing jukebox's centre, infinite for none).
-pub fn dances(no_ai: bool, panicking: bool, distance_sq: f64) -> bool {
-    !no_ai && !panicking && distance_sq <= 100.0
+/// `GameEvent.JUKEBOX_PLAY.notificationRadius()`: the `JukeboxListener`'s radius.
+const JUKEBOX_LISTENER_RADIUS: i64 = 10;
+
+/// `EuclideanGameEventListenerRegistry.getPostableListenerPosition` for the
+/// `JukeboxListener`: its source is the allay's eye (`EntityPositionSource`
+/// with `getEyeHeight`), and the event is heard when the blocks of the eye and
+/// of the event are at most 10 apart (`BlockPos.distSqr`).
+pub fn hears_jukebox(m: &Mob, pos: [f64; 3]) -> bool {
+    let block = |p: [f64; 3]| p.map(|v| i64::from(v.floor() as i32));
+    let (source, listener) = (block(pos), block([m.position.x, m.eye_y(), m.position.z]));
+    let d = [0, 1, 2].map(|i| source[i] - listener[i]);
+    d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= JUKEBOX_LISTENER_RADIUS * JUKEBOX_LISTENER_RADIUS
+}
+
+/// `Allay.setDancing`: only under `isEffectiveAi()` (so `NoAI` never changes
+/// it), and a panicking allay does not start.
+fn set_dancing(m: &mut Mob, dancing: bool) {
+    if m.no_ai || dancing && super::goals::should_panic(m) {
+        return;
+    }
+    m.extra.flag = dancing;
+}
+
+/// `Allay.setJukeboxPlaying`, from the `JukeboxListener` (`jukebox_play` and
+/// `jukebox_stop_play` at `jukebox`): a play starts a dance and keeps that
+/// jukebox while the allay is not dancing yet; a stop ends it only from the
+/// kept jukebox, or with none kept.
+pub fn set_jukebox_playing(m: &mut Mob, jukebox: [i32; 3], playing: bool) {
+    let Some(kept) = m.extra.allay.as_ref().map(|st| st.jukebox) else {
+        return;
+    };
+    if playing {
+        if !m.extra.flag {
+            set_jukebox(m, Some(jukebox));
+            set_dancing(m, true);
+        }
+    } else if kept.is_none() || kept == Some(jukebox) {
+        set_jukebox(m, None);
+        set_dancing(m, false);
+    }
+}
+
+fn set_jukebox(m: &mut Mob, jukebox: Option<[i32; 3]>) {
+    if let Some(st) = m.extra.allay.as_mut() {
+        st.jukebox = jukebox;
+    }
+}
+
+/// `Allay.aiStep`'s `isDancing() && shouldStopDancing() && tickCount % 20 == 0`:
+/// the dance ends when no jukebox is kept, it is not within 10 blocks of the
+/// allay (`closerToCenterThan` its centre) or is no jukebox any more.
+fn stop_dancing_away(m: &mut Mob, w: &MobWorld) {
+    if !m.extra.flag || !m.age.is_multiple_of(20) {
+        return;
+    }
+    let kept = m.extra.allay.as_ref().and_then(|st| st.jukebox);
+    let stays = kept.is_some_and(|[x, y, z]| {
+        let centre = Vec3::new(f64::from(x) + 0.5, f64::from(y) + 0.5, f64::from(z) + 0.5);
+        centre.distance_squared(m.position) < f64::from(JUKEBOX_LISTENER_RADIUS as i32).powi(2)
+            && &*w.facts.get(w.world.block(x, y, z)).name == "minecraft:jukebox"
+    });
+    if !stays {
+        set_dancing(m, false);
+        set_jukebox(m, None);
+    }
 }
 
 /// `Mob.getPickupReach` (1, 1, 1) around the box: `Mob.aiStep`'s looting loop
@@ -97,12 +173,16 @@ pub fn pickup_reach(bounds: Aabb) -> Aabb {
 pub struct State {
     /// Allay's separate one-slot SimpleContainer.
     pub inventory: Option<ItemStack>,
+    /// The full Codec.INT value, including zero while the memory is present.
+    pub pickup_cooldown: Option<i32>,
     pub vibration: sculk::Data,
     pub noteblock: Option<GlobalPos>,
     /// The `LIKED_PLAYER` memory's time to live (`MemorySlot.timeToLive`);
     /// None for a memory that never expires. The memory itself is
     /// `Extra::tame` and `Extra::owner`.
     pub liked_player_ttl: Option<i64>,
+    /// `Allay.jukeboxPos`: the jukebox the dance started from. Not saved.
+    pub jukebox: Option<[i32; 3]>,
 }
 
 /// The pocket is independent of the main-hand filter.
@@ -264,7 +344,7 @@ impl Goal for Fetch {
         MOVE
     }
     fn can_use(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
-        m.extra.point.is_some() && m.extra.ints[3] <= 0
+        m.extra.point.is_some() && pickup_cooldown(m).is_none()
     }
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(p) = m.extra.point
@@ -410,6 +490,10 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if let Some(info) = tick.received {
         receive_vibration(m, dimension(w), info);
     }
+    // Allay.tick, after the vibration ticker.
+    if super::goals::should_panic(m) {
+        set_dancing(m, false);
+    }
 }
 /// `Allay.travel`: `travelFlying(input, getSpeed())` — the airborne speed is
 /// the one the move control set this tick, and no gravity applies, so an
@@ -419,15 +503,18 @@ pub fn travel(m: &mut Mob, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>
     m.travel_flying_speeds(w, input, events, 0.02, 0.02, speed);
     true
 }
-/// `Allay.aiStep` / `tick`: healing, cooldowns, the hold and spin clocks.
-pub fn ai_step(m: &mut Mob) {
+/// `Allay.aiStep` / `tick`: healing, the dance's jukebox check, cooldowns, the
+/// hold and spin clocks.
+pub fn ai_step(m: &mut Mob, w: &MobWorld) {
     tick_liked_player(m);
     passive_heal(m);
-    for i in [2, 3] {
-        if m.extra.ints[i] > 0 {
-            m.extra.ints[i] -= 1;
-        }
+    stop_dancing_away(m, w);
+    if m.extra.ints[2] > 0 {
+        m.extra.ints[2] -= 1;
     }
+    // CountDownCooldownTicks stops and erases a nonpositive memory; a positive
+    // value reaches zero for one tick before that stop.
+    set_pickup_cooldown(m, pickup_cooldown(m).filter(|t| *t > 0).map(|t| t - 1));
     update_duplication_cooldown(m);
     animate(m);
 }
@@ -614,14 +701,55 @@ mod allay_parity_tests {
 
     #[test]
     fn a_no_ai_allay_does_not_dance_to_a_playing_jukebox() {
-        // Beside a playing jukebox and at the edge of its 10-block reach.
-        for distance_sq in [0.0, 1.5 * 1.5, 99.0, 100.0] {
-            assert!(!dances(true, false, distance_sq), "NoAI at {distance_sq}");
-            assert!(dances(false, false, distance_sq), "AI at {distance_sq}");
-        }
-        // Out of reach, or panicking: no allay dances.
-        assert!(!dances(false, false, 100.5));
-        assert!(!dances(false, true, 1.0));
+        let mut mob = test_allay();
+        mob.no_ai = true;
+        set_jukebox_playing(&mut mob, [0, 64, 0], true);
+        assert!(!mob.extra.flag, "NoAI");
+        mob.no_ai = false;
+        set_jukebox_playing(&mut mob, [0, 64, 0], true);
+        assert!(mob.extra.flag, "AI");
+        // A burning allay panics: it does not start dancing.
+        let mut burning = test_allay();
+        burning.fire_ticks = 20;
+        set_jukebox_playing(&mut burning, [0, 64, 0], true);
+        assert!(!burning.extra.flag);
+    }
+
+    fn test_allay() -> Mob {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let kind_mut = std::sync::Arc::make_mut(&mut kind);
+        kind_mut.species = crate::mobs::Species::Allay;
+        kind_mut.id = "minecraft:allay".into();
+        Mob::new(37, kind, Vec3::new(0.5, 64.0, 0.5), 0.0)
+    }
+
+    // Added after the baseline: the kept jukebox and the listener's reach.
+    #[test]
+    fn only_the_kept_jukebox_stops_the_dance() {
+        let mut mob = test_allay();
+        set_jukebox_playing(&mut mob, [3, 64, 0], true);
+        // Another jukebox plays: the first one stays the dance's.
+        set_jukebox_playing(&mut mob, [-4, 64, 0], true);
+        assert_eq!(mob.extra.allay.as_ref().unwrap().jukebox, Some([3, 64, 0]));
+        set_jukebox_playing(&mut mob, [-4, 64, 0], false);
+        assert!(mob.extra.flag, "a stop elsewhere does not end it");
+        set_jukebox_playing(&mut mob, [3, 64, 0], false);
+        assert!(!mob.extra.flag);
+        assert_eq!(mob.extra.allay.as_ref().unwrap().jukebox, None);
+        // With none kept, any stop ends a dance.
+        mob.extra.flag = true;
+        set_jukebox_playing(&mut mob, [9, 64, 9], false);
+        assert!(!mob.extra.flag);
+    }
+
+    #[test]
+    fn the_jukebox_listener_hears_ten_blocks_from_the_eye_block() {
+        let mob = test_allay();
+        let eye = mob.eye_y().floor();
+        // Block distance squared from the eye's block: 100 is heard, 101 not.
+        assert!(hears_jukebox(&mob, [10.5, eye, 0.5]));
+        assert!(!hears_jukebox(&mob, [10.5, eye + 1.0, 0.5]));
+        assert!(hears_jukebox(&mob, [6.5, eye + 8.0, 0.5]));
     }
 
     #[test]

@@ -303,8 +303,12 @@ fn faded(code: u32, local: vec3<f32>, dx: vec3<f32>, dy: vec3<f32>) -> bool {
     let pixel = max(length(dx), length(dy));
     let unit = exp2(ceil(log2(max(pixel * 1.5, 1.0 / 16.0))));
     let p = vec2<u32>(bitcast<vec2<u32>>(vec2<i32>(floor(plane / unit)))) & vec2(3u);
-    let bayer = array<u32, 16>(0u, 8u, 2u, 10u, 12u, 4u, 14u, 6u, 3u, 11u, 1u, 9u, 15u, 7u, 13u, 5u);
-    return (f32(bayer[p.y * 4u + p.x]) + 0.5) / 16.0 >= shown;
+    // The 4x4 Bayer matrix by rows, 0 8 2 10, 12 4 14 6, 3 11 1 9, 15 7 13 5: four bits each,
+    // two rows a word (a constant array indexed by the pixel would be a private array, which
+    // Adreno's Vulkan compiler, build 0676.41, fails to link).
+    let rows = select(0x6e4ca280u, 0x5d7f91b3u, p.y >= 2u);
+    let bayer = (rows >> (((p.y & 1u) * 4u + p.x) * 4u)) & 0xfu;
+    return (f32(bayer) + 0.5) / 16.0 >= shown;
 }
 // A fading tile or section is drawn a hair toward the camera (depth is
 // reversed: nearer is larger), the newer the more, so it wins where it draws
@@ -524,8 +528,18 @@ fn packed_corner(lo: vec3<u32>, hi: vec3<u32>, corner: u32) -> ArenaCorner {
     let packed_light = ((light & 63u) << 2u) | (((light >> 6u) & 63u) << 10u);
     let g = (lo.y >> (8u * corner)) & 255u;
     let t = lo.x;
+    // Corners 1 to 3's own alpha (`packed::ALPHA_STEP` times the code; 0: word 0's).
+    var code = 0u;
+    if corner == 1u {
+        code = (hi.x >> 28u) & 7u;
+    } else if corner == 2u {
+        code = (hi.y >> 24u) & 7u;
+    } else if corner == 3u {
+        code = (hi.y >> 27u) & 7u;
+    }
+    let alpha = select((code * 51u) << 24u, t & 0xff000000u, code == 0u);
     let color = (g * ((t >> 16u) & 255u) / 255u) | ((g * ((t >> 8u) & 255u) / 255u) << 8u)
-        | ((g * (t & 255u) / 255u) << 16u) | (t & 0xff000000u);
+        | ((g * (t & 255u) / 255u) << 16u) | alpha;
     return ArenaCorner(bitcast<vec3<u32>>(vec3<f32>(pos)),
         vec3((u << 10u) | (v << 26u), (hi.x & 0xffffu) | (packed_light << 16u), color));
 }
@@ -955,13 +969,13 @@ const PI: f32 = 3.14159265;
 fn disc_distance(d: vec3<f32>, y: f32) -> vec2<f32> {
     if d.y * y <= 0.0 { return vec2(-1.0); }
     let p = d * (y / d.y);
-    let h = length(p.xz);
-    let phi = atan2(p.z, p.x);
-    let sector = PI / 4.0;
-    let delta = phi - (floor(phi / sector) * sector + sector * 0.5);
-    let edge = 512.0 * cos(sector * 0.5) / cos(delta);
-    if h > edge { return vec2(-1.0); }
-    let s = h / edge;
+    // The regular octagon's edge parameter, directly from its half planes.
+    // max(|x| + tan(pi/8)*|z|, |z| + tan(pi/8)*|x|) / radius
+    // equals length(p.xz) / edge without atan2, floor or cos per pixel.
+    let a = abs(p.xz);
+    let diagonal = 0.41421356237309503;
+    let s = max(a.x + diagonal * a.y, a.y + diagonal * a.x) / 512.0;
+    if s > 1.0 { return vec2(-1.0); }
     let ay = abs(y);
     let rim = sqrt(512.0 * 512.0 + y * y);
     return vec2(ay + s * (rim - ay), ay + s * (512.0 - ay));

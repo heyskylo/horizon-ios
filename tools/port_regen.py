@@ -23,6 +23,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import zipfile
 
@@ -320,3 +321,9 @@ def regen(version, found, store, base, path, names=None):
     results = run_generators(root, version, store, names)
     return {"old": old, "new": version, "candidate": str(root), "commit": commit(root, version, results),
             "generators": results}
+
+
+if __name__ == "__main__":
+    # A module, not a command: say how it is used instead of doing nothing at all.
+    print(__doc__, file=sys.stderr)
+    raise SystemExit(2)

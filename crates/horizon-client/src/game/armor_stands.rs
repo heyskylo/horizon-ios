@@ -1954,8 +1954,7 @@ impl Game<'_> {
         mut skin: Option<&mut horizon_client::mobs::skin::Skin>,
         out: &mut Vec<Vertex>,
     ) {
-        let lights =
-            horizon_client::block_entity_render::diffuse_lights(self.dim == super::Dim::Nether);
+        let lights = horizon_client::block_entity_render::diffuse_lights(self.nether_lighting());
         let mut submit = |state: &horizon_client::item_render::ItemRenderState,
                           pose: glam::Mat4,
                           out: &mut Vec<Vertex>| {
@@ -2028,7 +2027,7 @@ impl Game<'_> {
                 out,
                 light,
                 lights: Some(horizon_client::block_entity_render::diffuse_lights(
-                    self.dim == super::Dim::Nether,
+                    self.nether_lighting(),
                 )),
                 glint: self.glint(),
                 tier: 0,
