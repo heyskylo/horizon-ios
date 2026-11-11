@@ -363,6 +363,11 @@ public final class VanillaPackScreenOracle {
             var o = a.getAsJsonObject();
             Screen s = gui.current;
             switch (o.get("type").getAsString()) {
+                case "drop" -> {
+                    var paths = new ArrayList<Path>();
+                    for (var path : o.getAsJsonArray("paths")) paths.add(Path.of(path.getAsString()));
+                    screen.onFilesDrop(paths);
+                }
                 case "click" -> {
                     var event = new MouseButtonEvent(o.get("x").getAsDouble(), o.get("y").getAsDouble(), info);
                     // Never press Open Pack Folder: it opens a file manager.

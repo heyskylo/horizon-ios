@@ -58,7 +58,8 @@ impl Game<'_> {
             life: 22,
             owner,
             started: false,
-            random: horizon_client::mobs::entity_random(id, Vec3::new(at[0], at[1], at[2])),
+            random: (*horizon_client::mobs::entity_random(id, Vec3::new(at[0], at[1], at[2])))
+                .clone(),
         });
     }
     pub(super) fn fangs_to_nbt(&self, f: &Fangs, uuid: [i32; 4]) -> horizon_world::nbt::Tag {

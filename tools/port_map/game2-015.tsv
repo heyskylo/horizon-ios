@@ -4,6 +4,9 @@ PointedDripstoneBlock.findRootBlock	inline	crates/horizon-world/src/level/speleo
 PointedDripstoneBlock.findFillableCauldronBelowStalactiteTip	port	crates/horizon-world/src/level/speleothem.rs::Sim::dripstone_find_cauldron	
 PointedDripstoneBlock.findStalactiteTipAboveCauldron	inline	crates/horizon-world/src/level/speleothem.rs::Sim::cauldron_tick	tip search upward from the cauldron folded into the cauldron tick
 PointedDripstoneBlock.getCauldronFillFluidType	inline	crates/horizon-world/src/level/speleothem.rs::Sim::cauldron_tick	water or lava filter on the fluid above folded into the cauldron tick
+PointedDripstoneBlock.animateTick	port	crates/horizon-client/src/animate_tick.rs::dripstone_drip	the free-hanging gate, the 0.12 roll and the drip of the fluid above the root
+PointedDripstoneBlock.getFluidAboveStalactite	inline	crates/horizon-client/src/animate_tick.rs::dripstone_drip	the ten-block root climb and the fluid above it folded into the drip
+PointedDripstoneBlock.canFillCauldron	inline	crates/horizon-client/src/animate_tick.rs::dripstone_drip	water or lava by fluid type, source or flowing, passes the 2% roll
 PointedDripstoneBlock.canGrow	inline	crates/horizon-world/src/level/speleothem.rs::Sim::speleothem_grow	gap: minor: checks the fluid two blocks above is water, not that it is a source block
 PointedDripstoneBlock.getDripParticle	port	crates/horizon-client/src/game/level_particles.rs::Game::dripstone_drip_particle	
 PotentSulfurBlock.isSourceIfFluid	inline	crates/horizon-world/src/level/shapes.rs::Sim::potent_sulfur_state	source_if_fluid check inside the state rule

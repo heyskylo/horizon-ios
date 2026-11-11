@@ -62,7 +62,7 @@ pub fn register(m: &mut Mob) {
     if trader {
         g.add(1, Panic::new(2.0));
     }
-    g.add(1, equine::RunAroundLikeCrazy);
+    g.add(1, equine::RunAroundLikeCrazy::new());
     g.add(2, super::caravan::FollowCaravan::new(f64::from(2.1_f32)));
     g.add(3, RangedAttack::new(1.25, 40, 40, 20.0, spit));
     g.add(3, Panic::new(1.2));
@@ -226,12 +226,7 @@ fn spit(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
     let zd = t.position.z - m.position.z;
     let yo = (xd * xd + zd * zd).sqrt() * f64::from(0.2_f32);
     let mut p = Projectile::new(ProjectileKind::LlamaSpit, start, Some(Who::Mob(m.id)));
-    p.shoot(
-        &mut crate::random_source::entity(),
-        [xd, yd + yo, zd],
-        1.5,
-        10.0,
-    );
+    p.shoot_own([xd, yd + yo, zd], 1.5, 10.0);
     cx.events.push(MobEvent::Projectile(p));
     let pitch = 1.0 + (m.random.next_float() - m.random.next_float()) * 0.2;
     cx.events.push(MobEvent::Sound(

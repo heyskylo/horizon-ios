@@ -366,10 +366,19 @@ def honest_play(game, console):
 def water_play(game, console):
     """In water as players are on the official server: sprint-swimming down and up a deep pool, held at
     the surface by jump, sinking, sneaking down, climbing out onto a ledge; standing in, against and with
-    a current; carried up a bubble column."""
+    a current; carried up a bubble column. Then the blocks #5879 names as unknown around the flags: a kelp
+    forest, a waterfall against a cliff, a current that dries up and comes back while the player swims in
+    it, and waterlogged slabs, fences and stairs."""
     def tp(x, y, z, yaw=0, pitch=0):
         console(f'tp Walker {x} {y} {z} {yaw} {pitch}')
         game.wait(20)
+
+    def expect(*blocks):
+        """Each (x, y, z, name, state) is in the client's world as built, so no case passes empty."""
+        for x, y, z, name, state in blocks:
+            got = game('block', x=x, y=y, z=z)
+            if got['block'] != name or state not in got['state']:
+                raise Failed(f'{x} {y} {z} is {got["block"]} {got["state"]}, not {name} {state}')
     # Above the flat ground (its top is at -61): a pool 10 deep, with a ledge one block above the water at its far end.
     console('fill 40 -60 0 50 -50 31 minecraft:stone')
     console('fill 41 -59 1 49 -50 29 minecraft:water')
@@ -404,6 +413,91 @@ def water_play(game, console):
     game.wait(80)
     tp(45.5, -48, 33.5)
     game.wait(20)
+    # Each case below is built once the player stands beside it: the server only fills loaded chunks.
+    # A kelp forest in a pool 10 deep: kelp from the floor up to two blocks under the surface, grown
+    # (age 25), so it doesn't change while the player swims in it.
+    tp(85.5, -60, -2.5)
+    console('fill 80 -60 0 90 -50 31 minecraft:stone')
+    console('fill 81 -59 1 89 -50 29 minecraft:water')
+    console('fill 81 -59 1 89 -53 29 minecraft:kelp_plant')
+    console('fill 81 -52 1 89 -52 29 minecraft:kelp[age=25]')
+    game.wait(40)
+    expect((85, -56, 10, 'minecraft:kelp_plant', ''), (85, -52, 10, 'minecraft:kelp', 'age=25'),
+           (85, -51, 10, 'minecraft:water', 'level=0'))
+    tp(85.5, -51, 3.5)
+    game.raw('look', 0, 40)
+    game.raw('move', 'forward', 2, '--sprint')
+    game.raw('look', 0, -40)
+    game.raw('move', 'forward', 2, '--sprint')
+    game.raw('look', 0, 0)
+    game.script(['key space down', 'wait 60', 'key space up', 'wait 40', 'key shift down', 'wait 30',
+                 'key shift up', 'wait 20'])
+    tp(85.5, -59, 20.5)
+    game.raw('move', 'forward', 2)
+    game.raw('move', 'forward', 3, '--jump')
+    # A waterfall: a source 11 blocks up against a cliff falls to the ground and spreads over it.
+    tp(95.5, -60, -2.5)
+    console('fill 101 -60 3 101 -48 7 minecraft:stone')
+    console('setblock 100 -49 5 minecraft:water')
+    game.wait(120)
+    expect((100, -55, 5, 'minecraft:water', 'level=8'), (100, -60, 5, 'minecraft:water', 'level=8'),
+           (97, -60, 5, 'minecraft:water', ''))
+    # Jump held at its foot, walking into it across the water it spreads, sinking down it from its top.
+    tp(100.5, -60, 5.5)
+    game.script(['key space down', 'wait 60', 'key space up', 'wait 20'])
+    tp(96.5, -60, 5.5, -90)
+    game.raw('move', 'forward', 2)
+    game.raw('move', 'forward', 2, '--jump')
+    tp(100.5, -51, 5.5)
+    game.wait(60)
+    # The waterfall stops and starts again over the player standing at its foot.
+    tp(100.5, -60, 5.5)
+    console('setblock 100 -49 5 minecraft:air')
+    game.wait(80)
+    console('setblock 100 -49 5 minecraft:water')
+    game.wait(80)
+    # A current that changes: a channel one deep whose source goes (the current dries up block by block)
+    # and comes back, while the player stands and walks in it.
+    tp(118.5, -60, -2.5)
+    console('fill 120 -60 -1 124 -60 9 minecraft:stone')
+    console('fill 122 -60 0 122 -60 8 minecraft:air')
+    console('setblock 122 -60 0 minecraft:water')
+    game.wait(60)
+    expect((122, -60, 3, 'minecraft:water', 'level=3'), (122, -60, 8, 'minecraft:air', ''))
+    tp(122.5, -60, 2.5)
+    game.raw('move', 'forward', 1)
+    game.raw('look', 180, 0)
+    game.raw('move', 'forward', 1)
+    tp(122.5, -60, 4.5)
+    console('setblock 122 -60 0 minecraft:air')
+    game.wait(60)
+    console('setblock 122 -60 0 minecraft:water')
+    game.wait(60)
+    game.raw('move', 'forward', 1)
+    console('setblock 122 -60 0 minecraft:air')
+    game.raw('move', 'back', 2)
+    game.wait(40)
+    # Waterlogged blocks in a pool 3 deep: bottom slabs for a floor, a row of fences across it, and two
+    # rows of stairs up to its rim.
+    tp(135.5, -60, -2.5)
+    console('fill 130 -60 0 140 -57 12 minecraft:stone')
+    console('fill 131 -59 1 139 -57 11 minecraft:water')
+    console('fill 131 -59 1 139 -59 9 minecraft:stone_slab[type=bottom,waterlogged=true]')
+    console('fill 131 -58 5 135 -58 5 minecraft:oak_fence[waterlogged=true]')
+    console('fill 131 -59 10 139 -59 10 minecraft:oak_stairs[facing=south,waterlogged=true]')
+    console('fill 131 -58 11 139 -58 11 minecraft:oak_stairs[facing=south,waterlogged=true]')
+    game.wait(40)
+    expect((133, -59, 3, 'minecraft:stone_slab', 'waterlogged=true'),
+           (133, -58, 5, 'minecraft:oak_fence', 'waterlogged=true'),
+           (133, -58, 11, 'minecraft:oak_stairs', 'waterlogged=true'))
+    # Standing on the slabs, walking into the fences, around them, and up the stairs.
+    tp(133.5, -58, 1.5)
+    game.wait(20)
+    game.raw('move', 'forward', 2)
+    game.raw('move', 'left', 2)
+    game.raw('move', 'forward', 4, '--jump')
+    game.wait(20)
+    tp(30.5, -60, -10.5)
 
 
 def items_play(game, console):
@@ -447,7 +541,8 @@ def check_prediction(bins, scratch, out, seconds, name='prediction', play=None):
     relay = Jitter(port)
     try:
         try:
-            game('launch', wait=False, offscreen=sys.platform == 'darwin')
+            game('launch', wait=False,
+                     offscreen=sys.platform == 'darwin' or bool(os.environ.get('HORIZON_E2E_HEADLESS')))
             game.raw('connect', f'127.0.0.1:{relay.port}', 'Walker')
             game.raw('wait-for', 'loaded', '--timeout', 300)
             game.wait(60)
