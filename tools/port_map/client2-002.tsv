@@ -100,7 +100,7 @@ SubmitNodeCollection.submitTextBackground	inline	crates/horizon-client/src/game/
 SubmitNodeCollection.submitTextPart	inline	crates/horizon-client/src/game/text_displays.rs::Game::text_display_geometry	the see-through or opaque choice for a text part
 SubmitNodeCollection.submitFlame	port	crates/horizon-client/src/fire_render.rs::flames	entity fire flames
 SubmitNodeCollection.submitLeash	port	crates/horizon-client/src/game/leads.rs::Game::leash_geometry	lead rope from a leashed mob to its holder
-SubmitNodeCollection.submitModel	port	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	mob models
+SubmitNodeCollection.submitModel	port	crates/horizon-client/src/game/creatures/mob_geometry.rs::Game::mob_geometry	mob models
 SubmitNodeCollection.submitCrumblingOverlay	port	crates/horizon-client/src/game/frame_geometry.rs::Game::cracks	block break cracks (destroy_stage sprites) over a block
 SubmitNodeCollection.submitMovingBlock	port	crates/horizon-client/src/game/moving_pistons.rs::Game::moving_piston_geometry	moving piston blocks
 SubmitNodeCollection.submitBlockModel	port	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_block	gap: minor: block models driven by block entities only

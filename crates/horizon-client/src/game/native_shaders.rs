@@ -12,7 +12,7 @@ use std::{
 };
 
 use horizon_client::text::Text;
-use horizon_shader_api::{Api, Blend, Manifest, Pack, check};
+use horizon_shader_api::{Api, Blend, Manifest, Pack, Primaries, check};
 
 use super::Game;
 
@@ -202,6 +202,12 @@ impl Game<'_> {
 /// (docs/design/hdr-linear-light.md, steps 3 and 4) isn't served yet. 0.2 itself is drawn
 /// under `HORIZON_HDR_FRAME=float` (`switch`).
 fn not_drawn(m: &Manifest, switch: bool) -> Option<String> {
+    if m.primaries == Primaries::Bt2020 {
+        return Some(
+            "[frame] primaries = \"bt2020\" isn't served yet: leave it out, or set \"bt709\""
+                .into(),
+        );
+    }
     if m.blend == Blend::Linear {
         return Some(
             "[frame] blend = \"linear\" isn't served yet: leave it out, or set \"gamma\"".into(),
@@ -354,6 +360,14 @@ mod tests {
             assert_eq!(not_drawn(&manifest("0.1", ""), switch), None);
             let why = not_drawn(&manifest("0.2", "[frame]\nblend = \"linear\"\n"), switch);
             assert!(why.unwrap().contains("blend = \"linear\" isn't served yet"));
+            let wide = "[frame]\nblend = \"linear\"\nprimaries = \"bt2020\"\n";
+            let why = not_drawn(&manifest("0.2", wide), switch).unwrap();
+            assert!(
+                why.contains("primaries = \"bt2020\" isn't served yet"),
+                "{why}"
+            );
+            let named = manifest("0.2", "[frame]\nprimaries = \"bt709\"\n");
+            assert_eq!(not_drawn(&named, true), None);
         }
         let why = not_drawn(&manifest("0.2", ""), false).unwrap();
         assert!(

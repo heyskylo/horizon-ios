@@ -11,3 +11,5 @@ pub mod mod_api;
 
 #[cfg(test)]
 mod brewing_speed_load_tests;
+#[cfg(test)]
+mod living_death_tests;

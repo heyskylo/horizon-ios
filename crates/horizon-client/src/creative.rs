@@ -26,8 +26,9 @@ pub struct Tab {
     /// The page of tabs it is on: vanilla's are 0, mods' after, as NeoForge
     /// pages them.
     pub page: u32,
-    /// A Polytone creative tab modifier's `name`: its text and colour, over the tab's own.
-    pub name: Option<(String, Option<u32>)>,
+    /// A Polytone creative tab modifier's `name`: its text (a translation key when
+    /// the flag is set) and colour, over the tab's own.
+    pub name: Option<(String, Option<u32>, bool)>,
 }
 impl Tab {
     /// The tab without its stacks.
@@ -103,25 +104,28 @@ pub struct Creative {
     /// The packs' Polytone creative tab modifiers, applied by `rebuild`.
     pack: Vec<crate::polytone_creative_tabs::TabModifier>,
 }
-/// A text component's plain text and its colour (a name, or `#rrggbb`).
-fn component_text(json: &Value) -> (String, Option<u32>) {
+/// A text component's text, its colour (a name, or `#rrggbb`) and whether the
+/// text is a `translate` key, to be resolved when drawn.
+fn component_text(json: &Value) -> (String, Option<u32>, bool) {
     match json {
-        Value::String(s) => (s.clone(), None),
+        Value::String(s) => (s.clone(), None, false),
         Value::Object(o) => {
+            let translate = o.get("translate").and_then(Value::as_str);
             let text = o
                 .get("text")
-                .or_else(|| o.get("translate"))
                 .and_then(Value::as_str)
+                .or(translate)
                 .unwrap_or("")
                 .to_owned();
+            let translate = o.get("text").is_none() && translate.is_some();
             let color = o.get("color").and_then(Value::as_str).and_then(|c| {
                 c.strip_prefix('#')
                     .and_then(|hex| u32::from_str_radix(hex, 16).ok())
                     .or_else(|| crate::text::named_color(c))
             });
-            (text, color)
+            (text, color, translate)
         }
-        _ => (String::new(), None),
+        _ => (String::new(), None, false),
     }
 }
 /// The grid's stacks for one tab, search text and language.
@@ -911,6 +915,16 @@ impl Creative {
         }
         let y = if tab.top { -28.0 } else { Self::HEIGHT - 4.0 };
         (x, y)
+    }
+    /// `CreativeModeInventoryScreen.checkTabHovering`: the tab whose icon
+    /// rectangle, 3 pixels in from its 26x32 slot (`isHovering(x + 3, y + 3,
+    /// 21, 27)`), holds the cursor. The screen draws its display name.
+    pub fn hovered_tab(tabs: &[Tab], origin: (f32, f32), cursor: (f32, f32)) -> Option<usize> {
+        tabs.iter().position(|tab| {
+            let (x, y) = Self::tab_position(tab);
+            let (x, y) = (origin.0 + x + 3.0, origin.1 + y + 3.0);
+            cursor.0 >= x && cursor.0 < x + 21.0 && cursor.1 >= y && cursor.1 < y + 27.0
+        })
     }
     /// `CreativeModeInventoryScreen.extractTabButton`'s cursor: an unselected
     /// tab asks for the pointing hand when the whole-pixel mouse, relative to
@@ -1788,5 +1802,22 @@ mod tests {
         assert!(c.items(&names).is_empty());
         assert!(c.tab_headers().is_empty());
         assert_eq!(c.search_tab(), None);
+    }
+
+    /// `CreativeModeInventoryScreen.checkTabHovering`: the 3-pixel inset of a
+    /// tab's 26x32 slot (21x27) is the hover area whose name the screen shows.
+    #[test]
+    fn only_a_tabs_inset_icon_is_hovered() {
+        let screen = tooltip_tabs();
+        let tab = &screen.tabs[0];
+        let (x, y) = Creative::tab_position(tab);
+        let at =
+            |dx: f32, dy: f32| Creative::hovered_tab(&screen.tabs, (0.0, 0.0), (x + dx, y + dy));
+        assert_eq!(at(4.0, 4.0), Some(0));
+        assert_eq!(at(23.5, 4.0), Some(0));
+        assert_eq!(at(2.0, 4.0), None);
+        assert_eq!(at(24.0, 4.0), None);
+        assert_eq!(at(4.0, 2.0), None);
+        assert_eq!(at(4.0, 30.0), None);
     }
 }

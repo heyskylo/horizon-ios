@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "map_colors", "target": "horizon_client::game::maps::Game<'_>::native_map_colors"},
+    {"name": "map_meta", "target": "horizon_client::game::maps::Game<'_>::native_map_meta"}
+  ],
+  "rust_summary": "maps a server mod reads back: `native_map_colors` and `native_map_meta`.",
+  "doc_summary": "`native_map_colors(map_id)` gives the 128 x 128 picture of a map the world keeps (`native_new_map`, `native_paint_map`, or a map the game made), row by row, one `MapColor` id times 4 plus its shade per byte, as vanilla's `MapItemSavedData.colors`; `native_map_meta(map_id)` gives its scale, dimension and locked flag. A map is read from its loaded copy or its saved file, without loading it. None for a map the world never made or saved, and on a client of a server."
+}
