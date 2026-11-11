@@ -51,8 +51,14 @@ fn float(tag: Option<&Tag>) -> Option<f32> {
         other => int(Some(other))? as f32,
     })
 }
+/// `TagValueInput.getBooleanOr`: a number is true when its byte value is not 0.
 fn flag(tag: Option<&Tag>) -> Option<bool> {
-    Some(int(tag)? != 0)
+    Some(int(tag)? as i8 != 0)
+}
+/// `Codec.BOOL` through `NbtOps.getBooleanValue`: a number is true when it
+/// is not 0 as a whole (`doubleValue() != 0`), unlike `getBooleanOr`.
+fn codec_flag(tag: Option<&Tag>) -> Option<bool> {
+    Some(float(tag)? != 0.0)
 }
 fn boolean(v: bool) -> Tag {
     Tag::Byte(i8::from(v))
@@ -308,7 +314,7 @@ pub fn sign_side(tag: Option<&Tag>) -> Tag {
         (
             "has_glowing_text",
             boolean(
-                tag.and_then(|t| flag(t.get("has_glowing_text")))
+                tag.and_then(|t| codec_flag(t.get("has_glowing_text")))
                     .unwrap_or(false),
             ),
         ),
@@ -866,6 +872,31 @@ mod tests {
             picked.get("spawn_data"),
             Some(&snbt(r#"{entity:{id:"minecraft:skeleton"}}"#))
         );
+    }
+
+    /// `getBooleanOr` tests a number's byte value: an int 256 is false and
+    /// 257 true, for a sign's wax and a piston's flags alike.
+    #[test]
+    fn booleans_are_read_as_bytes() {
+        let sign = |waxed: &str| {
+            canon(&format!(
+                "{{id:\"minecraft:sign\",x:1,y:2,z:3,is_waxed:{waxed}}}"
+            ))
+            .get("is_waxed")
+            .cloned()
+        };
+        assert_eq!(sign("1b"), Some(Tag::Byte(1)));
+        assert_eq!(sign("256"), Some(Tag::Byte(0)));
+        assert_eq!(sign("257"), Some(Tag::Byte(1)));
+        // `SignText` reads `has_glowing_text` through `Codec.BOOL`, which tests
+        // the whole number: 256 is true there.
+        let glowing =
+            canon(r#"{id:"minecraft:sign",x:1,y:2,z:3,front_text:{has_glowing_text:256}}"#);
+        let front = glowing.get("front_text").unwrap();
+        assert_eq!(front.get("has_glowing_text"), Some(&Tag::Byte(1)));
+        let piston = canon(r#"{id:"minecraft:piston",x:1,y:2,z:3,extending:256,source:513}"#);
+        assert_eq!(piston.get("extending"), Some(&Tag::Byte(0)));
+        assert_eq!(piston.get("source"), Some(&Tag::Byte(1)));
     }
 
     #[test]
