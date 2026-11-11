@@ -427,8 +427,8 @@ game built in `Game::new`, the integrated server on its own thread. On that base
 **Binaries.** The release archives hold `horizon-client`, `horizon-ctl`, `horizon-prepare` and
 `horizon-server`. On Linux the release also has `horizon-server-linux-x86_64.tar.gz`: `horizon-server`,
 `horizon-prepare` and `horizon-engine`, the game built with `--no-default-features` (no sound, no
-controllers, no Discord presence, Play with Friends or "I'm playing" ping: the `discord`, `friends` and
-`heartbeat` features), which links neither `libasound.so.2` nor `libudev.so.1`. `release.yml` builds it after the
+controllers, no Play with Friends: the `friends` feature; nor Discord presence or the "I'm playing" ping, which
+only the official executable has), which links neither `libasound.so.2` nor `libudev.so.1`. `release.yml` builds it after the
 client archive (`xtask package-server`) and fails if `tools/check_imports.py --server` finds either library;
 CI lints the same build. `horizon-server` runs `horizon-engine` when it is beside it or on the PATH, else
 `horizon-client`. Build it yourself with `cargo build --release -p horizon-client --no-default-features`
@@ -851,6 +851,11 @@ reproducible by anyone, and show the same gameplay on both sides.
   - `fight`: survival bots (`gamemode=survival`, `force-gamemode=true`, `allow-flight=true`) that track the entities the server
     sends, walk to the nearest living one and attack it every 5 ticks, vanilla's bare-hand cooldown; with `--pvp true` (the
     default) they attack each other too, which needs `pvp=true` on the server. The report counts `attacks`.
+
+  For controlled chunk-pacing tests, use `--behaviour explore --ack-mode 64`: the bot sends exactly
+  one acknowledgement per completed chunk batch, requesting 64 chunks per tick. The default
+  `--ack-mode vanilla` keeps vanilla estimation. Unlike `flood-acks`, this option adds no
+  unsolicited acknowledgements. The summary records `ack_mode`.
 
   A `build` behaviour (breaking and placing blocks) needs the bots to read terrain and comes later. Runs use
   1, 10, 25, 50 and 100 bots, joining 1 per second. Bots are needed because 100 real vanilla clients can't run

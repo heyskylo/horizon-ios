@@ -172,7 +172,7 @@ Limits, checked by `Item::parse` with the item's own (vertices, parts, texture):
 `Emote::pose_body` poses the six bones at a time and weight (the blend), `Emote::pose_props` the
 props; `Playing` is an emote someone plays (its start, its cancel) and gives its time and weight.
 
-### Playing an emote (`game/emotes.rs`, `game/emote_wheel.rs`)
+### Playing an emote (`game/cosmetics/emotes.rs`, `game/cosmetics/emote_wheel.rs`)
 
 - **The wheel**: *Emote Wheel* (`key.emote`, **B** by default: no vanilla key uses it; Controls
   rebinds it, kept as `emoteKey` in `horizon-extras.txt` so `options.txt` stays vanilla's, and so
@@ -304,6 +304,11 @@ same cached `/v1/worn` answers as what they wear (no request of its own, nothing
     know, so in single player (open to LAN too) the game draws and asks nothing for the player's
     own model. On, it asks by the signed-in account's UUID: their cosmetics, their name tag style
     (with *Own name tag*) and Horizon's mark show in their own worlds. Offline accounts: nothing.
+  - **Offline-mode servers** (#12820): such a server names the player by `nameUUIDFromBytes` of
+    their name (a version 3 UUID), which the service doesn't know, so the game asks for the
+    player's own model by the signed-in account's UUID, as on an online server; *My cosmetics*
+    decides, with no setting of its own. Only the own model: on an offline server anyone can take
+    any name, so other players are still asked by the UUID the server gives them.
 - **Name tag styles** (`game/names.rs`): the badge, 8 text pixels square, after the name and a
   one-pixel line in the style's colour under the name's background, in the name tag's own pass
   (the badge is in the atlas like the other items' textures). Horizon's mark goes before the name.

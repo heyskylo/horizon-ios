@@ -23,7 +23,8 @@ pub(super) const HELP: &[&str] = &[
 ];
 
 /// After a click, `ui`, `click` and `set` wait for a frame drawn since, so
-/// they never read the screen the click left.
+/// they never read the screen the click left; before the first frame, for
+/// that one, as a game answers its socket before it has drawn anything.
 #[derive(Default)]
 pub(super) struct UiWait {
     /// The widget generation at the last click, and when it happened.
@@ -33,9 +34,10 @@ pub(super) struct UiWait {
 
 impl UiWait {
     fn stale(&self) -> bool {
-        self.after.is_some_and(|(generation, at)| {
-            generation == widgets::generation() && at.elapsed() < Duration::from_secs(1)
-        })
+        widgets::generation() == 0
+            || self.after.is_some_and(|(generation, at)| {
+                generation == widgets::generation() && at.elapsed() < Duration::from_secs(1)
+            })
     }
     /// The commands that can run now.
     pub(super) fn ready(&mut self) -> Vec<Request> {
@@ -121,7 +123,8 @@ impl Game<'_> {
         })
     }
 
-    /// `ui`, `click` and `set`; `Handled::No` for other commands.
+    /// `ui`, `click` and `set`, and `screen` and `click-button` held until the first frame;
+    /// `Handled::No` for other commands.
     pub(super) fn ui_command(
         &mut self,
         words: &[&str],
@@ -129,7 +132,10 @@ impl Game<'_> {
         reply: &Sender<String>,
         event_loop: &dyn EventLoopCtl,
     ) -> Result<Handled> {
-        if !matches!(words[0], "ui" | "click" | "set") {
+        // `screen` and `click-button` read the last drawn frame too: they wait for the first.
+        let first_frame =
+            matches!(words[0], "screen" | "click-button") && widgets::generation() == 0;
+        if !matches!(words[0], "ui" | "click" | "set") && !first_frame {
             return Ok(Handled::No);
         }
         if self.ui_wait.stale() {
@@ -216,5 +222,19 @@ impl Game<'_> {
             }
             _ => Ok(Handled::No),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A game answers its socket before it draws: `ui` would read no widgets yet.
+    #[test]
+    fn widget_commands_wait_for_the_first_frame() {
+        let wait = UiWait::default();
+        assert!(wait.stale());
+        widgets::end_frame(1);
+        assert!(!wait.stale());
     }
 }

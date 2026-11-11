@@ -2,7 +2,7 @@
 import copy
 import unittest
 
-from tools.test_command_exec_parity import compare
+from tools.test_command_exec_parity import compare, unordered_attributes
 
 
 class CommandComparisonTests(unittest.TestCase):
@@ -58,3 +58,93 @@ class CommandComparisonTests(unittest.TestCase):
         wrong_style['messages'][0][0][1][1] = True
         self.assertEqual(compare(saved, wrong_style), 'messages')
         self.assertEqual(compare(finalized, {**finalized, 'results': [[True, 0]]}), 'results')
+
+class UnorderedAttributesTests(unittest.TestCase):
+    KEY, PLAIN, ID = [5636095] + [False] * 5, [None] + [False] * 5, [5635925] + [False] * 5
+
+    def body(self, *entries):
+        """`/data get entity` feedback holding an `attributes` list of (id, base) entries, as the printer styles it."""
+        spans = [['Pig has the following entity data: {', self.PLAIN], ['attributes', self.KEY], [': [', self.PLAIN]]
+        for n, (name, base) in enumerate(entries):
+            spans += [['{' if n == 0 else ', {', self.PLAIN], ['id', self.KEY], [': "', self.PLAIN],
+                      [f'minecraft:{name}', self.ID], ['", ', self.PLAIN], ['base', self.KEY], [': ' + base, self.PLAIN],
+                      ['}', self.PLAIN]]
+        spans += [[']}', self.PLAIN]]
+        return {'cmd': '/data get entity x', 'messages': [spans], 'results': [[True, 1]]}
+
+    def test_the_lists_order_is_ignored_and_its_entries_are_not(self):
+        speed_first = self.body(('movement_speed', '0.25d'), ('max_health', '20.0d'))
+        health_first = self.body(('max_health', '20.0d'), ('movement_speed', '0.25d'))
+        other_base = self.body(('max_health', '10.0d'), ('movement_speed', '0.25d'))
+        self.assertNotEqual(speed_first, health_first)
+        self.assertEqual(unordered_attributes(speed_first), unordered_attributes(health_first))
+        self.assertNotEqual(unordered_attributes(other_base), unordered_attributes(health_first))
+        plain = {'cmd': '/say', 'messages': [[['attributes', self.PLAIN]]], 'results': [[True, 1]]}
+        self.assertEqual(unordered_attributes(plain), plain)
+
+    def raw_body(self, body):
+        return {'cmd': '/data get entity x',
+                'messages': [[['Pig has the following entity data: ' + body, self.PLAIN]]],
+                'results': [[True, 1]]}
+
+    def test_only_the_root_entity_attribute_list_is_unordered(self):
+        for body in ('{CustomName: "attributes: [{id: b}, {id: a}]"}',
+                     "{CustomName: 'attributes: [{id: b}, {id: a}]'}",
+                     '{otherattributes: [{id: b}, {id: a}]}',
+                     '{custom: {attributes: [{id: b}, {id: a}]}}'):
+            with self.subTest(body=body):
+                record = self.raw_body(body)
+                other = self.raw_body(body.replace('{id: b}, {id: a}', '{id: a}, {id: b}'))
+                self.assertEqual(unordered_attributes(record), record)
+                self.assertNotEqual(unordered_attributes(record), unordered_attributes(other))
+        record = self.raw_body('{attributes: [{id: b}, {id: a}]}')
+        record['cmd'] = '/say attributes'
+        self.assertEqual(unordered_attributes(record), record)
+
+    def test_entries_duplicates_modifiers_and_other_state_stay_significant(self):
+        first = '{id: "minecraft:max_health", base: 20.0d, modifiers: [{id: "x", amount: 1.0d}, {id: "y", amount: 2.0d}]}'
+        second = '{id: "minecraft:movement_speed", base: 0.25d}'
+        body = '{attributes: [' + first + ', ' + second + ', ' + first + '], Motion: [1.0d, 2.0d, 3.0d], invulnerable_time: 30}'
+        record = self.raw_body(body)
+        original = copy.deepcopy(record)
+        reordered = self.raw_body(body.replace(first + ', ' + second + ', ' + first,
+                                               second + ', ' + first + ', ' + first))
+        self.assertEqual(unordered_attributes(record), unordered_attributes(reordered))
+        for changed in (body.replace(', ' + first + '], Motion', '], Motion'),
+                        body.replace('amount: 1.0d', 'amount: 3.0d'),
+                        body.replace('id: "x"', 'id: "z"'),
+                        body.replace('{id: "x", amount: 1.0d}, {id: "y", amount: 2.0d}',
+                                     '{id: "y", amount: 2.0d}, {id: "x", amount: 1.0d}'),
+                        body.replace('[1.0d, 2.0d, 3.0d]', '[2.0d, 1.0d, 3.0d]'),
+                        body.replace('invulnerable_time: 30', 'invulnerable_time: 29')):
+            with self.subTest(body=changed):
+                self.assertNotEqual(unordered_attributes(record), unordered_attributes(self.raw_body(changed)))
+        self.assertEqual(record, original)
+        for field, value in (('results', [[False, 0]]), ('state', {'health': 19})):
+            changed = {**record, field: value}
+            self.assertNotEqual(unordered_attributes(record), unordered_attributes(changed))
+
+    def test_quotes_nested_lists_and_malformed_input(self):
+        first = r'''{id: "b", note: 'comma, bracket ] and "quote"', nested: [1, 2]}'''
+        second = r'''{id: "a", note: "escaped \" and comma, bracket ]"}'''
+        left = self.raw_body('{attributes: [' + first + ', ' + second + ']}')
+        right = self.raw_body('{attributes: [' + second + ', ' + first + ']}')
+        self.assertEqual(unordered_attributes(left), unordered_attributes(right))
+        for body in ('{attributes: [{id: b}, {id: a}',
+                     '{attributes: [{id: b}, {id: a}}]}',
+                     '{attributes: [{id: b}, {id: a}], CustomName: "unterminated}'):
+            with self.subTest(body=body):
+                record = self.raw_body(body)
+                self.assertEqual(unordered_attributes(record), record)
+
+    def test_styles_of_entries_and_all_separators_are_retained(self):
+        record = self.body(('movement_speed', '0.25d'), ('max_health', '20.0d'), ('max_health', '20.0d'))
+        normalized = unordered_attributes(record)
+        styled = copy.deepcopy(record)
+        styled['messages'][0][4][1] = [123] + [False] * 5
+        self.assertNotEqual(unordered_attributes(styled), normalized)
+        # The second separator's style must not be replaced by a copy of the first.
+        styled = copy.deepcopy(record)
+        styled['messages'][0][19] = [', ', [123] + [False] * 5]
+        styled['messages'][0].insert(20, ['{', self.PLAIN])
+        self.assertNotEqual(unordered_attributes(styled), normalized)

@@ -20,13 +20,22 @@ Feature → files → harness for the most-changed areas: [docs/architecture.md]
   is the GitHub account the PR is opened from (`gh api user --jq .login`). Issues say "Filed by", reviews
   "Review by". Every comment starts with `🤖 Agent:`. Write only as the person you work for: the lines on
   this page that name Ludovic are for his own agents (account `ludovic111`), never for anyone else's.
+- **Review only when asked, and decide.** Review a pull request only when its author or a maintainer asks.
+  Asked by a maintainer to review open pull requests in general, take them one at a time, oldest first, skipping
+  drafts, your person's own and those they already reviewed. Check that the change does what it says (bugs, edge
+  cases), what it could break, whether tests cover it, and whether its scope and description hold up. Report only
+  what you can point to with a `file:line`, each point marked Blocker (fix before merge), Important, Nit,
+  Suggestion, Question or Praise. Submit a decision, never a plain comment: `gh pr review --approve` when nothing
+  blocks, `--request-changes` when something does.
 - **Attribution.** Commits end with a `Co-Authored-By:` line for the agent that wrote them, and PR bodies
   with that agent's own "Generated with" line. Example, Ludovic's agents (Claude Code on `ludovic111`):
   first line `> 🤖 Opened by Ludovic's AI agent (Claude), not by Ludovic himself.`, commits
   `Co-Authored-By: Claude <model> <noreply@anthropic.com>`, last line
   `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
-- **Layers** ([docs/layers.md](docs/layers.md)): engine < platform < Horizon; a crate depends only on its own layer or a
-  lower one (`tools/check_layers.py`, crate layers in `tools/layers.json`). New Horizon code goes behind `horizon-extras`.
+- **Layers** ([docs/layers.md](docs/layers.md)): engine uses engine; platform uses engine and platform; Horizon (its extras,
+  cosmetics, shop, telemetry, launcher) uses platform and Horizon only, never the engine: it moves to its own repository
+  later. `tools/check_layers.py` checks it. New Horizon code goes behind `horizon-extras`; built-in addresses go in
+  `horizon-addresses`.
 - Everything players run is Rust. Python/Java only for dev tools and harness drivers in `tools/`.
 - Horizon-only features follow [docs/design-system.md](docs/design-system.md) and are off by default where
   they would change the vanilla look.
@@ -39,7 +48,11 @@ Feature → files → harness for the most-changed areas: [docs/architecture.md]
   issue is taken, and so is one labelled `in progress` (claimed on Discord): pick another. `/unclaim` when you stop;
   a claim with no open PR linking it is released after 5 days. The issues free to claim, without reading threads:
   `gh issue list --search 'is:open no:assignee -label:"in progress" -label:tracker -label:proposal -label:"not claimable" -linked:pr'`
+- **Machine translations stay unreviewed.** `tools/lang_review/` records only text a person who speaks the language
+  wrote or checked; never `lang_coverage.py --mark-reviewed` machine text ([docs/translations.md](docs/translations.md)).
 - **Controllers reach what registers.** Draw controls with a registering helper (`ui::button`, `settings_shell::foot_button`); `graphics_style::button` and `screen_draw::button` only paint, and registering one part of a screen ends its crosshair, so register all of it.
+- **Render passes keep HDR's light.** A pass that reads, filters or redraws the world's picture (upscaling,
+  anti-aliasing, sharpening, frame generation, post effects, captures) follows [docs/hdr-passes.md](docs/hdr-passes.md).
 
 ## Crates
 
@@ -75,6 +88,7 @@ Game workspace (root `Cargo.toml`); `launcher/` and `crates/horizon-telemetry-se
 | `horizon-telemetry`, `horizon-telemetry-server`, `horizon-bench` | Opt-in data collection, its ingest server, the benchmark report format |
 | `horizon-system` | The machine the game runs on (OS, CPU, memory, drive, power, GPU maker and memory), for the crash report, the renderer's GPU info and telemetry |
 | `horizon-platform` | The platform's public API: what the Horizon layer may use of the engine ([docs/layers.md](docs/layers.md)); re-exports `horizon-system` today |
+| `horizon-hooks`, `horizon-game`, `horizon-official`, `horizon-heartbeat` | The layer seam: the engine's hooks for crates above it, the game an executable starts, the official executable (shipped as `horizon-client`) that registers Horizon's in-game parts, the first of them ([docs/layers.md](docs/layers.md#how-a-horizon-crate-plugs-in)) |
 | `horizon-dualsense`, `horizon-threads`, `horizon-release-sign`, `horizon-bots`, `xtask` | DualSense output, thread priorities, signed release checksums, load-test bots, repo tasks |
 | `launcher/` | GPUI launcher: `main.rs` (UI), `backend.rs` (installs, updates), `cli.rs`, `mcp.rs`, `*_page.rs` |
 
