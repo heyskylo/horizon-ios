@@ -897,13 +897,13 @@ mod tests {
     /// builders bakes what vanilla baked for the zombie
     /// (`minecraft:zombie#main` in the prepared `entity-models.json`):
     /// `cargo test -p horizon-client-lib --lib model_layers -- --ignored`
-    /// with HORIZON_RESOURCES set to the prepared resources.
+    /// with HORIZON_TEST_RESOURCES set to the prepared resources.
     #[test]
-    #[ignore = "needs the prepared resources"]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn the_humanoid_mesh_bakes_as_vanillas_zombie() {
-        let Some(root) = std::env::var_os("HORIZON_RESOURCES").map(std::path::PathBuf::from) else {
-            return;
-        };
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("HORIZON_TEST_RESOURCES"),
+        );
         let vanilla =
             super::super::load_model(&root, "minecraft:zombie#main").expect("zombie#main");
         let vanilla = ModelPart::from_part(&vanilla);
