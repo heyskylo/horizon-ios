@@ -8,28 +8,51 @@ use crate::{
     text::{Style, Text},
 };
 
-/// `ActiveTextCollector.ClickableStyleFinder.accept`: the style under a drawn
-/// message glyph, using the same visual order and advances as rendering.
+/// `ActiveTextCollector.ClickableStyleFinder.accept`: the last style `wanted`
+/// under the cursor, in the same visual order and advances as rendering.
+/// A drawn glyph is hit where it is drawn (`BakedSheetGlyph.GlyphInstance`),
+/// even far below the line when its font's `ascent` moves it; an empty one
+/// covers the line's 9 pixels (`EmptyArea`).
 pub fn line_style_at(
     font: &Font,
     text: &Text,
     x: f32,
     y: f32,
     cursor: (f32, f32),
+    wanted: impl Fn(&Style) -> bool,
 ) -> Option<Style> {
-    let mut left = cursor.0 - x;
-    if left < 0.0 || !(0.0..9.0).contains(&(cursor.1 - y)) {
-        return None;
-    }
     let text = text.resolve_legacy();
     let visual = crate::bidi::visual(&text);
+    let mut pen = x;
+    let mut found = None;
     for (c, style) in visual.chars() {
-        left -= font.advance(c, style);
-        if left < 0.0 {
-            return Some(style.clone());
+        let advance = font.advance(c, style);
+        let object = c == '\u{fffc}' && style.inline_object.is_some();
+        let glyph = (!object).then(|| font.glyph_styled(c, style));
+        let (left, top, bottom) = match glyph {
+            Some(g) if g.rect.is_some() => {
+                let thick = if style.is_bold() { 0.1 } else { 0.0 };
+                let shear = if style.is_italic() {
+                    1.0 - 0.25 * g.bottom
+                } else {
+                    0.0
+                };
+                // Dialog text is drawn with a shadow, which extends the bottom.
+                (
+                    pen + g.left + shear - thick,
+                    y + g.top - thick,
+                    y + g.bottom + g.offset + thick,
+                )
+            }
+            _ => (pen, y, y + 9.0),
+        };
+        let inside = (left..pen + advance).contains(&cursor.0) && (top..bottom).contains(&cursor.1);
+        if inside && wanted(style) {
+            found = Some(style.clone());
         }
+        pen += advance;
     }
-    None
+    found
 }
 
 /// `HeaderAndFooterLayout.DEFAULT_HEADER_AND_FOOTER_HEIGHT`.
@@ -485,7 +508,7 @@ mod tests {
             ]),
             &mut |_| Text::empty(),
         );
-        let style = |x, y| line_style_at(&font, &text, 10.0, 20.0, (x, y));
+        let style = |x, y| line_style_at(&font, &text, 10.0, 20.0, (x, y), |_| true);
         assert!(style(9.9, 20.0).is_none());
         assert_eq!(style(17.9, 20.0).unwrap().click, None);
         for x in [18.0, 21.0, 25.9] {
@@ -501,6 +524,77 @@ mod tests {
         assert!(style(34.0, 20.0).is_none());
         assert!(style(21.0, 19.9).is_none());
         assert!(style(21.0, 29.0).is_none());
+    }
+
+    #[test]
+    fn a_glyph_moved_down_by_its_ascent_is_clicked_where_it_is_drawn() {
+        use crate::{component, hud::Rect, text::ClickEvent};
+        let root =
+            std::env::temp_dir().join(format!("horizon-dialog-ascent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut sheet = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut sheet, 8, 8);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&[255; 8 * 8 * 4])
+                .unwrap();
+        }
+        for (path, bytes) in [
+            (
+                "assets/minecraft/font/low.json",
+                br#"{"providers":[{"type":"bitmap","file":"minecraft:font/box.png","height":8,"ascent":-28,"chars":["a"]}]}"#
+                    .as_slice(),
+            ),
+            ("assets/minecraft/textures/font/box.png", sheet.as_slice()),
+        ] {
+            let path = root.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+        let font = Font::load(
+            &root,
+            &std::collections::HashMap::new(),
+            &[],
+            (4096, 1024),
+            (512, 512),
+            Rect {
+                u0: 0.0,
+                v0: 0.0,
+                u1: 0.0,
+                v1: 0.0,
+                w: 1,
+                h: 1,
+            },
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let text = component::to_text(
+            &serde_json::json!([
+                {"text": "a", "font": "minecraft:low"},
+                {"text": "a", "font": "minecraft:low", "click_event": {
+                    "action": "custom", "id": "test:requests"
+                }},
+            ]),
+            &mut |_| Text::empty(),
+        );
+        let click = |x, y| {
+            line_style_at(&font, &text, 10.0, 20.0, (x, y), |s| s.click.is_some())
+                .and_then(|s| s.click)
+        };
+        let requests = Some(ClickEvent::Custom {
+            id: "test:requests".into(),
+            payload: None,
+        });
+        for (x, y) in [(19.0, 55.0), (22.0, 60.0), (27.9, 63.9)] {
+            assert_eq!(click(x, y), requests, "drawn 35 below the line at {x}, {y}");
+        }
+        assert_eq!(click(22.0, 24.0), None, "the line's own row holds nothing");
+        assert_eq!(click(22.0, 54.9), None, "above the glyph");
+        assert_eq!(click(22.0, 65.0), None, "below the glyph and its shadow");
+        assert_eq!(click(15.0, 60.0), None, "the plain glyph left of it");
     }
 
     #[test]
