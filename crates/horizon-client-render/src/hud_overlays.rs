@@ -39,11 +39,14 @@ pub fn text_with_backdrop(
     background: u32,
 ) {
     if background != 0 {
+        // Font.PreparedTextBuilder.markBackground: one pixel above and left of
+        // the glyphs, the glyph advance to the right and nine high: not a
+        // fixed two-pixel frame.
         out.push(fill(
-            x - 2,
-            y - 2,
-            x + w + 2,
-            y + 9 + 2,
+            x - 1,
+            y - 1,
+            x + w,
+            y + 9,
             multiply(background, color),
         ));
     }
