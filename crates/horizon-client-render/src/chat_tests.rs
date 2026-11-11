@@ -1093,6 +1093,8 @@ fn a_chat_option_change_keeps_the_readers_place_but_a_rescale_does_not() {
     chat.rescale(&atlas);
     assert_eq!(chat.scroll, 0);
     assert!(!chat.new_since_scroll);
+}
+
 /// `SuggestionsList.extractRenderState`: the list's rectangle asks for the
 /// pointing hand; outside it the cursor stays the arrow.
 #[test]
