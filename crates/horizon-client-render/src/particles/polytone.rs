@@ -1100,6 +1100,30 @@ pub(super) fn unobstructed(level: &ParticleLevel<'_>, bb: horizon_core::geometry
     scene.cells_without_collision(bb) || scene.unobstructed(bb).unwrap_or(true)
 }
 
+impl ParticleEngine {
+    /// Whether a pending Polytone particle joins the world. One with physics whose box starts
+    /// inside a block's collision never does, and its type's `limit` is then counted among those
+    /// that joined, so one that never joins takes no place (measured on the mod: with `limit` 1,
+    /// one born inside a block and one clear of it in the same tick, the clear one shows).
+    pub(super) fn polytone_joins(&self, p: &Particle, level: &ParticleLevel<'_>) -> bool {
+        if !p.spawn_check {
+            return true;
+        }
+        if !unobstructed(level, p.bb) {
+            return false;
+        }
+        let Some(name) = p.polytone_type.as_deref() else {
+            return true;
+        };
+        let def = self.polytone.as_ref().and_then(|r| r.get(name));
+        let limit = def.and_then(|d| d.limit.filter(|_| d.gpu.is_none()));
+        limit.is_none_or(|limit| {
+            let same = |q: &&Particle| !q.removed && q.polytone_type.as_deref() == Some(name);
+            self.particles.iter().filter(same).count() < limit as usize
+        })
+    }
+}
+
 impl super::ParticleController for Controller {
     fn tick(&mut self, p: &mut Particle, level: &ParticleLevel<'_>) -> ParticleUpdate {
         let mut update = ParticleUpdate::default();
@@ -1214,7 +1238,8 @@ pub(super) fn make(
     velocity: [f64; 3],
     seed: i64,
 ) -> Option<Particle> {
-    // `limit`: at most that many of the type alive at once.
+    // `limit`: at most that many of the type alive at once. A pending one with physics may never
+    // join (`polytone_joins`), so it takes no place until it does.
     // (A GPU particle's `limit` is its ring of records instead.)
     if let Some(limit) = def.limit
         && def.gpu.is_none()
@@ -1222,7 +1247,7 @@ pub(super) fn make(
         let alive = engine
             .particles
             .iter()
-            .chain(&engine.pending)
+            .chain(engine.pending.iter().filter(|p| !p.spawn_check))
             .filter(|p| !p.removed && p.polytone_type.as_deref() == Some(name))
             .count();
         if alive >= limit as usize {
@@ -2418,6 +2443,55 @@ mod tests {
         assert_eq!(spawn("minecraft:creeper", 60.0), (0, 0));
         // Nor does one a clear particle emits there: the small one joins, its wide copy never.
         assert_eq!(spawn("minecraft:skeleton", 60.0), (1, 0));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Measured on the mod: with `limit` 1, one particle born inside a block and one clear of it
+    /// in the same tick, the clear one shows. The one that never joins takes no place.
+    #[test]
+    fn a_particle_that_never_joins_takes_no_place_under_its_limit() {
+        let blocks = blocks();
+        let lim = |x: &str| serde_json::json!({"particle": "test:lim", "chance": "1", "x": x});
+        let root = pack(&[
+            (
+                "assets/test/polytone/custom_particles/lim.json",
+                serde_json::json!({"has_physics": true, "render_type": "invisible", "limit": 1,
+                    "initializer": {"lifetime": "20", "hitbox_size": "0.08"}}),
+            ),
+            // The first inside the block's reach, the second three blocks clear of it.
+            (
+                "assets/minecraft/polytone/entity_modifiers/player.json",
+                serde_json::json!({"emitters": [lim("0"), lim("3")]}),
+            ),
+            // Two clear of it: the limit still keeps one.
+            (
+                "assets/minecraft/polytone/entity_modifiers/zombie.json",
+                serde_json::json!({"emitters": [lim("3"), lim("6")]}),
+            ),
+        ]);
+        let scene = solid_scene(blocks);
+        let level = ParticleLevel {
+            world: &scene.world,
+            facts: &scene.facts,
+            collision: &scene.collision,
+            player: None,
+            cached_chunk: std::cell::Cell::new(None),
+        };
+        let mut engine = engine(Registry::read(&root, Default::default(), blocks));
+        let mut joined = |entity: &str| {
+            engine.particles.clear();
+            engine.pending.clear();
+            // The solid block is at (1, 64, 1): 0.05 under it, a 0.08 box reaches into it.
+            engine.polytone_entity(&level, entity, [1.5, 63.95, 1.5]);
+            engine.tick(&level);
+            engine
+                .particles
+                .iter()
+                .map(|p| p.position[0])
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(joined("minecraft:player"), vec![4.5]);
+        assert_eq!(joined("minecraft:zombie"), vec![4.5]);
         std::fs::remove_dir_all(root).unwrap();
     }
 
