@@ -288,7 +288,7 @@ impl Game<'_> {
         });
         let m = &mut self.mobs[i];
         m.extra.allay.as_mut().unwrap().take(1);
-        m.extra.ints[3] = 60;
+        allay::set_pickup_cooldown(m, Some(60));
         // ItemEntity.setDefaultPickUpDelay.
         self.spawn_item(stack, from, v, 10);
         // BehaviorUtils.throwItem: ItemEntity.setThrower(the allay).

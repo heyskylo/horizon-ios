@@ -294,6 +294,9 @@ pub fn control_path(dir: &Path) -> PathBuf {
     dir.join(".horizon/engine.json")
 }
 
+/// How long a [`Control`] waits for each reply.
+pub const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// A connection to the game's control endpoint: one JSON line asked, one answered.
 pub struct Control {
     writer: TcpStream,
@@ -311,7 +314,7 @@ impl Control {
             .ok_or_else(bad)?;
         let token = v["token"].as_str().ok_or_else(bad)?;
         let writer = TcpStream::connect((Ipv4Addr::LOCALHOST, port))?;
-        writer.set_read_timeout(Some(Duration::from_secs(30)))?;
+        writer.set_read_timeout(Some(REPLY_TIMEOUT))?;
         let mut control = Self {
             reader: BufReader::new(writer.try_clone()?),
             writer,
@@ -324,6 +327,11 @@ impl Control {
             ));
         }
         Ok(control)
+    }
+
+    /// How long [`Self::ask`] waits for a reply; [`REPLY_TIMEOUT`] unless changed.
+    pub fn set_reply_timeout(&self, wait: Duration) -> std::io::Result<()> {
+        self.writer.set_read_timeout(Some(wait))
     }
 
     pub fn ask(&mut self, line: &str) -> std::io::Result<serde_json::Value> {

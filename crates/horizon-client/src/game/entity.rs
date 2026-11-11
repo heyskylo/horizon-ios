@@ -262,6 +262,14 @@ pub(super) trait Entity: EntityRules {
     fn is_vehicle(&self) -> bool {
         false
     }
+    /// `Entity.getDimensionChangingDelay`, overridden by vehicles and projectiles.
+    fn dimension_changing_delay(&self) -> i32 {
+        horizon_client::nether_portal::ENTITY_DELAY
+    }
+    /// Whether movement applies portal block effects before Entity's base tick.
+    fn portal_after_move(&self) -> bool {
+        false
+    }
     /// Where it stood at the start of its tick, for the kinds that store it
     /// (None: `portals.before` has it).
     fn portal_from(&self) -> Option<Vec3> {
@@ -323,7 +331,14 @@ impl RenderEntityBounds for Mob {
             self.species(),
             Species::Guardian | Species::ElderGuardian | Species::Phantom
         ) {
-            let radius = width.max(height) * 2.5 + 3.0;
+            // The model's root scales its appendages too (the elder guardian
+            // uses 2.35), so the margin must grow along with the model.
+            let root_scale = self.kind.model.pose[6..]
+                .iter()
+                .copied()
+                .map(f32::abs)
+                .fold(1.0, f32::max);
+            let radius = width.max(height) * 2.5 + 3.0 * f64::from(root_scale * self.model_scale());
             return Aabb::of_size(at, Vec3::new(radius * 2.0, radius * 2.0, radius * 2.0));
         }
 
@@ -1322,6 +1337,9 @@ impl Entity for ExperienceOrb {
 }
 
 impl Entity for Boat {
+    fn dimension_changing_delay(&self) -> i32 {
+        10
+    }
     fn set_on_ground(&mut self, on_ground: bool) {
         self.on_ground = on_ground;
     }
@@ -1397,6 +1415,9 @@ impl Entity for Boat {
 }
 
 impl Entity for Minecart {
+    fn dimension_changing_delay(&self) -> i32 {
+        10
+    }
     fn set_on_ground(&mut self, on_ground: bool) {
         self.on_ground = on_ground;
     }
@@ -1723,6 +1744,16 @@ impl Entity for FallingBlock {
 }
 
 impl Entity for Projectile {
+    fn portal_after_move(&self) -> bool {
+        !matches!(
+            self.kind,
+            horizon_client::projectiles::ProjectileKind::LlamaSpit
+                | horizon_client::projectiles::ProjectileKind::ShulkerBullet { .. }
+        )
+    }
+    fn dimension_changing_delay(&self) -> i32 {
+        2
+    }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }
@@ -1843,6 +1874,9 @@ impl Entity for Projectile {
 }
 
 impl Entity for Rocket {
+    fn dimension_changing_delay(&self) -> i32 {
+        2
+    }
     fn rotation(&self) -> [f32; 2] {
         self.rotation
     }
@@ -1910,6 +1944,12 @@ impl Entity for Rocket {
 }
 
 impl Entity for ThrownTrident {
+    fn portal_after_move(&self) -> bool {
+        true
+    }
+    fn dimension_changing_delay(&self) -> i32 {
+        2
+    }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }
