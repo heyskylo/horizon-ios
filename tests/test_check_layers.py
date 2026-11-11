@@ -1,4 +1,10 @@
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
 import unittest
+from unittest import mock
 
 from tools import check_layers
 
@@ -120,6 +126,35 @@ class CheckLayersTests(unittest.TestCase):
     def test_registry_dependencies_are_not_edges(self):
         pkg = {"name": "game", "dependencies": [{"name": "cosmetics", "kind": None, "path": None}]}
         self.assertEqual(check_layers.edges([pkg]), {"game": set()})
+
+
+class BaseConfigTests(unittest.TestCase):
+    def test_the_base_is_where_the_branch_left_main(self):
+        """An entry main dropped after the branch left it is still on the branch's base: the branch didn't add it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t.invalid",
+                       GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t.invalid")
+
+            def run(*args):
+                subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, env=env)
+
+            def allow(*entries):
+                (root / "tools").mkdir(exist_ok=True)
+                (root / "tools" / "layers.json").write_text(json.dumps({"allowed": list(entries)}))
+
+            run("init", "-q", "-b", "main")
+            allow("game -> cosmetics")
+            run("add", ".")
+            run("commit", "-q", "-m", "base")
+            run("checkout", "-q", "-b", "work")
+            run("commit", "-q", "--allow-empty", "-m", "work")
+            run("checkout", "-q", "main")
+            allow()
+            run("commit", "-q", "-am", "main drops the entry")
+            run("checkout", "-q", "work")
+            with mock.patch.object(check_layers, "ROOT", root):
+                self.assertEqual(check_layers.base_config("main"), {"allowed": ["game -> cosmetics"]})
 
 
 if __name__ == "__main__":

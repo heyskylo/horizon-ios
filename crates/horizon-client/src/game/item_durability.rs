@@ -54,6 +54,33 @@ impl Game<'_> {
             .finish_equipment_hurt(&self.health_resources, hit)?;
         Ok((outcome, actual))
     }
+    /// `push_seen_with_hurt` for the host: the push is kept only when the hurt
+    /// marks the velocity as seen, and the hurt goes through
+    /// `hurt_player_equipment` so the worn armor loses durability. Answers
+    /// whether a native hook canceled the hurt.
+    pub(super) fn push_seen_with_equipment_hurt(
+        &mut self,
+        push: Vec3,
+        source: Option<horizon_world::damage_source::DamageTypeId>,
+        amount: f32,
+    ) -> bool {
+        let Some(p) = self.player.as_mut() else {
+            return false;
+        };
+        let before = p.velocity;
+        let marked_before = std::mem::take(&mut p.health.sync_velocity);
+        p.velocity = before.add_vector(push);
+        let canceled = source
+            .and_then(|id| self.hurt_player_equipment(id, amount, None, false, 0).ok())
+            .is_some_and(|(o, _)| o.canceled);
+        if let Some(p) = self.player.as_mut() {
+            if !p.health.sync_velocity {
+                p.velocity = before;
+            }
+            p.health.sync_velocity |= marked_before;
+        }
+        canceled
+    }
     /// The armor hits among a tick's motion events (`Player.hurtArmor` from
     /// `getDamageAfterArmorAbsorb`), whatever the damage: a mob, an explosion,
     /// a cactus, lava, a campfire.

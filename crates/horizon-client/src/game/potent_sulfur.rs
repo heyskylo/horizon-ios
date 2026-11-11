@@ -143,6 +143,7 @@ impl Game<'_> {
             facts: self.res.facts(),
             collision: self.collision,
             player: None,
+            cached_chunk: std::cell::Cell::new(None),
         };
         find_noxious_gas_source_block(&level, [pos.0, pos.1, pos.2])
     }
@@ -198,6 +199,7 @@ impl Game<'_> {
             facts: self.res.facts(),
             collision: self.collision,
             player: None,
+            cached_chunk: std::cell::Cell::new(None),
         };
         // The gas reads blocks only, so the mobs it reaches can be found
         // before any gets its effect.
@@ -264,6 +266,7 @@ impl Game<'_> {
                 facts: self.res.facts(),
                 collision: self.collision,
                 player: None,
+                cached_chunk: std::cell::Cell::new(None),
             };
             can_be_reached_by_noxious_gas(&level, source, eye)
         };
@@ -341,8 +344,8 @@ impl Game<'_> {
         self.process_level_events()
     }
 
-    /// `PotentSulfurBlockEntity.LAUNCH_ENTITY_TICKER` on the server: mobs and
-    /// items and primed TNT in the geyser's column with less than
+    /// `PotentSulfurBlockEntity.LAUNCH_ENTITY_TICKER` on the server: mobs, items,
+    /// primed TNT, projectiles, boats and minecarts in the geyser's column with less than
     /// `0.3 + 0.1 * water` upward speed get 0.2 more, unless they ride
     /// something or are of a type geysers do not move. Players are moved by
     /// their own client.
@@ -356,6 +359,7 @@ impl Game<'_> {
             facts: self.res.facts(),
             collision: self.collision,
             player: None,
+            cached_chunk: std::cell::Cell::new(None),
         };
         let height = unobstructed_block_count(&level, [pos.0, pos.1 + 1, pos.2], water_blocks);
         let area = launch_area(pos, height);
@@ -404,6 +408,37 @@ impl Game<'_> {
                 tnt.velocity.y += push;
             }
         }
+        // Every entity in the column is launched (`getEntitiesOfClass(Entity.class)`):
+        // a projectile in flight or at rest, a boat and a minecart too.
+        for p in self
+            .creatures
+            .projectiles
+            .iter_mut()
+            .filter(|p| p.bounds().intersects(area))
+        {
+            if p.velocity.y < limit {
+                p.velocity.y += push;
+                p.needs_sync = true;
+            }
+        }
+        for boat in self
+            .boats
+            .iter_mut()
+            .filter(|b| b.bounds().intersects(area))
+        {
+            if boat.velocity.y < limit {
+                boat.velocity.y += push;
+            }
+        }
+        for cart in self
+            .carts
+            .iter_mut()
+            .filter(|c| c.bounds().intersects(area))
+        {
+            if cart.velocity.y < limit {
+                cart.velocity.y += push;
+            }
+        }
     }
 
     /// `PotentSulfurBlockEntity.LAUNCH_ENTITY_TICKER` on the client: the local
@@ -419,6 +454,7 @@ impl Game<'_> {
                 facts: self.res.facts(),
                 collision: self.collision,
                 player: None,
+                cached_chunk: std::cell::Cell::new(None),
             };
             unobstructed_block_count(&level, [pos.0, pos.1 + 1, pos.2], water_blocks)
         };

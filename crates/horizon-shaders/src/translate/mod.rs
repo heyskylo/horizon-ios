@@ -37,12 +37,16 @@ mod image_parameters;
 mod integer_bounds;
 mod interface_blocks;
 mod ordering;
+mod reachability;
 mod rewrite;
 mod scan;
+mod varyings;
 
 pub use geometry::{GeometryInputs, translate_geometry};
 
 use scan::Stage;
+#[cfg(test)]
+use varyings::{struct_parts, varying_parts};
 
 /// What a program's stages need from the game.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -301,19 +305,10 @@ fn translate(
     } else {
         GBUFFERS_MATRICES.to_owned()
     };
-    // Struct types without a name get one (`anonymous_structs`), interface blocks travel
-    // as plain varyings (`interface_blocks`), and buffer vectors that atomic functions use by
-    // component become arrays (`atomic_vectors`).
-    let flat = |pp: &Preprocessed| {
-        let named = anonymous_structs::name(&pp.code);
-        let code = named.as_deref().unwrap_or(&pp.code);
-        let flat = interface_blocks::flatten(code)
-            .or(named)
-            .map(|code| Preprocessed { code, ..pp.clone() });
-        let split = atomic_vectors::rewrite(flat.as_ref().unwrap_or(pp));
-        split.or(flat)
-    };
-    let (vertex_flat, fragment_flat) = (flat(vertex), flat(fragment));
+    let (vertex_flat, fragment_flat) = (
+        reachability::prepare(vertex),
+        reachability::prepare(fragment),
+    );
     let vertex = vertex_flat.as_ref().unwrap_or(vertex);
     let fragment = fragment_flat.as_ref().unwrap_or(fragment);
     // A `bool` member of a storage buffer travels as a `uint` (`buffer_bools`).
@@ -471,55 +466,11 @@ fn translate(
         .collect();
     let images = bind_images([&v, &f], samplers.len());
 
-    // Varyings by name: the vertex outputs, then fragment inputs the vertex stage lacks. A
-    // matrix or array travels as one varying per column or element (`varying_parts`), a
-    // struct as its members packed into vectors (`struct_parts`).
-    let mut locations: BTreeMap<String, (u32, String)> = BTreeMap::new();
-    let mut split: BTreeMap<String, (String, Vec<(String, String)>)> = BTreeMap::new();
-    let vars = v.outs.iter().map(|o| (&v, o));
-    for (stage, var) in vars.chain(f.ins.iter().map(|i| (&f, i))) {
-        if locations.contains_key(&var.name) || split.contains_key(&var.name) {
-            continue;
-        }
-        if var.structure {
-            match struct_parts(&var.decl, &stage.structs) {
-                Some(parts) => {
-                    let mut copies = Vec::new();
-                    for (k, (decl, members)) in parts.into_iter().enumerate() {
-                        let part = format!("hz_v_{}_{k}", var.name);
-                        let next = locations.len() as u32;
-                        locations.insert(part.clone(), (next, decl));
-                        for (swizzle, access) in members {
-                            copies.push((format!("{part}{swizzle}"), access));
-                        }
-                    }
-                    split.insert(var.name.clone(), (String::new(), copies));
-                }
-                None => errors.push(Error {
-                    file: stage.pp.files.first().cloned().unwrap_or_default(),
-                    line: 0,
-                    message: format!("`{}`: this struct can't be a varying", var.name),
-                }),
-            }
-            continue;
-        }
-        match varying_parts(&var.decl) {
-            Some((global, parts)) => {
-                let mut copies = Vec::new();
-                for (k, (decl, access)) in parts.into_iter().enumerate() {
-                    let part = format!("hz_v_{}_{k}", var.name);
-                    let next = locations.len() as u32;
-                    locations.insert(part.clone(), (next, decl));
-                    copies.push((part, access));
-                }
-                split.insert(var.name.clone(), (global, copies));
-            }
-            None => {
-                let next = locations.len() as u32;
-                locations.insert(var.name.clone(), (next, var.decl.clone()));
-            }
-        }
-    }
+    let varyings::Varyings {
+        locations,
+        split,
+        private,
+    } = varyings::assign(&v, &f, &mut errors);
 
     // Terrain's fade input is supplied without a pack declaration. Inject it only when
     // the renderer provides the actual value; other geometry and authored globals keep
@@ -553,6 +504,11 @@ fn translate(
         }
         for (name, (global, _)) in split.iter().filter(|(_, (g, _))| !g.is_empty()) {
             writeln!(h, "{}", global.replace("@", name)).unwrap();
+        }
+        if stage.kind == ShaderStage::Vertex {
+            for decl in &private {
+                writeln!(h, "{decl}").unwrap();
+            }
         }
         if let (Some(inputs), ShaderStage::Vertex) = (gbuffers, stage.kind) {
             h.push_str(&inputs.declarations);
@@ -646,28 +602,28 @@ fn translate(
     }
     // Inside a boat's water patch (`GbuffersInputs::water_patches`): each box is a corner and
     // its y range, then its two horizontal edges; water there, a little below and above (waves),
-    // casts nothing.
+    // casts nothing. Direct unrolled checks avoid local array allocations and spilling (#14782).
     if patches {
-        let boxes: Vec<String> = (0..2 * WATER_PATCHES)
-            .map(|k| format!("horizonWaterPatch{k}"))
-            .collect();
-        writeln!(
-            fragment_main,
-            "    vec4 hz_patches[{}] = vec4[{}]({});\n    \
-             for (int hz_i = 0; hz_i < {WATER_PATCHES}; hz_i++) {{\n        \
-             if (hz_i >= horizonWaterPatchCount) {{ break; }}\n        \
-             vec4 hz_a = hz_patches[2 * hz_i];\n        vec4 hz_b = hz_patches[2 * hz_i + 1];\n        \
-             vec2 hz_d = horizonPatchPos.xz - hz_a.xy;\n        \
-             float hz_s = dot(hz_d, hz_b.xy) / max(dot(hz_b.xy, hz_b.xy), 1e-6);\n        \
-             float hz_t = dot(hz_d, hz_b.zw) / max(dot(hz_b.zw, hz_b.zw), 1e-6);\n        \
-             if (hz_s >= 0.0 && hz_s <= 1.0 && hz_t >= 0.0 && hz_t <= 1.0\n            \
-             && horizonPatchPos.y >= hz_a.z - 0.5 && horizonPatchPos.y <= hz_a.w + 0.25) {{ discard; }}\n    \
-             }}",
-            2 * WATER_PATCHES,
-            2 * WATER_PATCHES,
-            boxes.join(", ")
-        )
-        .unwrap();
+        fragment_main.push_str("    if (horizonWaterPatchCount > 0) {\n        vec2 hz_p = horizonPatchPos.xz;\n        float hz_y = horizonPatchPos.y;\n");
+        for k in 0..WATER_PATCHES {
+            let (a, b) = (2 * k, 2 * k + 1);
+            let prefix = if k == 0 {
+                String::new()
+            } else {
+                format!("if (horizonWaterPatchCount > {k}) ")
+            };
+            writeln!(
+                fragment_main,
+                "        {prefix}{{\n            \
+                 vec2 hz_d = hz_p - horizonWaterPatch{a}.xy;\n            \
+                 float hz_s = dot(hz_d, horizonWaterPatch{b}.xy) / max(dot(horizonWaterPatch{b}.xy, horizonWaterPatch{b}.xy), 1e-6);\n            \
+                 float hz_t = dot(hz_d, horizonWaterPatch{b}.zw) / max(dot(horizonWaterPatch{b}.zw, horizonWaterPatch{b}.zw), 1e-6);\n            \
+                 if (hz_s >= 0.0 && hz_s <= 1.0 && hz_t >= 0.0 && hz_t <= 1.0\n                \
+                 && hz_y >= horizonWaterPatch{a}.z - 0.5 && hz_y <= horizonWaterPatch{a}.w + 0.25) {{ discard; }}\n        }}"
+            )
+            .unwrap();
+        }
+        fragment_main.push_str("    }\n");
     }
     // Behind a boat's water patch, within 3% of its distance (the water's surface lies at the
     // patch, and packs wave it): no water there. Depth 1 is no patch.
@@ -1258,172 +1214,6 @@ fn constant(stage: &Stage, name: &str) -> Option<Vec<f64>> {
         values.resize(count, values[0]);
     }
     Some(values)
-}
-
-/// A matrix or array varying (`flat mat3 @[2];`): wgpu's stage interfaces take only scalars
-/// and vectors (WGSL), so it becomes a private global (`mat3 @[2];`) and one varying per
-/// column or element, each with the qualifiers and how to reach it (`[1][2]`). `None` for
-/// scalars and vectors, and for sizes that are not plain numbers.
-fn varying_parts(decl: &str) -> Option<(String, Vec<(String, String)>)> {
-    let (before, after) = decl.split_once('@')?;
-    let mut words: Vec<&str> = before.split_whitespace().collect();
-    let ty = words.pop()?;
-    let qualifiers: String = words.iter().map(|w| format!("{w} ")).collect();
-    let array = after.trim().trim_end_matches(';').trim();
-    let mut sizes = Vec::new();
-    let mut rest = array;
-    while let Some(r) = rest.strip_prefix('[') {
-        let (n, r) = r.split_once(']')?;
-        sizes.push(n.trim().parse::<usize>().ok()?);
-        rest = r.trim_start();
-    }
-    if !rest.is_empty() {
-        return None;
-    }
-    // matC or matCxR: C columns of R rows.
-    let column = ty.strip_prefix("mat").and_then(|d| {
-        let (c, r) = d.split_once('x').unwrap_or((d, d));
-        Some((c.parse::<usize>().ok()?, r.parse::<usize>().ok()?))
-    });
-    if sizes.is_empty() && column.is_none() {
-        return None;
-    }
-    let part_ty = column.map_or(ty.to_owned(), |(_, r)| format!("vec{r}"));
-    if let Some((c, _)) = column {
-        sizes.push(c);
-    }
-    let count: usize = sizes.iter().product();
-    let parts = (0..count)
-        .map(|mut k| {
-            let mut access = String::new();
-            for &size in sizes.iter().rev() {
-                access.insert_str(0, &format!("[{}]", k % size));
-                k /= size;
-            }
-            (format!("{qualifiers}{part_ty} @;"), access)
-        })
-        .collect();
-    Some((format!("{ty} @{array};"), parts))
-}
-
-/// A struct varying (`flat Params @;`) as vectors: its scalar, vector and matrix members, through
-/// nested structs and arrays, packed four components at a time by base type. Each part: its
-/// declaration and, per member, the swizzle of the part and how to reach the member (`.a[1].b`).
-/// `None` for a member that can't travel (`bool`, an unknown type, a size that is not a number).
-#[allow(clippy::type_complexity)]
-fn struct_parts(
-    decl: &str,
-    structs: &std::collections::HashMap<String, Vec<(String, String)>>,
-) -> Option<Vec<(String, Vec<(String, String)>)>> {
-    let (before, after) = decl.split_once('@')?;
-    let mut words: Vec<&str> = before.split_whitespace().collect();
-    let ty = words.pop()?;
-    let qualifiers: String = words.iter().map(|w| format!("{w} ")).collect();
-    let mut leaves = Vec::new();
-    leaves_of(
-        ty,
-        after.trim().trim_end_matches(';'),
-        String::new(),
-        structs,
-        &mut leaves,
-    )?;
-    // Slots of one base type and up to four components: (base, used, members (from, size, access)).
-    let mut slots: Vec<(&str, usize, Vec<(usize, usize, String)>)> = Vec::new();
-    for (base, size, access) in leaves {
-        match slots
-            .iter_mut()
-            .find(|(b, used, _)| *b == base && used + size <= 4)
-        {
-            Some(slot) => {
-                slot.2.push((slot.1, size, access));
-                slot.1 += size;
-            }
-            None => slots.push((base, size, vec![(0, size, access)])),
-        }
-    }
-    Some(
-        slots
-            .into_iter()
-            .map(|(base, used, members)| {
-                let ty = match (base, used) {
-                    (b, 1) => b.to_owned(),
-                    ("float", n) => format!("vec{n}"),
-                    ("int", n) => format!("ivec{n}"),
-                    (_, n) => format!("uvec{n}"),
-                };
-                // Integers only travel flat.
-                let flat = if base != "float" && !qualifiers.contains("flat") {
-                    "flat "
-                } else {
-                    ""
-                };
-                let members = members
-                    .into_iter()
-                    .map(|(from, size, access)| {
-                        let swizzle = if used == 1 {
-                            String::new()
-                        } else {
-                            format!(".{}", &"xyzw"[from..from + size])
-                        };
-                        (swizzle, access)
-                    })
-                    .collect();
-                (format!("{flat}{qualifiers}{ty} @;"), members)
-            })
-            .collect(),
-    )
-}
-
-/// The scalars and vectors inside a value of type `ty` with array suffix `array`, reached by
-/// `access`: (base type, components, access).
-fn leaves_of(
-    ty: &str,
-    array: &str,
-    access: String,
-    structs: &std::collections::HashMap<String, Vec<(String, String)>>,
-    out: &mut Vec<(&'static str, usize, String)>,
-) -> Option<()> {
-    if let Some(rest) = array.trim().strip_prefix('[') {
-        let (n, rest) = rest.split_once(']')?;
-        for k in 0..n.trim().parse::<usize>().ok()? {
-            leaves_of(ty, rest, format!("{access}[{k}]"), structs, out)?;
-        }
-        return Some(());
-    }
-    if let Some(members) = structs.get(ty) {
-        for (member_ty, member) in members {
-            let (name, array) = member
-                .split_once('[')
-                .map_or((member.as_str(), ""), |(n, _)| (n, &member[n.len()..]));
-            leaves_of(member_ty, array, format!("{access}.{name}"), structs, out)?;
-        }
-        return Some(());
-    }
-    if let Some(dims) = ty.strip_prefix("mat") {
-        let (c, r) = dims.split_once('x').unwrap_or((dims, dims));
-        let (c, r) = (c.parse::<usize>().ok()?, r.parse::<usize>().ok()?);
-        for k in 0..c {
-            out.push(("float", r, format!("{access}[{k}]")));
-        }
-        return Some(());
-    }
-    let (base, size) = match ty {
-        "float" => ("float", 1),
-        "int" => ("int", 1),
-        "uint" => ("uint", 1),
-        _ => {
-            let (base, n) = if let Some(n) = ty.strip_prefix("vec") {
-                ("float", n)
-            } else if let Some(n) = ty.strip_prefix("ivec") {
-                ("int", n)
-            } else {
-                ("uint", ty.strip_prefix("uvec")?)
-            };
-            (base, n.parse().ok()?)
-        }
-    };
-    out.push((base, size, access));
-    Some(())
 }
 
 /// `sampler2DShadow` → (`texture2D`, `samplerShadow`); `isampler3D` → (`itexture3D`, `sampler`).
@@ -2863,6 +2653,46 @@ in VertexData {{ {member} }} vIn;
         for name in ["shadowModelView", "shadowProjection", "gbufferModelView"] {
             assert!(names.contains(&name), "{name} missing from {names:?}");
         }
+    }
+
+    #[test]
+    fn vertex_outputs_the_fragment_stage_never_reads_take_no_location() {
+        // As GL's linker drops an inactive varying: only `seen` travels. The others stay
+        // globals of the vertex stage, which still reads what it wrote into them.
+        let vsh = "#version 120\nvarying vec4 seen;\nflat varying int count;\nvarying mat3 tbn;\n\
+                   varying vec2 uvs[2];\nvoid main() {\n    gl_Position = ftransform();\n    \
+                   count = 3;\n    tbn = mat3(2.0);\n    uvs[1] = vec2(4.0);\n    \
+                   seen = vec4(float(count), tbn[0][0], uvs[1]);\n}\n";
+        let fsh = "#version 120\nvarying vec4 seen;\nflat varying int count;\nvarying mat3 tbn;\n\
+                   varying vec2 uvs[2];\nvoid main() { gl_FragColor = seen; }\n";
+        let p = program(
+            &[("composite.vsh", vsh), ("composite.fsh", fsh)],
+            Target::Buffers,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        let locations = |module: &naga::Module, output: bool| -> Vec<u32> {
+            let f = &module.entry_points[0].function;
+            let bindings: Vec<Option<naga::Binding>> = if output {
+                let ty = f.result.as_ref().map(|r| r.ty);
+                match ty.map(|t| &module.types[t].inner) {
+                    Some(naga::TypeInner::Struct { members, .. }) => {
+                        members.iter().map(|m| m.binding.clone()).collect()
+                    }
+                    _ => f.result.iter().map(|r| r.binding.clone()).collect(),
+                }
+            } else {
+                f.arguments.iter().map(|a| a.binding.clone()).collect()
+            };
+            bindings
+                .into_iter()
+                .filter_map(|b| match b {
+                    Some(naga::Binding::Location { location, .. }) => Some(location),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(locations(&p.vertex, true), [0]);
+        assert_eq!(locations(&p.fragment, false), [0]);
     }
 
     #[test]

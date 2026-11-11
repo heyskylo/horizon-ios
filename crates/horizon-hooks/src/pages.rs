@@ -1,0 +1,188 @@
+//! Pages (docs/layers.md, "Platform registries"): a crate above the engine adds a settings page to
+//! the options screens without an engine file naming it. The engine draws its rows with the same
+//! widgets, tooltips, narration, controller focus and `horizon-ctl` ids as its own pages, and asks
+//! for them only while the page is open.
+use crate::TooLate;
+use crate::registry::Registry;
+
+/// Where a page's entry is.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    /// A button on the Horizon Settings page, after the engine's own pages.
+    HorizonSettings,
+    /// A full-width button of the pause menu, above Options (under Splitscreen's settings). The
+    /// pause menu has it only when a page registered there.
+    Pause,
+    /// A section of Horizon Settings' Extras page, with no entry: its rows join the page's group
+    /// its title names when the page has one (`horizon.extras.header.multiplayer`), else they
+    /// start a group of their own after the page's. A [`Row::Heading`] starts another group. A
+    /// [`Row::Key`] shows its key there, without changing it: give a page of its own to a key.
+    Extras,
+}
+
+/// One page. Its values live in the crate (statics, often its settings [`crate::settings::Store`]);
+/// the engine rebuilds the rows when it draws the page and after each act.
+pub trait Page: Sync {
+    /// Stable and unique: `<crate>.<page>`, as `horizon-ctl` and logs name it.
+    fn id(&self) -> &'static str;
+    /// The page's title and its entry's label: a translation key.
+    fn title(&self) -> &'static str;
+    /// Where its entry is.
+    fn place(&self) -> Place;
+    /// Its rows, top to bottom.
+    fn rows(&self, rows: &mut Vec<Row>);
+    /// The player acted on row `row` (its index in [`Page::rows`]). The options screen saves the
+    /// settings when it closes, as for every setting.
+    fn act(&self, row: usize, act: Act);
+    /// What row `row` says on hover (and the narrator after its label), which may follow its
+    /// value. None by default.
+    fn tooltip(&self, _row: usize) -> Option<Label> {
+        None
+    }
+}
+
+/// A row of a page. Labels are translation keys.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq)]
+pub enum Row {
+    /// A section's heading.
+    Heading(&'static str),
+    /// A line of grey text: a value such as a path, shown as it is.
+    Note(String),
+    /// `<label>: ON` or `OFF`; a press flips it.
+    Toggle { label: &'static str, on: bool },
+    /// `<label>: <value>`; a press steps forward, a shift-press back ([`Act::PressBack`]).
+    Cycle { label: &'static str, value: Label },
+    /// `<label>: <text>` on a slider at `value` (0 to 1); dragging or the arrow keys send
+    /// [`Act::Slide`].
+    Slider {
+        label: &'static str,
+        value: f32,
+        text: Label,
+    },
+    /// A button that does something ([`Row::button`]). An inactive one is drawn greyed and
+    /// never pressed; two half-width ones in a row sit side by side; a footer one sits at the
+    /// bottom beside Done on a page drawn as its own screen, and with the others elsewhere.
+    /// Horizon Settings' Extras shows only active ones.
+    #[non_exhaustive]
+    Button {
+        label: &'static str,
+        active: bool,
+        half: bool,
+        footer: bool,
+    },
+    /// Text shown as it is, wrapped to the page's width ([`Row::text`]): white, or grey when
+    /// `quiet` (secondary); `groups` breaks it only between its `-`-separated groups (a code).
+    #[non_exhaustive]
+    Text {
+        text: String,
+        quiet: bool,
+        groups: bool,
+    },
+    /// Empty space, in GUI pixels, on a page drawn as its own screen; nothing elsewhere.
+    Space(u8),
+    /// A key binding, as Key Binds shows one: `key` is its key name (`key.keyboard.z`,
+    /// `key.mouse.left`). A press waits for the next key or mouse button ([`Act::Bind`]).
+    Key { label: &'static str, key: String },
+}
+
+impl Row {
+    /// An active, full-width button in the page's body.
+    pub fn button(label: &'static str) -> Self {
+        Self::Button {
+            label,
+            active: true,
+            half: false,
+            footer: false,
+        }
+    }
+
+    /// White text in the page's body, wrapped at spaces.
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text {
+            text: text.into(),
+            quiet: false,
+            groups: false,
+        }
+    }
+
+    /// A button greyed out (`false`): drawn, never pressed.
+    pub fn active(mut self, on: bool) -> Self {
+        if let Self::Button { active, .. } = &mut self {
+            *active = on;
+        }
+        self
+    }
+
+    /// A button half as wide: two in a row sit side by side.
+    pub fn half(mut self) -> Self {
+        if let Self::Button { half, .. } = &mut self {
+            *half = true;
+        }
+        self
+    }
+
+    /// A button in the footer, beside Done, on a page drawn as its own screen.
+    pub fn footer(mut self) -> Self {
+        if let Self::Button { footer, .. } = &mut self {
+            *footer = true;
+        }
+        self
+    }
+
+    /// Text in grey: secondary.
+    pub fn quiet(mut self) -> Self {
+        if let Self::Text { quiet, .. } = &mut self {
+            *quiet = true;
+        }
+        self
+    }
+
+    /// Text broken only between its `-`-separated groups, never inside one (a code).
+    pub fn groups(mut self) -> Self {
+        if let Self::Text { groups, .. } = &mut self {
+            *groups = true;
+        }
+        self
+    }
+}
+
+/// A value shown on a row: a translation key, or text shown as it is (a number, a name).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Label {
+    Key(&'static str),
+    Value(String),
+}
+
+/// What the player did to a row.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq)]
+pub enum Act {
+    /// A click, or Enter or the controller's select on the row.
+    Press,
+    /// The same with Shift held: a cycle steps back.
+    PressBack,
+    /// A slider moved to this position (0 to 1).
+    Slide(f32),
+    /// A key row got its new key: its key name (`key.keyboard.z`).
+    Bind(String),
+}
+
+static PAGES: Registry<dyn Page> = Registry::new();
+
+/// Adds `page` to the game's options screens. Before the game starts, as [`crate::register`];
+/// entries keep the order pages registered in.
+pub fn register(page: &'static dyn Page) -> Result<(), TooLate> {
+    PAGES.register(page)
+}
+
+/// The engine's side. Only the engine calls it.
+pub mod engine {
+    use super::*;
+
+    /// Every registered page, sealing the list on the first call.
+    pub fn all() -> &'static [&'static dyn Page] {
+        PAGES.all()
+    }
+}

@@ -13,6 +13,15 @@ pub trait EntityFluidTickWorld:
     fn water_splash(&mut self) -> Result<(), WorldError<Self>>;
     fn set_was_touching_water(&mut self, value: bool);
     fn fast_lava(&mut self) -> Result<bool, WorldError<Self>>;
+    /// Multiplies the fall distance by a mod fluid's `fallDistanceModifier`;
+    /// an entity that keeps none only resets it (water's 0).
+    fn scale_fall_distance(&mut self, by: f32) -> Result<(), WorldError<Self>> {
+        if by == 0.0 {
+            self.reset_fall_distance()
+        } else {
+            Ok(())
+        }
+    }
 }
 /// The push predicate is queried twice: before resetting immersion state and
 /// after water-entry effects. Water/lava membership is captured before effects.
@@ -37,6 +46,11 @@ pub fn update<W: EntityFluidTickWorld>(
             world.water_splash().map_err(FluidInteractionError::World)?;
         }
     }
+    for m in interaction.mod_fluids().filter(|m| m.height > 0.0) {
+        world
+            .scale_fall_distance(m.fluid.info().entity.fall_distance_modifier)
+            .map_err(FluidInteractionError::World)?;
+    }
     world.set_was_touching_water(in_water);
     if world
         .is_pushed_by_fluid()
@@ -57,6 +71,9 @@ pub fn update<W: EntityFluidTickWorld>(
                 .apply_current(world, lava, speed)
                 .map_err(FluidInteractionError::World)?;
         }
+        interaction
+            .apply_mod_currents(world)
+            .map_err(FluidInteractionError::World)?;
     }
     Ok(changed)
 }
