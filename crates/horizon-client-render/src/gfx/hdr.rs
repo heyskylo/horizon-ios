@@ -169,7 +169,8 @@ pub struct Hdr {
     hand_mark: wgpu::RenderPipeline,
     params: wgpu::Buffer,
     /// The same pass drawing HDR10 for a screenshot (`capture`), with its own parameters,
-    /// so it can differ from the swapchain's in one frame.
+    /// so it can differ from the swapchain's in one frame, and without the swapchain's dither:
+    /// a screenshot keeps the exact codes.
     capture_pipeline: wgpu::RenderPipeline,
     capture_params: wgpu::Buffer,
     pub output: Output,
@@ -286,8 +287,9 @@ impl Hdr {
                 entries: &entries,
             })
         };
-        // One full-screen pass of hdr.wgsl's `entry` into `format`, reading `layout`.
-        let pass = |label, layout: &wgpu::BindGroupLayout, entry, format| {
+        // One full-screen pass of hdr.wgsl's `entry` into `format`, reading `layout`; `dither`
+        // for the last pass into the HDR10 swapchain (`pq_dither`).
+        let pass = |label, layout: &wgpu::BindGroupLayout, entry, format, dither: bool| {
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some(label),
                 bind_group_layouts: &[Some(layout)],
@@ -308,7 +310,10 @@ impl Hdr {
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
                     entry_point: Some(entry),
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &[("pq_dither", f64::from(u8::from(dither)))],
+                        ..Default::default()
+                    },
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
                         blend: None,
@@ -321,7 +326,8 @@ impl Hdr {
         };
         let layout_bindings: &[u32] = if coverage { &[0, 3, 4, 5] } else { &[0, 1, 3] };
         let display = layout("Horizon HDR bindings", layout_bindings, true);
-        let pipeline_for = |format| pass("Horizon HDR", &display, entry_point, format);
+        let pipeline_for =
+            |format, dither| pass("Horizon HDR", &display, entry_point, format, dither);
         let params = || {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Horizon HDR parameters"),
@@ -333,7 +339,7 @@ impl Hdr {
         let layered = coverage.then(|| {
             let with = |label, textures: &[u32], params, entry, format| {
                 let layout = layout(label, textures, params);
-                let pipeline = pass(label, &layout, entry, format);
+                let pipeline = pass(label, &layout, entry, format, false);
                 (layout, pipeline)
             };
             let hud = super::hud_coverage::HUD_FORMAT;
@@ -395,8 +401,8 @@ impl Hdr {
         );
         Self {
             logo: logo_mask(device, queue),
-            pipeline: pipeline_for(output.format()),
-            capture_pipeline: pipeline_for(Output::Pq.format()),
+            pipeline: pipeline_for(output.format(), output == Output::Pq),
+            capture_pipeline: pipeline_for(Output::Pq.format(), false),
             layout: display,
             clear_alpha,
             hand_mark,
@@ -1709,19 +1715,32 @@ struct ReferenceParams { peak: f32, scene: f32, world: f32, debug: f32, share: v
                     super::super::hud_coverage::clear(&mut encoder, &hdr.coverage_view().unwrap());
                     hdr.begin(&queue, true);
                     hdr.present(&queue, &mut encoder, &target, true, None);
-                    let got = texel(&device, &queue, encoder, &target);
-                    for c in &got[..3] {
-                        let c = f64::from(*c);
-                        let ok = match output {
-                            // 10-bit codes, a step either way for rounding.
-                            Output::Pq => (c - 1023.0 * pq(want)).abs() <= 1.0,
-                            // 80 nits a unit, in half floats.
-                            Output::ScRgb => (c * 80.0 - want).abs() <= 2e-3 * want + 1e-4,
+                    // HDR10's exact codes are a screenshot's copy: the swapchain's own get a
+                    // code of dither either way.
+                    let exact = (output == Output::Pq)
+                        .then(|| hdr.capture(&device, &queue, &mut encoder, true).unwrap());
+                    let presented = texel(&device, &queue, encoder, &target);
+                    let exact = exact.map(|copy| {
+                        let encoder = device.create_command_encoder(&Default::default());
+                        texel(&device, &queue, encoder, &copy)
+                    });
+                    for (got, codes) in [(Some(presented), 2.0), (exact, 1.0)] {
+                        let Some(got) = got else {
+                            continue;
                         };
-                        assert!(
-                            ok,
-                            "{output:?} black {black}, light {light}: {got:?}, not {want} nits"
-                        );
+                        for c in &got[..3] {
+                            let c = f64::from(*c);
+                            let ok = match output {
+                                // 10-bit codes, a step either way for rounding.
+                                Output::Pq => (c - 1023.0 * pq(want)).abs() <= codes,
+                                // 80 nits a unit, in half floats.
+                                Output::ScRgb => (c * 80.0 - want).abs() <= 2e-3 * want + 1e-4,
+                            };
+                            assert!(
+                                ok,
+                                "{output:?} black {black}, light {light}: {got:?}, not {want} nits"
+                            );
+                        }
                     }
                 }
             }
@@ -2078,3 +2097,7 @@ mod lighting_tests {
 #[cfg(test)]
 #[path = "hdr_written_tests.rs"]
 mod written_tests;
+
+#[cfg(test)]
+#[path = "hdr_dither_tests.rs"]
+mod dither_tests;

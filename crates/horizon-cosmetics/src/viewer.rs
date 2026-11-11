@@ -158,7 +158,17 @@ impl Stage {
                 .as_ref()
                 .map(|(m, _)| Arc::as_ptr(m) as *const () as usize),
         };
-        let gap = if moving { ANIMATION_FRAME } else { MOVE_FRAME };
+        let camera_moved = self
+            .drawn
+            .as_ref()
+            .is_some_and(|(d, _)| d.camera != self.camera());
+        let gap = if camera_moved {
+            MOVE_FRAME
+        } else if moving {
+            ANIMATION_FRAME
+        } else {
+            MOVE_FRAME
+        };
         match self.drawn {
             Some((drawn, _)) if drawn == key => Frame {
                 shot: None,
@@ -253,6 +263,30 @@ mod tests {
         let end = t0 + 1000 * MS + MOVE_FRAME;
         assert!(stage.frame(end, 2.0, true).shot.is_some());
         assert_eq!(stage.frame(end + 500 * MS, 2.0, true), Frame::default());
+    }
+
+    #[test]
+    fn dragging_while_animating_draws_at_60_pictures_a_second() {
+        let t0 = Instant::now();
+        let mut stage = Stage::default();
+        stage.dress(true);
+        stage.frame(t0, 2.0, true);
+        let mut drawn = 0;
+        let mut throttled_waits = Vec::new();
+        for k in 1..=250 {
+            let now = t0 + k * 4 * MS;
+            stage.set_camera(stage.camera().dragged(1.0, 0.0));
+            let f = stage.frame(now, 2.0, true);
+            drawn += usize::from(f.shot.is_some());
+            if f.shot.is_none() {
+                throttled_waits.extend(f.wake);
+            }
+        }
+        assert!((55..=63).contains(&drawn), "{drawn}");
+        assert!(
+            throttled_waits.iter().all(|w| *w <= MOVE_FRAME),
+            "{throttled_waits:?}"
+        );
     }
 
     #[test]
