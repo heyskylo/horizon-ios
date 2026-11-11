@@ -580,6 +580,15 @@ pub fn button(
         "widget/button"
     };
     sprite(out, sprite_id, x, y, w, h);
+    // `AbstractWidget.WithInactiveMessage.defaultInactiveMessage`: an inactive
+    // widget's message is -6250336 (0xFFA0A0A0), not the active white.
+    let inactive;
+    let label = if active {
+        label
+    } else {
+        inactive = label.clone().with_color(0xFFA0_A0A0);
+        &inactive
+    };
     scrolling_string_over_contents(out, m, label, x, y, w, h, 2, now_ms);
 }
 /// `Tooltip.splitTooltip` of a widget's tooltip, shown under the mouse.
