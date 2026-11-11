@@ -86,7 +86,5 @@ needed, the spec team records the observation (what was seen, with which pack an
 
 - The implementation is `crates/horizon-shaders` ([docs/shaders.md](../shaders.md) covers Horizon's own WGSL packs).
   Its first slices were written by the implementation team above; later contributors did not have the spec, which
-  was private until now. Their pull requests follow [CONTRIBUTING.md](../../CONTRIBUTING.md#only-original-code-or-code-whose-license-allows-it).
-- A shader-pack pull request now says which sources it used: the sections of this spec, the public documentation
-  pages, and the packs it ran as black boxes.
+  was private until now.
 - Not published: the implementer's question files and the implementation plan, which were working notes.
