@@ -342,6 +342,8 @@ impl Game<'_> {
         if !self.creative {
             self.consume_held();
         }
+        // `ItemStack.useOn` awards ITEM_USED for `FireworkRocketItem.useOn`'s SUCCESS.
+        self.award_stat("used", "minecraft:firework_rocket", 1);
         self.swing_arm();
         true
     }
@@ -571,6 +573,8 @@ impl Game<'_> {
             host.hub
                 .entity_event(r.id as i32, FIREWORK_EXPLODE_EVENT, at);
         }
+        // `this.gameEvent(GameEvent.EXPLODE, this.getOwner())`, before the blast.
+        self.rocket_explode_event(r.owner, r.guest, at);
         if !r.explosions.is_empty() {
             let damage = 5.0 + r.explosions.len() as f32 * 2.0;
             let from = r.position;
@@ -648,8 +652,33 @@ impl Game<'_> {
         let camera = self.eye_position().unwrap_or(at);
         let v = [r.velocity.x, r.velocity.y, r.velocity.z];
         self.particles
-            .fireworks(at, v, r.explosions.clone(), camera);
+            .fireworks(at, v, r.explosions.clone(), camera, !r.silent);
         self.native_firework_explode(r.id, at, r.explosions.len());
+    }
+    /// `FireworkRocketEntity.explode`'s game event: EXPLODE at the rocket, from
+    /// its owner (`Projectile.getOwner`), a guest's rocket as theirs.
+    fn rocket_explode_event(&mut self, mut owner: Option<Who>, guest: Option<u32>, at: [f64; 3]) {
+        if let Some(conn) = guest.filter(|conn| self.lan_acting != Some(*conn)) {
+            let posted = if let Some(mut host) = self.lan.take() {
+                let posted = self
+                    .as_guest(&mut host, conn, |g| {
+                        let ctx = g.who_context(owner, None);
+                        g.post_game_event("minecraft:explode", at, ctx);
+                    })
+                    .is_some();
+                self.lan = Some(host);
+                posted
+            } else {
+                false
+            };
+            if posted {
+                return;
+            }
+            // An owner who left cannot resolve to the host: no source entity.
+            owner = None;
+        }
+        let ctx = self.who_context(owner, None);
+        self.post_game_event("minecraft:explode", at, ctx);
     }
     fn rocket_hurt_mobs(&mut self, hits: &[(u32, f32)], attacker: Option<Who>, at: [f64; 3]) {
         let _attacker = self.knockback_scope(if attacker == Some(Who::Player) {
@@ -751,7 +780,7 @@ impl Game<'_> {
             let at = [r.position.x, r.position.y, r.position.z];
             let v = [r.velocity.x, r.velocity.y, r.velocity.z];
             self.particles
-                .fireworks(at, v, r.explosions.clone(), camera.unwrap_or(at));
+                .fireworks(at, v, r.explosions.clone(), camera.unwrap_or(at), !r.silent);
         }
     }
     /// `dealExplosionDamage` on a player that is not the rocket's
@@ -860,6 +889,10 @@ impl Game<'_> {
 fn use_on_passes(fall_flying: bool) -> bool {
     fall_flying
 }
+
+#[cfg(test)]
+#[path = "fireworks_events_tests.rs"]
+mod events_tests;
 
 #[cfg(test)]
 mod tests {

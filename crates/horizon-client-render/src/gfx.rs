@@ -1125,6 +1125,8 @@ pub struct Renderer {
     /// Sections upload their solid quads in the compact layout (`mesher::packed`): the solid
     /// passes read the arena themselves (`flat`) and no shader pack reads it as vertices.
     packed_quads: bool,
+    /// The compact layout is allowed (`HORIZON_PACKED_QUADS`, `set_packed_layout`).
+    packed_on: bool,
     /// The visibility buffer for flat frames' solid terrain (`visbuffer`,
     /// `HORIZON_VISBUFFER=1`).
     visbuf: Option<visbuffer::Visbuffer>,
@@ -4902,8 +4904,8 @@ impl Renderer {
             }
             None => (solid, solid_opaque, solid_cutout, solid_mirror),
         };
-        // The solid quads in the compact layout, while no shader pack reads the arena
-        // (`follow_packed_layout`).
+        // The solid quads in the compact layout where every pass reads it; the first world
+        // frames settle it for the picked pack (`follow_packed_layout`).
         let packed_quads = flat.is_some() && !shader_pack && packed_wanted();
         packed::pack_quads(packed_quads);
         // A native mod's world warp builds its pipelines with these layouts once it is given one.
@@ -5071,6 +5073,7 @@ impl Renderer {
             world_warps,
             flat_on: flat.is_some(),
             packed_quads,
+            packed_on: packed_wanted(),
             cull_on: cull.is_some(),
             sides_on: true,
             gpu_culling: None,
@@ -6707,13 +6710,17 @@ impl Renderer {
             flat.set_translucent_page_vertices(arena.page_vertices());
         }
     }
-    /// Uploads solid quads in the compact layout (`packed_quads`) while no shader pack runs:
-    /// a pack's terrain and shadow programs, and Horizon's own packs' stages, read the
-    /// arena's vertices as `TerrainVertex`es. Leaving it drops every section and far tile
-    /// for the game to mesh again, as `follow_translucent_layout` does.
+    /// Uploads solid quads in the compact layout (`packed_quads`) unless a pack reads the
+    /// arena's vertices as `TerrainVertex`es: Horizon's own packs' stages, and a `shaders/`
+    /// pack's terrain and shadow programs outside flat draws (flat ones unpack the records,
+    /// `pack_atlas::PULL_FLAT`). Leaving it drops every section and far tile for the game to
+    /// mesh again, as `follow_translucent_layout` does.
     fn follow_packed_layout(&mut self) {
         let pack = self.pack_post.as_ref().and_then(|p| p.1.as_ref()).is_some();
-        let want = self.flat.is_some() && !pack && self.native.is_none() && packed_wanted();
+        let want = self.flat.is_some()
+            && (!pack || self.pack_terrain_flat)
+            && self.native.is_none()
+            && self.packed_on;
         if want == self.packed_quads {
             return;
         }
@@ -6724,6 +6731,10 @@ impl Renderer {
             let waiting = self.hold.take_all();
             self.place_held(waiting);
         }
+        log::info!(
+            "Horizon: compact solid terrain {}",
+            if want { "on" } else { "off" }
+        );
         self.packed_quads = want;
         packed::pack_quads(want);
         let laid_out = self.sections.values().any(|s| s.packed)
@@ -6732,6 +6743,17 @@ impl Renderer {
             self.sections_dropped = true;
             self.clear_sections(self.layout);
         }
+    }
+    /// Allows the compact layout of solid quads or not, for A/B checks: every section and far
+    /// tile is meshed again in the layout that follows. Replies whether sections now use it.
+    pub fn set_packed_layout(&mut self, on: bool) -> bool {
+        if on != self.packed_on {
+            self.packed_on = on;
+            self.follow_packed_layout();
+            self.sections_dropped = true;
+            self.clear_sections(self.layout);
+        }
+        self.packed_quads
     }
     /// Whether every section and far tile was dropped since the last call, to be
     /// laid out again (`follow_translucent_layout`): the game meshes them again,
@@ -7175,7 +7197,8 @@ impl Renderer {
                     .as_ref()
                     .map_or([1, 1], |t| [t.width(), t.height()]),
                 terrain: self.pack_atlas.as_ref().map(|_| pack_post::Geometry {
-                    buffers: if flat { &buffers[..1] } else { &buffers },
+                    // Flat terrain programs pull their vertices (`pack_atlas::PULL_FLAT`).
+                    buffers: if flat { &[] } else { &buffers },
                     table: self.flat.as_ref().filter(|_| flat).map(|f| &f.draw_layout),
                     depth_write: true,
                     atlas: None,
@@ -7345,7 +7368,8 @@ impl Renderer {
                 lightmap,
                 gui_size,
                 terrain: terrain.then(|| pack_post::Geometry {
-                    buffers: if flat { &buffers[..1] } else { &buffers },
+                    // Flat terrain programs pull their vertices (`pack_atlas::PULL_FLAT`).
+                    buffers: if flat { &[] } else { &buffers },
                     table: table.as_ref(),
                     depth_write: true,
                     atlas: None,
@@ -7510,7 +7534,8 @@ impl Renderer {
                 );
                 horizon_shaders::GeometryInputs {
                     inputs,
-                    pull: pack_atlas::PULL.to_owned(),
+                    // Flat terrain inputs pull their own vertex (`PULL_FLAT`, `gl_VertexIndex` → `hz_vertex_index`).
+                    pull: String::new(),
                     index: "hz_indices[@]".to_owned(),
                 }
             });

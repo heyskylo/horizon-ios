@@ -80,11 +80,11 @@ ResolvableProfile.Static.hashCode	skip:java		hash for collections
 Tool.Rule.minesAndDrops	port	crates/horizon-items/src/items.rs::Items::load_with	rule read from the item JSON: speed and correct_for_drops set to true
 TooltipDisplay.withHidden	port	crates/horizon-client/src/game/commands/items.rs::Game::apply_item_modifier	gap: minor: only the /item modify toggle_tooltips path; the loot-table toggle function is not ported, and the raid banner's hidden pattern is read in item_tooltip shows()
 WrittenBookContent.craftCopy	port	crates/horizon-client/src/crafting.rs::Special::assemble	book copy: generation plus one, pages kept
-WrittenBookContent.resolveForItem	missing		minor: selectors in a written book's text (@p and so on) are not resolved when the book reaches a player; the raw text shows
-WrittenBookContent.resolve	missing		minor: no selector resolution for written book pages; the raw text shows
-WrittenBookContent.markResolved	missing		minor: resolved flag is not kept, so a book is never marked as resolved
-WrittenBookContent.resolvePage	missing		minor: no per-page selector resolution, and no drop of pages over 32767 characters
-WrittenBookContent.isPageTooLarge	missing		minor: no check that a resolved page stays under the 32767 character limit
+WrittenBookContent.resolveForItem	port	crates/horizon-client/src/game/books.rs::Game::resolve_held_book	the book in the acting hand resolves when `use_book` opens it, as `ServerPlayer.openItemGui` does before the book screen reads it
+WrittenBookContent.resolve	port	crates/horizon-items/src/item_data.rs::WrittenBook::resolve	every page's selectors and scores become their text (`extra` and `with` recurse), and the book is marked resolved
+WrittenBookContent.markResolved	port	crates/horizon-items/src/item_data.rs::WrittenBook::resolve	the `resolved` component field is kept and written by the codec; a resolved book is never resolved again
+WrittenBookContent.resolvePage	port	crates/horizon-items/src/item_data.rs::resolve_page_tag	one page's component with its selectors and scores replaced, recursing into `extra` and `with`
+WrittenBookContent.isPageTooLarge	port	crates/horizon-items/src/item_data.rs::WrittenBook::resolve	a page whose resolved text passes 32767 characters cancels the resolution and only marks the book resolved
 WrittenBookContent.getPages	port	crates/horizon-client/src/game/books.rs::view_pages	gap: minor: returns the stored pages; the filtered-text choice (filterEnabled) is not modelled
 WrittenBookContent.withReplacedPages	missing		minor: loot function set_written_book_pages is not in the loot modifiers, so a loot book gets no pages
 BookCloningRecipe.matches	port	crates/horizon-client/src/crafting.rs::Special::matches	BookCloning arm: one written book within the allowed generations, plus material

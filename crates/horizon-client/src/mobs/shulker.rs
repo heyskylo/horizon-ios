@@ -363,6 +363,19 @@ fn teleport(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
             f64::from(t[2]) + 0.5,
         );
         m.previous = m.position;
+        // `level.gameEvent(GameEvent.TELEPORT, oldPos, Context.of(this))`:
+        // the BlockPos overload uses `Vec3.atCenterOf(oldPos)`, between the
+        // sound and the level event.
+        events.push(MobEvent::GameEvent {
+            event: "minecraft:teleport",
+            at: [
+                f64::from(old[0]) + 0.5,
+                f64::from(old[1]) + 0.5,
+                f64::from(old[2]) + 0.5,
+            ],
+            source: m.id,
+            state: horizon_world::registry::BlockStateId(0),
+        });
         // Level.levelEvent(2016, oldPos, packedDiff): the teleport's
         // particles at both ends, seen by the players around.
         events.push(MobEvent::LevelEvent {
@@ -401,6 +414,14 @@ fn set_peek(m: &mut Mob, amount: i32, events: &mut Vec<MobEvent>) {
         source: m.id,
         state: horizon_world::registry::BlockStateId(0),
     });
+    // The getAttribute(ARMOR) calls make the instance (saved as an armor entry
+    // even with no modifier) and swap the covered +20 modifier.
+    use super::finalize::{Attr, Op};
+    super::finalize::set_base(m, Attr::Armor, super::finalize::base_value(m, Attr::Armor));
+    super::finalize::remove_modifier(m, Attr::Armor, "minecraft:covered");
+    if amount == 0 {
+        super::finalize::add_modifier(m, Attr::Armor, "minecraft:covered", 20.0, Op::AddValue);
+    }
     m.extra.counter = amount;
 }
 /// `Shulker.updatePeekAmount`/`updatePeekAmountO`: the eased peek.

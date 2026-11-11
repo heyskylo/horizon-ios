@@ -304,6 +304,13 @@ public final class VanillaDispenserOracle {
             marker.setAccessible(true);
             marker.invoke(stand, true);
         }
+        // ArmorStand.showArms and the DisabledSlots lock bits.
+        if (e.has("arms") && ent instanceof net.minecraft.world.entity.decoration.ArmorStand stand) {
+            stand.setShowArms(true);
+        }
+        if (e.has("disabled") && ent instanceof net.minecraft.world.entity.decoration.ArmorStand stand) {
+            VanillaBlockUpdateOracle.set(net.minecraft.world.entity.decoration.ArmorStand.class, stand, "disabledSlots", e.get("disabled").getAsInt());
+        }
         // ArmorStand.lastHit: the game tick of the stand's previous punch.
         if (e.has("last_hit") && ent instanceof net.minecraft.world.entity.decoration.ArmorStand stand) {
             stand.lastHit = e.get("last_hit").getAsLong();

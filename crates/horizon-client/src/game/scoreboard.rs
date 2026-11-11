@@ -739,7 +739,7 @@ impl Game<'_> {
             other => other,
         }
     }
-    fn resolve_selector_text(&mut self, raw: &str) -> String {
+    pub(super) fn resolve_selector_text(&mut self, raw: &str) -> String {
         let mut reader = horizon_client::command::Reader::new(raw);
         let ty = horizon_client::command::args::ArgType::Entity {
             single: false,

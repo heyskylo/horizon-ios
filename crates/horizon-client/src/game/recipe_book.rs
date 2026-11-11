@@ -231,7 +231,7 @@ impl Game<'_> {
             return;
         }
         self.ensure_book();
-        let index = &self.stations().recipe_index;
+        let index = self.display_index();
         let book = self.recipe_ui.book.as_ref();
         // SmithingTrimDemoSlotDisplay draws from a random of its own.
         let mut random = random_source::entity();
@@ -413,10 +413,15 @@ impl Game<'_> {
             r.builtin
                 .get(registry)
                 .and_then(|ids| ids.name(id))
+                .or_else(|| r.registries.name(registry, id))
                 .map(str::to_owned)
         };
         let item = |id: i32| name_of("minecraft:item", id);
-        let category = |id: i32| name_of("minecraft:recipe_book_category", id);
+        let category = |id: i32| {
+            name_of("minecraft:recipe_book_category", id).or_else(|| {
+                horizon_client::recipe_book::Category::from_id(id).map(|c| c.name().to_owned())
+            })
+        };
         let tag = |name: &str| items.item_tag_order.get(name).cloned().unwrap_or_default();
         book.use_server_entries(
             entries,
@@ -430,7 +435,7 @@ impl Game<'_> {
     fn ensure_book(&mut self) {
         if self.recipe_ui.book.is_none() {
             let mut book = Book::build(self.recipes(), self.items());
-            book.set_display_ids(&self.stations().recipe_index);
+            book.set_display_ids(self.display_index());
             // A server numbers and describes its recipes itself.
             self.server_entries_over(&mut book, self.recipe_ui.server_entries.values());
             self.recipe_ui.book = Some(book);
@@ -1368,6 +1373,11 @@ impl Game<'_> {
         p: horizon_protocol::packets::recipes::RecipeBookAdd,
     ) {
         let ui = &mut self.recipe_ui;
+        // `display_index`, borrowed by field beside the book.
+        let index = match &self.recipe_tables.synced_index {
+            Some(index) => index,
+            None => &world_stations!(self).recipe_index,
+        };
         if p.replace {
             ui.client.clear();
             ui.server_entries.clear();
@@ -1380,7 +1390,7 @@ impl Game<'_> {
                 ui.client.highlight.insert(e.id);
             }
             if e.flags & 1 != 0
-                && let Some(id) = world_stations!(self).recipe_index.recipe_of_display(e.id)
+                && let Some(id) = index.recipe_of_display(e.id)
                 && !toast.iter().any(|t| t == id)
             {
                 toast.push(id.to_owned());

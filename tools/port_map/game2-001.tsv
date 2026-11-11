@@ -140,3 +140,4 @@ HangingEntity.recalculateBoundingBox	skip:other		bounds are derived on demand fr
 HangingEntity.calculateSupportBox	inline	crates/horizon-client/src/game/paintings.rs::Game::painting_survives	support box moved half a block into the wall
 HangingEntity.canCoexist	port	crates/horizon-client/src/game/paintings.rs::Game::painting_survives	gap: minor: only other paintings are checked for overlap; item frames and the same-facing rule are not
 HangingEntity.hasLevelCollision	port	crates/horizon-client/src/game/paintings.rs::Game::painting_survives	block collision of the box
+WitherBoss.customServerAiStep	port	crates/horizon-client/src/mobs/wither.rs::custom_server_ai_step	side heads pick targets with line of sight

@@ -2694,7 +2694,7 @@ mod damage_type_registry_tests {
         let pack = dir.join("datapacks/model");
         let types = pack.join("data/example/damage_type");
         std::fs::create_dir_all(&types).unwrap();
-        std::fs::write(pack.join("pack.mcmeta"), "{}").unwrap();
+        std::fs::write(pack.join("pack.mcmeta"), r#"{"pack":{"description":""}}"#).unwrap();
         std::fs::write(
             types.join("test.json"),
             r#"{"message_id":"example.test","scaling":"never","exhaustion":0.0}"#,
