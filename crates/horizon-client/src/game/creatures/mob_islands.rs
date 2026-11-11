@@ -22,7 +22,10 @@
 //! `HORIZON_TEST_SEEDS`, with few ticking mobs, with a mob whose reach is the whole level, or when
 //! one island holds most of them, or a mob belongs to a raid (its hurt sequence is shared).
 //! An owned mob also keeps the loop serial: tame pets can teleport to a distant owner, outside
-//! the local motion bounds. Ownership is checked even for resting or sitting mobs.
+//! the local motion bounds. Ownership is checked even for resting or sitting mobs. So does a mob
+//! holding, in either hand, or using an item that teleports its eater (`ConsumeEffect::
+//! TeleportRandomly`): the diameter is item data and the landing drops to the first ground below,
+//! so the destination is unbounded; see [`holds_teleport_consumable`].
 //! Reach changes and their behavioral proof follow `docs/mob-islands.md`.
 //!
 //! Whether a mob is loaded and ticking is decided at its turn, as the serial loop decides it, so
@@ -147,6 +150,13 @@ impl Islands<'_> {
             || mobs.iter().any(|m| {
                 horizon_client::mobs::raider::state(m).is_some_and(|r| r.raid_id.is_some())
             })
+        {
+            return None;
+        }
+        // A mob that finishes eating a teleporting item (chorus fruit by default) lands anywhere
+        // its item's diameter allows and falls to the ground there: not a bounded margin.
+        if let Some(items) = turns.base.items
+            && mobs.iter().any(|m| holds_teleport_consumable(m, items))
         {
             return None;
         }
@@ -451,6 +461,25 @@ fn jump(species: Species) -> f64 {
         Species::Shulker => 9.0,
         _ => 0.0,
     }
+}
+/// Whether `m` holds in either hand, or is using, an item whose consumable has a
+/// `TeleportRandomly` effect. Judged by the item, not the species, so any mob that eats is covered
+/// (`Fox.ai_step` today). A used item is always one of the two hands, so the hands cover it.
+fn holds_teleport_consumable(m: &Mob, items: &horizon_client::items::Items) -> bool {
+    [&m.extra.main_hand, &m.extra.off_hand]
+        .into_iter()
+        .flatten()
+        .any(|id| {
+            items
+                .items
+                .get(&**id)
+                .and_then(|i| i.consumable.as_ref())
+                .is_some_and(|c| {
+                    c.effects.iter().any(|e| {
+                        matches!(e, horizon_client::items::ConsumeEffect::TeleportRandomly(_))
+                    })
+                })
+        })
 }
 /// Mobs whose tick reads every villager's points of interest (`village_sections`,
 /// `others_tickets`).
@@ -1788,6 +1817,183 @@ mod tests {
                 } else {
                     expected = Some(result);
                 }
+            }
+        }
+    }
+
+    /// `plan` stays serial while a mob holds, in either hand, an item whose consumable teleports
+    /// its eater, whatever the species; the same mobs plan normally with a plain item.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn plan_is_none_while_a_mob_holds_a_teleport_consumable() {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                LANES.with(|l| l.set(None));
+            }
+        }
+        let _reset = Reset;
+        let mut game = super::super::super::native_machines::tests::server_game();
+        game.spawn_mob("minecraft:cow", [0.5, 65.0, 0.5], true)
+            .unwrap();
+        let kind = Arc::clone(&game.mobs[0].kind);
+        let mut mobs: Vec<_> = (0..400)
+            .map(|i| {
+                let x = f64::from(i / 100 * 1000 + i % 8);
+                let z = f64::from(i % 100 / 8);
+                let key = (x as i32 >> 4, z as i32 >> 4);
+                if !game.world.chunks.contains_key(&key) {
+                    game.world.chunks.insert(
+                        key,
+                        Arc::new(horizon_client::chunk::Chunk::empty(key.0, key.1)),
+                    );
+                }
+                Mob::new(i, Arc::clone(&kind), Vec3::new(x, 65.0, z), 0.0)
+            })
+            .collect();
+        let snapshot: Vec<_> = mobs.iter().map(|m| m.seen(None)).collect();
+        let base = game.mob_world_base(&[]);
+        let players = super::super::super::natural_spawning::NearestPlayers::new(&[]);
+        let nearest = super::super::prep::MobsNearest::new(&players, &mobs, false);
+        let turns = Turns {
+            base: &base,
+            despawn: base.despawn_view(),
+            ticking: &|_, _| true,
+            nearest: &nearest,
+            single_player: Some(None),
+            canceled: &|_| false,
+            difficulty: &|_| horizon_client::mobs::spawning::LocalDifficulty::new(2, 0, 0, 0.0),
+            cached_difficulty: None,
+        };
+        let ticking = || -> Box<dyn Fn(i32, i32) -> bool + Send> { Box::new(|_, _| true) };
+        let islands = Islands {
+            uuid: None,
+            mods: false,
+            ticking: &ticking,
+        };
+        LANES.with(|l| l.set(Some(4)));
+        let can_group = lanes() > 1;
+        for item in ["minecraft:bread", "minecraft:apple"] {
+            mobs[7].extra.set_main_hand(Some(item.into()));
+            assert_eq!(
+                islands.plan(&mobs, &snapshot, &turns).is_some(),
+                can_group,
+                "{item} does not teleport"
+            );
+        }
+        mobs[7].extra.set_main_hand(None);
+        for (hand, off) in [("main", false), ("off", true)] {
+            let chorus = Some("minecraft:chorus_fruit".into());
+            if off {
+                mobs[7].extra.off_hand = chorus;
+            } else {
+                mobs[7].extra.set_main_hand(chorus);
+            }
+            assert!(
+                islands.plan(&mobs, &snapshot, &turns).is_none(),
+                "chorus fruit in the {hand} hand keeps the tick serial"
+            );
+            mobs[7].extra.off_hand = None;
+            mobs[7].extra.set_main_hand(None);
+        }
+        assert_eq!(islands.plan(&mobs, &snapshot, &turns).is_some(), can_group);
+    }
+
+    /// A fox that finishes a chorus fruit teleports to the first ground below a point within the
+    /// item's diameter, a fall of any length: it can land in a herd the planner kept apart. The
+    /// real loop must stay serial, including verify's reference copy, and match the serial result.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn fox_teleporting_onto_another_herd_runs_serially_without_reference_ticks() {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                LANES.with(|l| l.set(None));
+                VERIFY.with(|v| v.set(false));
+            }
+        }
+        let _reset = Reset;
+        let mut game = separated_herds_game();
+        for m in &mut game.mobs {
+            m.no_ai = true;
+        }
+        // Without the fox the herds really group.
+        LANES.with(|l| l.set(Some(3)));
+        VERIFY.with(|v| v.set(true));
+        RAN.with(|r| r.set(0));
+        CHECK.with(|c| c.set((0, 0)));
+        game.tick_creature_entities().unwrap();
+        let grouped = lanes() > 1;
+        assert_eq!(RAN.with(|r| r.get() > 1), grouped, "the herds can group");
+        assert_eq!(CHECK.with(Cell::get), (usize::from(grouped), 0));
+        // The fox waits 85 blocks above the second herd, far outside every read of it, and
+        // finishes its fruit this tick (`TICKS_SINCE_EATEN` is 600; the tick makes it 601).
+        game.spawn_mob("minecraft:fox", [2.5, 65.0, 2.5], true)
+            .unwrap();
+        let mut fox = game.mobs.pop().unwrap();
+        // It stands on a one-block pillar, so `travel` keeps it on the ground until it eats.
+        let pillar = game.pack.assets.registry.default_state("minecraft:stone");
+        game.world.set(106, 149, 10, pillar.unwrap()).unwrap();
+        fox.position = Vec3::new(106.5, 150.0, 10.5);
+        fox.previous = fox.position;
+        fox.velocity = Vec3::ZERO;
+        fox.on_ground = true;
+        fox.ai.goals = Default::default();
+        fox.ai.targets = Default::default();
+        fox.extra
+            .set_main_hand(Some("minecraft:chorus_fruit".into()));
+        fox.random = horizon_core::random::LegacyRandom::new(7);
+        // The herd's mobs come later, so the serial loop shows them the landed fox.
+        game.mobs.insert(0, fox);
+        // One tick settles it on the pillar (the first tick of a mob does not run its step);
+        // it has just started eating, so it does not finish yet.
+        game.tick_creature_entities().unwrap();
+        assert_eq!(game.mobs[0].position, Vec3::new(106.5, 150.0, 10.5));
+        game.mobs[0].extra.ints[1] = 600;
+        let initial = game.mobs.clone();
+        let random = game.world.random.clone();
+        let died = game.died.clone();
+        let mut expected = None;
+        let mut seeds = None;
+        for (requested, verify) in [(1, false), (3, false), (3, true)] {
+            game.mobs = initial.clone();
+            game.world.random = random.clone();
+            game.died = died.clone();
+            LANES.with(|l| l.set(Some(requested)));
+            VERIFY.with(|v| v.set(verify));
+            RAN.with(|r| r.set(0));
+            CHECK.with(|c| c.set((0, 0)));
+            // Only the eating tick: once the fruit is gone the herds group again.
+            let tick = || game.tick_creature_entities().unwrap();
+            if requested == 1 {
+                seeds = Some(horizon_client::random_source::record_seeds(tick).1);
+            } else {
+                let seeds = seeds.as_ref().unwrap();
+                horizon_client::random_source::replay_seeds(Arc::clone(seeds), tick);
+                assert!(seeds.complete(), "the same seeds were consumed");
+            }
+            let fox = &game.mobs[0];
+            assert!(
+                fox.position.y < 100.0 && fox.extra.main_hand.is_none(),
+                "the fox ate its fruit and really teleported down to the herd: {:?}",
+                fox.position
+            );
+            assert_eq!(RAN.with(Cell::get), 0, "a teleport consumable stays serial");
+            assert_eq!(CHECK.with(Cell::get), (0, 0), "no cloned reference runs");
+            let mobs: Vec<_> = game
+                .mobs
+                .iter()
+                .map(|m| {
+                    let mut m = m.clone();
+                    m.extra.section_seq = 0;
+                    format!("{m:?}")
+                })
+                .collect();
+            let result = (mobs, format!("{:?}", game.world.random), game.died.clone());
+            if let Some(expected) = &expected {
+                assert_eq!(&result, expected, "fallback matches the serial loop");
+            } else {
+                expected = Some(result);
             }
         }
     }

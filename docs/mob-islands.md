@@ -76,6 +76,45 @@ cargo test -p horizon-client --lib game::creatures::mob_islands::tests:: -- --in
 Set `HORIZON_TEST_RESOURCES` to prepared resources and isolate game homes as `AGENTS.md`
 requires. Do not set `HORIZON_TEST_SEEDS` when proving grouped execution: it forces fallback.
 
+## Teleport consumables
+
+A mob that finishes an item whose consumable has a `ConsumeEffect::TeleportRandomly` effect
+(chorus fruit by default; a fox eats it in `Fox.aiStep`) moves up to half the effect's
+`diameter` on each axis, and `Entity.randomTeleport` then drops it to the first ground below,
+which can be far down. The diameter is item data and the fall is unbounded, so no margin like
+the enderman's or shulker's covers it, and a mob landing beside a herd in another group would be
+seen and pushed by that herd's later mobs in the serial loop but not in a grouped one.
+
+`Islands::plan` therefore returns `None`, in production and verify, while any mob holds such an
+item in either hand or is using one (a used item is always one of the two hands). The check reads
+the item's consumable, never the species, so a future mob that eats is covered as well, and it runs
+before the reach conversion: no cloned reference tick runs. Once the item is eaten or dropped,
+the next tick can group again.
+
+The resource-backed islands tests include a fox 85 blocks above one herd that finishes chorus
+fruit and lands in it. They first check that the same world groups without the fox, then assert
+serial fallback, no diagnostic clone, a successful teleport and matching serial mob/RNG outcomes
+in production and verify. Another test asserts `plan` is `None` for chorus fruit in either hand.
+
+Other ways one turn can move a mob that were audited when this fallback was added (grep of
+position writes, `teleport`, `set_pos`, `move_to` under `mobs/` and `game/creatures/`):
+
+- Enderman and shulker teleports (`jump`) and the hurt-time teleports in `ai.rs`: margins.
+- `tame::teleport_to_owner`: the owner fallback above.
+- Fox chorus teleport: the fallback in this section.
+- Motion: `travel`, vex `noPhysics` travel, turtle and bat adjustments: the velocity reach and
+  the locomotion fallback.
+- Villager `start_sleeping`/`stop_sleeping` and the first-tick bed position: the villager claim box
+  (its bed and points of interest).
+- `riders::stop_riding` and `conversion::single`: placed at the vehicle or at the converted mob,
+  both ids linked in the reach.
+- Block landing (`landing.rs`), resizing (`living.rs`): sub-block adjustments.
+- `MobEvent::Push` and `SetVelocity` (ravager roar, hoglin/piglin knockback, entity pushing,
+  frog tongue): they change velocity, not position, on a target in the actor's own reads, so the
+  target is in its island. Open: a ravager's fling is `4 / d` and unbounded for centres closer than
+  about 0.03 blocks, so a mob pressed against a ravager could move farther than its reach in the
+  same tick. It is not covered by a fallback; see the PR discussion.
+
 ## Before merge
 
 - Pass `pr_ready.py` on the exact proposed head and review the port-ledger warnings. Resolve
