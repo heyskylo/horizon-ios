@@ -516,9 +516,11 @@ impl Game<'_> {
                     new.glow = old.glow;
                     // ItemFrame.readAdditionalSaveData: ItemStack.matches includes
                     // count, item and components, before adopting the new stack.
+                    // It compares the stack as read; setItem keeps one of it
+                    // only after, as `new.item` already does.
+                    let read = tag.get("Item").and_then(save::item_from_nbt);
                     if old.item.as_ref().is_some_and(|a| {
-                        new.item
-                            .as_ref()
+                        read.as_ref()
                             .is_none_or(|b| a.count != b.count || !a.same_item_same_components(b))
                     }) {
                         let old = old.clone();

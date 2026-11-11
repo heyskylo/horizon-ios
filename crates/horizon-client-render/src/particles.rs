@@ -526,6 +526,8 @@ pub struct Particle {
     no_render: bool,
     /// Ticked once when created (`CritParticle` constructor).
     pre_tick: bool,
+    /// A Polytone particle with physics, which joins only where its box is clear of blocks.
+    spawn_check: bool,
     /// `Particle.random`: the particle's own generator (`RandomSource.create()`).
     random: LegacyRandom,
     controller: Option<Box<dyn native::Controller>>,
@@ -895,6 +897,7 @@ impl Particle {
             behaviour: Behaviour::Base,
             no_render: false,
             pre_tick: false,
+            spawn_check: false,
             frame_ticks: 0,
             random: LegacyRandom::new(0),
             controller: None,
@@ -1758,28 +1761,6 @@ impl ParticleEngine {
         particle.behaviour = Behaviour::Controlled { translucent };
         particle.controller = Some(Box::new(controller));
         Some(particle)
-    }
-    /// Sets (or clears) the resource packs' Polytone custom particle types.
-    pub fn set_polytone(&mut self, registry: Option<std::sync::Arc<polytone::Registry>>) {
-        let registry = registry.filter(|r| !r.is_empty());
-        let same = match (&self.polytone, &registry) {
-            (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
-            (None, None) => true,
-            _ => false,
-        };
-        if !same {
-            self.polytone_gpu.clear();
-            self.polytone_overrides = registry
-                .iter()
-                .flat_map(|r| {
-                    ParticleType::ALL.iter().filter_map(|&ty| {
-                        let id = format!("minecraft:{}", ty.name());
-                        r.get(&id).is_some().then_some((ty, id))
-                    })
-                })
-                .collect();
-        }
-        self.polytone = registry;
     }
     /// The quads the last render blends additively (`RenderPipelines` additive, src alpha and
     /// one), for the frame's additive pass.
@@ -3844,6 +3825,9 @@ impl ParticleEngine {
         }
         let pending = std::mem::take(&mut self.pending);
         for mut p in pending {
+            if p.spawn_check && !polytone::unobstructed(level, p.bb) {
+                continue;
+            }
             if p.pre_tick {
                 p.pre_tick = false;
                 self.tick_particle(&mut p, level);

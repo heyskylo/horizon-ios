@@ -3321,6 +3321,14 @@ def shulker_box_empty_items():
     return ops + setup(f'/fill {x} {y} {z + 8} {x + 6} {y} {z + 8} minecraft:air', f'/forceload remove {x} {z}')
 
 
+def shulker_lock_drop_cases():
+    try:
+        from .shulker_lock_drop_corpus import cases
+    except ImportError:
+        from shulker_lock_drop_corpus import cases
+    return cases(cmd)
+
+
 def creative_shulker_drops():
     """ShulkerBoxBlock.playerWillDestroy: Creative keeps a filled box as one item,
     even with block_drops off. Empty boxes and survival use the ordinary drop rules."""
@@ -5823,6 +5831,14 @@ def jukebox_saved_clock_cases():
     return cases(cmd)
 
 
+def item_count_predicate_cases():
+    try:
+        from .item_count_predicate_corpus import cases
+    except ImportError:
+        from item_count_predicate_corpus import cases
+    return cases(cmd)
+
+
 def structured_item_slots():
     range3 = '{type:"minecraft:slot_range",slots:"container.3"}'
     range5 = '{type:"minecraft:slot_range",slots:"container.5"}'
@@ -7446,8 +7462,10 @@ ISOLATED_SEED_SYNC = frozenset({'seed sync proof'})
 ISOLATED_EFFECTIVE_PRESENCE = frozenset({'effective component presence'})
 ISOLATED_BOAT_TREE = frozenset({'boat passenger tree'})
 ISOLATED_GUEST_CLOSE = frozenset({'guest container close event'})
+ISOLATED_ITEM_COUNT = frozenset({'item count predicate'})
+ISOLATED_SHULKER_LOCK = frozenset({'shulker external lock drop'})
 ISOLATED_POT_HOPPER = frozenset({'hopper pot saved slot'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC | ISOLATED_EFFECTIVE_PRESENCE | ISOLATED_BOAT_TREE | ISOLATED_GUEST_CLOSE | ISOLATED_POT_HOPPER
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC | ISOLATED_EFFECTIVE_PRESENCE | ISOLATED_BOAT_TREE | ISOLATED_GUEST_CLOSE | ISOLATED_POT_HOPPER | ISOLATED_ITEM_COUNT | ISOLATED_SHULKER_LOCK
 
 
 def vehicle_fall_clip():
@@ -7729,6 +7747,7 @@ def groups():
         ('boat passenger tree', boat_passenger_tree_cases()),
         ('effective component presence', effective_component_presence_cases()),
         ('jukebox saved clock', jukebox_saved_clock_cases()),
+        ('item count predicate', item_count_predicate_cases()),
         ('loaded potion clouds', loaded_clouds(cmd, setup)),
         ('server clock', server_clock()),
         ('inline execute predicates', inline_execute_predicates()),
@@ -7871,6 +7890,7 @@ def groups():
         ('tnt minecart rails', tnt_minecart_rails()),
         ('creative shulker drops', creative_shulker_drops()),
         ('shulker box empty Items', shulker_box_empty_items()),
+        ('shulker external lock drop', shulker_lock_drop_cases()),
         ('minecart drag', minecart_drag()),
         ('ender dragon', ender_dragon()),
         ('summoned dragon hovers', summoned_dragon_hovers()),
