@@ -395,9 +395,10 @@ mod tests {
         field.max_length = usize::MAX;
         field.multiline = true;
         field.apply_edit(&mut edit);
+        // maxLength is 4 UTF-16 code units: a, b and the emoji's two.
         assert_eq!(
             (edit.value.as_str(), edit.cursor, edit.highlight),
-            ("a\u{1f600}bc", 4, 1)
+            ("a\u{1f600}b", 3, 1)
         );
         assert_eq!((edit.max_length, edit.multiline), (4, false));
         edit.focused = false;
@@ -523,9 +524,11 @@ mod tests {
         field.cursor = 1;
         field.highlight = usize::MAX;
         field.apply_text(&mut edit, &measure);
+        // maxLength 3 is three UTF-16 code units, so the emoji fills the
+        // last two and the b past them is cut.
         assert_eq!(
             (edit.value.as_str(), edit.cursor, edit.highlight),
-            ("a\u{1f600}b", 1, 3)
+            ("a\u{1f600}", 1, 2)
         );
     }
 }

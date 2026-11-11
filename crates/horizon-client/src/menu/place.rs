@@ -365,6 +365,13 @@ impl Menu {
                     stacked.account_stack(stack, Self::max_stack(env, stack));
                 }
             }
+            // A crafter's `fillStackedContents`: its 3x3 slots are the menu's
+            // MAIN container (`CrafterMenu.addSlots`), not a crafting GRID.
+            Kind::Crafter | Kind::CrafterBlock => {
+                for stack in self.containers[MAIN].iter().flatten() {
+                    stacked.account_simple(stack, Self::max_stack(env, stack));
+                }
+            }
             _ => {
                 for stack in self.containers[GRID].iter().flatten() {
                     stacked.account_simple(stack, Self::max_stack(env, stack));
