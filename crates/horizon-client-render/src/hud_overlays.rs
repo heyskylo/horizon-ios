@@ -1487,3 +1487,27 @@ mod boss_bar_room_tests {
         }
     }
 }
+#[cfg(test)]
+mod backdrop_tests {
+    use super::*;
+
+    /// `markBackground`: the backdrop reaches one pixel above and left of the
+    /// glyphs, their advance to the right and nine down, not 2 on every side.
+    #[test]
+    fn the_backdrop_frames_the_glyphs_by_one_pixel() {
+        let mut out = Vec::new();
+        text_with_backdrop(
+            &mut out,
+            Text::literal("X"),
+            10,
+            20,
+            6,
+            u32::MAX,
+            0xFF00_0000,
+        );
+        let Some(GuiDraw::Fill { x0, y0, x1, y1, .. }) = out.first() else {
+            panic!("a backdrop is a fill first");
+        };
+        assert_eq!((*x0, *y0, *x1, *y1), (9, 19, 16, 29));
+    }
+}
