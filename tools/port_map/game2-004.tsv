@@ -152,6 +152,15 @@ Zombie.wantsToPickUp	port	crates/horizon-client/src/mobs/equip.rs::wants_to_pick
 Zombie.onOffspringSpawnedFromEgg	port	crates/horizon-client/src/mobs/finalize.rs::zombie	the 0.55 times the special multiplier roll sets pick_up_loot; Horizon runs it for every non-conversion zombie spawn
 Zombie.ZombieAttackTurtleEggGoal.playDestroyProgressSound	inline	crates/horizon-client/src/mobs/undead.rs::AttackTurtleEgg::tick	zombie.destroy_egg sound while the egg is trampled
 Zombie.ZombieAttackTurtleEggGoal.playBreakSound	inline	crates/horizon-client/src/mobs/undead.rs::AttackTurtleEgg::tick	turtle egg break sound when the egg breaks
+Zombie.isUnderWaterConverting	port	crates/horizon-client/src/mobs/undead.rs::custom_server_ai_step	`drowningTracker.isConverting()`: 600 ticks with the eyes in water start it, leaving the water ends it
+Zombie.convertsInWater	port	crates/horizon-client/src/mobs/undead.rs::custom_server_ai_step	true: the drowned arm
+Zombie.convertsToWhenDrowning	port	crates/horizon-client/src/mobs/undead.rs::custom_server_ai_step	EntityTypes.DROWNED
+Zombie.getConversionSound	port	crates/horizon-client/src/mobs/undead.rs::custom_server_ai_step	1040, `entity.zombie.converted_to_drowned`
+ConversionTracker.tick	port	crates/horizon-client/src/mobs/undead.rs::custom_server_ai_step	300 ticks after the start convert; leaving the water cancels both counters
+Husk.convertsInWater	port	crates/horizon-client/src/mobs/undead.rs::custom_server_ai_step	true: a husk becomes a zombie
+Husk.convertsToWhenDrowning	port	crates/horizon-client/src/mobs/undead.rs::custom_server_ai_step	EntityTypes.ZOMBIE
+Husk.getConversionSound	port	crates/horizon-client/src/mobs/undead.rs::custom_server_ai_step	1041, `entity.husk.converted_to_zombie`
+ZombieVillager.convertsInWater	port	crates/horizon-client/src/mobs/undead.rs::custom_server_ai_step	false: a zombie villager never drowns into a drowned
 SpellcasterIllager.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	SpellTicks binds to the existing live counter, default zero
 SpellcasterIllager.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	SpellTicks saves the live Int counter including zero and negative values
 Evoker.EvokerWololoSpellGoal.canUse	port	crates/horizon-client/src/mobs/illager.rs::UseSpell::can_use	wololo branch: blue sheep range scaled by visibility, floor 2

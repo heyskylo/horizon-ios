@@ -380,6 +380,40 @@ mod tests {
         c.set_slot_state(4, true);
         assert_eq!(c.redstone_signal(), 1);
     }
+    /// `CrafterBlockEntity.setSlotState`: a slot toggled in the menu lands on
+    /// the block entity itself, whose `setChanged` marks the chunk.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_slot_toggled_in_the_menu_lands_on_the_crafter() {
+        use crate::game::native_machines::tests::server_game;
+        let mut game = server_game();
+        let key = (2, 4, 3);
+        let state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:crafter")
+            .unwrap();
+        game.world.set(key.0, key.1, key.2, state).unwrap();
+        let mut crafter = Crafter::default();
+        crafter.set_slot_state(3, false);
+        game.world
+            .block_entities
+            .put(key, BlockEntity::Crafter(crafter));
+        game.container = Some(key);
+        game.world.modified.clear();
+
+        game.crafter_slot_clicked(303, 0, horizon_client::menu::Input::Pickup);
+
+        let Some(BlockEntity::Crafter(c)) = game.world.block_entities.get(&key) else {
+            panic!("no crafter");
+        };
+        assert!(!c.disabled[3], "the click enabled the slot");
+        assert!(
+            game.world.modified.contains(&(0, 0)),
+            "the toggled slot left the chunk unmarked"
+        );
+    }
     #[test]
     fn hoppers_fill_the_smaller_stacks_first() {
         let mut c = Crafter::default();

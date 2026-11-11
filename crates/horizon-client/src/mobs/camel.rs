@@ -68,7 +68,13 @@ fn client_pose(m: &Mob, game_time: i64) -> (i64, bool) {
 /// The camel's `LAST_POSE_CHANGE_TICK` as the server sends it: in game time
 /// (a mob counts its own age), negative while sitting.
 pub fn synced_pose_tick(m: &Mob, game_time: i64) -> i64 {
-    let tick = (game_time - pose_time(m)).max(0);
+    // `egg_time` is a mob age: the game time of the last tick tells which
+    // game time that age was, however long the mob has not ticked since.
+    let now = m
+        .extra
+        .pose_epoch
+        .map_or(game_time, |epoch| epoch + i64::from(m.age));
+    let tick = (now - pose_time(m)).max(0);
     if sitting(m) { -tick.max(1) } else { tick }
 }
 /// `Entity.onSyncedDataUpdated` for the pose tick of a client mob: its sign
@@ -78,6 +84,17 @@ pub fn set_synced_pose_tick(m: &mut Mob, tick: i64) {
     m.extra.pose_change_tick = tick;
     m.extra.camel_sitting = tick < 0;
 }
+/// A mob's age counts up by one in its tick; a camel also notes the game time
+/// that age matches.
+pub fn tick_age(m: &mut Mob, game_time: i64) {
+    m.age += 1;
+    if is_camel(m.species()) {
+        note_tick(m, game_time);
+    }
+}
+fn note_tick(m: &mut Mob, game_time: i64) {
+    m.extra.pose_epoch = Some(game_time - i64::from(m.age));
+}
 /// `Camel.getPoseTime`: put the loaded `LastPoseTick` on the mob's own
 /// clock. Zero is game-time zero, and a future tick has negative elapsed
 /// time; neither is an instruction to start a new standing transition.
@@ -85,6 +102,7 @@ pub fn finish_load(m: &mut Mob, game_time: i64) {
     let tick = m.extra.pose_change_tick;
     let since = (game_time - tick.abs()).min(i64::from(i32::MAX / 2));
     m.extra.egg_time = (i64::from(m.age) - since) as i32;
+    note_tick(m, game_time);
 }
 /// `Camel.getDefaultDimensions`: the standing box, the type's or a baby's
 /// `BABY_STANDING_DIMENSIONS` (width and height).
@@ -679,6 +697,30 @@ mod tests {
         let mut m = crate::entity_nbt::mob_from_nbt(&tag, &types, 2, None).unwrap();
         finish_load(&mut m, 5000);
         assert!(!refuse_to_move(&m));
+    }
+
+    /// A loaded camel that has not ticked yet saves the game time it was
+    /// loaded with, however much game time passes (`Camel.addAdditionalSaveData`
+    /// writes the synced value unchanged).
+    #[test]
+    fn a_camel_that_does_not_tick_saves_its_loaded_pose_tick() {
+        let mut m = camel();
+        register(&mut m);
+        let types = types(&m);
+        for tick in [200, -200, 0] {
+            let (tag, _) = horizon_world::nbt::parse_snbt(&format!(
+                "{{id:\"minecraft:camel\",Pos:[0.0d,0.0d,0.0d],LastPoseTick:{tick}L}}"
+            ))
+            .unwrap();
+            let mut m = crate::entity_nbt::mob_from_nbt(&tag, &types, 2, None).unwrap();
+            finish_load(&mut m, 5000);
+            for now in [5000, 5007, 6000] {
+                assert_eq!(synced_pose_tick(&m, now), tick, "{tick} at {now}");
+            }
+            // Ticking keeps it: age and game time advance together.
+            tick_age(&mut m, 5001);
+            assert_eq!(synced_pose_tick(&m, 5001), tick);
+        }
     }
 
     /// `Camel.canMate`: both sides answer `AbstractHorse.canParent` — not a
