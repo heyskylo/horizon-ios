@@ -50,8 +50,9 @@ impl Damage {
     }
     pub fn from_nbt(tag: &Tag, anvil: bool) -> Self {
         Self {
-            hurt_entities: number(tag.get("HurtEntities")).map_or(anvil, |v| v != 0),
-            cancel_drop: number(tag.get("CancelDrop")).is_some_and(|v| v != 0),
+            // getBooleanOr: a number is true when its byte value is not 0.
+            hurt_entities: crate::entity_nbt::flag_or(tag, "HurtEntities", anvil),
+            cancel_drop: crate::entity_nbt::flag(tag, "CancelDrop"),
             per_distance: float(tag.get("FallHurtAmount")).unwrap_or(0.0) as f32,
             max: number(tag.get("FallHurtMax")).unwrap_or(40) as i32,
         }
@@ -150,10 +151,41 @@ pub fn apply_effects_from_blocks(
     velocity: &mut Vec3,
     fall_distance: &mut f64,
     surfaces: &mut Vec<BlockPos>,
+    block: impl FnMut(BlockPos) -> Inside,
+) -> Option<Vec3> {
+    let effects = Effects {
+        bounds,
+        from,
+        to,
+        original,
+    };
+    apply_effects_from_blocks_of(effects, velocity, fall_distance, surfaces, block)
+}
+/// A move [`apply_effects_from_blocks_of`] reads the blocks of: an entity of
+/// `bounds` (its box at a position) from `from` to `to`, `original` as there.
+pub struct Effects<B> {
+    pub bounds: B,
+    pub from: Vec3,
+    pub to: Vec3,
+    pub original: Option<Vec3>,
+}
+/// [`apply_effects_from_blocks`] for an entity of any size.
+pub fn apply_effects_from_blocks_of(
+    move_: Effects<impl Fn(Vec3) -> Aabb + Copy>,
+    velocity: &mut Vec3,
+    fall_distance: &mut f64,
+    surfaces: &mut Vec<BlockPos>,
     mut block: impl FnMut(BlockPos) -> Inside,
 ) -> Option<Vec3> {
+    let Effects {
+        bounds,
+        from,
+        to,
+        original,
+    } = move_;
     let mut stuck = None;
     inside_blocks(
+        bounds,
         from,
         to,
         original,
@@ -203,6 +235,7 @@ pub fn apply_effects_from_blocks(
 /// block's `getEntityInsideCollisionShape`; only a block it was inside is not
 /// visited again.
 fn inside_blocks(
+    bounds: impl Fn(Vec3) -> Aabb,
     from: Vec3,
     to: Vec3,
     original: Option<Vec3>,
@@ -284,6 +317,27 @@ pub fn hurt_mobs_with_kind(mobs: &mut [Mob], position: Vec3, amount: f32, kind: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `FallingBlockEntity.readAdditionalSaveData` reads `HurtEntities` and
+    /// `CancelDrop` with `getBooleanOr`: an int 256 has byte value 0 and is
+    /// false, 257 is true.
+    #[test]
+    fn saved_flags_are_read_as_bytes() {
+        let load = |hurt: i32, cancel: i32| {
+            let tag = Tag::compound([
+                ("HurtEntities", Tag::Int(hurt)),
+                ("CancelDrop", Tag::Int(cancel)),
+            ]);
+            let d = Damage::from_nbt(&tag, true);
+            (d.hurt_entities, d.cancel_drop)
+        };
+        assert_eq!(load(1, 1), (true, true));
+        assert_eq!(load(256, 256), (false, false));
+        assert_eq!(load(257, 257), (true, true));
+        // Absent: an anvil hurts, nothing cancels its drop.
+        let absent = Damage::from_nbt(&Tag::compound([("Time", Tag::Int(1))]), true);
+        assert_eq!((absent.hurt_entities, absent.cancel_drop), (true, false));
+    }
+
     #[test]
     fn only_brushable_blocks_break_where_they_land() {
         assert!(Damage::falling("minecraft:suspicious_gravel").cancel_drop);

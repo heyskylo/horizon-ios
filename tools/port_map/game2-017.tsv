@@ -36,6 +36,7 @@ ChiseledBookShelfBlockEntity.canTakeItem	port	crates/horizon-client/src/game/mac
 ChiseledBookShelfBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::place	Items as container component
 ChiseledBookShelfBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::collect	Items as container component
 CommandBlockEntity.onModeSwitch	port	crates/horizon-client/src/game/command_blocks.rs::Game::apply_command_block	mode switch; the AUTO schedule follows the setAutomatic step
+CommandBlockEntity.onUpdated	port	crates/horizon-client/src/game/command_blocks.rs::Game::apply_command_block	sends the edited block entity to clients and marks the chunk dirty
 CommandBlockEntity.isConditional	port	crates/horizon-client/src/game/command_blocks.rs::conditional	
 CommandBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::place	custom name component
 CommandBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::collect	custom name component
@@ -47,6 +48,7 @@ ContainerOpenersCounter.incrementOpeners	port	crates/horizon-client/src/game/blo
 ContainerOpenersCounter.recheckOpeners	port	crates/horizon-client/src/game.rs::GameLevel::recheck_container_openers	the level asks, from ChestBlock.tick, EnderChestBlock.tick and BarrelBlock.tick
 CrafterBlockEntity.isSlotDisabled	port	crates/horizon-client-render/src/containers.rs::Crafter::can_place	disabled check (disabled[slot]) inside can_place
 CrafterBlockEntity.canPlaceItem	port	crates/horizon-client/src/game/machines.rs::Containers::can_place	calls Crafter::can_place
+CrafterBlockEntity.setSlotState	port	crates/horizon-client/src/game/menu_clicks.rs::Game::menu_click	only an empty slot toggles; the menu's write-back (`apply_crafter_slot_states`) lands on the block entity and marks the chunk (`setChanged`)
 CrafterBlockEntity.smallerStackExist	port	crates/horizon-client-render/src/containers.rs::Crafter::can_place	the smaller-stack check later in the slots
 CrafterBlockEntity.saveAdditional	port	crates/horizon-client/src/save.rs::encode_block_entity	crafter arm: items, disabled slots, triggered, ticks
 CrafterBlockEntity.isEmpty	port	crates/horizon-client/src/game/machines.rs::Containers::is_empty	

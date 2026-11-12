@@ -6,7 +6,7 @@ Dev tool, standard library only. Two commands, run against a Velocity in offline
 
     velocity_forwarding_probe.py backend --listen 25642 --data 01 [--out capture.json]
         a stand-in backend: asks the proxy for forwarding with DATA (hex), records the answer, then kicks;
-    velocity_forwarding_probe.py join --proxy 25641 [--name Tester] [--protocol 777]
+    velocity_forwarding_probe.py join --proxy 25641 [--name Tester] [--protocol N]
         a minimal offline client that logs in through the proxy so that it connects to the backend. Pointed
         at a Horizon server directly it answers the forwarding request as a client does ("not understood"),
         or with --forge-secret FILE as a stand-in proxy that signs --forge-name/-uuid/-address.
@@ -18,10 +18,28 @@ import argparse
 import hashlib
 import hmac
 import json
+from pathlib import Path
+import re
 import socket
 import struct
 import uuid
 import zlib
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def parse_protocol(source):
+    """The protocol version in a `version.rs` source: the one place it is written down."""
+    match = re.search(r"pub const PROTOCOL_VERSION: i32 = (\d+);", source)
+    if not match:
+        raise SystemExit("crates/horizon-core/src/version.rs states no PROTOCOL_VERSION")
+    return int(match.group(1))
+
+
+def protocol_version():
+    """The protocol the game speaks, read from the one place it is written down
+    (crates/horizon-core/src/version.rs), so a version bump reaches this probe too."""
+    return parse_protocol((ROOT / "crates/horizon-core/src/version.rs").read_text())
 
 
 def varint(n):
@@ -162,7 +180,8 @@ def main():
     j = sub.add_parser("join")
     j.add_argument("--proxy", type=int, default=25641)
     j.add_argument("--name", default="Tester")
-    j.add_argument("--protocol", type=int, default=777)
+    j.add_argument("--protocol", type=int, default=protocol_version(),
+                   help="the protocol version to announce (default: %(default)s, the game's)")
     j.add_argument("--forge-secret", help="answer the forwarding request as a proxy with this secret file would")
     j.add_argument("--forge-name", default="Forged")
     j.add_argument("--forge-uuid", default="11111111-2222-3333-4444-555555555555")

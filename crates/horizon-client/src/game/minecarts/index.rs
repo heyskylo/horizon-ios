@@ -97,7 +97,7 @@ impl CartIndex {
 /// the usual case while carts tick in order) or found by a scan. A world
 /// with hundreds of mineshaft chest carts asked this of every cart several
 /// times a tick.
-pub(super) fn cart_at(carts: &[Minecart], id: u32, hint: usize) -> Option<usize> {
+pub(in crate::game) fn cart_at(carts: &[Minecart], id: u32, hint: usize) -> Option<usize> {
     if carts.get(hint).is_some_and(|c| c.id == id) {
         return Some(hint);
     }
