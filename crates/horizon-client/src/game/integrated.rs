@@ -484,7 +484,7 @@ impl Game<'_> {
             .store(settings.entity_distance.to_bits(), Ordering::Relaxed);
         flags
             .legacy_rules
-            .store(settings.extras.pvp.combat.rules, Ordering::Relaxed);
+            .store(self.pvp_legacy_rules(), Ordering::Relaxed);
         let (ready_tx, ready) = channel();
         let (tasks, server_tasks) = channel();
         let server_flags = flags.clone();
@@ -1148,7 +1148,7 @@ impl Game<'_> {
         // IntegratedServer.getScaledTrackingDistance reads the option each time.
         self.settings.entity_distance =
             f32::from_bits(flags.entity_distance.load(Ordering::Relaxed));
-        self.settings.extras.pvp.combat.rules = flags.legacy_rules.load(Ordering::Relaxed);
+        self.set_pvp_legacy_rules(flags.legacy_rules.load(Ordering::Relaxed));
         let Some(host) = self.lan.as_mut() else {
             return;
         };

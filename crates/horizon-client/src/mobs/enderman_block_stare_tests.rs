@@ -4,7 +4,7 @@
 //! `onSyncedDataUpdated`) and `targetChangeTime` (`setTarget`).
 use super::*;
 use crate::mobs::world::{with_built_test_world, with_test_world};
-use horizon_core::random::LegacyRandom;
+use horizon_core::random::{EntityRandom, LegacyRandom};
 use std::sync::Arc;
 
 /// The vanilla enderman type, from the extracted data.
@@ -31,7 +31,7 @@ fn tick_at(
             pick(m, [r.next_double(), r.next_double(), r.next_double()]) == cube
         })
         .expect("a seed picks the cube");
-    m.random = LegacyRandom::new(seed);
+    m.random = EntityRandom::own(LegacyRandom::new(seed));
     let mut events = Vec::new();
     let mut lr = LegacyRandom::new(0);
     goal.tick(

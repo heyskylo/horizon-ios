@@ -113,7 +113,7 @@ fn summoned_drowned_hold_shells_as_guaranteed_drops() {
 #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
 fn only_an_empty_offhand_drowned_draws_for_the_shell() {
     use horizon_client::mobs::drops::{DEFAULT_DROP_CHANCE, SLOTS, drop_chance};
-    use horizon_core::random::{LegacyRandom, RandomSource};
+    use horizon_core::random::RandomSource;
     let mut game = game();
     for command in [
         "summon drowned 0.5 100 0.5 {NoAI:1b}",
@@ -133,7 +133,7 @@ fn only_an_empty_offhand_drowned_draws_for_the_shell() {
         m.clone()
     };
     let finalize = |mut m: horizon_client::mobs::Mob, seed: i64| {
-        m.random = LegacyRandom::new(seed);
+        m.random.set_seed(seed);
         horizon_client::mobs::spawning::finalize(&mut m, &facts, &difficulty);
         m
     };

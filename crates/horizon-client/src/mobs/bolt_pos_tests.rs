@@ -5,7 +5,7 @@
 //! or over a pond instead.
 use super::*;
 use horizon_core::geometry::Vec3;
-use horizon_core::random::LegacyRandom;
+use horizon_core::random::{EntityRandom, LegacyRandom};
 use std::sync::Arc;
 
 const SEEDS: i64 = 200;
@@ -49,7 +49,7 @@ fn horse(seed: i64, types: &crate::mobs::MobTypes) -> Mob {
         kind,
         Vec3::new(0.5, 64.0, 0.5),
         0.0,
-        LegacyRandom::new(seed),
+        EntityRandom::own(LegacyRandom::new(seed)),
     );
     m.on_ground = true;
     // `isVehicle`: a mob's back is enough to bolt.
