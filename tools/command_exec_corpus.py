@@ -521,6 +521,16 @@ def player_state():
         cmd('/attribute @s minecraft:max_health base reset'),
         cmd('/spawnpoint @s 8 230 8'),
         cmd('/setworldspawn 8 230 8'),
+        # Vanilla only checks the spawnable bounds, not a loaded chunk.
+        cmd('/setworldspawn 29999999 64 -30000000'),
+        cmd('/setworldspawn 30000000 64 0'),
+        cmd('/setworldspawn 0 64 -30000001'),
+        cmd('/setworldspawn 0 -20000000 0'),
+        cmd('/setworldspawn 0 20000000 0'),
+        cmd('/spawnpoint @s 30000000 64 0'),
+        cmd('/spawnpoint @s 29999999 64 29999999'),
+        cmd('/setworldspawn 8 230 8'),
+        cmd('/spawnpoint @s 8 230 8'),
         cmd('/tp @s 8.5 230 8.5'),
         cmd('/tp @s ~1 ~ ~'),
         cmd('/teleport @s 8.5 230 8.5 90 0'),
@@ -1115,6 +1125,36 @@ def minecart_numeric_fields():
         ops += [cmd(f'/data get entity @e[tag={tag},limit=1] {path}')]
     return ops + setup(*[f'/kill @e[tag=cart_num_{i}]' for i in range(len(cases))],
                        '/tick unfreeze', '/forceload remove 0 0 15 15')
+
+
+def tnt_minecart_explosion_power():
+    """MinecartTNT reads explosion_power / explosion_speed_factor with getFloatOr (4 and 1), clamped
+    to 0..128, and writes each only when it is not the default. explode() blows with
+    explosionPowerBase + explosionSpeedFactor * nextDouble() * 1.5 * min(speed, 5): a cart standing
+    still blows with its base power exactly."""
+    ops = setup('/forceload add 0 0 31 31', '/tick freeze')
+    ops += [{'op': 'settle'}]
+    cases = ('{explosion_power:2.5f}', '{explosion_power:500f}', '{explosion_power:-1f}',
+             '{explosion_power:7}', '{explosion_speed_factor:3.5f}', '{explosion_power:4f}', '{}')
+    for i, nbt in enumerate(cases):
+        tag = f'cart_pow_{i}'
+        extra = ',' + nbt[1:-1] if nbt != '{}' else ''
+        ops += setup(f'/summon tnt_minecart {2 + i * 2}.5 200 2.5 {{Tags:["{tag}"],NoGravity:1b{extra}}}')
+        for field in ('explosion_power', 'explosion_speed_factor'):
+            ops += [cmd(f'/data get entity @e[tag={tag},limit=1] {field} 100')]
+    ops += setup(*[f'/kill @e[tag=cart_pow_{i}]' for i in range(len(cases))], '/tick unfreeze')
+    # The blast itself: a NoAI husk (no sunburn) two blocks from a cart that blows at its base power.
+    for i, power in enumerate(('0f', '1.5f')):
+        x = 8 + i * 12
+        ops += setup(f'/summon husk {x + 2}.5 200 16.5 {{Tags:["pow_target"],NoAI:1b,NoGravity:1b,'
+                     'PersistenceRequired:1b}',
+                     f'/summon tnt_minecart {x}.5 200 16.5 {{Tags:["pow_blast"],NoGravity:1b,fuse:1,'
+                     f'explosion_power:{power}}}')
+        ops += [{'op': 'tick', 'n': 5}]
+        ops += [cmd('/execute if entity @e[tag=pow_blast]'),
+                cmd('/data get entity @e[tag=pow_target,limit=1] Health 100')]
+        ops += setup('/kill @e[tag=pow_target]', '/kill @e[tag=pow_blast]')
+    return ops + setup('/forceload remove 0 0 31 31')
 
 
 def rocket_data_merge():
@@ -7874,6 +7914,75 @@ def comparator_setblock_output():
     return ops + setup('/tick unfreeze', f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0} {z0 + 15} air',
                        f'/forceload remove {x0} {z0}')
 
+def explosion_player_experience():
+    """#11330: `Block.onExplosionHit` passes `dropExperience` = the blast's indirect source is a player (a primed
+    TNT's `owner`) to `spawnAfterBreak`, so blasted sculk pops its constant experience (catalyst 5, sculk 1) only
+    for a player's TNT, not for one whose `owner` is a zombie's UUID. Orbs may merge, so only whether any came
+    out is compared."""
+    # Entities tick once the forced chunk's 2-column neighbourhood is loaded (ChunkMap.prepareEntityTickingChunk).
+    x0, y0, z0 = 4096 - 384, 260, 3584
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks',
+            'chunks': [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]},
+           cmd('/tick freeze', False)]
+    near = f'x={x0},y={y0 - 4},z={z0},dx=16,dy=16,dz=16'
+    for owner in (None, '@p', 'zombie'):
+        ops += [cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 6} {z0 + 15} air', False),
+                cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} bedrock', False),
+                cmd(f'/setblock {x0 + 8} {y0} {z0 + 8} sculk_catalyst', expect_result=1),
+                cmd(f'/setblock {x0 + 7} {y0} {z0 + 8} sculk', expect_result=1),
+                cmd(f'/summon tnt {x0 + 8}.5 {y0 + 1} {z0 + 8}.5 {{fuse:1,Tags:["xp_tnt"]}}', expect_result=1)]
+        if owner == 'zombie':
+            ops.append(cmd(f'/summon zombie {x0 + 1}.5 {y0} {z0 + 1}.5 '
+                           f'{{NoAI:1b,Silent:1b,PersistenceRequired:1b,Tags:["xp_owner"]}}',
+                           expect_result=1))
+            owner = f'@e[type=zombie,tag=xp_owner,{near},limit=1]'
+        if owner:
+            ops.append(cmd(f'/data modify entity @e[type=tnt,tag=xp_tnt,limit=1] owner set from entity {owner} UUID'))
+        ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 2}, cmd('/tick freeze', False),
+                cmd(f'/execute if block {x0 + 8} {y0} {z0 + 8} air', expect_result=1),
+                cmd(f'/execute if entity @e[type=experience_orb,{near}]', comparison='positive_result'),
+                cmd(f'/kill @e[type=!player,{near}]', False), cmd(f'/kill @e[type=item,{near}]', False)]
+    return ops + setup('/tick unfreeze', f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 6} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
+def explosion_creaking_heart_experience():
+    """#11330: `CreakingHeartBlock.onExplosionHit` awards a natural heart's experience (`tryAwardExperience`)
+    when the blast's indirect source is a player (a primed TNT's `owner`); an ownerless blast awards none. The
+    amount is random (20 to 24), so only whether orbs came out is compared. A creative owner gets none
+    (`preventsBlockDrops`), so the player is in survival for the owned blasts, then back in creative. A TNT
+    whose `owner` is a zombie's UUID is no player's (none), and with `block_drops` off `popExperience` drops
+    nothing."""
+    # Entities tick once the forced chunk's 2-column neighbourhood is loaded (ChunkMap.prepareEntityTickingChunk).
+    x0, y0, z0 = 4096 - 416, 260, 3584
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks',
+            'chunks': [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]},
+           cmd('/tick freeze', False)]
+    near = f'x={x0},y={y0 - 4},z={z0},dx=16,dy=16,dz=16'
+    for owner, mode, drops in ((None, 'survival', True), ('@p', 'creative', True), ('@p', 'survival', True),
+                               ('zombie', 'survival', True), ('@p', 'survival', False)):
+        ops += [cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 6} {z0 + 15} air', False),
+                cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} bedrock', False),
+                cmd(f'/setblock {x0 + 8} {y0} {z0 + 8} creaking_heart[natural=true]', expect_result=1),
+                cmd(f'/summon tnt {x0 + 8}.5 {y0 + 1} {z0 + 8}.5 {{fuse:1,Tags:["heart_tnt"]}}', expect_result=1)]
+        if owner == 'zombie':
+            ops.append(cmd(f'/summon zombie {x0 + 1}.5 {y0} {z0 + 1}.5 '
+                           f'{{NoAI:1b,Silent:1b,PersistenceRequired:1b,Tags:["heart_owner"]}}',
+                           expect_result=1))
+            owner = f'@e[type=zombie,tag=heart_owner,{near},limit=1]'
+        if owner:
+            ops.append(cmd(f'/data modify entity @e[type=tnt,tag=heart_tnt,limit=1] owner set from entity {owner} UUID'))
+        ops.append(cmd(f'/gamemode {mode} @p', False))
+        ops.append(cmd(f'/gamerule block_drops {str(drops).lower()}', False))
+        ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 2}, cmd('/tick freeze', False),
+                cmd(f'/execute if block {x0 + 8} {y0} {z0 + 8} air', expect_result=1),
+                cmd(f'/execute if entity @e[type=experience_orb,{near}]', comparison='positive_result'),
+                cmd(f'/kill @e[type=!player,{near}]', False), cmd(f'/kill @e[type=item,{near}]', False)]
+    return ops + setup('/gamemode creative @p', '/gamerule block_drops true', '/tick unfreeze',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 6} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
 def groups():
     try:
         from .spectral_duration_corpus import cases as spectral_saved_duration
@@ -8071,6 +8180,8 @@ def groups():
         ('primed tnt fall', primed_tnt_fall()),
         ('dispensed item escape', dispensed_item_escape()),
         ('command block last output', command_block_last_output()),
+        ('explosion player experience', explosion_player_experience()),
+        ('explosion creaking heart experience', explosion_creaking_heart_experience()),
         ('comparator setblock output', comparator_setblock_output()),
         ('glide fall accumulation', glide_fall_accumulation()),
         ('living short timers', living_short_timers()),
@@ -8107,6 +8218,7 @@ def groups():
         ('dragon command damage', dragon_command_damage()),
         ('vehicle item stack config', vehicle_item_stack_config()),
         ('minecart numeric fields', minecart_numeric_fields()),
+        ('tnt minecart explosion power', tnt_minecart_explosion_power()),
         ('enderman command damage', enderman_command_damage()),
         ('shulker command damage', shulker_command_damage()),
         ('SNBT trailing commas', snbt_trailing_commas()),

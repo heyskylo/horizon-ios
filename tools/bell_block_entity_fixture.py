@@ -2,6 +2,7 @@ import json,sys,hashlib
 from pathlib import Path
 sys.path.insert(0,str(Path.cwd()/'tools'))
 import test_command_exec_parity as driver
+import harness_args
 def program():
  ops=[]
  def c(cmd,label,result=None,admission=True,trace=False):
@@ -29,10 +30,11 @@ def program():
  c('/execute store result score end h174 run time query gametime','clock-end',trace=True);c('/scoreboard players operation end h174 -= start h174','clock-delta-operation',0);c('/scoreboard players get end h174','clock-delta',0)
  return ops
 if __name__=='__main__':
+ build=harness_args.require_work_dir().resolve()
  reference=None
  if '--reference' in sys.argv:
   i=sys.argv.index('--reference');reference=Path(sys.argv[i+1]).read_bytes();del sys.argv[i:i+2]
- build=Path(sys.argv[sys.argv.index('--work-dir')+1]).resolve();assert not build.exists();build.mkdir(parents=True);ops=program();rows=[o for o in ops if o['op']=='cmd' and o.get('record',True)]
+ assert not build.exists();build.mkdir(parents=True);ops=program();rows=[o for o in ops if o['op']=='cmd' and o.get('record',True)]
  (build/'declaration.json').write_text(json.dumps({'sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'records':len(rows),'labels':[o['label'] for o in rows],'scope':'direct floor bell identity and coordinates only; chest/nonBE/repeatedreads/zero clocks; raw full compounds diagnostic; no generated/runtime/tick closure'},indent=2)+'\n')
  driver.corpus_module.groups=lambda:[('Bell block entity command identity',ops)];sys.argv.append('--allow-gaps');driver.main();fresh=(build/'vanilla.jsonl').read_bytes()
  if reference is not None:assert fresh==reference,'reference changed'

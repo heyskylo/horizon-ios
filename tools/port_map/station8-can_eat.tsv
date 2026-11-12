@@ -1,0 +1,1 @@
+FoodProperties.canAlwaysEat	port	crates/horizon-client/src/item_sync.rs::can_always_eat	can_always_eat from the stack's food component
