@@ -44,6 +44,10 @@ impl Game<'_> {
                     .iter()
                     .position(|e| wants(self, e) && reach.intersects(e.bounds()));
                 if let Some(j) = taken {
+                    let before = self.dropped[j].clone();
+                    // `Panda.pickUpItem`'s `onItemPickup` comes first: the
+                    // advancement of whoever threw it.
+                    self.mob_item_pickup_trigger(i, &before);
                     let e = self.remove_dropped(j);
                     self.add_pickup(Taken::Item(Box::new(e.clone())), Collector::Mob(id));
                     panda::hold(&mut self.mobs[i], &e.stack.item, e.stack.count, true);
@@ -185,5 +189,100 @@ impl Game<'_> {
         for (at, velocity) in sneezes {
             self.particles.add(&options, at, velocity);
         }
+    }
+}
+
+#[cfg(test)]
+mod pickup_tests {
+    use super::*;
+    use crate::game::native_machines::tests::server_game;
+    use horizon_client::advancements as adv;
+    use horizon_client::motion::PlayerMotion;
+    use horizon_world::lazy_json::LazyJson;
+
+    const ADV: &str = "horizon:test/panda_pickup";
+    const TRIGGER: &str = "minecraft:thrown_item_picked_up_by_entity";
+    const THROWER: [i32; 4] = [413, 0, 0, 1];
+
+    /// An advancement on the pickup trigger, as a data pack would add one: no
+    /// vanilla advancement tests it, so the tree needs one of its own.
+    fn install_pickup_advancement(game: &mut Game<'_>) {
+        let mut tree = std::sync::Arc::new(adv::Tree::default());
+        let one = std::sync::Arc::get_mut(&mut tree).unwrap();
+        one.list.push(adv::Advancement {
+            id: ADV.into(),
+            parent: None,
+            display: None,
+            criteria: vec![adv::Criterion {
+                name: "pickup".into(),
+                trigger: TRIGGER.into(),
+                conditions: LazyJson::new(&serde_json::json!({})),
+            }],
+            requirements: vec![vec!["pickup".into()]],
+            rewards: Default::default(),
+        });
+        one.by_id.insert(ADV.into(), 0);
+        one.by_trigger.insert(TRIGGER.into(), vec![(0, 0)]);
+        game.adv.tree = tree;
+    }
+
+    /// `Panda.pickUpItem` calls `onItemPickup`, which fires
+    /// `CriteriaTriggers.THROWN_ITEM_PICKED_UP_BY_ENTITY` for whoever threw the
+    /// bamboo, as the fox's pickup does (`LivingEntity.onItemPickup`).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_panda_that_takes_a_thrown_item_credits_the_thrower() {
+        let mut game = server_game();
+        game.options.dedicated = None;
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(4.5, 100.0, 4.5)).unwrap());
+        game.level.player_uuid = Some(THROWER);
+        game.level.health = 20.0;
+        game.creative = false;
+        // A world of its own under the temporary folder, never the cwd.
+        game.world_root =
+            std::env::temp_dir().join(format!("horizon-panda-pickup-world-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&game.world_root);
+        game.build_registries();
+        game.set_allow_commands(true);
+        install_pickup_advancement(&mut game);
+        // `DistanceManager` keeps a chunk entity-ticking only while its whole
+        // 5x5 neighbourhood is resident.
+        for cx in -2..=2 {
+            for cz in -2..=2 {
+                game.world.chunks.insert(
+                    (cx, cz),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(cx, cz)),
+                );
+            }
+        }
+        for command in [
+            "forceload add 0 0",
+            "tick freeze",
+            "fill 0 99 0 15 99 15 stone",
+            "summon minecraft:panda 4.5 100 6.5 {UUID:[I;9,9,9,9],PersistenceRequired:1b,CanPickUpLoot:1b}",
+            "summon minecraft:item 4.5 100 6.5 {Item:{id:\"minecraft:bamboo\",count:1},Thrower:[I;413,0,0,1],PickupDelay:0s}",
+        ] {
+            assert!(game.run_command(command), "{command}");
+        }
+        let id = game.mob_by_uuid([9, 9, 9, 9]).unwrap();
+        let holding = |g: &Game<'_>| {
+            g.mobs
+                .iter()
+                .any(|m| m.id == id && m.extra.main_hand.is_some())
+        };
+        for _ in 0..20 {
+            if holding(&game) {
+                break;
+            }
+            assert!(game.run_command("tick step 1"));
+            game.tick_server(false).unwrap();
+        }
+        assert!(holding(&game), "the panda took the bamboo");
+        assert!(
+            game.adv.progress.has(ADV, "pickup"),
+            "the thrower's advancement: {:?}",
+            game.adv.progress.criteria
+        );
+        let _ = std::fs::remove_dir_all(&game.world_root);
     }
 }
