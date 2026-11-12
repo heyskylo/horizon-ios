@@ -1410,7 +1410,7 @@ impl Game<'_> {
                 return false;
             }
             if deflect_stop {
-                return t.age < 1200 && t.position.y > -128.0;
+                return t.age < 1200 && t.position.y >= self.world.below_world_y();
             }
             t.position = next;
             let bounds = Aabb::new(
@@ -1418,7 +1418,7 @@ impl Game<'_> {
                 next.add_vector(Vec3::new(0.125, 0.25, 0.125)),
             );
             self.entity_powder_snow_particles(t.previous, next, bounds, t.velocity, false);
-            t.age < 1200 && t.position.y > -128.0
+            t.age < 1200 && t.position.y >= self.world.below_world_y()
         });
         self.potions.thrown = thrown;
         for id in deflected {
