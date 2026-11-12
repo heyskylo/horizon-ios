@@ -2473,3 +2473,46 @@ fn joining_a_service_id_tells_mojangs_session_server() {
     );
     assert!(refused.unwrap_err().contains("Sign in again"));
 }
+
+/// A launch loads the accounts, asks the services for a while, then saves: a sign-in or sign-out
+/// made meanwhile stays, and only the names and skins it renewed are written.
+#[test]
+fn a_launch_saving_late_keeps_sign_ins_and_outs_made_meanwhile() {
+    let store = MemoryStore::default();
+    let dir = std::env::temp_dir().join(format!("horizon-launcher-late-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let file = dir.join("accounts.json");
+    let other = |uuid: &str, name: &str| Account {
+        uuid: uuid.into(),
+        name: name.into(),
+        skin: None,
+        cape: None,
+    };
+    let mut before = signed_in(&store, &secrets("mc-token", true));
+    before.accounts.push(other("gone", "Leaving"));
+    before.save_to(&file).unwrap();
+    // The launch's copy, with Notch's new skin.
+    let mut renewed = Accounts::load_from(&file);
+    renewed.accounts[0].skin = Some(("https://textures.example/notch".into(), "classic".into()));
+    // Meanwhile: one account signs out, another signs in.
+    let mut now = Accounts::load_from(&file);
+    now.accounts.retain(|a| a.uuid != "gone");
+    now.accounts.push(other("new", "Arriving"));
+    now.save_to(&file).unwrap();
+    renewed.save_renewed_to(&store, &file).unwrap();
+    let saved = Accounts::load_from(&file);
+    let uuids: Vec<&str> = saved.accounts.iter().map(|a| a.uuid.as_str()).collect();
+    assert_eq!(uuids, [UUID, "new"]);
+    assert!(
+        saved.find(UUID).unwrap().skin.is_some(),
+        "the renewed skin is kept"
+    );
+    assert_eq!(saved.selected.as_deref(), Some(UUID));
+    // Written whole through a new file: nothing else is left beside it.
+    let names: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names, [std::ffi::OsString::from("accounts.json")]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

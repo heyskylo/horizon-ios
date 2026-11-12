@@ -90,6 +90,22 @@ pub(super) struct DialogState {
     warning: bool,
 }
 
+impl DialogState {
+    /// `Minecraft.pause` over these screens: `DialogScreen.isPauseScreen` is
+    /// the dialog's own `pause` (`CommonDialogData.pause`, true by default),
+    /// `WaitingForResponseScreen` overrides it false, and the warning above
+    /// the dialog is a `ConfirmScreen`, which inherits `Screen`'s true.
+    pub(super) fn pauses_world(&self) -> bool {
+        if self.warning {
+            return true;
+        }
+        if self.waiting.is_some() {
+            return false;
+        }
+        self.open.as_ref().is_some_and(|open| open.dialog.pause)
+    }
+}
+
 /// `CycleButton.cycleValue`: the next option (`delta` 1) or the one before
 /// it, wrapping.
 fn cycle(open: &mut Open, input: usize, delta: i32) {
@@ -182,7 +198,11 @@ impl Game<'_> {
                     } else {
                         format!("minecraft:{name}")
                     };
-                    let ids = r.registries.dialog_tags.get(&name).into_iter().flatten();
+                    let ids = r
+                        .registries
+                        .tag("minecraft:dialog", &name)
+                        .into_iter()
+                        .flatten();
                     ids.filter_map(|&i| list?.get(usize::try_from(i).ok()?)?.1.clone())
                         .collect()
                 };
@@ -557,17 +577,19 @@ impl Game<'_> {
                     batch.text_styled(atlas, &text, x, y, u32::MAX, true);
                     // AbstractStringWidget: only the styled glyph under the
                     // pointer requests a hand, not the whole message widget.
-                    if (!clipped || in_area(cursor.1))
-                        && let Some(style) = horizon_client::dialog_screen::line_style_at(
+                    let under = |wanted: fn(&horizon_client::text::Style) -> bool| {
+                        horizon_client::dialog_screen::line_style_at(
                             &atlas.font,
                             &text,
                             x,
                             y,
                             cursor,
+                            wanted,
                         )
-                    {
-                        widgets::widget_cursor(style.click.is_some(), true);
-                        if let Some(hover) = style.hover {
+                    };
+                    if !clipped || in_area(cursor.1) {
+                        widgets::widget_cursor(under(|s| s.click.is_some()).is_some(), true);
+                        if let Some(hover) = under(|s| s.hover.is_some()).and_then(|s| s.hover) {
                             tooltip = Some(*hover);
                         }
                     }
@@ -898,6 +920,7 @@ impl Game<'_> {
                         x,
                         y,
                         cursor,
+                        |style| style.click.is_some(),
                     )
                     .and_then(|style| style.click);
                 }
@@ -1257,5 +1280,54 @@ mod background_tests {
             );
             assert!(batch.vertices.iter().all(|v| v.color == u32::MAX));
         }
+    }
+}
+#[cfg(test)]
+mod pause_tests {
+    use super::*;
+
+    fn dialog(pause: bool) -> Dialog {
+        let s = |value: &str| Tag::String(value.into());
+        Dialog::parse(&Tag::compound([
+            ("type", s("notice")),
+            ("title", s("Hi")),
+            ("pause", Tag::Byte(i8::from(pause))),
+        ]))
+        .unwrap()
+    }
+
+    fn state(pause: bool) -> DialogState {
+        DialogState {
+            open: Some(Open {
+                dialog: dialog(pause),
+                values: Vec::new(),
+                fields: Vec::new(),
+                focus: None,
+                scroll: ui::Scroll::default(),
+                dragging: None,
+                selecting: None,
+            }),
+            waiting: None,
+            warning: false,
+        }
+    }
+
+    /// `DialogScreen.isPauseScreen` is `dialog.common().pause()`, true by
+    /// default, so a server's dialog stops a single-player world unless it
+    /// asks otherwise. The waiting screen and the warning override it.
+    #[test]
+    fn a_dialog_pauses_the_world_only_while_its_pause_says_so() {
+        assert!(state(true).pauses_world());
+        assert!(!state(false).pauses_world());
+        // No dialog screen at all.
+        assert!(!DialogState::default().pauses_world());
+        // DialogScreen.WarningScreen extends ConfirmScreen: true.
+        let mut warning = state(false);
+        warning.warning = true;
+        assert!(warning.pauses_world());
+        // WaitingForResponseScreen.isPauseScreen is false.
+        let mut waiting = state(true);
+        waiting.waiting = Some(Instant::now());
+        assert!(!waiting.pauses_world());
     }
 }

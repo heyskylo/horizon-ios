@@ -31,7 +31,7 @@ ClientboundBossEventPacket.createUpdateProgressPacket	inline	crates/horizon-clie
 ClientboundBossEventPacket.createUpdateNamePacket	inline	crates/horizon-client/src/game/bossbars.rs::Game::diff_boss_events	UpdateName when the bar's name differs from what that viewer was sent
 ClientboundBossEventPacket.createUpdateStylePacket	inline	crates/horizon-client/src/game/bossbars.rs::Game::diff_boss_events	UpdateStyle when the colour or the overlay differ
 ClientboundBossEventPacket.createUpdatePropertiesPacket	inline	crates/horizon-client/src/game/bossbars.rs::Game::diff_boss_events	UpdateProperties when darken, boss music or fog differ
-ClientboundBossEventPacket.encodeProperties	port	crates/horizon-protocol/src/packets/play.rs::boss_flags	the three flag bits (darken, music, fog)
+ClientboundBossEventPacket.encodeProperties	port	crates/horizon-protocol/src/packets/play/hud.rs::boss_flags	the three flag bits (darken, music, fog)
 ClientboundBossEventPacket.AddOperation.dispatch	port	crates/horizon-client/src/boss_overlay.rs::BossOverlay::apply	
 ClientboundChunksBiomesPacket.ChunkBiomeData.calculateChunkSize	inline	crates/horizon-protocol/src/packets/play.rs::ChunkBiomeData::from_biomes	the buffer grows as each section's container is written, so no size is computed or prefixed on the wire
 ClientboundChunksBiomesPacket.ChunkBiomeData.extractChunkData	port	crates/horizon-protocol/src/packets/play.rs::ChunkBiomeData::from_biomes	the column's sections' biome containers written one after another into the buffer
@@ -87,7 +87,7 @@ ClientboundSetExperiencePacket.write	port	crates/horizon-protocol/src/buf.rs::wr
 ClientboundSetHealthPacket.write	port	crates/horizon-protocol/src/buf.rs::write	packet! SetHealth {health, food VarInt, saturation}
 ClientboundSetPlayerTeamPacket.createAddOrModifyPacket	port	crates/horizon-client/src/lan/scoreboard.rs::View::changes	the method and parameters of a team the view gained or changed, sent before its players
 ClientboundSetPlayerTeamPacket.createPlayerPacket	inline	crates/horizon-client/src/lan/scoreboard.rs::View::changes	the same builder sends a player's add and remove methods, every leave before any join
-ClientboundSetPlayerTeamPacket.shouldHavePlayerList	port	crates/horizon-protocol/src/packets/play.rs::SetPlayerTeam::read	the player list is read only for methods 0, 3 and 4
+ClientboundSetPlayerTeamPacket.shouldHavePlayerList	port	crates/horizon-protocol/src/packets/play/hud.rs::SetPlayerTeam::read	the player list is read only for methods 0, 3 and 4
 ClientboundSetTitlesAnimationPacket.write	port	crates/horizon-protocol/src/buf.rs::write	packet! TitlesAnimation {fade_in, stay, fade_out Int}
 ClientboundSoundEntityPacket.write	port	crates/horizon-protocol/src/buf.rs::write	packet! SoundEntity with the sound holder
 ClientboundSoundPacket.write	port	crates/horizon-protocol/src/buf.rs::write	packet! Sound with the sound holder and fixed-point position
@@ -100,7 +100,7 @@ ServerboundJigsawGeneratePacket.write	port	crates/horizon-protocol/src/buf.rs::w
 ServerboundMovePlayerPacket.packFlags	inline	crates/horizon-client/src/player_sync.rs::PositionSender::update	on-ground and horizontal-collision bits set when the move is sent
 ServerboundPlayerActionPacket.write	port	crates/horizon-protocol/src/buf.rs::write	packet! PlayerAction {action VarInt, pos, direction UByte, sequence VarInt}
 ServerboundPlayerCommandPacket.write	port	crates/horizon-protocol/src/buf.rs::write	packet! PlayerCommand {id, action, data VarInt}
-ServerboundSeenAdvancementsPacket.write	port	crates/horizon-protocol/src/packets/play.rs::SeenAdvancements::write	the action, then the tab only for OPENED_TAB; the hub keeps and answers it (Hub::process_inbox)
+ServerboundSeenAdvancementsPacket.write	port	crates/horizon-protocol/src/packets/play/advancements.rs::SeenAdvancements::write	the action, then the tab only for OPENED_TAB; the hub keeps and answers it (Hub::process_inbox)
 ServerboundSetCommandMinecartPacket.write	port	crates/horizon-protocol/src/buf.rs::write	packet! SetCommandMinecart {entity VarInt, command Str, track_output Bool}; the cart's edit screen sends it (command_minecarts.rs::Game::set_command_minecart)
 ServerboundSetCommandMinecartPacket.getCommandBlock	inline	crates/horizon-client/src/game/command_minecarts.rs::Game::apply_cart_command	the packet's command and track-output flag go into the cart, with handleSetCommandMinecart's onUpdated and chat note, in one fn
 ServerboundSetJigsawBlockPacket.write	port	crates/horizon-protocol/src/buf.rs::write	packet! SetJigsawBlock {pos Pos, name/target/pool Ident, final_state Str, joint Str, selection and placement priority VarInt}; the jigsaw screen sends it (jigsaw_edit.rs::JigsawEditor::set_packet)

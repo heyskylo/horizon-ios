@@ -206,7 +206,7 @@ impl Game<'_> {
             to_world.transform_vector3(b).normalize(),
         );
         // PvP & HUD's totem animation size (100% is vanilla's), about the item's centre.
-        let size = f32::from(self.settings.extras.pvp.tweaks.totem_size) / 100.0;
+        let size = self.pvp_totem_scale();
         let pose = pose * glam::Mat4::from_scale(glam::Vec3::splat(size));
         self.submit_item_lit(&state, to_world * pose, vertex_light(0xFF), lights, out);
     }

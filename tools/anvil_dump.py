@@ -2,13 +2,18 @@
 """Dump Minecraft NBT files (level.dat, data/*.dat, players/*.dat) and Anvil
 region chunks (region/, entities/, poi/) as readable SNBT-like text.
 
+Usage:
   anvil_dump.py FILE.dat [PATH...]
   anvil_dump.py r.0.0.mca [CX CZ] [PATH...]
 
-PATH selects nested keys (for example `sections 3 block_states`). Long
-arrays are summarised unless --full is given; --typed suffixes numbers
-with their NBT type (b, s, l, f, d; plain ints are TAG_Int). Used to compare Horizon saves
-with worlds written by the vanilla server.
+PATH selects nested keys (for example `sections 3 block_states`).
+
+Options:
+  --full      print long arrays whole instead of summarising them
+  --typed     suffix numbers with their NBT type (b, s, l, f, d; plain ints are TAG_Int)
+  -h, --help  print this help and exit
+
+Used to compare Horizon saves with worlds written by the vanilla server.
 """
 import gzip
 import io
@@ -16,6 +21,8 @@ import json
 import struct
 import sys
 import zlib
+
+USAGE = __doc__
 
 
 def read_tag(f, tag_id):
@@ -119,11 +126,14 @@ def select(v, path):
 
 
 def main(argv):
+    if '--help' in argv or '-h' in argv:
+        print(USAGE)
+        return 0
     full = '--full' in argv
     typed = '--typed' in argv
     argv = [a for a in argv if a not in ('--full', '--typed')]
     if not argv:
-        print(__doc__)
+        print(USAGE)
         return 1
     path = argv[0]
     rest = argv[1:]

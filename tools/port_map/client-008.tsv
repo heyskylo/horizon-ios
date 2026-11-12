@@ -46,7 +46,7 @@ BeaconRenderer.extract	inline	crates/horizon-client/src/game/beacon.rs::Game::be
 BeaconRenderer.renderQuad	port	crates/horizon-client-render/src/block_entity_render.rs::beam	solid beam and glow quads per section
 BeaconRenderer.addVertex	port	crates/horizon-client-render/src/block_entity_render.rs::beam	vertex with colour and full light, emitted by beam's inner emit
 BellRenderer.extractRenderState	inline	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	bell ticks and shake direction read in the bell branch
-BellRenderer.submit	port	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	gap: player: no crack overlay while a bell is broken (render_breaking draws only banners and chests)
+BellRenderer.submit	port	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	the crack overlay on a bell is redrawn by BlockEntityRenderer::render_breaking
 BlockEntityRenderDispatcher.getRenderer	port	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::kind	renderer chosen from the block state
 BlockEntityRenderDispatcher.tryExtractRenderState	port	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render	gap: minor: distance cull only (256 for gateways); no frustum, type-validity or off-screen test here
 BlockEntityRenderDispatcher.submit	port	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	draws each kind; no crash report wrapper
@@ -68,9 +68,9 @@ ConduitRenderer.createEyeLayer	skip:data		model layer; Horizon loads the conduit
 ConduitRenderer.createWindLayer	skip:data		model layer; Horizon loads the conduit parts from exported model data in BlockEntityRenderer::load
 ConduitRenderer.createShellLayer	skip:data		model layer; Horizon loads the conduit parts from exported model data in BlockEntityRenderer::load
 ConduitRenderer.createCageLayer	skip:data		model layer; Horizon loads the conduit parts from exported model data in BlockEntityRenderer::load
-ConduitRenderer.submit	port	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	gap: player: no crack overlay on the conduit (render_breaking draws only banners and chests)
+ConduitRenderer.submit	port	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	the crack overlay on the conduit is redrawn by BlockEntityRenderer::render_breaking
 CopperGolemStatueBlockRenderer.extractRenderState	inline	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	facing, pose and oxidation texture read in the golem branch
-CopperGolemStatueBlockRenderer.submit	port	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	gap: player: no crack overlay on the statue (render_breaking draws only banners and chests)
+CopperGolemStatueBlockRenderer.submit	port	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	the crack overlay on the statue is redrawn by BlockEntityRenderer::render_breaking
 CopperGolemStatueBlockRenderer.createModelTransformation	inline	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	rotation from the opposite facing in the golem branch
 DecoratedPotRenderer.createBaseLayer	skip:data		pot base model; Horizon loads it from exported model data in BlockEntityRenderer::load
 DecoratedPotRenderer.createSidesLayer	skip:data		pot side models; Horizon loads them from exported model data in BlockEntityRenderer::load
@@ -79,20 +79,20 @@ DecoratedPotRenderer.createModelTransformation	inline	crates/horizon-client-rend
 DecoratedPotRenderer.getExtents	port	crates/horizon-client/src/item_render/special.rs::extents	decorated pot part extents for the item model bounds
 HangingSignRenderer.extractRenderState	inline	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	gap: minor: the text filtering option is not read
 LecternRenderer.extractRenderState	inline	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	book drawn only when has_book is set, turned by facing
-LecternRenderer.submit	port	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	gap: player: no crack overlay on the lectern book (render_breaking draws only banners and chests)
+LecternRenderer.submit	port	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	the crack overlay on the lectern book is redrawn by BlockEntityRenderer::render_breaking
 PistonHeadRenderer.submit	port	crates/horizon-client/src/game/moving_pistons.rs::Game::moving_piston_geometry	head and base blocks drawn at their offsets
 PistonHeadRenderer.createMovingBlock	port	crates/horizon-client/src/game/moving_pistons.rs::Game::moving_block_vertices	gap: minor: the tint is the particle sprite colour, not the block's tint sources
 ShelfRenderer.extractRenderState	inline	crates/horizon-client/src/game/shelf.rs::Game::shelf_geometry	the three items, the facing and align-to-bottom are read from the block entity
 ShelfRenderer.submit	port	crates/horizon-client/src/game/shelf.rs::Game::shelf_geometry	three items drawn facing out, 0.3125 apart and 0.25 down
 ShelfRenderer.submitItem	inline	crates/horizon-client/src/game/shelf.rs::Game::shelf_geometry	the slot offset and quarter scale, aligned to the bottom or centred
 ShulkerBoxRenderer.extractRenderState	inline	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	facing, colour texture and lid progress read in the shulker branch
-ShulkerBoxRenderer.submit	port	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	gap: player: no crack overlay on shulker boxes (render_breaking draws only banners and chests)
+ShulkerBoxRenderer.submit	port	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	the crack overlay on shulker boxes is redrawn by BlockEntityRenderer::render_breaking
 ShulkerBoxRenderer.createModelTransform	inline	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	facing transform in the shulker branch
 ShulkerBoxRenderer.getExtents	port	crates/horizon-client/src/item_render/special.rs::extents	shulker lid pose extents for the item model bounds
 SkullBlockRenderer.createModel	skip:data		skull models; Horizon loads them from exported model data in BlockEntityRenderer::load
 SkullBlockRenderer.extractRenderState	inline	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	type, wall facing and turn read from the skull kind; player skin via scene.skull
-SkullBlockRenderer.submit	port	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	gap: player: no crack overlay on skulls and heads (render_breaking draws only banners and chests)
-SkullBlockRenderer.submitSkull	port	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	gap: player: no crack overlay on skulls and heads (render_breaking draws only banners and chests)
+SkullBlockRenderer.submit	port	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	the crack overlay on skulls and heads is redrawn by BlockEntityRenderer::render_breaking
+SkullBlockRenderer.submitSkull	port	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	the crack overlay on skulls and heads is redrawn by BlockEntityRenderer::render_breaking
 SkullBlockRenderer.resolveSkullRenderType	inline	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	player head skin via scene.skull, otherwise the type's texture
 SkullBlockRenderer.createWallTransformation	inline	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	wall skull offset and turn in the skull branch
 SkullBlockRenderer.createGroundTransformation	inline	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	ground skull turn by segment in the skull branch
