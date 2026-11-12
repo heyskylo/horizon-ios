@@ -40,6 +40,11 @@ thread_local! {
     static LEVEL: Cell<Option<&'static str>> = const { Cell::new(None) };
 }
 
+/// The level this thread acts in (`in_level`), for a helper thread to act in it too.
+pub fn current_level() -> Option<&'static str> {
+    LEVEL.get()
+}
+
 /// Scope authority to this thread and restore it even on an error or panic.
 /// Nested guest actions may temporarily enter a different dimension.
 pub fn in_level<R>(dimension: Option<&'static str>, f: impl FnOnce() -> R) -> R {

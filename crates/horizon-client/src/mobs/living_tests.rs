@@ -1179,6 +1179,64 @@ fn a_steered_mount_moves_through_the_air_at_a_tenth_of_its_speed() {
     assert_eq!(m.flying_speed(), 0.3_f32 * 0.1);
 }
 
+/// `Entity.getFluidInteractionBox` with `AbstractBoat.modifyPassengerFluidInteractionBox`:
+/// a drowned sitting in a boat on a lake, its legs below the water's surface,
+/// isn't in the water (so it burns in daylight), while the same drowned
+/// without the boat, in a boat that sank, or with a boat it has since left, is.
+/// A boat reaching above its head keeps all fluids off it.
+#[test]
+fn a_mob_in_a_boat_on_water_is_not_in_the_water() {
+    let build = |world: &mut crate::world::World,
+                 registry: &horizon_world::registry::BlockRegistry| {
+        world.chunks.insert(
+            (0, 0),
+            std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+        );
+        let water = registry.default_state("minecraft:water").unwrap();
+        for x in 0..=4 {
+            for z in 0..=4 {
+                // Sources up to y 3: the surface is at 3 + 8/9.
+                for y in 1..=3 {
+                    world.set(x, y, z, water).unwrap();
+                }
+            }
+        }
+    };
+    let boat = |under_water, max_y| crate::motion::RiddenBoat { under_water, max_y };
+    crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+        let kind = std::sync::Arc::new(types.types["minecraft:drowned"].clone());
+        let wet = |mount: Option<u32>, ridden: Option<crate::motion::RiddenBoat>| {
+            let mut m = Mob::new(1, kind.clone(), Vec3::new(2.5, 3.5, 2.5), 0.0);
+            m.extra.mount = mount;
+            m.fluids.boat = ridden.map(|b| (7, b));
+            m.update_fluids(w, &mut Vec::new());
+            (m.fluids.in_water, m.fluids.water)
+        };
+        assert!(
+            wet(None, None).0,
+            "its legs are in the water without a boat"
+        );
+        assert_eq!(
+            wet(Some(7), Some(boat(false, 3.95))),
+            (false, 0.0),
+            "a boat afloat keeps only what is above its top, clear of the water"
+        );
+        assert_eq!(
+            wet(Some(7), Some(boat(false, 6.0))),
+            (false, 0.0),
+            "a boat reaching above its head keeps all of it out"
+        );
+        assert!(
+            wet(Some(7), Some(boat(true, 3.95))).0,
+            "a boat under water shelters nothing"
+        );
+        assert!(
+            wet(None, Some(boat(false, 3.95))).0,
+            "a boat it no longer rides shelters nothing"
+        );
+    });
+}
+
 /// `Strider.checkFallDamage`: in lava the fall is reset before the base runs, so
 /// a strider that drops into a lava sea lands with no damage and no dust — and
 /// walks out owing nothing — while a pig in the same lava takes the fall, and a

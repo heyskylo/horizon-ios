@@ -109,6 +109,7 @@ impl Game<'_> {
             return;
         };
         let file = multiplayer::servers_file(&saves());
+        let _guard = servers::lock();
         let (mut list, mut hidden) = servers::load_all(&file);
         let mut found = false;
         for entry in list.iter_mut().filter(|s| &s.ip == address) {
