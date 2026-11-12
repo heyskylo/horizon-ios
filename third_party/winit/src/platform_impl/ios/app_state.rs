@@ -467,6 +467,8 @@ pub fn did_finish_launching(mtm: MainThreadMarker) {
     };
 
     this.waker.start();
+    // Horizon: ask for ProMotion refresh rates (see display_link.rs).
+    super::display_link::start(mtm);
 
     // have to drop RefMut because the window setup code below can trigger new events
     drop(this);
