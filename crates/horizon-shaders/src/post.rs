@@ -313,10 +313,20 @@ impl BufferSize {
 }
 
 /// `bufferObject.<n>`: an SSBO's size in bytes, or bytes per pixel of the render size scaled.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum BufferObject {
     Bytes(u64),
-    PerPixel { bytes: u64, scale: [f32; 2] },
+    PerPixel {
+        bytes: u64,
+        scale: [f32; 2],
+    },
+    /// A fixed size with the bytes a file of the pack holds, read on load: the documented
+    /// `bufferObject.<n> = <size> <file>` form, the file's path inside `shaders`.
+    File {
+        bytes: u64,
+        path: String,
+        data: Vec<u8>,
+    },
 }
 
 impl BufferObject {
@@ -329,20 +339,42 @@ impl BufferObject {
                 bytes,
                 scale: [x.parse().ok()?, y.parse().ok()?],
             }),
+            [_, path] => Some(Self::File {
+                bytes,
+                path: path.to_owned(),
+                data: Vec::new(),
+            }),
             _ => None,
         }
     }
 
     /// The size in bytes for a render size of `render`, at least 16.
-    pub fn size(self, render: [u32; 2]) -> u64 {
+    pub fn size(&self, render: [u32; 2]) -> u64 {
         match self {
-            Self::Bytes(b) => b,
+            Self::Bytes(b) => *b,
             Self::PerPixel { bytes, scale } => {
                 let [w, h] = [0, 1].map(|k| (render[k] as f32 * scale[k]) as u64);
                 bytes.saturating_mul(w).saturating_mul(h)
             }
+            Self::File { bytes, .. } => *bytes,
         }
         .max(16)
+    }
+
+    /// The file's path inside `shaders`, when the buffer is initialized from one.
+    pub fn file(&self) -> Option<&str> {
+        match self {
+            Self::File { path, .. } => Some(path),
+            _ => None,
+        }
+    }
+
+    /// The bytes the buffer starts with, when it is initialized from a file.
+    pub fn initial_data(&self) -> Option<&[u8]> {
+        match self {
+            Self::File { data, .. } => Some(data),
+            _ => None,
+        }
     }
 }
 
@@ -490,6 +522,11 @@ pub struct Post {
     /// translucent terrain (`shadow_water` or `shadow`), into the shadow buffers (2.4).
     pub shadow: Option<PostProgram>,
     pub shadow_water: Option<PostProgram>,
+    /// `shadow_water` without the boats' water patches (`GbuffersInputs::water_patches`), for a
+    /// GPU that refuses it with them: their vertex output is one more than a pack writing as
+    /// many as the GPU takes has room for. The water's light then shows in the boats, as before
+    /// the patches, and the rest of the shadow pass stays.
+    pub shadow_water_plain: Option<PostProgram>,
     /// What draws entities (`shadow_entities` or `shadow`) and block entities (`shadow_block` or
     /// `shadow`) from the light, unless `shadowEntities`/`shadowBlockEntities` is false.
     pub shadow_entities: Option<PostProgram>,
@@ -645,9 +682,12 @@ pub struct GameInputs {
     pub lines: Option<GbuffersInputs>,
     /// The first-person hand and held items.
     pub hand: Option<GbuffersInputs>,
-    /// `terrain`, drawing only its solid quads, then only its cutout ones: given, every pack
-    /// draws terrain in these two parts.
+    /// `terrain`, drawing only its solid quads, then only its cutout ones: given, a pack with
+    /// `gbuffers_terrain_solid` or `gbuffers_terrain_cutout` draws terrain in these two parts.
     pub terrain_parts: Option<[GbuffersInputs; 2]>,
+    /// `terrain` with both parts in one draw (`GbuffersInputs::parts`): given, a pack drawing
+    /// both with one program draws them in one pass.
+    pub terrain_one_pass: Option<GbuffersInputs>,
     /// Terrain read vertex by vertex, for a shadow program with a geometry stage.
     pub terrain_geometry: Option<crate::GeometryInputs>,
     /// Entities and block entities read vertex by vertex, for the same.
@@ -656,6 +696,27 @@ pub struct GameInputs {
 
 /// Loads the post-processing programs of `folder` and, for the geometry `inputs` describes, the
 /// gbuffers programs it draws with.
+/// The buffer object with its file read, when it has one: the documented
+/// `bufferObject.<n> = <size> <file>` form reads the file's bytes from the pack. A file that
+/// is not there, or that is bigger than the buffer it fills, is refused with a note.
+fn buffer_object_file(pack: &Pack, object: BufferObject) -> Result<BufferObject, String> {
+    let BufferObject::File { bytes, path, .. } = &object else {
+        return Ok(object);
+    };
+    let Some(data) = pack.read(path) else {
+        return Err(format!("`{path}`: no such file in the pack"));
+    };
+    // The size the pack asks for, not the size the buffer is made (which is at least 16).
+    if data.len() as u64 > *bytes {
+        return Err(format!("`{path}`: bigger than the buffer it fills"));
+    }
+    Ok(BufferObject::File {
+        bytes: *bytes,
+        path: path.clone(),
+        data,
+    })
+}
+
 pub fn load_post(
     pack: &Pack,
     folder: &str,
@@ -692,6 +753,7 @@ pub fn load_post(
         shadow_pass: false,
         shadow: None,
         shadow_water: None,
+        shadow_water_plain: None,
         shadow_entities: None,
         shadow_block: None,
         shadow_only_player: false,
@@ -721,7 +783,10 @@ pub fn load_post(
     for e in &properties.entries {
         if let Some(n) = e.key.strip_prefix("bufferObject.") {
             match (n.parse(), BufferObject::parse(&e.value)) {
-                (Ok(n), Some(b)) => _ = post.buffer_objects.insert(n, b),
+                (Ok(n), Some(b)) => match buffer_object_file(pack, b) {
+                    Ok(b) => _ = post.buffer_objects.insert(n, b),
+                    Err(note) => post.notes.push(note),
+                },
                 _ => post.notes.push(format!("`{}`: not a buffer object", e.key)),
             }
             continue;
@@ -795,6 +860,10 @@ pub fn load_post(
             let mut inputs = inputs.clone();
             if let Some(test) = test {
                 inputs.alpha_test = test;
+                // One program's solid and cutout parts in one pass: both, as in two.
+                if let Some(parts) = &mut inputs.parts {
+                    parts.cutout_alpha_test = test;
+                }
             }
             loader.load(name.to_string(), group, |v, f| {
                 translate_gbuffers(v, f, Target::Buffers, &inputs)
@@ -928,18 +997,20 @@ pub fn load_post(
         // gbuffers_terrain alone or gbuffers_terrain_cutout: cutout fragments written with alpha
         // 0.5 and below were discarded, 0.51 and above kept, and alphaTestRef read 0.5. Vanilla's
         // cutout terrain cuts at 0.5 too (`RenderPipelines.CUTOUT_TERRAIN`'s `ALPHA_CUTOUT`).
+        let cut = Some(crate::AlphaTest {
+            op: ">",
+            reference: 0.5,
+        });
         let cutout = |inputs: &GbuffersInputs| {
             let mut cutout = inputs.clone();
-            cutout.alpha_test = cutout.alpha_test.or(Some(crate::AlphaTest {
-                op: ">",
-                reference: 0.5,
-            }));
+            cutout.alpha_test = cutout.alpha_test.or(cut);
             cutout
         };
-        // Solid and cutout terrain draw apart. A pack with Iris's gbuffers_terrain_solid or
-        // gbuffers_terrain_cutout draws each with its own, falling back to gbuffers_terrain's
+        // A pack with Iris's gbuffers_terrain_solid or gbuffers_terrain_cutout draws solid and
+        // cutout terrain apart, each with its own program, falling back to gbuffers_terrain's
         // chain (Iris 1.11.7 with probe packs having both, or one of them); any other pack draws
-        // both parts with gbuffers_terrain's chain, each with its own alpha test (#9307). Solid
+        // both parts with gbuffers_terrain's chain, each quad with its part's alpha test (#9307),
+        // in one pass: two passes would run every vertex of solid terrain twice. Solid
         // terrain gets no default alpha test, and alphaTestRef 0: in those probes Iris kept
         // solid fragments written with alpha 0.05, through either program, and also 0.0
         // through gbuffers_terrain alone or gbuffers_terrain_solid (#9307).
@@ -978,15 +1049,14 @@ pub fn load_post(
                     None => (solid, cut),
                 }
             }
-            None => match &inputs.terrain_parts {
-                // One program draws both parts, so both load or neither does.
-                Some([solid, cut]) => match (
-                    gbuffers(&TERRAIN, Group::Gbuffers, solid),
-                    gbuffers(&TERRAIN, Group::Gbuffers, &cutout(cut)),
-                ) {
-                    (Some(solid), Some(cut)) => (Some(solid), Some(cut)),
-                    _ => (None, None),
-                },
+            None => match &inputs.terrain_one_pass {
+                Some(both) => {
+                    let mut both = both.clone();
+                    if let Some(parts) = &mut both.parts {
+                        parts.cutout_alpha_test = parts.cutout_alpha_test.or(cut);
+                    }
+                    (gbuffers(&TERRAIN, Group::Gbuffers, &both), None)
+                }
                 // A game that draws terrain in one part: all of it with the cutout test.
                 None => (gbuffers(&TERRAIN, Group::Gbuffers, &cutout(terrain)), None),
             },
@@ -1203,6 +1273,12 @@ fn load_shadow(
     let shadow_block = (keep("shadowBlockEntities") || only_lit)
         .then(|| load(&["shadow_block", "shadow"], entities, false, true))
         .flatten();
+    let water_plain = water
+        .as_ref()
+        .and_then(|_| load(&["shadow_water", "shadow"], terrain, true, false));
+    // The plain one's notes are the patched one's again: each once.
+    let mut seen = std::collections::HashSet::new();
+    loader.post.notes.retain(|n| seen.insert(n.clone()));
     if shadow.is_none() && terrain.is_some() {
         loader
             .post
@@ -1212,6 +1288,7 @@ fn load_shadow(
     loader.geometry = None;
     loader.post.shadow = shadow;
     loader.post.shadow_water = water;
+    loader.post.shadow_water_plain = water_plain;
     loader.post.shadow_entities = shadow_entities;
     loader.post.shadow_block = shadow_block;
     loader.post.shadow_only_player = only_player;
@@ -1996,6 +2073,106 @@ mod tests {
                        gl_FragData[0] = texture2D(colortex0, uv);\n}\n";
 
     #[test]
+    fn a_buffer_object_can_name_the_file_it_starts_with() {
+        assert_eq!(
+            BufferObject::parse("16 data/seed.bin"),
+            Some(BufferObject::File {
+                bytes: 16,
+                path: "data/seed.bin".to_owned(),
+                data: Vec::new(),
+            })
+        );
+        // The other forms still read as they did.
+        assert_eq!(BufferObject::parse("4096"), Some(BufferObject::Bytes(4096)));
+        assert_eq!(
+            BufferObject::parse("16 true 0.5 0.25"),
+            Some(BufferObject::PerPixel {
+                bytes: 16,
+                scale: [0.5, 0.25]
+            })
+        );
+    }
+
+    #[test]
+    fn a_buffer_object_reads_the_file_it_names() {
+        let seed: Vec<u8> = (0..16).collect();
+        let pack = Pack::from_zip_bytes(
+            "buffer.zip",
+            crate::pack::tests::zip(&[
+                (
+                    "shaders/shaders.properties",
+                    b"bufferObject.2 = 16 data/seed.bin".to_vec(),
+                ),
+                ("shaders/data/seed.bin", seed.clone()),
+            ]),
+        )
+        .unwrap();
+        let macros = Macros::standard();
+        let properties = Properties::parse("bufferObject.2 = 16 data/seed.bin", &macros);
+        let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
+        assert!(post.notes.is_empty(), "{:?}", post.notes);
+        let buffer = post.buffer_objects.get(&2).expect("the buffer is there");
+        assert_eq!(buffer.initial_data(), Some(seed.as_slice()));
+        assert_eq!(buffer.size([1, 1]), 16);
+    }
+
+    #[test]
+    fn a_buffer_object_whose_file_is_missing_is_refused() {
+        let pack = Pack::from_zip_bytes(
+            "buffer.zip",
+            crate::pack::tests::zip(&[(
+                "shaders/shaders.properties",
+                b"bufferObject.2 = 16 data/seed.bin".to_vec(),
+            )]),
+        )
+        .unwrap();
+        let macros = Macros::standard();
+        let properties = Properties::parse("bufferObject.2 = 16 data/seed.bin", &macros);
+        let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
+        assert!(post.buffer_objects.is_empty());
+        assert_eq!(post.notes.len(), 1, "{:?}", post.notes);
+        assert!(post.notes[0].contains("data/seed.bin"), "{:?}", post.notes);
+    }
+
+    #[test]
+    fn a_buffer_object_whose_file_is_bigger_than_it_is_refused() {
+        let pack = Pack::from_zip_bytes(
+            "buffer.zip",
+            crate::pack::tests::zip(&[
+                (
+                    "shaders/shaders.properties",
+                    b"bufferObject.2 = 4 data/seed.bin".to_vec(),
+                ),
+                ("shaders/data/seed.bin", (0..16).collect::<Vec<u8>>()),
+            ]),
+        )
+        .unwrap();
+        let macros = Macros::standard();
+        let properties = Properties::parse("bufferObject.2 = 4 data/seed.bin", &macros);
+        let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
+        assert!(post.buffer_objects.is_empty());
+        assert_eq!(post.notes.len(), 1, "{:?}", post.notes);
+        assert!(post.notes[0].contains("bigger"), "{:?}", post.notes);
+    }
+
+    #[test]
+    fn a_buffer_object_whose_file_leaves_the_pack_is_refused() {
+        let pack = Pack::from_zip_bytes(
+            "buffer.zip",
+            crate::pack::tests::zip(&[(
+                "shaders/shaders.properties",
+                "bufferObject.2 = 16 ../seed.bin",
+            )]),
+        )
+        .unwrap();
+        let macros = Macros::standard();
+        let properties = Properties::parse("bufferObject.2 = 16 ../seed.bin", &macros);
+        let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
+        assert!(post.buffer_objects.is_empty());
+        assert_eq!(post.notes.len(), 1, "{:?}", post.notes);
+    }
+
+    #[test]
     fn buffer_objects_and_images_parse() {
         assert_eq!(BufferObject::parse("4096"), Some(BufferObject::Bytes(4096)));
         assert_eq!(
@@ -2526,6 +2703,11 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
             post.shadow_water.as_ref().map(|p| p.name.as_str()),
             Some("shadow")
         );
+        // ...with the boats' water patches, and once more without them.
+        assert_eq!(
+            post.shadow_water_plain.as_ref().map(|p| p.name.as_str()),
+            Some("shadow")
+        );
         // Entities fall back to shadow; block entities have their own program.
         let name = |p: &Option<PostProgram>| p.as_ref().map(|p| p.name.clone());
         assert_eq!(
@@ -2943,8 +3125,16 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
             body: "    hz_Vertex = vec4(hz_v_pos, 1.0);\n    hz_Color = vec4(1.0);\n".into(),
             ..Default::default()
         };
+        let one_pass = crate::GbuffersInputs {
+            parts: Some(crate::Parts {
+                solid: "hz_v_pos.x > 0.0".into(),
+                cutout_alpha_test: None,
+            }),
+            ..inputs.clone()
+        };
         let inputs = GameInputs {
             terrain_parts: parts.then(|| [inputs.clone(), inputs.clone()]),
+            terrain_one_pass: parts.then_some(one_pass),
             terrain: Some(inputs),
             ..Default::default()
         };
@@ -2980,8 +3170,8 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
 
     /// Iris 1.11.7 with our probe packs (#9137): `gbuffers_terrain_solid` draws solid terrain
     /// and `gbuffers_terrain_cutout` cutout terrain, each falling back to `gbuffers_terrain`;
-    /// a pack with only `gbuffers_terrain` draws both parts with it, each with its own alpha
-    /// test (#9307).
+    /// a pack with only `gbuffers_terrain` draws both parts with it, in one pass, each with its
+    /// own alpha test (#9307).
     #[test]
     fn terrain_solid_and_cutout_fall_back_to_terrain() {
         let names = |programs: &[&str], parts: bool| terrain_names(programs, "", parts);
@@ -2996,7 +3186,7 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
             names(&[terrain, cutout], true),
             [some(terrain), some(cutout)]
         );
-        assert_eq!(names(&[terrain], true), [some(terrain), some(terrain)]);
+        assert_eq!(names(&[terrain], true), [some(terrain), None]);
         // Without the game's two parts, terrain draws whole.
         assert_eq!(
             names(&[terrain, solid, cutout], false),
@@ -3049,7 +3239,7 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
         let some = |name: &str| Some(name.to_owned());
         assert_eq!(
             terrain_names(&[terrain, solid], off, true),
-            [some(terrain), some(terrain)]
+            [some(terrain), None]
         );
         let on = "program.gbuffers_terrain_solid.enabled = true\n";
         assert_eq!(
@@ -3150,6 +3340,7 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
             lines: Some(inputs.clone()),
             hand: Some(inputs),
             terrain_parts: None,
+            terrain_one_pass: None,
             terrain_geometry: None,
             entity_geometry: None,
         };
@@ -3348,63 +3539,10 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
 }
 
 #[cfg(test)]
-mod lifecycle_tests {
-    use super::*;
-    #[test]
-    fn setup_and_begin_compute_load_before_prepare_even_with_only_a_suffix() {
-        let compute = "#version 430\nlayout(local_size_x=1) in; void main(){}";
-        let zip = crate::pack::tests::zip(&[
-            ("shaders/setup.csh", compute),
-            ("shaders/begin_a.csh", compute),
-            ("shaders/prepare.csh", compute),
-        ]);
-        let pack = Pack::from_zip_bytes("lifecycle.zip", zip).unwrap();
-        let post = load_post(
-            &pack,
-            "",
-            &Properties::default(),
-            &Macros::standard(),
-            &GameInputs::default(),
-        );
-        assert!(post.notes.is_empty(), "{:?}", post.notes);
-        assert_eq!(
-            post.programs
-                .iter()
-                .map(|p| p.name.as_str())
-                .collect::<Vec<_>>(),
-            ["setup", "begin", "prepare"]
-        );
-    }
-}
+mod lifecycle_tests;
 
 #[cfg(test)]
-mod buffer_blend_tests {
-    use super::*;
-    #[test]
-    fn buffer_blends_use_colortex_numbers_and_preserve_explicit_off() {
-        let props = Properties::parse(
-            "blend.gbuffers_water=off\nblend.gbuffers_water.colortex13=ONE ONE_MINUS_SRC_ALPHA ONE ONE_MINUS_SRC_ALPHA\nblend.gbuffers_water.colortex2=off\n",
-            &Macros::standard(),
-        );
-        let overrides = buffer_blends(&props, "gbuffers_water");
-        assert_eq!(blend(&props, "gbuffers_water"), Some(None));
-        assert_eq!(
-            overrides,
-            vec![
-                (
-                    13,
-                    Some([
-                        Factor::One,
-                        Factor::OneMinusSrcAlpha,
-                        Factor::One,
-                        Factor::OneMinusSrcAlpha
-                    ])
-                ),
-                (2, None)
-            ]
-        );
-    }
-}
+mod buffer_blend_tests;
 
 #[cfg(test)]
 mod material_variant_tests;

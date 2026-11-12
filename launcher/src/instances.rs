@@ -704,38 +704,10 @@ fn follow_player(game_home: &Path, home: &Path) {
         let _ = fs::create_dir_all(to.parent().unwrap());
         let _ = fs::copy(consent, to);
     }
-    let no_ai = horizon_core::no_ai::is_on(game_home);
-    if horizon_core::no_ai::is_on(home) != no_ai {
-        let _ = horizon_core::no_ai::set(home, no_ai);
+    let no_ai = horizon_platform::no_ai::is_on(game_home);
+    if horizon_platform::no_ai::is_on(home) != no_ai {
+        let _ = horizon_platform::no_ai::set(home, no_ai);
     }
-}
-
-/// A fresh made-up name everywhere the game keeps one: `horizon-player.txt` is per game
-/// folder (`PLAYER_FILES`), so the same new name goes to the default home and every
-/// instance's — the player stays one player in its worlds. The file's `name:` line and the
-/// `Player` + five digits scheme are horizon-client's (`offline_name.rs`).
-pub fn new_player_name() -> Result<String, String> {
-    new_player_name_in(&backend::game_home(), &backend::data_dir())
-}
-
-fn new_player_name_in(game_home: &Path, data: &Path) -> Result<String, String> {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos() as u64);
-    let name = format!(
-        "Player{:05}",
-        (nanos ^ u64::from(std::process::id()).rotate_left(32)) % 100_000
-    );
-    for instance in list_in(game_home, data) {
-        if instance.home.is_dir() {
-            fs::write(
-                instance.home.join("horizon-player.txt"),
-                format!("name:{name}\n"),
-            )
-            .map_err(|e| format!("{}: {e}", instance.home.display()))?;
-        }
-    }
-    Ok(name)
 }
 
 #[path = "instances/switch.rs"]

@@ -15,9 +15,17 @@ pub const OFFICIAL_SERVER: &str = "play.playhorizon.dev";
 /// `official_server_previous` in `launcher/links.json`).
 pub const OFFICIAL_SERVER_PREVIOUS: &[&str] = &["horizon.bunchy7s.dev"];
 
+/// Afri-Network, a partner server the game added once below the official server (#9299) until
+/// the partnership ended: kept so the game can take back out the entry it added.
+pub const WITHDRAWN_PARTNER_SERVER: &str = "afri-network.co.za";
+
 /// [`OFFICIAL_SERVER`] with the port its SRV record gives, for askers that don't look SRV up
 /// (the telemetry server's status checks).
 pub const OFFICIAL_SERVER_STATUS: &str = "play.playhorizon.dev:24454";
+
+/// Horizon's website, where the launcher is downloaded: the game started without its prepared
+/// files sends the player there.
+pub const WEBSITE: &str = "https://playhorizon.dev";
 
 /// The cosmetics service: cosmetics, emotes, "Show me as a Horizon player"
 /// (`HORIZON_COSMETICS_API` overrides it).

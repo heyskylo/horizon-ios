@@ -15,6 +15,9 @@ pub struct SeenGrid {
     /// The widest box (along x or z) the grid has held: no box reaches
     /// further than this past its minimum corner.
     reach: f64,
+    /// The entries a query counts when it decides to scan them all instead (at least the grid's
+    /// own): a grid of part of a list answers as the whole list's would.
+    entries: usize,
 }
 
 fn column(x: f64, z: f64) -> (i32, i32) {
@@ -39,6 +42,22 @@ impl SeenGrid {
         }
         grid
     }
+    /// The widest box and the entries it has, for a grid of part of its entries that must meet
+    /// the same entries in the same order (the server's parallel mob tick).
+    pub fn bounds(&self) -> (f64, usize) {
+        (self.reach, self.cell_of.len().max(self.entries))
+    }
+    /// [`Self::bounds`] of the grid of `boxes`, without building it.
+    pub fn bounds_of(boxes: impl Iterator<Item = Aabb>) -> (f64, usize) {
+        boxes.fold((0.0_f64, 0), |(reach, n), b| (reach.max(width(b)), n + 1))
+    }
+    /// Answer queries as a grid of `bounds` would: as wide a margin, and a scan past as many
+    /// entries.
+    pub fn answering_as(mut self, (reach, entries): (f64, usize)) -> Self {
+        self.reach = self.reach.max(reach);
+        self.entries = entries;
+        self
+    }
     /// Entry `i`'s box is now `b` (the mob moved or resized).
     pub fn update(&mut self, i: usize, b: Aabb) {
         self.reach = self.reach.max(width(b));
@@ -48,36 +67,154 @@ impl SeenGrid {
             return;
         }
         if let Some(list) = self.cells.get_mut(&old)
-            && let Some(k) = list.iter().position(|&j| j == i as u32)
+            && let Ok(k) = list.binary_search(&(i as u32))
         {
-            list.swap_remove(k);
+            list.remove(k);
         }
-        self.cells.entry(at).or_default().push(i as u32);
+        let list = self.cells.entry(at).or_default();
+        let idx = match list.binary_search(&(i as u32)) {
+            Ok(k) | Err(k) => k,
+        };
+        list.insert(idx, i as u32);
     }
     /// The indices, ascending, of every entry whose box can meet `area`
     /// (a superset: callers still test it). False when the area spans more
-    /// columns than the grid holds (or is not finite): scan them all.
+    /// columns than the grid has entries (at least 64), or is not finite:
+    /// scan them all.
     pub fn candidates(&self, area: Aabb, out: &mut Vec<u32>) -> bool {
         out.clear();
         // A box meets `area` only if its minimum corner is below area.max
         // and within `reach` (plus a margin for rounding) of area.min.
         let margin = self.reach + 1.0;
-        let lo = column(area.min(Axis::X) - margin, area.min(Axis::Z) - margin);
-        let hi = column(area.max(Axis::X), area.max(Axis::Z));
-        let span = |a: i32, b: i32| i64::from(b) - i64::from(a) + 1;
-        let (nx, nz) = (span(lo.0, hi.0), span(lo.1, hi.1));
-        if nx < 1 || nz < 1 || nx.saturating_mul(nz) > self.cells.len() as i64 {
+        let min_x = area.min(Axis::X) - margin;
+        let min_z = area.min(Axis::Z) - margin;
+        let max_x = area.max(Axis::X);
+        let max_z = area.max(Axis::Z);
+        if !min_x.is_finite() || !min_z.is_finite() || !max_x.is_finite() || !max_z.is_finite() {
             return false;
         }
+        let lo = column(min_x, min_z);
+        let hi = column(max_x, max_z);
+        let span = |a: i32, b: i32| i64::from(b) - i64::from(a) + 1;
+        let (nx, nz) = (span(lo.0, hi.0), span(lo.1, hi.1));
+        let max_cells = (self.cell_of.len().max(self.entries) as i64).max(64);
+        if nx < 1 || nz < 1 || nx.saturating_mul(nz) > max_cells {
+            return false;
+        }
+        let mut slices = [&[][..]; 16];
+        let mut num_slices = 0;
+        let mut overflow = false;
         for x in lo.0..=hi.0 {
             for z in lo.1..=hi.1 {
-                if let Some(list) = self.cells.get(&(x, z)) {
-                    out.extend_from_slice(list);
+                if let Some(list) = self.cells.get(&(x, z))
+                    && !list.is_empty()
+                {
+                    if num_slices < slices.len() {
+                        slices[num_slices] = list.as_slice();
+                        num_slices += 1;
+                    } else {
+                        overflow = true;
+                        out.extend_from_slice(list);
+                    }
                 }
             }
         }
-        out.sort_unstable();
+        if overflow {
+            for s in &slices[..num_slices] {
+                out.extend_from_slice(s);
+            }
+            out.sort_unstable();
+            return true;
+        }
+        merge_slices(&slices[..num_slices], out);
         true
+    }
+}
+
+fn merge_2(s0: &[u32], s1: &[u32], out: &mut Vec<u32>) {
+    out.reserve(s0.len() + s1.len());
+    let (mut i, mut j) = (0, 0);
+    while i < s0.len() && j < s1.len() {
+        if s0[i] < s1[j] {
+            out.push(s0[i]);
+            i += 1;
+        } else {
+            out.push(s1[j]);
+            j += 1;
+        }
+    }
+    out.extend_from_slice(&s0[i..]);
+    out.extend_from_slice(&s1[j..]);
+}
+
+fn merge_slices(slices: &[&[u32]], out: &mut Vec<u32>) {
+    match slices.len() {
+        0 => {}
+        1 => out.extend_from_slice(slices[0]),
+        2 => merge_2(slices[0], slices[1], out),
+        3 => {
+            let (mut i, mut j, mut k) = (0, 0, 0);
+            let (s0, s1, s2) = (slices[0], slices[1], slices[2]);
+            out.reserve(s0.len() + s1.len() + s2.len());
+            while i < s0.len() || j < s1.len() || k < s2.len() {
+                let v0 = if i < s0.len() { s0[i] } else { u32::MAX };
+                let v1 = if j < s1.len() { s1[j] } else { u32::MAX };
+                let v2 = if k < s2.len() { s2[k] } else { u32::MAX };
+                if v0 <= v1 && v0 <= v2 {
+                    out.push(v0);
+                    i += 1;
+                } else if v1 <= v2 {
+                    out.push(v1);
+                    j += 1;
+                } else {
+                    out.push(v2);
+                    k += 1;
+                }
+            }
+        }
+        4 => {
+            let (mut i, mut j, mut k, mut l) = (0, 0, 0, 0);
+            let (s0, s1, s2, s3) = (slices[0], slices[1], slices[2], slices[3]);
+            out.reserve(s0.len() + s1.len() + s2.len() + s3.len());
+            while i < s0.len() || j < s1.len() || k < s2.len() || l < s3.len() {
+                let v0 = if i < s0.len() { s0[i] } else { u32::MAX };
+                let v1 = if j < s1.len() { s1[j] } else { u32::MAX };
+                let v2 = if k < s2.len() { s2[k] } else { u32::MAX };
+                let v3 = if l < s3.len() { s3[l] } else { u32::MAX };
+                if v0 <= v1 && v0 <= v2 && v0 <= v3 {
+                    out.push(v0);
+                    i += 1;
+                } else if v1 <= v2 && v1 <= v3 {
+                    out.push(v1);
+                    j += 1;
+                } else if v2 <= v3 {
+                    out.push(v2);
+                    k += 1;
+                } else {
+                    out.push(v3);
+                    l += 1;
+                }
+            }
+        }
+        _ => {
+            for s in slices {
+                out.extend_from_slice(s);
+            }
+            out.sort_unstable();
+        }
+    }
+}
+
+impl super::BoxReach {
+    /// The box that holds the box of each mob this was worked out for, standing at `at`: an
+    /// area clear of it is one [`super::BoxReach::may_meet`] turns away.
+    pub fn around(self, at: horizon_core::geometry::Vec3) -> Aabb {
+        use horizon_core::geometry::Vec3;
+        let (w, b, h) = (self.half_width, self.below, self.height);
+        Aabb::new(
+            Vec3::new(at.x - w, at.y - b, at.z - w),
+            Vec3::new(at.x + w, at.y + h, at.z + w),
+        )
     }
 }
 
@@ -144,5 +281,134 @@ mod tests {
             Vec3::new(f64::INFINITY, 1.0, 1.0),
         );
         assert!(!grid.candidates(huge, &mut out));
+    }
+
+    #[test]
+    fn candidates_merges_multiple_cells_in_strict_order() {
+        // Place boxes across 4 adjacent grid cells: (0, 0), (4, 0), (0, 4), (4, 4)
+        // With interleaving snapshot indices to test 1, 2, 3, and 4-way merges.
+        let boxes = vec![
+            boxed(0.5, 64.0, 0.5, 0.6), // 0: cell (0, 0)
+            boxed(4.5, 64.0, 0.5, 0.6), // 1: cell (1, 0)
+            boxed(0.5, 64.0, 4.5, 0.6), // 2: cell (0, 1)
+            boxed(4.5, 64.0, 4.5, 0.6), // 3: cell (1, 1)
+            boxed(0.8, 64.0, 0.8, 0.6), // 4: cell (0, 0)
+            boxed(4.8, 64.0, 0.8, 0.6), // 5: cell (1, 0)
+            boxed(0.8, 64.0, 4.8, 0.6), // 6: cell (0, 1)
+            boxed(4.8, 64.0, 4.8, 0.6), // 7: cell (1, 1)
+        ];
+        let grid = SeenGrid::new(boxes.into_iter());
+        let mut out = Vec::new();
+
+        // Query covering only cell (0, 0): indices 0, 4
+        let q1 = boxed(0.1, 64.0, 0.1, 1.5);
+        assert!(grid.candidates(q1, &mut out));
+        assert_eq!(out, vec![0, 4]);
+
+        // Query covering cells (0, 0) and (1, 0): indices 0, 1, 4, 5
+        let q2 = Aabb::new(Vec3::new(0.0, 64.0, 0.0), Vec3::new(6.0, 66.0, 1.5));
+        assert!(grid.candidates(q2, &mut out));
+        assert_eq!(out, vec![0, 1, 4, 5]);
+
+        // Query covering all 4 cells: indices 0..8 in order
+        let q4 = Aabb::new(Vec3::new(0.0, 64.0, 0.0), Vec3::new(6.0, 66.0, 6.0));
+        assert!(grid.candidates(q4, &mut out));
+        assert_eq!(out, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_dense_farm() {
+        let n = 300;
+        let mut seed = 0x1234_5678_9abc_def0_u64;
+        let mut next = |range: f64| {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (seed >> 11) as f64 / (1u64 << 53) as f64 * range
+        };
+        // 300 mobs in a 1.5 x 1.5 block pen around (3.5, 64.0, 3.5) crossing cell boundary at 4.0
+        let mut boxes: Vec<Aabb> = (0..n)
+            .map(|_| {
+                let x = 3.5 + next(1.5);
+                let z = 3.5 + next(1.5);
+                boxed(x, 64.0, z, 0.6)
+            })
+            .collect();
+        let mut grid = SeenGrid::new(boxes.iter().copied());
+        let mut out = Vec::new();
+
+        let t = std::time::Instant::now();
+        let rounds = 100;
+        let mut fallback_count = 0;
+        let mut query_dur = std::time::Duration::ZERO;
+        let mut update_dur = std::time::Duration::ZERO;
+        for _ in 0..rounds {
+            for i in 0..n {
+                let area = boxes[i];
+                let t0 = std::time::Instant::now();
+                if !grid.candidates(area, &mut out) {
+                    fallback_count += 1;
+                    out.clear();
+                    out.extend(0..n as u32);
+                }
+                query_dur += t0.elapsed();
+                // small jitter
+                let x = 3.5 + next(1.5);
+                let z = 3.5 + next(1.5);
+                boxes[i] = boxed(x, 64.0, z, 0.6);
+                let t1 = std::time::Instant::now();
+                grid.update(i, boxes[i]);
+                update_dur += t1.elapsed();
+            }
+        }
+        let elapsed = t.elapsed();
+        println!(
+            "{rounds} ticks of {n} mobs in 1.5x1.5 pen: {elapsed:?} (query: {:.3} ms, update: {:.3} ms, per tick: {:.3} ms, fallback: {fallback_count}/{})",
+            query_dur.as_secs_f64() * 1e3 / rounds as f64,
+            update_dur.as_secs_f64() * 1e3 / rounds as f64,
+            elapsed.as_secs_f64() * 1e3 / rounds as f64,
+            rounds * n
+        );
+    }
+
+    /// A grid of part of a list's boxes that answers as the whole list's grid decides when to scan
+    /// every entry and when to look in columns: the part meets its boxes as the whole would.
+    #[test]
+    fn a_part_answers_as_the_whole_list() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = |range: f64| {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (seed >> 11) as f64 / (1u64 << 53) as f64 * range
+        };
+        let boxes: Vec<Aabb> = (0..400)
+            .map(|_| boxed(next(400.0) - 200.0, next(8.0), next(400.0) - 200.0, 0.6))
+            .collect();
+        let whole = SeenGrid::new(boxes.iter().copied());
+        assert_eq!(SeenGrid::bounds_of(boxes.iter().copied()), whole.bounds());
+        let part: Vec<usize> = (0..boxes.len()).step_by(4).collect();
+        let grid = SeenGrid::new(part.iter().map(|&i| boxes[i])).answering_as(whole.bounds());
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        let mut scanned = 0;
+        for _ in 0..500 {
+            let side = next(100.0);
+            let area = boxed(next(400.0) - 200.0, next(8.0), next(400.0) - 200.0, side);
+            let indexed = whole.candidates(area, &mut a);
+            assert_eq!(grid.candidates(area, &mut b), indexed, "{side} blocks");
+            scanned += usize::from(!indexed);
+            if indexed {
+                let met = |out: &[u32]| -> Vec<usize> {
+                    out.iter()
+                        .map(|&j| part[j as usize])
+                        .filter(|&i| boxes[i].intersects(area))
+                        .collect()
+                };
+                let expected: Vec<usize> = a
+                    .iter()
+                    .map(|&j| j as usize)
+                    .filter(|i| i % 4 == 0 && boxes[*i].intersects(area))
+                    .collect();
+                assert_eq!(met(&b), expected);
+            }
+        }
+        assert!(scanned > 0 && scanned < 500, "{scanned} of 500 scanned");
     }
 }

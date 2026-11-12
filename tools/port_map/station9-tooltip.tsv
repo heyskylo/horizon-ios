@@ -1,0 +1,1 @@
+ItemStack.addDetailsToTooltip	port	crates/horizon-client/src/item_tooltip.rs::stack_modifiers	Tooltip attribute modifiers come from the stack component read from the stack

@@ -39,7 +39,11 @@ impl MotionWorld<'_, '_, '_> {
             }
             self.player.fire_ticks -= 1;
         }
-        if self.player.fluids.was_touching_water {
+        let extinguishes = self
+            .player
+            .mod_fluid()
+            .is_some_and(|m| m.fluid.info().entity.can_extinguish);
+        if self.player.fluids.was_touching_water || extinguishes {
             self.player.fire_ticks = self.player.fire_ticks.min(0);
         }
         Ok(())
@@ -56,7 +60,8 @@ impl MotionWorld<'_, '_, '_> {
             .registry
             .state(self.block(eye))
             .is_some_and(|state| state.name == "minecraft:bubble_column");
-        let submerged = self.player.is_eye_in_fluid(WATER) && !bubble_column;
+        let submerged = (self.player.is_eye_in_fluid(WATER) || self.player.eye_in_drowning_fluid())
+            && !bubble_column;
         let drowns = submerged
             && !self.player.status.water_breathing
             && !self.player.status.breath_of_the_nautilus
@@ -124,7 +129,7 @@ impl MotionWorld<'_, '_, '_> {
     /// take too) and suffocation (`isInWall`, which the caller decides from
     /// the blocks at the eyes).
     pub fn server_hazards_tick(&mut self, in_wall: bool) -> Result<()> {
-        if self.player.position.y < f64::from(self.scene.bottom_y() - 64) {
+        if self.player.position.y < self.scene.below_world_y() {
             let id = self
                 .health
                 .damage
@@ -213,7 +218,9 @@ pub(crate) fn cactus_contact(
 }
 impl LivingFluidWorld for MotionWorld<'_, '_, '_> {
     fn in_water(&mut self) -> Result<bool> {
-        Ok(self.player.fluids.was_touching_water)
+        // A mod fluid moves the player as water (NeoForge's `FluidType.move`
+        // left to the default).
+        Ok(self.player.fluids.was_touching_water || self.player.mod_fluid().is_some())
     }
     fn sprinting(&mut self) -> Result<bool> {
         Ok(self.player.sprinting)
@@ -228,11 +235,11 @@ impl LivingFluidWorld for MotionWorld<'_, '_, '_> {
         Ok(self.player.status.dolphins_grace)
     }
     fn fluid_height(&mut self, tag: TravelFluidTag) -> Result<f64> {
-        Ok(self.player.fluid_height(if tag == TravelFluidTag::Lava {
-            LAVA
-        } else {
-            WATER
-        }))
+        if tag == TravelFluidTag::Lava {
+            return Ok(self.player.fluid_height(LAVA));
+        }
+        let modded = self.player.mod_fluid().map_or(0.0, |m| m.height);
+        Ok(self.player.fluid_height(WATER).max(modded))
     }
     fn fluid_jump_threshold(&mut self) -> Result<f64> {
         Ok(self.player.fluid_jump_threshold())
@@ -263,8 +270,16 @@ impl MotionWorld<'_, '_, '_> {
             return Ok(());
         }
         let in_lava = self.player.is_in_lava();
-        let height = self.player.fluid_height(if in_lava { LAVA } else { WATER });
-        let in_water = self.player.fluids.was_touching_water && height > 0.0;
+        // `jumpInFluid` also rises in a mod fluid that `canSwim`.
+        let swim = self.player.swim_fluid();
+        let height = if in_lava {
+            self.player.fluid_height(LAVA)
+        } else {
+            self.player
+                .fluid_height(WATER)
+                .max(swim.map_or(0.0, |m| m.height))
+        };
+        let in_water = (self.player.fluids.was_touching_water || swim.is_some()) && height > 0.0;
         let threshold = self.player.fluid_jump_threshold();
         let on_ground = self.player.ground.on_ground;
         if in_water && !(on_ground && height <= threshold) {
@@ -380,5 +395,69 @@ mod fire_ignition_tests {
             assert!(ticks < 0);
         }
         assert_eq!(ignite_contact(ticks, true, &mut r, 0.4), 64);
+    }
+}
+
+#[cfg(test)]
+mod below_world_tests {
+    use super::*;
+    use crate::chunk::LevelShape;
+
+    /// The player's health after one `server_hazards_tick` at `y` in a level of `shape`.
+    fn health_after_hazards(shape: LevelShape, y: f64) -> f32 {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("HORIZON_TEST_RESOURCES"),
+        );
+        let assets = Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let binding = crate::collisions::load(&root, assets.registry).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        let mut scene = World::test_scene(&assets, &render, 1).unwrap();
+        scene.shape = shape;
+        let mut player = PlayerMotion::new(&resources, Vec3::new(0.5, y, 0.5)).unwrap();
+        MotionWorld {
+            entities: &[],
+            player: &mut player,
+            scene: &mut scene,
+            assets: &assets,
+            collision_binding: &binding,
+            resources: &resources,
+            health: &resources.health,
+        }
+        .server_hazards_tick(false)
+        .unwrap();
+        player.health.health()
+    }
+
+    /// `Entity.checkBelowWorld` hurts below `Level.getMinY() - 64`: y = -64 in the End and the
+    /// Nether (min Y 0), y = -128 in the Overworld, whatever the chunks' widened column holds.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn the_void_starts_64_blocks_below_each_levels_floor() {
+        assert_eq!(
+            health_after_hazards(LevelShape::END, -64.5),
+            16.0,
+            "End: below -64"
+        );
+        assert_eq!(
+            health_after_hazards(LevelShape::NETHER, -64.5),
+            16.0,
+            "Nether: below -64"
+        );
+        assert_eq!(
+            health_after_hazards(LevelShape::END, -63.5),
+            20.0,
+            "End: above -64"
+        );
+        assert_eq!(
+            health_after_hazards(LevelShape::OVERWORLD, -64.5),
+            20.0,
+            "Overworld: above -128"
+        );
+        assert_eq!(
+            health_after_hazards(LevelShape::OVERWORLD, -128.5),
+            16.0,
+            "Overworld: below -128"
+        );
     }
 }

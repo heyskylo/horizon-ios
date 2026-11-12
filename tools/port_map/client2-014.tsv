@@ -34,13 +34,15 @@ CreditsAndAttributionScreen.openCreditsScreen	port	crates/horizon-client/src/gam
 DatapackLoadFailureScreen.init	missing		gap: minor: no datapack failure screen; a pack that fails to install is logged (game.rs:12109-12111) and the world opens with the packs it has
 DatapackLoadFailureScreen.extractRenderState	missing		gap: minor: same as init, there is no failure screen to draw; a failed pack install only reaches the log
 DeathScreen.exitToTitleScreen	port	crates/horizon-client/src/game/screens.rs::Game::death_confirm_answer	Yes leaves the world; gap: minor: the leave and title hand-off is one close_world call
-DeathScreen.extractRenderState	port	crates/horizon-client/src/game/screens.rs::Game::draw_death_screen	gap: minor: no draft-report badge on the title button (reporting service)
+DeathScreen.extractRenderState	port	crates/horizon-client/src/game/screens.rs::Game::draw_death_screen	gap: minor: no draft-report badge on the title button (reporting service); the cause line is visited with hover tooltips and a link cursor
 DeathScreen.visitText	port	crates/horizon-client/src/game/screens.rs::Game::draw_death_screen	title at double size, cause and score lines
-DeathScreen.mouseClicked	port	crates/horizon-client/src/game/screens.rs::Game::death_click	buttons and the title confirm; gap: minor: a click on a link in the death text does nothing
+DeathScreen.mouseClicked	port	crates/horizon-client/src/game/screens.rs::Game::death_click	buttons, the title confirm and the cause line's open_url links (ClickableStyleFinder, Game::click_url)
 DeathScreen.tick	inline	crates/horizon-client/src/game/screens.rs::Game::draw_death_screen	the 20-tick delay is checked as 1000 ms since death, on draw and on click
 DeathScreen.setButtonsActive	inline	crates/horizon-client/src/game/screens.rs::Game::draw_death_screen	buttons are active once the 1000 ms delay has passed
 DirectJoinServerScreen.keyPressed	port	crates/horizon-client/src/multiplayer.rs::Screen::confirm	Enter joins the typed address when it parses (direct_address, friend invite codes included); on the server list it joins the selected server or LAN game
 DirectJoinServerScreen.init	port	crates/horizon-client/src/multiplayer.rs::Screen::buttons	Direct Connection field with Join and Cancel (Screen::Direct arm)
+DirectJoinServerScreen.updateSelectButtonStatus	port	crates/horizon-client/src/multiplayer.rs::Screen::buttons	the Join Server button is active only while servers::parse_address accepts the typed address (Screen::Direct)
+DirectJoinServerScreen.setInitialFocus	skip:ui		the address field is drawn focused (focused_at); it is the Direct screen's only text field
 DirectJoinServerScreen.resize	skip:ui		layout only; Screen::Direct keeps the typed address
 DirectJoinServerScreen.onSelect	port	crates/horizon-client/src/multiplayer.rs::Screen::click	Join returns the typed address as Outcome::Connect
 DirectJoinServerScreen.removed	port	crates/horizon-client/src/title.rs::Title::remember_direct_address	saves the address to last_server; gap: minor: the options file write is not in this fn
@@ -75,7 +77,7 @@ LevelLoadingScreen.extractChunksForRendering	port	crates/horizon-client-render/s
 LevelLoadingScreen.getNetherPortalSprite	port	crates/horizon-client-render/src/hud_overlays.rs::portal_overlay	draws the block/nether_portal sprite
 LoadingOverlay.extractRenderState	port	crates/horizon-client/src/game.rs::Game::render	the reload screen's progress bar; gap: player: no Mojang logo and no fade in or out
 LoadingOverlay.tick	port	crates/horizon-client/src/game/server_packs.rs::Game::tick_server_packs	finishes the reload; gap: minor: no fade-out before it finishes
-LoadingOverlay.isReadyToFadeOut	missing		minor: no one-second fade-in before the reload can finish
+LoadingOverlay.isReadyToFadeOut	port	crates/horizon-client/src/game/packs.rs::PackReload::finished	a mid-game reload's overlay stays up for 1000 ms from its first frame (OVERLAY_HOLD) before the staged pack is applied
 LoadingOverlay.extractProgressBar	port	crates/horizon-client-render/src/level_loading.rs::draw_progress	200 by 2 bar; gap: minor: no fade alpha
 LoadingOverlay.LogoTexture.loadContents	skip:other		Horizon ships no Mojang logo (title_edition.rs)
 ManageServerScreen.init	port	crates/horizon-client/src/multiplayer.rs::Screen::buttons	name and address fields, resource packs cycle, Done and Cancel (Screen::Edit arm)
