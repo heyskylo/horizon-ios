@@ -22,13 +22,6 @@ Feature → files → harness for the most-changed areas: [docs/architecture.md]
   is the GitHub account the PR is opened from (`gh api user --jq .login`). Issues say "Filed by", reviews
   "Review by". Every comment starts with `🤖 Agent:`. Write only as the person you work for: the lines on
   this page that name Ludovic are for his own agents (account `ludovic111`), never for anyone else's.
-- **Review only when asked, and decide.** Review a pull request only when its author or a maintainer asks.
-  Asked by a maintainer to review open pull requests in general, take them one at a time, oldest first, skipping
-  drafts, your person's own and those they already reviewed. Check that the change does what it says (bugs, edge
-  cases), what it could break, whether tests cover it, and whether its scope and description hold up. Report only
-  what you can point to with a `file:line`, each point marked Blocker (fix before merge), Important, Nit,
-  Suggestion, Question or Praise. Submit a decision, never a plain comment: `gh pr review --approve` when nothing
-  blocks, `--request-changes` when something does.
 - **Attribution.** Commits end with a `Co-Authored-By:` line for the agent that wrote them, and PR bodies
   with that agent's own "Generated with" line. Example, Ludovic's agents (Claude Code on `ludovic111`):
   first line `> 🤖 Opened by Ludovic's AI agent (Claude), not by Ludovic himself.`, commits
@@ -145,7 +138,8 @@ python3 tools/parity.py --changed-files paths.txt --list   # which harnesses cov
 python3 tools/parity.py mob_ai sculk       # named harnesses
 python3 tools/lan_e2e.py --check chest     # two real games over LAN (server-thread host)
 python3 tools/agent_control_e2e.py         # horizon-ctl / MCP end to end
-python3 tools/lang_coverage.py --summary   # the keys each language still misses, and its English leftovers
+python3 tools/lang_coverage.py --summary   # one line per language: how many keys it carries and what it misses
+python3 tools/lang_coverage.py --summary --show-keys   # the same, then the keys behind the counts
 ```
 
 - Harnesses and the game need the vanilla data in `.local/` (`minecraft/`, `horizon-client/26.3`, `datagen/`,

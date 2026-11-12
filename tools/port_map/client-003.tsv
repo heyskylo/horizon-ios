@@ -2,7 +2,7 @@ ServerData.write	port	crates/horizon-protocol/src/servers.rs::ServerEntry::to_ta
 ServerData.read	port	crates/horizon-protocol/src/servers.rs::ServerEntry::from_tag	acceptedCodeOfConduct is read as its int hash (0 when absent or not an int), with the name, ip, icon and acceptTextures
 ServerData.copyNameIconFrom	inline	crates/horizon-client/src/multiplayer.rs::Screen::click	the Edit save writes name, ip and pack setting and keeps the icon
 ServerData.copyFrom	inline	crates/horizon-client/src/multiplayer.rs::Screen::click	Edit opens the form pre-filled from the entry (name, ip, pack setting)
-ServerData.validateIcon	port	crates/horizon-client/src/multiplayer.rs::icon_pixels	gap: minor: only 64x64 PNGs are kept; vanilla keeps any PNG up to 1024x1024 in servers.dat
+ServerData.validateIcon	port	crates/horizon-client/src/multiplayer.rs::valid_icon	keeps any PNG up to 1024x1024 in servers.dat; FaviconTexture.upload's 64x64 is icon_pixels, used for drawing only
 ServerList.get	inline	crates/horizon-client/src/multiplayer.rs::remember_direct_join	Direct Connect looks the address up among shown and hidden entries before adding a hidden one
 ServerList.unhide	inline	crates/horizon-client/src/multiplayer.rs::Screen::click	Add Server brings back the hidden entry for that address with the new name and icon, keeping its other settings
 ServerList.remove	port	crates/horizon-client/src/multiplayer.rs::Screen::click	Delete confirm removes the selected row and saves

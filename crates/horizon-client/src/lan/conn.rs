@@ -1667,7 +1667,7 @@ fn play(
     shared.entered_play();
     let conn = shared.next_id();
     let pending = Arc::new(AtomicUsize::new(0));
-    let outbox = match io_pool::Outbox::new(pending.clone()) {
+    let outbox = match io_pool::Outbox::new(pending.clone(), !c.is_memory()) {
         Ok(outbox) => outbox,
         Err(e) => {
             log::warn!("[lan] {e}");
