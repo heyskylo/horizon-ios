@@ -573,7 +573,7 @@ impl Game<'_> {
         let corner = |max: bool| {
             [Axis::X, Axis::Y, Axis::Z].map(|a| if max { around.max(a) } else { around.min(a) })
         };
-        let no_blocks = no_blocks_in(&self.world, corner(false), corner(true));
+        let no_blocks = no_blocks_in(&self.world, corner(false), corner(true), &host.hub.encoder);
         let allow_flight = host.hub.config.allow_flight;
         let g = &mut host.hub.guests[gi];
         g.vehicle_good = Some([target.x, target.y, target.z]);
