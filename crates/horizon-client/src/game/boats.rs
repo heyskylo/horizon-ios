@@ -720,19 +720,14 @@ impl Game<'_> {
     /// of it (`ClipContext.Block.FALLDAMAGE_RESETTING`, `ClipContext.Fluid.WATER`)
     /// and a hit resets the fall, before the move's own drop counts.
     pub(super) fn vehicle_fall_reset(&self, fall: f64, from: Vec3, moved: Vec3) -> f64 {
-        let length = moved.length_squared();
-        if fall == 0.0 || length < 1.0 {
-            return fall;
-        }
-        let reset = &self.res.motion().fall_reset;
-        let hit = horizon_client::entities::fall_reset_hit(
+        fall_reset(
             &self.world,
-            &self.res.motion().fluids,
-            |p| reset.contains(&*self.res.facts().get(self.world.block(p.x, p.y, p.z)).name),
+            self.res.motion(),
+            self.res.facts(),
+            fall,
             from,
             moved,
-        );
-        if hit { 0.0 } else { fall }
+        )
     }
     /// `AbstractBoat.checkFallDamage` after a move that went `moved_y` (with
     /// `b` already where it landed): on the ground the fall resets; a move
@@ -2162,3 +2157,26 @@ mod tests {
     }
 }
 horizon_client::impl_joined!(Boat);
+
+/// [`Game::vehicle_fall_reset`] from the tables it reads.
+pub(super) fn fall_reset(
+    world: &horizon_client::world::World,
+    motion: &horizon_client::motion::MotionResources,
+    facts: &horizon_client::blocks::BlockFacts,
+    fall: f64,
+    from: Vec3,
+    moved: Vec3,
+) -> f64 {
+    if fall == 0.0 || moved.length_squared() < 1.0 {
+        return fall;
+    }
+    let reset = &motion.fall_reset;
+    let hit = horizon_client::entities::fall_reset_hit(
+        world,
+        &motion.fluids,
+        |p| reset.contains(&*facts.get(world.block(p.x, p.y, p.z)).name),
+        from,
+        moved,
+    );
+    if hit { 0.0 } else { fall }
+}
