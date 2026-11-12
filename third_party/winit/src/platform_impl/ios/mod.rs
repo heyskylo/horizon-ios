@@ -1,6 +1,7 @@
 #![allow(clippy::let_unit_value)]
 
 mod app_state;
+mod display_link;
 mod event_loop;
 mod hardware_keyboard;
 mod hardware_mouse;

@@ -9,7 +9,7 @@ Upstream revision: `e9809ef54b18499bb4f2cac945719ecc2a61061b`.
 The upstream Apache-2.0 license and copyright notices are retained in LICENSE.
 
 The patch is confined to Cargo.toml (UIKit binding features), src/lib.rs (host mapping tests),
-and src/platform_impl/ios/{mod,view,view_controller,window,event_loop,scene,hardware_keyboard,hardware_mouse}.rs.
+and src/platform_impl/ios/{mod,app_state,display_link,view,view_controller,window,event_loop,scene,hardware_keyboard,hardware_mouse}.rs.
 `src/event.rs` also provides the iOS-only virtual-key constructor described below. All other files are the unmodified published crate. Root Cargo.toml patches crates.io so local
 and CI builds use the same input backend; Cargo.lock removes only winit's registry source/checksum.
 
@@ -58,3 +58,13 @@ view-local coordinates, matching hover events, including across orientation chan
 ## Custom touch key transport
 
 `KeyEvent::from_virtual_key` creates an iOS-only physical key press/release without invented text or repeat events. Custom touch bindings use it to reach the same menu/edit-box handlers as physical keys. Horizon marks this dispatch as touch input so it neither claims hardware ownership nor adds virtual keys to the physical keyboard ledger.
+
+## ProMotion refresh rate
+
+`CADisableMinimumFrameDurationOnPhone` in the game plist only permits rates above 60 Hz on
+ProMotion iPhones; the display runs at the rate the app's display links ask for, and winit's
+redraws come from run-loop observers, not a display link. `display_link.rs` adds one
+`CADisplayLink` to the main run loop at launch (`app_state::did_finish_launching`) with
+`preferredFrameRateRange` 80–120, preferred 120, as Apple suggests for games. Its callback does
+nothing: the game's loop and frame limiter still decide when to draw. 60 Hz screens cap the range
+at their own maximum.
