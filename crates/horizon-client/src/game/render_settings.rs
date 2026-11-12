@@ -3,20 +3,19 @@
 use super::*;
 
 #[derive(Default)]
-pub(super) struct FrameAttempt(Option<FrameKey>);
+pub(super) struct FrameAttempt<K = FrameKey>(Option<K>);
 
-/// HDR wanted, HDR output offered, Smooth Gradients' wide frame, the pick's path, its outcome.
+/// The frame the renderer would be made with (`Renderer::requested_frame`), the pick's path,
+/// its outcome.
 type FrameKey = (
-    bool,
-    bool,
-    bool,
+    Option<horizon_client::gfx::FrameConfiguration>,
     PathBuf,
     Option<Option<horizon_shader_api::Api>>,
 );
 
-impl FrameAttempt {
+impl<K: PartialEq> FrameAttempt<K> {
     // Remember attempts, including failures, until the requested configuration changes.
-    fn changed(&mut self, key: FrameKey) -> bool {
+    fn changed(&mut self, key: K) -> bool {
         let changed = self.0.as_ref() != Some(&key);
         self.0 = Some(key);
         changed
@@ -39,8 +38,13 @@ impl Game<'_> {
             None,
             self.settings.horizon.api,
             self.settings.horizon.translucent_batching,
-            self.settings.horizon.wide_frame(),
+            self.settings.vsync,
+            &self.settings.horizon,
             shader_packs::picked_pack_shape(&self.settings),
+            self.renderer
+                .as_ref()
+                .map(|r| r.display_reading())
+                .unwrap_or_default(),
             (
                 self.settings.file.int("textureFiltering"),
                 self.settings.file.int("maxAnisotropyBit"),
@@ -73,20 +77,20 @@ impl Game<'_> {
         } else {
             Some(None)
         };
-        let horizon = &self.settings.horizon;
-        let wide_frame = horizon.wide_frame();
-        // On wants HDR whether or not it is offered; the offer can change while the game runs
-        // (Vulkan's formats follow desktop HDR and the window's output), and the frame with it.
-        let offered = horizon_client::graphics::hdr_offered();
-        let key = (horizon.hdr_wanted(), offered, wide_frame, path, outcome);
-        if !self.frame_attempted.changed(key) {
+        // The renderer's offer can change while the game runs (Vulkan's formats follow desktop
+        // HDR and the window's output), and the frame with it.
+        let request = shader_packs::picked_pack_shape(&self.settings).frame();
+        let wanted = self
+            .renderer
+            .as_ref()
+            .map(|r| r.requested_frame(&self.settings.horizon, request));
+        if !self.frame_attempted.changed((wanted, path, outcome)) {
             return;
         }
-        let shape = shader_packs::picked_pack_shape(&self.settings);
         if self
             .renderer
             .as_ref()
-            .is_none_or(|r| r.frame_follows(wide_frame, shape.linear, shape.hdr_float))
+            .is_none_or(|r| r.frame_follows(&self.settings.horizon, request))
         {
             return;
         }
@@ -228,19 +232,20 @@ mod tests {
     fn failed_frame_attempt_waits_for_a_policy_or_setting_change() {
         let mut attempts = FrameAttempt::default();
         let mut rebuilds = 0;
+        // The requested frame stands for itself here: the 8-bit one, then the float one.
         for key in [
-            (true, false, true, "p", None),
-            (true, false, true, "p", None),
+            ("8-bit", "p", None),
+            ("8-bit", "p", None),
             // HDR output offered later, with HDR On: the frame is looked at again.
-            (true, true, true, "p", None),
-            (true, true, true, "p", Some(Some(Api::V0_2))),
-            (true, true, true, "p", Some(Some(Api::V0_2))),
-            (true, true, true, "p", Some(None)),
-            (true, true, true, "p", Some(None)),
-            (true, true, true, "q", None),
-            (false, true, false, "q", None),
+            ("float", "p", None),
+            ("float", "p", Some(Some(Api::V0_2))),
+            ("float", "p", Some(Some(Api::V0_2))),
+            ("float", "p", Some(None)),
+            ("float", "p", Some(None)),
+            ("float", "q", None),
+            ("8-bit", "q", None),
         ] {
-            if attempts.changed((key.0, key.1, key.2, key.3.into(), key.4)) {
+            if attempts.changed(key) {
                 // A replacement fails: no success is recorded, just the attempted key.
                 rebuilds += 1;
             }

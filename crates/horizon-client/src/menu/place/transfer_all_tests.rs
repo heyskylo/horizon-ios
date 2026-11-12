@@ -149,3 +149,36 @@ fn quick_move_crafting_records_only_items_moved() {
         });
     }
 }
+
+/// A viewer's transfer takes a worn tool, as crafting by hand does (JEI's
+/// "+"), while the recipe book's placement keeps vanilla's
+/// `isUsableForCrafting` and leaves it.
+#[test]
+fn a_transfer_takes_a_worn_tool() {
+    let worn = || {
+        let mut rod = stack("fishing_rod", 1).unwrap();
+        rod.damage = 40;
+        Some(rod)
+    };
+    with_menu(Kind::Inventory, |env, menu| {
+        menu.set_player_item(0, worn());
+        menu.set_player_item(1, stack("carrot", 1));
+        assert_eq!(
+            menu.transfer_recipe(env, "minecraft:carrot_on_a_stick", false),
+            Ok(())
+        );
+        let filled: Vec<_> = (1..5).filter_map(|s| menu.slot(s).cloned()).collect();
+        assert!(
+            filled
+                .iter()
+                .any(|s| &*s.item == "minecraft:fishing_rod" && s.damage == 40)
+        );
+        assert_eq!(menu.player_item(0), None);
+    });
+    with_menu(Kind::Inventory, |env, menu| {
+        menu.set_player_item(0, worn());
+        menu.set_player_item(1, stack("carrot", 1));
+        let _ = menu.place_recipe(env, "minecraft:carrot_on_a_stick", false, false, None);
+        assert!(menu.player_item(0).is_some_and(|s| s.damage == 40));
+    });
+}

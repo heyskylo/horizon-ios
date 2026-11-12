@@ -433,6 +433,16 @@ mod tests {
     }
 
     #[test]
+    fn a_spline_without_its_spline_is_ported_not_a_panic() {
+        // A cache over a spline function the pack left without its "spline" field.
+        let (v, _) = up(
+            "data/x/worldgen/density_function/f.json",
+            json!({"type": "minecraft:flat_cache", "argument": {"type": "minecraft:spline"}}),
+        );
+        assert!(v.is_object(), "{v}");
+    }
+
+    #[test]
     fn density_arguments_and_removed_types() {
         let (v, _) = up(
             "data/x/worldgen/density_function/f.json",

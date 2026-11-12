@@ -32,8 +32,15 @@ impl Hooks for Arc<Probe> {
 }
 
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and an isolated mod registry"]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
 fn the_active_stack_survives_a_partial_contact_and_consumption_removes_the_entity() {
+    crate::mod_api::in_own_process(
+        "game::item_contact_tests::the_active_stack_survives_a_partial_contact_and_consumption_removes_the_entity",
+        the_active_stack_survives_a_partial_contact_and_consumption_removes_the_entity_in_own_process,
+    );
+}
+
+fn the_active_stack_survives_a_partial_contact_and_consumption_removes_the_entity_in_own_process() {
     let root = PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
     let settings = Settings::default();
     let loaded = load_resources(
@@ -125,5 +132,45 @@ fn the_active_stack_survives_a_partial_contact_and_consumption_removes_the_entit
         spawn(&mut game, count);
         game.tick_items();
         assert!(game.dropped.is_empty(), "consumed stack of {count}");
+    }
+
+    // More than the helper threshold, with a native contact hook loaded:
+    // every item must still reach its turn's hook, keeping opaque components.
+    // Unique components prevent merges despite all items sharing a landing.
+    for count in [13, 2, 1] {
+        game.dropped.clear();
+        probe.contacts.lock().unwrap().clear();
+        for n in 0..300 {
+            let mut stack = input.clone();
+            stack.count = count;
+            stack
+                .data_mut()
+                .set_other("fixture:opaque", Some(horizon_world::nbt::Tag::Long(n)));
+            game.spawn_item(stack, [landing[0], 64.1, landing[2]], [0.0, -0.3, 0.0], 20);
+            game.dropped.last_mut().unwrap().ticks = 39;
+        }
+        game.ticked_entities_through = u32::MAX;
+        let before = game.dropped.clone();
+        game.tick_items();
+        let expected_contacts: Vec<_> = before
+            .iter()
+            .map(|item| (false, item.id, [4, 63, 4], landing, count))
+            .collect();
+        assert_eq!(*probe.contacts.lock().unwrap(), expected_contacts);
+        if count <= 2 {
+            assert!(game.dropped.is_empty(), "consumed 300 stacks of {count}");
+        } else {
+            assert_eq!(game.dropped.len(), 300);
+            for (item, old) in game.dropped.iter().zip(&before) {
+                let mut expected = old.stack.clone();
+                expected.count = 11;
+                assert_eq!(item.stack, expected);
+                assert_eq!(item.id, old.id);
+                assert_eq!(item.join_seq(), old.join_seq());
+                assert_eq!(item.position, vanilla.position);
+                assert_eq!(item.velocity, vanilla.velocity);
+                assert_eq!(item.age, 1);
+            }
+        }
     }
 }

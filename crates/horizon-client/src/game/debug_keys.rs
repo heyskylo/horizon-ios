@@ -504,6 +504,14 @@ impl Game<'_> {
                     )],
                 );
             }
+            // Dynamic Resolution's scale, which moves on its own.
+            if self.settings.horizon.dynamic_resolution {
+                let scale = super::frame_autotune::world_scale(
+                    &self.settings.horizon,
+                    &self.dynamic_resolution,
+                );
+                d.group("system", [format!("Resolution Scale: {scale}% (dynamic)")]);
+            }
             let kind = match info.device_type {
                 wgpu::DeviceType::IntegratedGpu => " (iGPU)",
                 wgpu::DeviceType::DiscreteGpu => " (dGPU)",
@@ -528,8 +536,8 @@ impl Game<'_> {
         }
         // Horizon's own: HDR's output while the setting is on, under the GPU (a group of its
         // own would move others to the other column).
-        if self.settings.horizon.hdr_wanted()
-            && let Some(r) = self.renderer.as_ref()
+        if let Some(r) = self.renderer.as_ref()
+            && r.output().requests_hdr(self.settings.horizon.hdr)
         {
             d.group("system", [r.hdr_line()]);
         }

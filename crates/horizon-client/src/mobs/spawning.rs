@@ -163,6 +163,22 @@ fn populate_armor(m: &mut Mob, d: &LocalDifficulty) {
         }
     }
 }
+/// `Spider.SpiderEffectsGroupData.setRandomEffect`: Speed on two of five
+/// draws, then Strength, Regeneration and Invisibility on one each.
+pub fn spider_random_effect(random: &mut impl RandomSource) -> &'static str {
+    match random.next_int_bound(5).unwrap_or(0) {
+        0 | 1 => "minecraft:speed",
+        2 => "minecraft:strength",
+        3 => "minecraft:regeneration",
+        _ => "minecraft:invisibility",
+    }
+}
+/// `Spider.finalizeSpawn`: everything it adds to `Mob.finalizeSpawn` is the
+/// skeleton jockey (a spawn in the level, `Game::spawn_jockeys`) and, on Hard,
+/// one of four effects for good (`MobEffectInstance(effect, -1)`) for
+/// `0.1 * getSpecialMultiplier()` of spiders, for every spawn reason. Chunk
+/// generation rolls the same through [`super::finalize`]'s `Group::Spider`;
+/// the draw here is the mob's own random, as the rest of this finalizer's is.
 pub fn finalize(m: &mut Mob, biome: &BiomeFacts, difficulty: &LocalDifficulty) {
     use Species as S;
     let climate_index = match biome.climate {
@@ -236,8 +252,9 @@ pub fn finalize(m: &mut Mob, biome: &BiomeFacts, difficulty: &LocalDifficulty) {
                 ));
             }
             if m.species() == S::ZombieVillager {
+                // `finalizeVillagerType` only picks the type; the profession is
+                // the constructor's draw (`defineSynchedData`).
                 m.extra.variant = villager_type(biome);
-                m.extra.variant2 = m.random.next_int_bound(15).unwrap_or(0) as u8;
             }
         }
         // ZombifiedPiglin.populateDefaultEquipmentSlots: a golden sword, or
@@ -311,6 +328,13 @@ pub fn finalize(m: &mut Mob, biome: &BiomeFacts, difficulty: &LocalDifficulty) {
             m.extra.pick_up_loot = true;
         }
         S::Illusioner => super::illusioner::finalize(m),
+        // Spider.finalizeSpawn: on Hard, a tenth carry a permanent effect.
+        S::Spider => {
+            if difficulty.hard && m.random.next_float() < 0.1 * difficulty.special() {
+                let effect = spider_random_effect(&mut m.random);
+                m.add_effect(effect, -1, 0);
+            }
+        }
         S::Vindicator => m.extra.set_main_hand(Some("minecraft:iron_axe".into())),
         S::Villager => {
             m.extra.variant = villager_type(biome);
@@ -350,6 +374,13 @@ pub fn finalize(m: &mut Mob, biome: &BiomeFacts, difficulty: &LocalDifficulty) {
             difficulty.special(),
             super::finalize::Reason::Natural,
         );
+    }
+    // Drowned.finalizeSpawn, once Zombie.finalizeSpawn is done: a nautilus
+    // shell in an empty offhand, as a guaranteed drop. Java draws it from the
+    // level's random; this route stands in the mob's own, as above.
+    if m.species() == S::Drowned && m.extra.off_hand.is_none() && m.random.next_float() < 0.03 {
+        super::finalize::set_item(m, super::finalize::OFFHAND, "minecraft:nautilus_shell");
+        super::finalize::set_drop_chance(m, super::finalize::OFFHAND, 2.0);
     }
 }
 /// A baby from `Animal.spawnChildFromBreeding`: `getBreedOffspring` creates
@@ -393,6 +424,14 @@ mod tests {
         Some(crate::mobs::MobTypes::load(&root).unwrap())
     }
     fn spawn(types: &crate::mobs::MobTypes, kind: &str, id: u32) -> Mob {
+        spawn_with(types, kind, id, &LocalDifficulty::new(3, 0, 0, 1.0))
+    }
+    fn spawn_with(
+        types: &crate::mobs::MobTypes,
+        kind: &str,
+        id: u32,
+        difficulty: &LocalDifficulty,
+    ) -> Mob {
         let kind = std::sync::Arc::new(types.types.get(kind).unwrap().clone());
         let mut m = Mob::new(
             id,
@@ -400,9 +439,69 @@ mod tests {
             horizon_core::geometry::Vec3::new(0.5, 64.0, 0.5),
             0.0,
         );
-        let difficulty = LocalDifficulty::new(3, 0, 0, 1.0);
-        finalize(&mut m, &BiomeFacts::default(), &difficulty);
+        finalize(&mut m, &BiomeFacts::default(), difficulty);
         m
+    }
+    /// The four effects `Spider.SpiderEffectsGroupData.setRandomEffect` picks.
+    const SPIDER_EFFECTS: [&str; 4] = [
+        "minecraft:speed",
+        "minecraft:strength",
+        "minecraft:regeneration",
+        "minecraft:invisibility",
+    ];
+    /// `Spider.finalizeSpawn`: on Hard, `0.1 * getSpecialMultiplier()` of
+    /// spiders get one of those four for good (`MobEffectInstance(effect, -1)`).
+    /// `/summon`, eggs, spawners and natural spawns all run it; Normal and
+    /// CaveSpider's own `finalizeSpawn` never roll.
+    #[test]
+    fn runtime_spiders_roll_a_permanent_effect_on_hard() {
+        let Some(types) = types() else { return };
+        // Long played-in time: `getSpecialMultiplier` at its 1.0 maximum.
+        let hard = LocalDifficulty::new(3, 1_512_000, 3_600_000, 1.0);
+        assert_eq!(hard.special(), 1.0);
+        let mut carried = 0;
+        let mut kinds = [0usize; 4];
+        for id in 1..=400 {
+            let m = spawn_with(&types, "minecraft:spider", id, &hard);
+            let effects = &m.extra.effects;
+            assert!(effects.len() <= 1, "{id}: {effects:?}");
+            for &(effect, duration, amplifier) in effects {
+                let i = SPIDER_EFFECTS
+                    .iter()
+                    .position(|e| *e == effect)
+                    .unwrap_or_else(|| panic!("{id}: {effect}"));
+                assert_eq!((duration, amplifier), (-1, 0), "{id}: {effect}");
+                kinds[i] += 1;
+                carried += 1;
+            }
+        }
+        // 10 percent of 400 is 40.
+        assert!((25..=60).contains(&carried), "{carried} of 400 spiders");
+        // Vanilla's `nextInt(5)`: Speed on 0 or 1, then one each.
+        assert!(kinds.iter().all(|n| *n > 0), "{kinds:?}");
+        assert!(
+            kinds[0] >= kinds[1] && kinds[0] >= kinds[2] && kinds[0] >= kinds[3],
+            "{kinds:?}"
+        );
+        // Normal: `level.getDifficulty() == Difficulty.HARD` is false.
+        let normal = LocalDifficulty::new(2, 1_512_000, 3_600_000, 1.0);
+        for id in 1..=400 {
+            let m = spawn_with(&types, "minecraft:spider", id, &normal);
+            assert!(
+                m.extra.effects.is_empty(),
+                "normal {id}: {:?}",
+                m.extra.effects
+            );
+        }
+        // CaveSpider.finalizeSpawn returns the group data without rolling.
+        for id in 1..=400 {
+            let m = spawn_with(&types, "minecraft:cave_spider", id, &hard);
+            assert!(
+                m.extra.effects.is_empty(),
+                "cave spider {id}: {:?}",
+                m.extra.effects
+            );
+        }
     }
     /// #2783: `/summon`, eggs, spawners and natural spawns run
     /// `WitherSkeleton.finalizeSpawn`: attack damage base 4.0, not the

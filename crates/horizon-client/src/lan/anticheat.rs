@@ -13,8 +13,8 @@ use std::{io::Write, time::Instant};
 
 pub struct Anticheat {
     pub config: Config,
-    /// `log`, opened at the first flag.
-    log: Option<std::fs::File>,
+    /// The thread writing `log`, started at the first flag: the tick only hands it the lines.
+    log: Option<LogWriter>,
     /// The players' kicks by check, read from `strikes` at the first kick.
     strikes: Option<Strikes>,
     /// When the previous server tick started, for the timer's balance.
@@ -38,19 +38,44 @@ impl Anticheat {
             return;
         }
         if self.log.is_none() {
-            let path = std::path::Path::new(&self.config.log);
+            let path = std::path::PathBuf::from(&self.config.log);
             if let Some(dir) = path.parent() {
                 let _ = std::fs::create_dir_all(dir);
             }
-            self.log = std::fs::OpenOptions::new()
+            let Ok(file) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(path)
-                .ok();
+                .open(&path)
+            else {
+                return;
+            };
+            // A flood of flags (a lagging player, the load-test bots) wrote to the disk on the
+            // tick thread, one line at a time: the lines go to a writer thread instead, in order.
+            let (send, lines) = std::sync::mpsc::channel::<String>();
+            let Ok(thread) = std::thread::Builder::new()
+                .name("anticheat-log".into())
+                .spawn(move || {
+                    // The lines waiting are written together, flushed once none is left.
+                    let mut file = std::io::BufWriter::new(file);
+                    while let Ok(entry) = lines.recv() {
+                        let _ = file.write_all(entry.as_bytes());
+                        for entry in lines.try_iter() {
+                            let _ = file.write_all(entry.as_bytes());
+                        }
+                        let _ = file.flush();
+                    }
+                })
+            else {
+                return;
+            };
+            self.log = Some(LogWriter {
+                send: Some(send),
+                thread: Some(thread),
+            });
         }
-        if let Some(file) = &mut self.log {
+        if let Some(send) = self.log.as_ref().and_then(|log| log.send.as_ref()) {
             let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-            let _ = writeln!(file, "[{time}] {line}");
+            let _ = send.send(format!("[{time}] {line}\n"));
         }
     }
 
@@ -72,6 +97,22 @@ impl Anticheat {
             let _ = std::fs::write(path, json);
         }
         kick
+    }
+}
+
+/// The flag log's writer thread. Dropped with the anticheat (the server stopping), it closes the
+/// channel and waits for the thread to write every line handed to it, so none is lost.
+struct LogWriter {
+    send: Option<std::sync::mpsc::Sender<String>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for LogWriter {
+    fn drop(&mut self) {
+        self.send = None;
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -157,11 +198,8 @@ impl Hub {
         };
         if ac.config.runs(Check::Prediction) {
             let g = &mut self.guests[i];
-            let (input, sprinting) = (g.input, g.anticheat.sprinting);
-            g.anticheat
-                .record
-                .get_or_insert_default()
-                .tick_end(input, sprinting);
+            let (input, sprinting) = (g.input, g.client_sprinting);
+            g.record.get_or_insert_default().tick_end(input, sprinting);
         }
         if !ac.config.runs(Check::Timer) {
             return;
@@ -249,7 +287,7 @@ impl Hub {
         flags: u8,
     ) {
         if self.recording() {
-            let record = self.guests[i].anticheat.record.get_or_insert_default();
+            let record = self.guests[i].record.get_or_insert_default();
             record.moved(pos, rot, flags);
         }
     }
@@ -259,7 +297,7 @@ impl Hub {
     pub(super) fn anticheat_pong(&mut self, i: usize, id: i32) {
         let ticks = self.ticks;
         if self.recording() {
-            let record = self.guests[i].anticheat.record.get_or_insert_default();
+            let record = self.guests[i].record.get_or_insert_default();
             // Ids are server ticks, cut to 32 bits.
             record.pong(u64::from(id as u32), ticks);
         }
@@ -280,7 +318,7 @@ impl Hub {
                     .get_mut()
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             );
-            if let Some(record) = g.anticheat.record.as_deref_mut() {
+            if let Some(record) = g.record.as_deref_mut() {
                 for change in changes {
                     record.changed(ticks, change);
                 }
@@ -561,6 +599,66 @@ impl Hub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The log's lines reach the file in the order flagged, every one of them by the time the
+    /// anticheat is dropped (the server stopping), even a flood written just before.
+    #[test]
+    fn the_log_keeps_every_line_in_order_up_to_the_drop() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-anticheat-log-{}", std::process::id()));
+        let path = dir.join("logs").join("anticheat.log");
+        let mut anticheat = Anticheat::new(Config {
+            log: path.to_string_lossy().into_owned(),
+            ..Config::default()
+        });
+        for i in 0..20_000 {
+            anticheat.write_log(&format!("flag {i}"));
+        }
+        drop(anticheat);
+        let written = std::fs::read_to_string(&path).expect("the log was written");
+        let _ = std::fs::remove_dir_all(&dir);
+        let flags: Vec<&str> = written
+            .lines()
+            .map(|line| line.split_once("] ").expect("a timestamp").1)
+            .collect();
+        assert_eq!(flags.len(), 20_000);
+        assert!(
+            flags
+                .iter()
+                .enumerate()
+                .all(|(i, f)| *f == format!("flag {i}"))
+        );
+    }
+
+    /// Dropping the writer waits for its thread to write what it was handed, however far behind
+    /// it is.
+    #[test]
+    fn dropping_the_writer_waits_for_its_lines() {
+        let written = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (send, lines) = std::sync::mpsc::channel::<String>();
+        let out = std::sync::Arc::clone(&written);
+        let thread = std::thread::spawn(move || {
+            for line in lines {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                out.lock().unwrap().push(line);
+            }
+        });
+        let writer = LogWriter {
+            send: Some(send),
+            thread: Some(thread),
+        };
+        for i in 0..5 {
+            writer
+                .send
+                .as_ref()
+                .unwrap()
+                .send(format!("flag {i}"))
+                .unwrap();
+        }
+        drop(writer);
+        let expected: Vec<String> = (0..5).map(|i| format!("flag {i}")).collect();
+        assert_eq!(*written.lock().unwrap(), expected);
+    }
 
     #[test]
     fn uuids_are_written_as_the_ban_list_writes_them() {

@@ -6,6 +6,8 @@ API 362 adds `native_compute_fov_modifier(player, base, modifier)` on the client
 
 The client hook `native_client_packet(packet)` hears each play packet the server sends, decoded (`ClientboundPlayPacket`, `horizon_protocol`'s `play::Clientbound`), just before the game handles it, custom payloads included and in the order they came. It only reads: the game handles the packet as it would without the mod. Packets the network thread handles itself (keep-alives, bundle delimiters, resource packs, cookies, server links, transfers, disconnects, the configuration switch, `minecraft:brand`, far terrain tiles) and the configuration phase are not heard. Bundles need "hooks": 408.
 
+`native_registry_name(registry, id)` (`host.registry_name`) is the name of a protocol id in a registry: `minecraft:item`, `minecraft:data_component_type`, `minecraft:entity_type`, `minecraft:sound_event`, `minecraft:particle_type` and the like. It names what `native_client_packet`'s packets carry as numbers (a `Stack`'s item and components, `AddEntity`'s type, `Sound`, `LevelParticles`). On a client the ids are those of the server it is connected to, so a registry the server synced (enchantments, painting variants) and a mod's own data components, when the server carries them, name too; on a server they are the ids it sends. It answers `None` for an unknown registry, an id out of range or negative, and while no server is connected. Bundles need `"hooks": @API:registry_name@`.
+
 The client hook `native_render_name_tag(entity_id, kind, vanilla_visible, visible, text)` runs at player and mob, armor stand, and item frame name decisions before shared geometry. Set `visible` to override vanilla and `text` to `Some` literal replacement text (NeoForge `RenderNameTagEvent`). Distance and entity availability still apply; the local player's tag is considered only when its own camera and settings gates allow it. Bundles need "hooks": 372.
 
 Native mods are **mixin bundles** that change the game's own Rust source before it is compiled, with
@@ -744,9 +746,13 @@ decides what happens: only `horizon-mod.toml` with `assets/` and `data/` is a co
 one file: `horizon-mod.toml`, `assets/` and `data/` are its content, checked as a content mod's
 (`horizon_mods::Content`) and left out of the build, and the two manifests name the same mod id. A `.hmod` with
 native code is never a WebAssembly mod: one carrying `mod.wasm` is refused with
-`horizon_mods::index::native::WASM_GONE`. An `.hnmod` (code only) keeps loading as before. The registry keeps
-publishing native mods as `.hnmod` until launchers and the game read native `.hmod`s. Every rule of the file is in
-[api/mod-files.md](api/mod-files.md).
+`horizon_mods::index::native::WASM_GONE`. An `.hnmod` (code only) keeps loading as before. The launcher can install
+native `.hmod` files from the registry, alongside legacy `.hnmod`s. A build validates the content and snapshots it
+under its own `native-content/<id>/`, then the game layers it through the normal content loader before loading
+sounds and textures. Updating the installed archive cannot change an older build's content; rebuilding without a
+mod removes its snapshot, and turning it off excludes its content. Namespace collisions follow the content mod
+rules. Put sound events in `assets/<namespace>/sounds.json` and their files in `assets/<namespace>/sounds/*.ogg`
+at the archive's top level, not under `mixins/`. Every rule of the file is in [api/mod-files.md](api/mod-files.md).
 
 ### Post-build steps
 
@@ -888,6 +894,14 @@ API 59 adds [entities](#entities) for server mods: `native_summon(dimension, kin
 as `/summon` does, and `native_move_entity`, `native_set_display` (a display's transformation, eased over ticks) and
 `native_remove_entity` move, pose and remove displays, markers and interactions: models that move, from a mod's own
 item models. Bundles that use them need `"hooks": 59`.
+
+`native_summon_with_uuid(dimension, kind, pos, nbt, uuid)` is `native_summon` with a UUID the mod picks for the root (the
+entity answers to it in `native_entity_by_uuid` afterwards); nothing is spawned, and None comes back, when an entity of any
+loaded level or a server's player already holds it or a passenger's `UUID` in `nbt` is taken (`/summon`'s "duplicate
+UUIDs"). Passengers in `nbt` are spawned and mounted as in `/summon`; mount and dismount are `native_mount`,
+`native_dismount` and `native_eject_passengers`, and an item frame's `ItemRotation` and a hanging entity's `Facing` change
+through `native_entity_merge_nbt` (`/data merge entity`, which refuses players). Bundles need
+`"hooks": @API:summon_with_uuid@`.
 
 API 60 adds `native_item_bar(stack, bar)`: the small bar `GuiGraphicsExtractor.itemDecorations` draws under an item,
 wherever the game shows one. `bar` arrives holding
@@ -1215,7 +1229,7 @@ API 137 adds an entity getting on or off a vehicle, which a mod can cancel, thro
 
 API 138 adds `native_interaction_key(button, key_mapping, hand, swing_hand, canceled)` fires while playing when an interaction key is about to act on the crosshair: button 0 the attack key (`key.attack`; when an attack is allowed, and each tick a held key keeps digging a block), 1 the use key (`key.use`; once for each hand tried, main first, before the hand's target and item), 2 pick block (`key.pickItem`; only with a block or entity aimed at). Set `canceled` to skip the action; a cancelled use ends the click, so the other hand gets no turn. A cancelled attack or use still swings `hand` unless the mod clears `swing_hand` (true on entry). A single player's window and a server's player (any window that plays on a server). Bundles need "hooks": 138.
 
-API 139 adds `native_gui_layer_pre(layer, batch, canceled)` and `native_gui_layer_post(layer, batch)` fire around each vanilla HUD layer Horizon draws, in its paint order, so a mod places its own drawing below a layer (in `pre`) or above it (in `post`), NeoForge's `RegisterGuiLayersEvent` registerBelow/registerAbove, and hides a layer by setting `canceled` in `pre` (`RenderGuiLayerEvent.Pre`). Layer ids: `minecraft:crosshair`, `hotbar`, `effects`, `boss_overlay`, `vehicle_health` (riding a mount), `contextual_info_bar` (the jump bar, locator bar or experience bar with the level number), `player_health` (health, armor, food and air rows, one pass), `selected_item_name`, `sleep_overlay`, `overlay_message` (action bar), `title`, `scoreboard_sidebar`, `subtitle_overlay`, `chat` (the unfocused lines) and `tab_list`. F1 hides the layers it hides in vanilla, and then nothing fires for them. The camera overlays (drawn by the screen-effects pass) and the debug screen are not layers. A hidden layer still runs its game logic (the health rows' blink, the bubble pop sound) and `post` still fires. Bundles need "hooks": 139.
+API 139 adds `native_gui_layer_pre(layer, batch, canceled)` and `native_gui_layer_post(layer, batch)` fire around each vanilla HUD layer Horizon draws, in its paint order, so a mod places its own drawing below a layer (in `pre`) or above it (in `post`), NeoForge's `RegisterGuiLayersEvent` registerBelow/registerAbove, and hides a layer by setting `canceled` in `pre` (`RenderGuiLayerEvent.Pre`). Layer ids: `minecraft:crosshair`, `hotbar`, `effects`, `boss_overlay`, `vehicle_health` (riding a mount), `player_health` (health, armor, food and air rows, one pass), `contextual_info_bar` (the jump bar, locator bar or experience bar with the level number), `selected_item_name`, `sleep_overlay`, `overlay_message` (action bar), `title`, `scoreboard_sidebar`, `subtitle_overlay`, `chat` (the unfocused lines) and `tab_list`. F1 hides the layers it hides in vanilla, and then nothing fires for them. The camera overlays (drawn by the screen-effects pass) and the debug screen are not layers. A hidden layer still runs its game logic (the health rows' blink, the bubble pop sound) and `post` still fires. Bundles need "hooks": 139.
 
 API 140 adds `native_map_decorations(map, decorations)` is asked each time a map is drawn (held, in an item frame, or on the cartography table's screen) with `NativeMapInfo` (id, centre block, scale, dimension, locked, whether it is in a frame); push `NativeMapDecoration { sprite, x, y, rot, shown_on_frame }` (an atlas sprite, a position in half map pixels from -128 to 127, a rotation 0 to 15, and whether it shows in frames and on the screen like vanilla's markers) and it is drawn after the vanilla decorations with the same pose; a sprite the atlas lacks is left out. Nothing is saved in the map and vanilla's decorations are not passed in. This is the client half of NeoForge's `MapDecorationType`; types registered on the server and saved in map data need code-side registration. Bundles need "hooks": 140.
 
@@ -1230,6 +1244,8 @@ API 143 adds data maps (`RegisterDataMapTypesEvent`). `native_data_map_types(typ
 `native_living_jump(entity, kind)` listens for NeoForge's `LivingEvent.LivingJumpEvent` after a living entity jumps. It receives the entity ID and type, and cannot cancel or change the jump. The player motion and mob ground-jump paths, including cubes and ridden horses and camels, are wired; whether every client-side prediction path reaches them remains unverified. Bundles need `"hooks": 359`.
 
 `native_living_heal(entity, amount, cancel)` corresponds to NeoForge's `LivingHealEvent` at `LivingEntity.heal`. The amount can be changed and cancellation prevents the heal. It covers player effect, food and peaceful regeneration healing and the wired mob healing paths. Other healing paths and client-side coverage remain unverified. `entity` is the affected player or mob ID. Bundles need `"hooks": 358`.
+
+`native_living_death_message(entity, kind, message)` is asked for the death message a tamed mob (wolf, cat, parrot, nautilus) sends its owner, as vanilla's `TamableAnimal.die` does. It is asked once the message is built and only when it would be sent: the owner is online and `show_death_messages` is on. `message` holds the text: replace it, or set it to `None` to tell the owner nothing; every mod is asked in order. Vanilla's named-mob line (`LivingEntity.die`) is only logged on the server, not sent to players, so it is not hooked. This is a pending hook: it gets its API number when its fragment is stamped (`tools/native-hook-fragments/living_death_message.json`).
 
 `native_living_drown(entity, kind, is_drowning, damage_amount, bubble_count, cancel)` asks on the server when a player or generic-air mob cannot breathe and has no air (NeoForge's `LivingDrownEvent`, `LivingEntity.baseTick`). Mods may change the drowning decision, damage and bubble count, or cancel. Damage at or below zero does not hurt. The normal eight bubbles use the entity event; other positive counts are sent in a particle packet, and nonpositive counts suppress bubbles. Bundles need "hooks": 356.
 
@@ -2197,6 +2213,10 @@ shared knockback path; direct velocity pushes (explosions, Punch arrows, hoglin 
 `LivingEntity.knockback` and do not fire it. The fragment assigns the new API number when
 stamped; the existing hook stays version 1.
 
+### Server settings (draft)
+
+`native_online_mode()` is the dedicated server's `online-mode`: true when its players sign in with their accounts. `native_server_port()` is the port it listens on, `server-port` of server.properties or the `--port` it started with. `native_proxy_forwarding()` is `"velocity"` when the server takes its players from a Velocity proxy (`forwarding.secret` beside server.properties, offline mode only) and `"none"` otherwise; the secret itself is never returned. All three are read from the server's live network config, so they match what it does. They are None off a dedicated server (a single player's or LAN world's) and before it listens. The `enforce-secure-profile` and `hardcore` settings are not exposed here.
+
 ### Reading server blocks (draft)
 
 A native server tick hook can call `native_server_block` with its context, a dimension id and a block position. It returns the block name and state properties from a loaded chunk. It does not load a chunk or open a dimension. Reads outside that hook, from a stale context, from unavailable dimensions or outside the world bounds return an error.
@@ -2737,6 +2757,12 @@ server's command tree ask. Without such a mod every answer is the operator level
   `native_permission_check`, and when no mod answers, whether the player's operator level is `default_level` or above.
   The level is the server's for a player who is on or joining, the acting player's inside their hook; anyone else, and
   every player on a client, counts as level 0. Bundles need `"hooks": @API:permission_check@`.
+- Helper **`native_player_permission_value(player, node)`** (`host.player_permission_value`): the node as the
+  permissions mods set it, three-valued as Bukkit's `isPermissionSet` against `hasPermission`: Some(true), Some(false)
+  (a mod set it to false, which is not the same as unset), or None when no mod answers `native_permission_check` (asked
+  with a `default_level` of 0, no operator fallback). A mod applies its own default and parent-node inheritance on None.
+  The operator level is `native_player_permission(player)`. Works for players on the server or not. Server-side.
+  Bundles need `"hooks": @API:permission_value@`.
 - **`native_player_commands_sent_v2(player, name, names, names_hidden)`**: an additive version of
   `native_player_commands_sent`, heard right after v1 at the same times (join, a change of level, a resend) with
   `names` as v1 left it. `names_hidden` lists the root commands an operator of level 4 would get that this player's
@@ -3017,6 +3043,12 @@ console (which waits for the next tick and does nothing inside a player's hook).
   `eject`). `native_entity_mount` may refuse each. Inside a player's hook only the acting player and mobs are reached.
   True when it rides, got off, or one got off; false otherwise and on a client. Server-side. Bundles need
   `"hooks": @API:mount@`.
+- Helpers **`native_vehicle_of(entity)`** and **`native_passengers_of(entity)`** (`host.vehicle_of`, `host.passengers_of`),
+  by entity id in the level in place: the boat, minecart or mob a server player or mob sits on (Bukkit's `getVehicle`), and
+  the server players and mobs riding a boat, minecart or mob, in vanilla's `getPassengers` order (the controlling
+  passenger first; players, then mobs). Read-only: they change nothing. None or empty when nothing rides, for an entity
+  not reached (inside another player's hook only the acting player and mobs are), and on a client. Server-side. Bundles
+  need `"hooks": @API:riding_getters@`.
 - Helper **`native_set_flight(uuid, allow, flying)`** (`host.set_flight`): lets a server player fly in any game mode
   (`allow`) or not, and sets whether they fly now (`flying`), as Bukkit's `Player.setAllowFlight` and `setFlying`
   (`Abilities.mayfly` and `flying`); their client is told, and the server's flying check no longer kicks them. A player
@@ -3263,6 +3295,18 @@ that tick the other mobs of that level read as gone.
   handles](#entity-and-level-handles)) for any loaded level, as `execute in <dimension> run data merge entity` does,
   with the same refusals (a player, a kind Horizon can't reload yet, data that changes nothing). API
   @API:npc_entity_by_uuid@.
+- **`native_find_entity_by_uuid(uuid)`** is `native_entity_by_uuid` from a `&self` context, so a mod can make many
+  lookups from a read-only hook: the same `(dimension, id, kind)`, for a server's player and for the entities of the
+  level in place. A level not in place is read only by swapping it in, which needs `&mut`, so those stay with
+  `native_entity_by_uuid`. None on a client.
+- **`native_entity_nbt_in(dimension, id)`** is the entity's data as `native_entity_nbt` gives it, in any loaded level
+  (`/execute in <dimension> run data get entity`, without `id`): what a mod reads after finding an entity by UUID in
+  another level. None on a client, for a level not loaded, and for no such entity. API @API:npc_entity_lookup@.
+- **`native_level_markers(dimension)`** lists the `minecraft:marker` entities of a loaded level as `(id, position,
+  data)`: the `data` compound is what `/data get entity <marker> data` shows (empty for a marker saved without data).
+  It reads only the level's list of kept entities (displays, interactions, markers), not every entity, so it is the
+  cheap way to find markers used as anchors, beside filtering `native_level_entities`. Empty on a client and for a
+  level not loaded. Bundles need `"hooks": @API:level_markers@`.
 - **`native_set_entity_rotation(dimension, id, yaw, pitch, head_yaw)`** turns an entity without moving it, as
   `/rotate` does (`Entity.forceSetRotation`): its yaw and pitch in degrees (pitch clamped to -90..90), with its body and
   head; `Some(head_yaw)` then turns a mob's head alone (`setYHeadRot`), so an NPC looks over its shoulder. It takes
@@ -3401,6 +3445,10 @@ Bundles need "hooks": @API:hurt_entity@.
   are saved with the world's maps (`data/minecraft/maps/<id>.dat`) and sent like vanilla map data to whoever carries
   the map or sees it framed, players who join later included, so the mod never resends them. None and false on a
   client of a server. Bundles need `"hooks": @API:new_map@`.
+- Helpers `native_map_colors(map_id) -> Option<Vec<u8>>` and `native_map_meta(map_id) -> Option<(u8, String, bool)>`: the
+  picture (16384 bytes, row by row, as `native_paint_map` takes it) and the scale, dimension and locked flag of a map the
+  world keeps. A map is read from its loaded copy or its saved file, which is not loaded by the read. None for a map the
+  world never made or saved, and on a client of a server. No hook is needed.
 - Helper `native_open_menu_with_input(uuid, rows, title, items, input) -> Option<i32>`: a server menu (see "Server
   menus") whose slots in the range `input` hold items as a chest's do (Bukkit's custom inventory with storage slots):
   the player puts stacks in and takes them out by vanilla's click rules (pickup, split, shift-click from their
@@ -3583,8 +3631,8 @@ while no mod asks for it.
   `pos`. Set `cancel` to keep it.
 - **`native_dragon_egg_form(dimension, pos, cancel)`** (on `GameLevel`): the first Ender Dragon fight is about to place
   its egg at `pos`. Set `cancel` to leave the block unchanged.
-- **`native_fluid_level_change(dimension, pos, fluid, from, to, cancel)`** (on `GameLevel`): flowing `water` or `lava`
-  at `pos` is about to change level. Levels run from 0 through 8. Set `cancel` to keep the old level.
+- **`native_fluid_level_change(dimension, pos, fluid, from, to, cancel)`** (on `GameLevel`): flowing `water`, `lava`
+  or a mod fluid (by its id, `ruby:honey`) at `pos` is about to change level. Levels run from 0 through 8. Set `cancel` to keep the old level.
 - **`native_leaves_decay(dimension, pos, cancel)`** (on `GameLevel`): a non-persistent leaf block at distance 7 is
   about to decay. Set `cancel` to keep it.
 - **`native_inventory_block_start(player, name, pos, cancel)`**: a guest is about to open an inventory supplied by a
@@ -3868,6 +3916,12 @@ chest's own slots, then the player's inventory, then the hotbar; an empty slot i
 counts the slots, this lists them. It is `None` on a server, while no server-opened menu is up (the window's own
 inventory, creative) and for a menu whose slots the client doesn't lay out (a lectern).
 
+`host.own_inventory()` (client, API @API:client_own_inventory@) gives the player's own inventory, slots 0-35 by Minecraft's
+numbering (0-8 the hotbar, 9-35 the main inventory), with their components; an empty slot is `None`. Unlike `menu_stacks()`
+it answers whichever menu is up, a server-opened one or the window's own inventory. Armor and the off hand are not in it
+(`living.equipment` has them). It is what the server last synced, so before the first sync every slot is `None`, and it is
+`None` itself on a server. Each call copies the 36 slots.
+
 `host.menu_slot_roles()` (client, `native_menu_slot_roles`, API @API:slot_roles@) says what each of those slots is for,
 in the same numbering, so an inventory mod (drags, the wheel, sorting, quick-stack) works in any menu without a list
 of menu type ids: `NativeSlotRole::Hotbar` and `Inventory` (the player's), `Equipment` (armour, the off hand, a
@@ -3882,6 +3936,17 @@ instead; Horizon's sort buttons (the extras) use it too.
 
 Each read is a `Host` method too (`host.entity_position(entity)`): a helper whose catalog entry names a `receiver`
 (`entity`, `level`) also becomes a method of that handle.
+
+`host.has_line_of_sight(from_entity, to_entity)` (server, `native_has_line_of_sight`, API @API:line_of_sight@) is vanilla's
+`LivingEntity.hasLineOfSight`, the test guards and tab-list mods use: whether the entity `from_entity` sees `to_entity`,
+both given by the id the events carry. The ray runs from the eyes of the first to the eyes of the second (`Entity.getEyeY`),
+against `ClipContext.Block.COLLIDER` block shapes (a bottom slab under the eye line does not block, a stone wall does),
+with no fluids (water does not block), in the collision context of the first entity; it is false for two entities in
+different levels, for more than 128 blocks between the eyes, for an unknown entity and on a client. The shapes are the
+ones mobs use for their own sight. `host.clear_between(dimension, from, to)` (`native_clear_between`) is the same
+COLLIDER ray between two points with no entity (`Level.clip` missing: `true` when it meets no collider). Both answer only
+for the level being ticked on the server: another dimension gives `false`, and a mod asks in the level it runs in.
+Bundles need `"hooks": @API:line_of_sight@`.
 
 ### Entities a client sees
 
@@ -4272,8 +4337,9 @@ than `minecraft` (`create:chocolate`). `native_fluid_insert`, `native_fluid_extr
 and `native_fluid_tanks` reads what a side reaches (`Host::fluid_tanks`). Equal ids merge in a tank; variants of a fluid,
 a potion's kinds, are ids of their own (`create:potion/healing`). The mod draws its fluid in its block entities. A
 fluid a content mod declares (`data/<id>/horizon/fluid/`, [mods.md](mods.md#content-mods-api-02)) also has network ids
-and may be named in fluid tags; tanks still take undeclared ids as before. A cauldron takes only water and lava, and the
-world itself has only vanilla's fluids: no source or flowing blocks of a mod's fluid yet, and no buckets of one.
+and may be named in fluid tags; tanks still take undeclared ids as before. A declared fluid with a `block` flows in the
+world as that block (`native_fluid_level_change` gets its id, `ruby:honey`, where vanilla's are `water` and `lava`); a
+cauldron takes only water and lava. Its `bucket` pours and picks it up as vanilla's do, so `native_bucket_empty` hears it with its id.
 
 A tank may refuse a fluid: `native_block_entity_accepts_fluid(block, tank, fluid, cancel)` (NeoForge's
 `IFluidHandler.isFluidValid`) is asked on the server before `native_fluid_insert` fills a fillable tank, in both its
@@ -4346,6 +4412,25 @@ It names the level it means by its `dimension` (`minecraft:overworld`), as `nati
   say no; any mod setting `cancel` denies the edit, and with no such mod it is allowed. Nothing asks it for you: a mod
   that edits for a player asks it for the positions it is about to change, and leaves out those it is refused.
   Bundles need "hooks": @API:can_build@.
+
+### Light and resends for raw section writes
+
+`crates/horizon-client/src/game/native_world_edit.rs`: more helpers for server mods that write sections themselves (a paste,
+an edit of their own) and must get the result to the players. Each names the level by its `dimension`, as
+`native_edit_blocks` does, and acts on the level being ticked only (0 or empty for another, and on a client).
+
+- `native_relight_chunks(dimension, chunks)` lights the loaded chunks `chunks` (`[x, z]`, block coordinates `>> 4`) and
+  the loaded chunks beside them again, whole and at once, from the blocks of each 3x3, as the light jobs
+  `native_edit_blocks` queues do later. A chunk without all eight neighbours loaded is left out; a job already out for a
+  chunk is dropped. The light that changed is saved and sent to the players for whom the chunk is on the edge of what
+  they track; send the others the chunk (`native_resend_chunk`). Returns how many chunks were lit.
+- `native_chunk_trackers(dimension, chunk)` gives the UUIDs of the players who have been sent the chunk, in join order
+  (vanilla's `ChunkMap.getPlayers(pos, false)`).
+- `native_resend_chunk(dimension, chunk, player)` sends the chunk whole again with its light, block entities and biomes
+  as they are now, to every player who has it or only to `player` (a UUID, or none) when that player has it. Returns how
+  many players were sent it. Relight first.
+
+Bundles need `"hooks": @API:chunk_relight_resend@`.
 
 ### Machines
 
@@ -5300,9 +5385,12 @@ A new hook needs its fragment in `tools/native-hook-fragments/` with its `mod_ap
 `let _ = (every, parameter);` (all its parameters, in order), and a run of `cargo run -p xtask -- mod-api`.
 That command only replaces the placeholder in `native_hooks.rs` with the `dispatch_<hook>` call; commit
 that source change and the fragment. The `horizon-mod-api-gen` build dependency generates the hook traits,
-`Host` methods and dispatch code into Cargo's `OUT_DIR` when the game and renderer build, including release
-builds. These generated Rust files are not kept in the source tree or committed, and no manual regeneration
-is needed after a merge. Every hook needs a `mod_api` entry: the build fails naming any hook without one.
+`Host` methods and dispatch code into Cargo's `OUT_DIR` when the game builds, including release builds.
+These generated Rust files are not kept in the source tree or committed, and no manual regeneration is
+needed after a merge. The one exception is the renderer's (`horizon-client-render`, an engine crate, which
+may not depend on the generator: [layers.md](layers.md)): its `RenderHooks` trait and dispatch are committed
+in `gfx/native_render/generated.rs`. A render hook's change rewrites that file when you run
+`cargo run -p xtask -- mod-api`, and the game's build fails while it is out of date. Every hook needs a `mod_api` entry: the build fails naming any hook without one.
 A body that is neither the
 placeholder nor already calls the dispatch is an error, and the generator never changes it. Hooks that are
 free functions outside `Game` are wired by hand: those crates can't see the mod list, so each calls a callback

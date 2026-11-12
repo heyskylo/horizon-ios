@@ -33,7 +33,7 @@ CropBlock.growCrops	inline	crates/horizon-world/src/level/bonemeal.rs::Sim::perf
 CropBlock.canSurvive	port	crates/horizon-world/src/level/survive.rs::Sim::can_survive_class	Crop arm: raw light of at least 8 and the supports_crops ground check
 CropBlock.entityInside	port	crates/horizon-client/src/mobs/ravager.rs::ai_step	ticked in #3516; `CropBlock.entityInside` is cited at crates/horizon-client/src/mobs/ravager.rs:134 (in a comment, so `where` names the enclosing fn)
 DaylightDetectorBlock.useWithoutItem	port	crates/horizon-world/src/level/interact.rs::Sim::use_without_item	DaylightDetector arm checks mayBuild, cycles inverted, sends block change and updates the signal
-DaylightDetectorBlock.getTicker	port	crates/horizon-world/src/level/mod.rs::Behaviours::tick_daylight_detector	gap: minor: every 20 game ticks; only the Nether is skipped here, the End has no sky light but is not excluded
+DaylightDetectorBlock.getTicker	port	crates/horizon-world/src/level/mod.rs::Behaviours::tick_daylight_detector	only where the dimension type has sky light (`dimension_type().height.has_skylight`: neither the Nether nor the End), then every 20 game ticks
 DaylightDetectorBlock.createBlockStateDefinition	skip:data		power and inverted properties come from the block state tables
 DecoratedPotBlock.updateShape	port	crates/horizon-world/src/level/shapes.rs::Sim::update_shape_class	DecoratedPot arm: waterlogged tick then the default shape update
 DecoratedPotBlock.getStateForPlacement	port	crates/horizon-world/src/level/place.rs::Sim::placement_class	DecoratedPot arm: facing from the player, waterlogged from the spot, cracked false

@@ -17,6 +17,7 @@ use crate::{
 use std::sync::Arc;
 
 mod bundle;
+mod equippable;
 pub mod place;
 
 /// `ServerPlayer.getRecipeBook`: whether the player knows a recipe.
@@ -1160,7 +1161,7 @@ impl Menu {
     fn enchant_changed(&mut self, env: &Env) {
         let enchantable = self.containers[MAIN][0]
             .as_ref()
-            .is_some_and(|s| env.enchantments.enchantable_of(s) > 0 && s.enchantments().is_empty());
+            .is_some_and(|s| crate::stations::is_enchantable(env.enchantments, s));
         if enchantable {
             self.enchant_changed = true;
         } else {
@@ -1437,32 +1438,17 @@ impl Menu {
     fn may_place(&self, env: &Env, s: usize, stack: &ItemStack) -> bool {
         match self.slots[s].role {
             Role::Plain | Role::CreativeDisplay => true,
-            Role::Armor(eq) => env
-                .items
-                .get(&stack.item)
-                .and_then(|i| {
-                    let slot = match i.equip_slot.as_deref()? {
-                        "feet" => 0,
-                        "legs" => 1,
-                        "chest" => 2,
-                        "head" => 3,
-                        _ => return None,
-                    };
-                    let allowed = i
-                        .equip_allowed
-                        .as_ref()
-                        .is_none_or(|a| a.contains("minecraft:player"));
-                    Some(slot == eq && allowed)
-                })
-                .unwrap_or(false),
-            // LivingEntity.isEquippableInSlot: the item's equippable slot,
+            Role::Armor(eq) => Self::equippable(env, stack).is_some_and(|e| {
+                ["feet", "legs", "chest", "head"]
+                    .iter()
+                    .position(|s| *s == e.slot)
+                    == Some(eq)
+                    && e.allows("minecraft:player")
+            }),
+            // LivingEntity.isEquippableInSlot: the stack's equippable slot,
             // and the mount among its allowed entities.
-            Role::MountEquip(slot) => env.items.get(&stack.item).is_some_and(|i| {
-                i.equip_slot.as_deref() == Some(slot)
-                    && self
-                        .mount
-                        .as_deref()
-                        .is_some_and(|m| i.equip_allowed.as_ref().is_none_or(|a| a.contains(m)))
+            Role::MountEquip(slot) => Self::equippable(env, stack).is_some_and(|e| {
+                e.slot == slot && self.mount.as_deref().is_some_and(|m| e.allows(m))
             }),
             Role::Shulker => fits_inside_container_items(stack),
             Role::Mod | Role::ModResult => self.mod_slot(s, stack).0,
@@ -2166,11 +2152,7 @@ enum Equip {
 
 impl Menu {
     fn equip(env: &Env, stack: &ItemStack) -> Equip {
-        match env
-            .items
-            .get(&stack.item)
-            .and_then(|i| i.equip_slot.as_deref())
-        {
+        match Self::equippable(env, stack).map(|e| e.slot).as_deref() {
             Some("feet") => Equip::Armor(0),
             Some("legs") => Equip::Armor(1),
             Some("chest") => Equip::Armor(2),
@@ -3522,6 +3504,21 @@ pub(crate) mod tests {
         test(&env, &mut menu);
     }
 
+    /// `CrafterBlockEntity.fillStackedContents`: a crafter's 3x3 slots are
+    /// part of the recipe book's craftable contents.
+    #[test]
+    fn a_crafters_grid_counts_for_the_recipe_book() {
+        with_menu(Kind::CrafterBlock, |env, menu| {
+            menu.containers[MAIN][0] = Some(ItemStack::new("minecraft:oak_planks", 4));
+            let stacked = menu.stacked_contents(env);
+            let planks = crate::crafting::Ingredient::of(vec!["minecraft:oak_planks".to_owned()]);
+            assert!(
+                stacked.can_craft(&[&planks]),
+                "the crafter's own grid stacks"
+            );
+        });
+    }
+
     /// `BrewingStandMenu.FuelSlot` and `quickMoveStack` use the same component.
     #[test]
     fn brewing_fuel_slot_and_quick_move_use_stack_components() {
@@ -3921,6 +3918,7 @@ pub(crate) mod tests {
                 ingredient: |_, _, _| {},
                 ingredient_test: |_, _, _, _| {},
                 log_line: |_, _, _, _| {},
+                living_death_message: |_, _, _| {},
                 handshake: |_, _, _, _, _| {},
             });
         assert!(installed.is_ok());

@@ -131,6 +131,26 @@ struct View {
 fn window(w: f32, h: f32) -> (f32, f32) {
     (((w - 252.0) / 2.0).floor(), ((h - 140.0) / 2.0).floor())
 }
+/// `ServerboundSeenAdvancementsPacket.openedTab`: `ClientAdvancements.setSelectedTab`
+/// with `showToast` true — the player picked a tab — tells the server which
+/// one, so a LAN server can keep it (`handleSeenAdvancements`) and answer with
+/// the tab to reopen. The tab the screen opens on is picked without the flag
+/// and says nothing.
+pub(super) fn opened_tab(id: &str) -> horizon_protocol::packets::play::SeenAdvancements {
+    horizon_protocol::packets::play::SeenAdvancements {
+        action: 0,
+        tab: Some(id.to_owned()),
+    }
+}
+/// `ServerboundSeenAdvancementsPacket.closedScreen()` (`AdvancementsScreen.removed`):
+/// action 1, which carries no tab.
+pub(super) fn closed_screen() -> horizon_protocol::packets::play::SeenAdvancements {
+    horizon_protocol::packets::play::SeenAdvancements {
+        action: 1,
+        tab: None,
+    }
+}
+
 impl Game<'_> {
     pub(super) fn open_advancements(&mut self, from_pause: bool) {
         self.load_advancements();
@@ -145,6 +165,8 @@ impl Game<'_> {
         self.capture(false);
     }
     pub(super) fn close_advancements(&mut self) {
+        // AdvancementsScreen.removed: the server hears the screen closed.
+        self.send(horizon_protocol::packets::play::Serverbound::SeenAdvancements(closed_screen()));
         if self.adv_ui.from_pause {
             self.screen = Screen::Paused;
         } else {
@@ -779,6 +801,13 @@ impl Game<'_> {
             let (x, y) = (left + x, top + y);
             let (cx, cy) = self.cursor;
             if cx > x && cx < x + ty.1 && cy > y && cy < y + ty.2 {
+                // `ClientAdvancements.setSelectedTab(tab, true)`: the packet
+                // goes out before the tab is compared, so a click on the tab
+                // already open tells the server again.
+                let id = self.adv.tree.list[t].id.clone();
+                self.send(
+                    horizon_protocol::packets::play::Serverbound::SeenAdvancements(opened_tab(&id)),
+                );
                 if self.adv_ui.tab != Some(t) {
                     self.adv_ui.tab = Some(t);
                     self.adv_ui.scroll = None;
@@ -806,5 +835,59 @@ impl Game<'_> {
     pub(super) fn advancements_scroll(&mut self, x: f32, y: f32) {
         let view = self.adv_view();
         self.adv_scroll_by(&view, f64::from(x) * 16.0, f64::from(y) * 16.0);
+    }
+}
+
+#[cfg(test)]
+mod seen_advancement_tests {
+    use super::*;
+    use horizon_protocol::buf::{Codec, Reader, Writer};
+    use horizon_protocol::packets::play::SeenAdvancements;
+
+    /// `ServerboundSeenAdvancementsPacket.openedTab` and `closedScreen`: an
+    /// opened tab is action 0 with its advancement id, a closed screen action
+    /// 1 with no id at all.
+    #[test]
+    fn an_opened_tab_carries_its_id_and_a_close_carries_none() {
+        assert_eq!(
+            opened_tab("minecraft:story/root"),
+            SeenAdvancements {
+                action: 0,
+                tab: Some("minecraft:story/root".into()),
+            }
+        );
+        assert_eq!(
+            closed_screen(),
+            SeenAdvancements {
+                action: 1,
+                tab: None,
+            }
+        );
+    }
+
+    /// The wire form `handleSeenAdvancements` reads back: the id follows only
+    /// action 0, so a close is two bytes and a read of it yields no tab.
+    #[test]
+    fn a_closed_screen_writes_no_identifier() {
+        let mut w = Writer::new();
+        SeenAdvancements::write(&closed_screen(), &mut w);
+        let bytes = w.data;
+        assert_eq!(bytes, vec![1]);
+        let mut r = Reader::new(&bytes);
+        assert_eq!(
+            SeenAdvancements::read(&mut r).unwrap(),
+            SeenAdvancements {
+                action: 1,
+                tab: None,
+            }
+        );
+        let mut w = Writer::new();
+        SeenAdvancements::write(&opened_tab("minecraft:story/root"), &mut w);
+        let bytes = w.data;
+        let mut r = Reader::new(&bytes);
+        assert_eq!(
+            SeenAdvancements::read(&mut r).ok(),
+            Some(opened_tab("minecraft:story/root"))
+        );
     }
 }

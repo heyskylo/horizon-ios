@@ -1,6 +1,71 @@
 use super::*;
 use crate::gfx::hud_coverage;
 
+#[test]
+fn standalone_picture_draw_order_and_screen_exit_release() {
+    let Some(mut gpu) = Gpu::new() else { return };
+    let image = Arc::new(pictures::Picture {
+        id: u64::MAX,
+        width: 1,
+        height: 1,
+        pixels: vec![255, 0, 0, 255],
+        flags: TextureFlags::default(),
+    });
+    let weak = Arc::downgrade(&image);
+    let mut batch = HudBatch::new([4, 2]);
+    batch.pictures.push(image.clone());
+    let rect = Rect {
+        u0: 0.0,
+        v0: 0.0,
+        u1: 1.0,
+        v1: 1.0,
+        w: 1,
+        h: 1,
+    };
+    batch.rect_uv(0.0, 0.0, 4.0, 2.0, rect, u32::MAX);
+    batch.blend_since(0, Blend::Picture(image.id));
+    batch.rect_uv(
+        2.0,
+        0.0,
+        2.0,
+        2.0,
+        Rect {
+            u0: 0.0,
+            u1: 0.5,
+            ..rect
+        },
+        rgba(0, 255, 0, 255),
+    );
+    let mut uploads = crate::gfx::upload::Uploads::new(&gpu.device);
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    gpu.hud
+        .prepare_pictures(&gpu.device, &mut uploads, &mut encoder, &batch);
+    uploads.finish(&encoder);
+    gpu.queue.submit([encoder.finish()]);
+    let (pixels, mask) = gpu.draw(&batch, 0.0, 0.0, true);
+    for row in pixels.as_chunks::<16>().0 {
+        assert_eq!(&row[..8], &[255, 0, 0, 255, 255, 0, 0, 255]);
+        assert_eq!(&row[8..], &[0, 255, 0, 255, 0, 255, 0, 255]);
+    }
+    assert!(mask.iter().all(|v| *v == 255));
+    drop(image);
+    drop(batch);
+    assert!(weak.upgrade().is_some());
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    gpu.hud.prepare_pictures(
+        &gpu.device,
+        &mut uploads,
+        &mut encoder,
+        &HudBatch::new([4, 2]),
+    );
+    assert!(gpu.hud.pictures.is_empty());
+    assert!(
+        weak.upgrade().is_none(),
+        "closing the screen releases pixels and the GPU bind group"
+    );
+    eprintln!("standalone picture GPU rendering and release exercised");
+}
+
 struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -328,9 +393,10 @@ fn coverage_uses_pack_texts_final_alpha_and_discard() {
         return;
     };
     // A translated-style struct result and early return; no dependency on game resources.
-    let program = horizon_shaders::CoreProgram {
+    let program = crate::core_shader::CoreProgram {
         vertex: naga::front::wgsl::parse_str("@vertex fn main(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4(p.x / 2.0 - 1.0, 1.0 - p.y, 0.0, 1.0); }").unwrap(),
         fragment: naga::front::wgsl::parse_str("struct Result { @location(0) color: vec4<f32> } @fragment fn main(@builtin(position) p: vec4<f32>) -> Result { if p.x > 2.0 { discard; } return Result(vec4(0.4, 0.2, 0.1, 0.5)); }").unwrap(),
+        other: Vec::new(),
     };
     gpu.hud.set_text_shader(&gpu.device, Some(&program));
     assert!(gpu.hud.pack_text.is_some());
@@ -349,9 +415,10 @@ fn a_pack_text_shader_without_a_colour_output_is_dropped_not_wrapped() {
     let Some(mut gpu) = Gpu::new() else {
         return;
     };
-    let program = horizon_shaders::CoreProgram {
+    let program = crate::core_shader::CoreProgram {
         vertex: naga::front::wgsl::parse_str("@vertex fn main(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4(p, 0.0, 1.0); }").unwrap(),
         fragment: naga::front::wgsl::parse_str("@fragment fn main() -> @location(1) vec4<f32> { return vec4(1.0); }").unwrap(),
+        other: Vec::new(),
     };
     gpu.hud.set_text_shader(&gpu.device, Some(&program));
     assert!(gpu.hud.pack_text.is_none());

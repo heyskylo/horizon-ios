@@ -4,7 +4,7 @@ ActiveTextCollector.acceptScrollingWithDefaultCenter	port	crates/horizon-client-
 ActiveTextCollector.defaultScrollingHelper	port	crates/horizon-client-render/src/screen_draw.rs::scrolling_text	the offset is ui.rs::scroll_offset (screen_draw.rs::scroll_offset for the screen_draw widgets); ui.rs::centered_text, for titles and text lines, still clips because vanilla does not scroll them
 ActiveTextCollector.findElementUnderCursor	port	crates/horizon-client-render/src/chat.rs::Chat::style_at	gap: minor: hit test covers chat lines only; book links use game/books.rs book_link_at
 ActiveTextCollector.isPointInRectangle	port	crates/horizon-client-render/src/ui.rs::hovered	half-open rectangle test with the same bounds
-ActiveTextCollector.ClickableStyleFinder.accept	port	crates/horizon-client-render/src/chat.rs::Chat::style_at	gap: minor: only chat lines are searched for click and hover styles
+ActiveTextCollector.ClickableStyleFinder.accept	port	crates/horizon-client-render/src/chat.rs::Chat::style_at	gap: minor: only chat lines and dialog body lines (dialog_screen.rs::line_style_at, glyph bounds like BakedSheetGlyph.GlyphInstance) are searched for click and hover styles
 ActiveTextCollector.ClickableStyleFinder.acceptScrolling	missing		minor: scrolling text is not hit-tested for click and hover styles (Chat::style_at searches chat lines only)
 ActiveTextCollector.Parameters.withScale	skip:java		record copy-with helper; Horizon has no pose matrix per text
 ActiveTextCollector.Parameters.withOpacity	skip:java		record copy-with helper; opacity is the colour's alpha byte in Horizon
@@ -16,7 +16,7 @@ Font.prepare8xTextOutline	skip:other		no vanilla 26.3 caller passes a non-zero o
 Font.prepareBackground	port	crates/horizon-client-render/src/hud_overlays.rs::text_with_backdrop	background box behind text; callers pass their own bounds
 Font.getGlyph	port	crates/horizon-client-render/src/font.rs::Font::glyph_styled	obfuscated glyph is picked in HudBatch::text_styled via random_glyph
 Font.PreparedTextBuilder.markSize	skip:other		bounds bookkeeping of prepared text; Horizon has no prepared-text object and hit-tests by advance
-Font.PreparedTextBuilder.markBackground	inline	crates/horizon-client-render/src/hud_overlays.rs::text_with_backdrop	gap: minor: the background box is 2 px around the text; vanilla grows it by 1 px around each glyph
+Font.PreparedTextBuilder.markBackground	inline	crates/horizon-client-render/src/hud_overlays.rs::text_with_backdrop	one pixel above and left of the glyphs, the advance right and nine down
 Font.PreparedTextBuilder.addGlyph	inline	crates/horizon-client-render/src/hud.rs::HudBatch::text_styled	glyph quad pushed directly into the batch
 Font.PreparedTextBuilder.addEffect	inline	crates/horizon-client-render/src/hud.rs::HudBatch::text_styled	underline and strikethrough rectangles drawn inline
 Font.PreparedTextBuilder.addEmptyGlyph	skip:other		hit areas for glyphs with no image; Chat::style_at hit-tests by advance width instead
@@ -69,6 +69,7 @@ GuiGraphicsExtractor.ScissorStack.containsPoint	missing		minor: hover ignores th
 Hud.extractHotbarAndDecorations	port	crates/horizon-client-render/src/hud_layout.rs::hotbar	items and decorations are drawn by Game::draw_item
 Hud.<init>	skip:java		constructor state setup
 Hud.extractSubtitleOverlay	port	crates/horizon-client-render/src/hud_overlays.rs::SubtitleOverlay::extract	
+Hud.extractDeferredSubtitles	inline	crates/horizon-client/src/game.rs::Game::hud_layers	with a `Screen.isInGameUi` screen open the subtitles draw just before the screen (Screen.extractBackground runs them), under its slots and tooltips; F1 keeps them
 Hud.extractSelectedItemName	port	crates/horizon-client-render/src/hud_overlays.rs::ToolHighlight::draw	59 pixels above the bottom edge, 14 lower in a mode that cannot hurt the player
 Hud.extractOverlayMessage	port	crates/horizon-client-render/src/hud_overlays.rs::Titles::overlay_message	guiHeight - 68 and the text four pixels under that, whatever the bars above the hotbar are
 Hud.extractChat	port	crates/horizon-client-render/src/chat.rs::Chat::layout	
@@ -96,9 +97,10 @@ AbstractContainerWidget.setFocused	port	crates/horizon-client-render/src/pack_sc
 AbstractContainerWidget.mouseClicked	port	crates/horizon-client-render/src/ui.rs::Scroll::press	gap: minor: child click dispatch is per screen; only the scrollbar press is here
 AbstractScrollArea.isOverScrollbar	inline	crates/horizon-client-render/src/ui.rs::Scroll::press	scrollbar column test folded into the press
 AbstractScrollArea.scrollBarY	port	crates/horizon-client-render/src/ui.rs::scrollbar_thumb	thumb top
-AbstractScrollArea.extractScrollbar	port	crates/horizon-client-render/src/ui.rs::scrollbar	gap: minor: no disabled-scroller sprite and no cursor request
+AbstractScrollArea.extractScrollbar	port	crates/horizon-client-render/src/ui.rs::scrollbar	the pack screen's bars ask for the hand, and RESIZE_NS while held (PackScreen::draw); the disabled-scroller sprite is still unported
 AbstractScrollArea.defaultSettings	skip:java		settings record builder; the sizes are constants in ui.rs
 AbstractSelectionList.swap	port	crates/horizon-client/src/multiplayer.rs::Screen::click	gap: minor: mouse move up or down works; keyboard Shift+arrow reorder is not ported
+AbstractSelectionList.scrollBarX	port	crates/horizon-client/src/social_screen.rs::scrollbar_x	the rows' right edge + 6 + 2; the social list's draw passes it to ui::scrollbar
 AbstractSelectionList.clearEntriesExcept	skip:other		only the stats screen calls it; Horizon's stats screen draws its rows directly
 AbstractSelectionList.replaceEntries	port	crates/horizon-client-render/src/pack_screen.rs::PackScreen::update_list	
 AbstractSelectionList.getNextY	port	crates/horizon-client-render/src/pack_screen.rs::List::next_y	
@@ -121,11 +123,11 @@ AbstractSelectionList.narrationPriority	inline	crates/horizon-client/src/screen_
 AbstractSelectionList.removeEntry	skip:other		rows are rebuilt from the model when they change (update_list, server list), so there is no single-row removal
 AbstractSelectionList.narrateListElementPosition	skip:other		narration only
 AbstractSelectionList.TrackedList.set	skip:java		delegate list wrapper
-AbstractSliderButton.getSprite	inline	crates/horizon-client-render/src/ui.rs::slider	gap: minor: the track outline is drawn while dragged only; keyboard focus does not highlight it; hover highlights only the handle
-AbstractSliderButton.getHandleSprite	inline	crates/horizon-client-render/src/ui.rs::slider	gap: minor: handle highlight follows hover only
+AbstractSliderButton.getSprite	port	crates/horizon-client-render/src/ui.rs::slider_sprites_ext	the outline lights for a focused slider whose value cannot change (`isActive() && isFocused() && !canChangeValue`); canChangeValue is the keyboard's (Tab, Enter) or a mouse drag
+AbstractSliderButton.getHandleSprite	port	crates/horizon-client-render/src/ui.rs::slider_sprites_ext	lit while hovered or while its value can change (Tab, Enter, a mouse drag)
 AbstractSliderButton.updateWidgetNarration	skip:other		narration only
 AbstractSliderButton.extractWidgetRenderState	port	crates/horizon-client-render/src/ui.rs::slider_ext	the whole message, value included, scrolls inside the slider (margin 2)
-AbstractSliderButton.handleCursor	port	crates/horizon-client-render/src/widgets.rs::widget_cursor	gap: minor: no resize cursor while dragging
+AbstractSliderButton.handleCursor	port	crates/horizon-client-render/src/widgets.rs::slider_cursor	a hovered slider points, a dragged one resizes horizontally, an inactive one is not allowed
 AbstractSliderButton.setFocused	port	crates/horizon-client/src/game/key_focus.rs::slider_edit_on_focus	the arrows change the value only when the mouse or Tab focused the slider, not when an arrow did
 AbstractSliderButton.keyPressed	port	crates/horizon-client/src/game/key_focus.rs::act	left and right nudge a focused slider once Tab or Enter let them (Act::Nudge), Enter toggles it (Act::ToggleSlider)
 AbstractSliderButton.setValue	port	crates/horizon-client-render/src/options_ui.rs::set_slider	gap: minor: the 0..1 clamp is done by the caller (ui.rs slider_value)
@@ -141,12 +143,13 @@ AbstractTextAreaWidget.extractBackground	skip:ui		frame drawn by the book screen
 AbstractTextAreaWidget.extractBorder	skip:ui		frame sprite; no behaviour
 AbstractTextAreaWidget.withinContentAreaTopBottom	skip:ui		visibility cull while drawing lines
 AbstractWidget.extractRenderState	port	crates/horizon-client-render/src/ui.rs::hovered	gap: minor: the scissor test is not part of the hover check
-AbstractWidget.extractTooltipForNextRenderPass	port	crates/horizon-client-render/src/ui.rs::tooltip	gap: minor: unsure: widget hover delay not checked
+AbstractWidget.extractTooltipForNextRenderPass	port	crates/horizon-client-render/src/ui.rs::tooltip	widgets with a delay wait it out: the social rows' buttons use social_screen::TooltipDelay (PlayerEntry.TOOLTIP_DELAY, 500 ms); others have vanilla's zero delay
 AbstractWidget.extractScrollingStringOverContents	port	crates/horizon-client-render/src/ui.rs::scrolling_text	ui::button and ui::slider (margin 2) draw it for the HudBatch widgets; screen_draw.rs::scrolling_string_over_contents for the screen_draw ones
 AbstractWidget.mouseClicked	port	crates/horizon-client/src/title.rs::Title::click	gap: minor: click dispatch is per screen; the press sound is audio.rs Audio::play_button_click
 AbstractWidget.mouseReleased	port	crates/horizon-client-render/src/ui.rs::Scroll::release	gap: minor: only the scroll release; widget onRelease is per screen
 AbstractWidget.mouseDragged	port	crates/horizon-client-render/src/ui.rs::Scroll::drag	gap: minor: only scroll drag; widget onDrag is per screen
 AbstractWidget.nextFocusPath	port	crates/horizon-client/src/game/key_focus.rs::act	focus navigation is per screen: act and gamepad::focus_step_rect answer nextFocusPath for the arrows, tab_step for Tab
 AbstractWidget.isMouseOver	port	crates/horizon-client-render/src/screen_draw.rs::inside	gap: minor: isActive is checked by the caller
+AbstractWidget.WithInactiveMessage.defaultInactiveMessage	port	crates/horizon-client-render/src/screen_draw.rs::button	an inactive button's label is styled -6250336 (0xFFA0A0A0), as mergeStyles does
 AbstractWidget.narrationPriority	skip:other		narration only
 AbstractWidget.defaultButtonNarrationText	skip:other		narration only

@@ -4,6 +4,8 @@
 //! looking players up by name. The game's dedicated server
 //! (`horizon-client --dedicated`) reads them, and `horizon-server` manages
 //! them; this crate needs neither a window nor the game.
+pub mod chat_guard;
+pub mod duration;
 pub mod eula;
 pub mod java_properties;
 pub mod json;

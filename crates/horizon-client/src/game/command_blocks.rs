@@ -46,13 +46,13 @@ pub(super) struct CommandBlockScreen {
 }
 
 /// What `ServerboundSetCommandBlockPacket` carries.
-struct CommandBlockEdit {
-    pos: Pos,
-    command: String,
-    track_output: bool,
-    mode: Mode,
-    conditional: bool,
-    auto: bool,
+pub(super) struct CommandBlockEdit {
+    pub(super) pos: Pos,
+    pub(super) command: String,
+    pub(super) track_output: bool,
+    pub(super) mode: Mode,
+    pub(super) conditional: bool,
+    pub(super) auto: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -307,6 +307,25 @@ impl Game<'_> {
     fn schedule_command_block(&mut self, pos: Pos) {
         let at = BlockPos::new(pos.0, pos.1, pos.2);
         self.with_level(|b, level, ticks| b.schedule_tick(level, ticks, at, 1));
+    }
+    /// `isAutomatic` of the command block at `pos`, before new data loads.
+    pub(super) fn command_block_auto(&self, pos: Pos) -> bool {
+        self.command_block(pos).is_some_and(|c| c.auto)
+    }
+    /// `CommandBlockEntity.loadAdditional` with a level (`/setblock`, `/fill`,
+    /// `/data`) ends with `setAutomatic`: a block that turned automatic, is
+    /// not powered and is no chain block schedules its first tick.
+    pub(super) fn command_block_loaded(&mut self, pos: Pos, was_auto: bool) {
+        let Some(c) = self.command_block(pos) else {
+            return;
+        };
+        let (auto, powered) = (c.auto, c.powered);
+        let mode = self
+            .block_state_at(pos)
+            .and_then(|s| Mode::of_block(&s.name));
+        if !was_auto && auto && !powered && mode.is_some_and(|m| m != Mode::Sequence) {
+            self.schedule_command_block_tick(pos);
+        }
     }
     /// `CommandBlockEntity.scheduleTick`.
     fn schedule_command_block_tick(&mut self, pos: Pos) {
@@ -929,8 +948,6 @@ impl Game<'_> {
         self.as_guest_messaged(host, conn, |game| {
             if allowed {
                 game.apply_command_block(&edit);
-                // BaseCommandBlock.onUpdated: the clients get the new command.
-                game.mark_block_entity_updated(edit.pos);
             } else {
                 game.system_message(Text::translate("advMode.notAllowed", &[]));
             }
@@ -965,7 +982,7 @@ impl Game<'_> {
         );
     }
     /// What `handleSetCommandBlock` does once the player may edit the block.
-    fn apply_command_block(&mut self, s: &CommandBlockEdit) {
+    pub(super) fn apply_command_block(&mut self, s: &CommandBlockEdit) {
         let pos = s.pos;
         let registry = self.pack.assets.registry;
         let Some(current) = self.block_state_at(pos) else {
@@ -1023,6 +1040,9 @@ impl Game<'_> {
             };
             self.system_message(Text::translate(key, &[Text::literal(command)]));
         }
+        // `BaseCommandBlock.onUpdated`: the edited block entity is saved and
+        // its clients (and comparators) see the new command.
+        self.mark_block_entity_updated(pos);
     }
 }
 

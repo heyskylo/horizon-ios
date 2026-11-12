@@ -9,9 +9,10 @@ use horizon_client::{
     gamepad::{GuideDetail, Rect},
     gameplay_guide::{self, Active, Facts, MenuFacts, Row, Target, Under, Verb},
     hud::HudBatch,
+    hud_kit::hint::{self, HintRow, Look, Side},
+    hud_kit::plate::Plate,
     items::ItemStack,
     mobs::{Species, equine, llama},
-    pad_glyph,
 };
 use serde_json::{Value, json};
 
@@ -22,23 +23,33 @@ pub(in crate::game) struct Shown {
     rect: Rect,
 }
 
-/// A row's glyphs: the one held with it, if any, and its own.
-struct Keys {
-    with: Option<pad_glyph::Glyph>,
-    key: Option<pad_glyph::Glyph>,
-}
-
-impl Keys {
-    /// How wide the glyphs show side by side, in GUI pixels.
-    fn width(&self, atlas: &horizon_client::hud::HudAtlas) -> f32 {
-        let key = self.key.map_or(0.0, |k| pad_glyph::width(atlas, k));
-        self.with
-            .map_or(key, |with| pad_glyph::width(atlas, with) + 1.0 + key)
-    }
-}
-
 /// A drawn quad covering this much of the view is the screen's dimming, not something to avoid.
 const GUIDE_BACKDROP_SHARE: f32 = 0.9;
+
+/// `ItemStack.get(EQUIPPABLE)` for the guide: the stack's slot and
+/// `swappable`, else the item's own.
+fn guide_equippable(
+    stack: &ItemStack,
+    default_slot: Option<&str>,
+    default_swappable: bool,
+) -> Option<(String, bool)> {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:equippable").is_some()) {
+        return None;
+    }
+    if let Some(tag) = data.and_then(|d| d.other("minecraft:equippable")) {
+        let slot = match tag.get("slot") {
+            Some(horizon_world::nbt::Tag::String(slot)) => slot.to_string_lossy(),
+            _ => return None,
+        };
+        let swappable = tag
+            .get("swappable")
+            .and_then(horizon_client::item_data::component_bool)
+            .unwrap_or(true);
+        return Some((slot, swappable));
+    }
+    Some((default_slot?.to_owned(), default_swappable))
+}
 
 impl Game<'_> {
     /// The guide shows while the pad plays: not over a menu, a prompt, the debug screen or a sleeping
@@ -49,6 +60,9 @@ impl Game<'_> {
             && settings.guide_detail != GuideDetail::Off
             && self.pad.in_use
             && !self.pad.keyboard_took_over
+            // Hidden once the radial menu shows, not on the opener's press: a quick tap draws
+            // nothing, so the guide doesn't blink.
+            && !self.pad_radial_shown()
             && !self.pad_in_menu()
             && !self.screen_over_playing()
             && self.sleeping.is_none()
@@ -77,9 +91,24 @@ impl Game<'_> {
             .at_detail(self.settings.controller.guide_detail);
         let mut taken = Self::guide_taken(batch, from);
         // The right column first: the left has the rows it can better do without.
-        for (left, rows) in [(false, &guide.right), (true, &guide.left)] {
-            self.draw_guide_column(batch, left, false, rows, &mut taken);
-        }
+        self.draw_guide_columns(batch, false, &guide, &mut taken);
+    }
+
+    /// Both columns, the right first. A row that would run into the other column or past the
+    /// view has its caption cut to the room left (`gameplay_guide::left_room`, `row_room`)
+    /// rather than moving down or going.
+    fn draw_guide_columns(
+        &mut self,
+        batch: &mut HudBatch,
+        up: bool,
+        guide: &gameplay_guide::Guide,
+        taken: &mut Vec<Rect>,
+    ) {
+        let view = batch.width;
+        let right = gameplay_guide::row_room(view);
+        let widest = self.draw_guide_column(batch, false, up, &guide.right, taken, right);
+        let left = gameplay_guide::left_room(view, widest);
+        self.draw_guide_column(batch, true, up, &guide.left, taken, left);
     }
 
     /// What's drawn since vertex `from`, minus what fills the view: what rows keep off.
@@ -117,7 +146,7 @@ impl Game<'_> {
             || self.pad.keyboard_took_over
             || self.prompt_open()
             || self.title.is_some()
-            || self.pad.menu.osk.is_some()
+            || self.pad_keyboard_captures()
         {
             return;
         }
@@ -125,9 +154,7 @@ impl Game<'_> {
         let guide =
             gameplay_guide::resolve_menu(&facts).at_detail(self.settings.controller.guide_detail);
         let mut taken = Self::guide_taken(batch, from);
-        for (left, rows) in [(false, &guide.right), (true, &guide.left)] {
-            self.draw_guide_column(batch, left, true, rows, &mut taken);
-        }
+        self.draw_guide_columns(batch, true, &guide, &mut taken);
     }
 
     fn pad_menu_guide_facts(&mut self, batch: &HudBatch) -> MenuFacts {
@@ -181,6 +208,8 @@ impl Game<'_> {
         }
     }
 
+    /// A column's rows where they fit around `taken`, each cut to `room` (GUI px) where only
+    /// that fits. Returns the widest row drawn, 0 with none.
     fn draw_guide_column(
         &mut self,
         batch: &mut HudBatch,
@@ -188,59 +217,57 @@ impl Game<'_> {
         up: bool,
         rows: &[Row],
         taken: &mut Vec<Rect>,
-    ) {
+        room: f32,
+    ) -> f32 {
         // Each row's glyphs, from what its buttons do: a rebinding or the pad's letters reach them.
-        let keys: Vec<Keys> = rows
+        let hints: Vec<HintRow> = rows
             .iter()
-            .map(|r| Keys {
-                with: r.with.and_then(|w| self.glyph(w)),
-                key: self.glyph(r.of),
+            .map(|r| {
+                let with = r.with.and_then(|w| self.glyph(w));
+                let glyphs = with.into_iter().chain(self.glyph(r.of));
+                HintRow::new(glyphs, horizon_client::lang::get(r.caption))
             })
             .collect();
+        // Glyphs against the view's edge, captions towards the middle.
+        let look = Look {
+            side: if left { Side::Leading } else { Side::Trailing },
+            ..hint::GUIDE
+        };
         let atlas = &self.gui.atlas;
-        let width = |text: &str| HudBatch::text_width(atlas, text).ceil();
-        let captions: Vec<String> = rows
+        let widths: Vec<f32> = hints
             .iter()
-            .map(|r| horizon_client::lang::get(r.caption))
-            .collect();
-        let widths: Vec<f32> = keys
-            .iter()
-            .zip(&captions)
-            .map(|(k, c)| k.width(atlas) + width(c) + 6.0)
+            .map(|h| hint::plated_width(atlas, h, &look))
             .collect();
         let view = [batch.width, batch.height];
         let places = if up {
-            gameplay_guide::place_column_up(view, left, &widths, taken)
+            gameplay_guide::place_column_up(view, left, &widths, room, taken)
         } else {
-            gameplay_guide::place_column(view, left, &widths, taken)
+            gameplay_guide::place_column(view, left, &widths, room, taken)
         };
-        for (((row, keys), caption), place) in rows.iter().zip(&keys).zip(&captions).zip(places) {
-            let Some(rect @ [x, y, w, h]) = place else {
+        // The player's text background (Accessibility), as chat's: black at its opacity.
+        let alpha = (self.settings.text_background(0.4) >> 24) as u8;
+        let mut widest = 0.0_f32;
+        for ((row, line), place) in rows.iter().zip(&hints).zip(places) {
+            let Some(rect) = place else {
                 continue;
             };
-            let key = keys.width(atlas);
-            let (key_x, text_x) = if left {
-                (x, x + key + 3.0)
-            } else {
-                (x + w - key, x + 3.0)
-            };
-            batch.fill(atlas, x, y, w, h, self.settings.text_background(0.4));
-            // One taller than its row, into the gap above: the rows' glyphs meet but don't overlap.
-            let mut glyph_x = key_x + 1.0;
-            if let Some(with) = keys.with {
-                pad_glyph::draw(batch, atlas, with, glyph_x, y + 1.0);
-                glyph_x += pad_glyph::width(atlas, with) + 1.0;
-            }
-            if let Some(key) = keys.key {
-                pad_glyph::draw(batch, atlas, key, glyph_x, y + 1.0);
-            }
-            batch.text(atlas, caption, text_x, y + 1.0, u32::MAX, true);
+            // Cut to its place: the caption gives way, never the glyphs. Its plate shrinks to it,
+            // against the view's edge.
+            let line = line.fitted(atlas, &look, rect[2] - hint::PAD);
+            let [x, y, w, h] = rect;
+            let shown = hint::plated_width(atlas, &line, &look);
+            let x = if left { x } else { x + w - shown };
+            // The glyphs' art reaches a pixel above its row, into the gap: rows meet, not overlap.
+            let plate = Plate::Backing { alpha };
+            hint::draw_plated(batch, atlas, &line, &look, plate, [x, y, shown, h]);
+            widest = widest.max(rect[2]);
             self.pad.guide_shown.push(Shown {
                 left,
                 row: *row,
                 rect,
             });
         }
+        widest
     }
 
     /// The rows last drawn, for `pad status`.
@@ -628,11 +655,10 @@ impl Game<'_> {
                 }
             }
             // Equippable.swapWithEquipmentSlot: only what can be swapped onto the armour slots.
-            _ if info.swappable
-                && matches!(
-                    info.equip_slot.as_deref(),
-                    Some("head" | "chest" | "legs" | "feet")
-                ) =>
+            _ if guide_equippable(&stack, info.equip_slot.as_deref(), info.swappable)
+                .is_some_and(|(slot, swappable)| {
+                    swappable && matches!(slot.as_str(), "head" | "chest" | "legs" | "feet")
+                }) =>
             {
                 Verb::Equip
             }
@@ -663,5 +689,40 @@ impl Game<'_> {
     fn pad_guide_has_ammo(&self, weapon: &str) -> Option<()> {
         let weapon = format!("minecraft:{weapon}");
         (self.creative || self.projectile_slot(&weapon).is_some()).then_some(())
+    }
+}
+
+#[cfg(test)]
+mod guide_equippable_tests {
+    use super::guide_equippable;
+    use horizon_client::items::ItemStack;
+
+    #[test]
+    fn a_stack_swappable_flag_comes_from_its_equippable() {
+        let mut helmet = ItemStack::new("minecraft:golden_helmet", 1);
+        let default = Some("head");
+        assert_eq!(
+            guide_equippable(&helmet, default, true),
+            Some(("head".into(), true))
+        );
+        helmet.data_mut().set_other(
+            "minecraft:equippable",
+            Some(horizon_world::nbt::Tag::compound([
+                ("slot", horizon_world::nbt::Tag::String("head".into())),
+                ("swappable", horizon_world::nbt::Tag::Byte(0)),
+            ])),
+        );
+        assert_eq!(
+            guide_equippable(&helmet, default, true),
+            Some(("head".into(), false))
+        );
+        helmet.data_mut().set_other(
+            "!minecraft:equippable",
+            Some(horizon_world::nbt::Tag::compound(Vec::<(
+                &str,
+                horizon_world::nbt::Tag,
+            )>::new())),
+        );
+        assert_eq!(guide_equippable(&helmet, default, true), None);
     }
 }

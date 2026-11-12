@@ -196,17 +196,18 @@ pub fn sleep_pose(m: &Mob) -> Option<(f32, [f32; 2])> {
         _ => return None,
     })
 }
-/// `Villager.tick`: the unhappy counter and the gossip decay; a hurt
-/// sleeper wakes up (`LivingEntity.hurtServer`; the `checkBedExists` wake
-/// runs earlier in `LivingEntity.tick`, for AI-less mobs too), and lies the
-/// way its bed faces (`getBedOrientation`). The brain does the rest.
-pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+/// `Villager.tick` after `super.tick()`, with or without AI: the unhappy
+/// counter counts down and the gossip decays once a day.
+pub fn tick(m: &mut Mob, now: i64) {
     if m.extra.ints[0] > 0 {
         m.extra.ints[0] -= 1;
     }
-    if m.species() == Species::Villager {
-        ext_mut(m).maybe_decay(w.game_time);
-    }
+    ext_mut(m).maybe_decay(now);
+}
+/// A hurt sleeper wakes up (`LivingEntity.hurtServer`; the `checkBedExists`
+/// wake runs earlier in `LivingEntity.tick`, for AI-less mobs too), and lies
+/// the way its bed faces (`getBedOrientation`). The brain does the rest.
+pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if sleeping(m) {
         let bed = sleeping_pos(m).filter(|p| w.block_name(p[0], p[1], p[2]).ends_with("_bed"));
         if let Some(p) = bed {
@@ -294,6 +295,9 @@ pub struct Ext {
     pub hurt_seen: i32,
     /// A zombie villager's cure under way.
     pub cure: Option<super::zombie_villager::Cure>,
+    /// `ZombieVillager.villagerDataFinalized`: only a save with
+    /// `VillagerDataFinalized` or `VillagerData` sets it.
+    pub data_finalized: bool,
     /// The villager's brain, built at its first tick.
     pub brain: Option<Box<super::villager_brain::Brain>>,
     /// Saved memories awaiting the first brain initialization.
@@ -605,6 +609,10 @@ impl Ext {
 /// reads the other villager itself).
 #[derive(Clone, Debug, Default)]
 pub struct Seen {
+    /// Visibility inputs for another villager's noncombat sensor.
+    pub invisible: bool,
+    pub crouching: bool,
+    pub armor: [Option<std::sync::Arc<str>>; 4],
     pub gossips: crate::gossip::Gossips,
     pub last_gossip_time: i64,
     /// `countFoodPointsInInventory`.
@@ -618,6 +626,28 @@ pub struct Seen {
     pub golem_detected: bool,
 }
 impl Seen {
+    /// `LivingEntity.getVisibilityPercent`, for a targeting villager.
+    pub fn visibility(&self, items: Option<&crate::items::Items>) -> f64 {
+        let mut value = if self.crouching { 0.8 } else { 1.0 };
+        if self.invisible {
+            let cover = self.armor.iter().filter(|i| i.is_some()).count() as f32 / 4.0;
+            value *= 0.7 * f64::from(cover).max(0.1);
+        }
+        if let Some(items) = items {
+            for (slot, item) in ["feet", "legs", "chest", "head"]
+                .into_iter()
+                .zip(&self.armor)
+            {
+                if let Some(factor) = item
+                    .as_deref()
+                    .and_then(|i| items.worn_visibility(i, slot, "minecraft:villager"))
+                {
+                    value *= f64::from(factor);
+                }
+            }
+        }
+        if value < 0.0 { 0.0 } else { value.min(10.0) }
+    }
     /// `Villager.wantsToSpawnGolem`.
     pub fn wants_golem(&self, now: i64) -> bool {
         self.last_slept.is_some_and(|t| now - t < 24000) && !self.golem_detected
@@ -632,6 +662,26 @@ pub fn seen(m: &Mob) -> Seen {
     let (interaction_target, path_nodes, golem_detected, last_slept) =
         super::villager_brain::seen_memories(m);
     Seen {
+        invisible: m.is_invisible(),
+        crouching: m.extra.crouching,
+        armor: [
+            m.extra
+                .feet
+                .clone()
+                .or_else(|| m.extra.armor[3].as_ref().map(|s| s.item.clone())),
+            m.extra
+                .legs
+                .clone()
+                .or_else(|| m.extra.armor[2].as_ref().map(|s| s.item.clone())),
+            m.extra
+                .chest
+                .clone()
+                .or_else(|| m.extra.armor[1].as_ref().map(|s| s.item.clone())),
+            m.extra
+                .head
+                .clone()
+                .or_else(|| m.extra.armor[0].as_ref().map(|s| s.item.clone())),
+        ],
         gossips: e.map(|e| e.gossips.clone()).unwrap_or_default(),
         last_gossip_time: e.map_or(0, |e| e.last_gossip_time),
         food_points: e.map_or(0, Ext::food_in_inventory),
@@ -1002,7 +1052,8 @@ pub fn read_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
         |v| int(Some(v)),
     );
     let e = ext_mut(m);
-    e.food_level = int(tag.get("FoodLevel")).unwrap_or(0) as i32;
+    // `getByteOr("FoodLevel", 0)`: any number, narrowed to a byte.
+    e.food_level = i32::from(int(tag.get("FoodLevel")).unwrap_or(0) as i8);
     e.gossips = tag
         .get("Gossips")
         .map(crate::gossip::Gossips::from_nbt)
@@ -1152,6 +1203,22 @@ mod tests {
             ),
         ]);
         assert_eq!(actual, expected);
+    }
+
+    /// `Villager.readAdditionalSaveData` reads `FoodLevel` with `getByteOr`:
+    /// an int is narrowed (`(byte)(value & 255)`), so 300 is 44 and 200 -56.
+    #[test]
+    fn a_villagers_food_level_is_narrowed_to_a_byte() {
+        use horizon_world::nbt::Tag;
+        for (saved, expected) in [
+            (Tag::Int(300), 44),
+            (Tag::Int(200), -56),
+            (Tag::Byte(12), 12),
+        ] {
+            let mut loaded = villager();
+            read_nbt(&mut loaded, &Tag::compound([("FoodLevel", saved)]));
+            assert_eq!(ext(&loaded).unwrap().food_level, expected);
+        }
     }
 
     #[test]

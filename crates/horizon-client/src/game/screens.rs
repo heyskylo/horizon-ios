@@ -5,7 +5,7 @@ use horizon_client::{
     confirm_screen::Confirm,
     dialog::Dialog,
     hud::{HudBatch, rgba},
-    text::{self, Text},
+    text::{self, ClickEvent, Text},
     ui,
     widgets::{self, ScreenInfo},
 };
@@ -13,6 +13,76 @@ use horizon_world::nbt::Tag;
 use winit::keyboard::KeyCode;
 
 impl Screen {
+    /// The screens whose own `keyPressed` takes every press: the social
+    /// screen, the command block and block editors, the debug options.
+    pub(super) fn takes_presses(self) -> bool {
+        matches!(
+            self,
+            Self::Social | Self::CommandBlock | Self::DebugOptions | Self::BlockEditor
+        )
+    }
+}
+
+impl Game<'_> {
+    /// A press on a screen that `takes_presses`, to that screen.
+    pub(super) fn screen_press(&mut self, event: &winit::event::KeyEvent) {
+        match self.screen {
+            Screen::Social => self.social_key(event),
+            Screen::CommandBlock => self.command_block_key(event),
+            Screen::DebugOptions => self.debug_options_key(event),
+            Screen::BlockEditor => self.block_editor_key(event),
+            _ => {}
+        }
+    }
+}
+
+impl Screen {
+    /// `Screen.isPauseScreen`: whether this screen, open in a single-player
+    /// world, stops the world ticking (`Gui.isPausing` -> `Minecraft.pause`).
+    /// The class default is true. 26.3's false overrides are
+    /// `AbstractContainerScreen` (creative and inventory), `ChatScreen`,
+    /// `DeathScreen`, `GameModeSwitcherScreen`, `SocialInteractionsScreen`
+    /// and `LecternScreen`; Horizon's own screens over the world follow
+    /// them. The book in hand (`BookViewScreen`, true), the win screen
+    /// (`WinScreen`, `!poem`) and a dialog (`DialogScreen`, its `pause`)
+    /// answer from their own state, so `Game::pauses_game` reads those where
+    /// they live and `Win` is not decided here.
+    pub(super) fn is_pause_screen(self) -> bool {
+        match self {
+            // AbstractContainerScreen.isPauseScreen.
+            Self::Creative | Self::Inventory
+            // ChatScreen.isPauseScreen.
+            | Self::Chat
+            // DeathScreen.isPauseScreen.
+            | Self::Dead
+            // GameModeSwitcherScreen.isPauseScreen.
+            | Self::GameModeSwitcher
+            // SocialInteractionsScreen.isPauseScreen.
+            | Self::Social
+            // No screen over the world, and Horizon's own screens that
+            // draw over it (the emote wheel, a native mod's screen and
+            // Studio) leave it running as they always have.
+            | Self::Playing | Self::EmoteWheel | Self::Mod | Self::Studio
+            // WinScreen.isPauseScreen is `!poem`: Game::win_screen_pauses.
+            | Self::Win => false,
+            // Every other screen, and the game-master block editors
+            // (StructureBlockEditScreen and its siblings), inherit Screen's
+            // true.
+            Self::Paused
+            | Self::Options
+            | Self::Stats
+            | Self::Advancements
+            | Self::WorldOptions
+            | Self::Friends
+            | Self::ServerLinks
+            | Self::ConfirmLink
+            | Self::DialogWarning
+            | Self::CommandBlock
+            | Self::BlockEditor
+            | Self::DebugOptions
+            | Self::HudEditor => true,
+        }
+    }
     /// Screen.extractBackground for non-isInGameUi screens, and
     /// PauseScreen.extractBackground only when showPauseMenu is true.
     pub(super) fn blurs_background(self, pause_menu: bool) -> bool {
@@ -71,11 +141,12 @@ fn pause_buttons(
     remote: bool,
     links: bool,
     additions: bool,
-    split: bool,
+    rows: &[(&'static str, u8)],
 ) -> Vec<(f32, f32, f32, &'static str, u8, bool)> {
     let row3 = links || additions;
-    let (x0, y0) = pause_grid(w, h, u8::from(row3) + u8::from(split));
-    let down = 24.0 * f32::from(u8::from(row3) + u8::from(split));
+    let extra = u8::from(row3) + rows.len() as u8;
+    let (x0, y0) = pause_grid(w, h, extra);
+    let down = 24.0 * f32::from(extra);
     let mut v = vec![
         (x0 + 4.0, y0 + 50.0, 204.0, "menu.returnToGame", 0, true),
         (x0 + 4.0, y0 + 74.0, 98.0, "gui.advancements", 4, true),
@@ -89,9 +160,9 @@ fn pause_buttons(
         // CommonDialogData.computeExternalTitle of Dialogs.SERVER_LINKS.
         v.push((x0 + 4.0, y0 + 122.0, 204.0, "menu.server_links", 11, true));
     }
-    if split {
-        let y = y0 + 122.0 + if row3 { 24.0 } else { 0.0 };
-        v.push((x0 + 4.0, y, 204.0, SPLIT_SETTINGS, 30, true));
+    for (k, &(key, id)) in rows.iter().enumerate() {
+        let y = y0 + 122.0 + 24.0 * (f32::from(u8::from(row3)) + k as f32);
+        v.push((x0 + 4.0, y, 204.0, key, id, true));
     }
     v.extend([
         (x0 + 4.0, y0 + 122.0 + down, 98.0, "menu.options", 1, true),
@@ -158,14 +229,17 @@ fn pause_icon_focus_ids(friends: bool) -> Vec<u8> {
         .collect()
 }
 const SPLIT_SETTINGS: &str = "horizon.pages.split_settings";
+/// The pause menu's first id for the pages crates registered there: id `ADDED_PAGES + i` opens
+/// registered page `i`.
+const ADDED_PAGES: u8 = 40;
 fn pause_icons(
     w: f32,
     h: f32,
     links: bool,
     additions: bool,
-    split: bool,
+    rows: &[(&'static str, u8)],
 ) -> [(f32, f32, &'static str); 4] {
-    let (x0, y0) = pause_grid(w, h, u8::from(links || additions) + u8::from(split));
+    let (x0, y0) = pause_grid(w, h, u8::from(links || additions) + rows.len() as u8);
     let (x0, y) = (x0 + 60.0, y0 + 98.0);
     [
         (x0, y, "gui/sprites/pause_menu/bug"),
@@ -197,6 +271,37 @@ fn death_buttons(w: f32, h: f32, hardcore: bool) -> [(f32, f32, &'static str, u8
         (x, y + 96.0, "deathScreen.titleScreen", 1),
     ]
 }
+/// `ActiveTextCollector`'s width of one line: every glyph's `advance`.
+fn line_width(advance: &dyn Fn(char, &text::Style) -> f32, line: &Text) -> f32 {
+    line.resolve_legacy()
+        .chars()
+        .map(|(c, style)| advance(c, style))
+        .sum()
+}
+
+/// `DeathScreen.mouseClicked`'s `ClickableStyleFinder` over the cause line,
+/// which `DeathScreen.visitText` draws centred at y 85: the style of the glyph
+/// under `cursor`.
+fn death_style_at(
+    advance: &dyn Fn(char, &text::Style) -> f32,
+    cause: &Text,
+    width: f32,
+    cursor: (f32, f32),
+) -> Option<text::Style> {
+    let left = ((width - line_width(advance, cause)) / 2.0).floor();
+    let top = 85.0;
+    if cursor.1 < top || cursor.1 >= top + 9.0 || cursor.0 < left {
+        return None;
+    }
+    let mut x = cursor.0 - left;
+    for (c, style) in cause.resolve_legacy().chars() {
+        x -= advance(c, style);
+        if x < 0.0 {
+            return Some(style.clone());
+        }
+    }
+    None
+}
 impl Game<'_> {
     /// `PauseScreen.getCustomAdditions`'s additions: the
     /// `minecraft:pause_screen_additions` tag's one dialog, or the
@@ -206,9 +311,7 @@ impl Game<'_> {
     fn pause_screen_additions(&self) -> Option<(Text, Tag)> {
         let registries = &self.remote.as_ref()?.registries;
         let dialogs = registries.registries.get("minecraft:dialog")?;
-        let tag = registries
-            .dialog_tags
-            .get("minecraft:pause_screen_additions")?;
+        let tag = registries.tag("minecraft:dialog", "minecraft:pause_screen_additions")?;
         // addCustomDialogButtons' label: computeExternalTitle falls back to the title.
         let button = |dialog_tag: Tag| -> Option<(Text, Tag)> {
             let dialog = Dialog::parse(&dialog_tag)?;
@@ -237,7 +340,7 @@ impl Game<'_> {
         self.remote.is_some() && self.integrated.is_none()
     }
     pub(super) fn draw_pause_menu(&mut self, batch: &mut HudBatch) {
-        let friends = self.friends_view().shown;
+        let friends = self.friends_shown();
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, true);
@@ -261,7 +364,7 @@ impl Game<'_> {
             self.external_server(),
             links,
             additions.is_some(),
-            self.options.split_guest || self.split_hud.menu,
+            &self.pause_rows(),
         ) {
             let is_focused = self.pause_focus == Some(id);
             let hover = active && (ui::hovered(self.cursor, x, y, bw, 20.0) || is_focused);
@@ -288,15 +391,9 @@ impl Game<'_> {
                 tooltip = Some(Text::translate("menu.custom_options.tooltip", &[]));
             }
         }
-        for (i, (x, y, sprite)) in pause_icons(
-            w,
-            h,
-            links,
-            additions.is_some(),
-            self.options.split_guest || self.split_hud.menu,
-        )
-        .into_iter()
-        .enumerate()
+        for (i, (x, y, sprite)) in pause_icons(w, h, links, additions.is_some(), &self.pause_rows())
+            .into_iter()
+            .enumerate()
         {
             let active = icon_active(i, friends);
             let is_focused = (self.pause_focus == Some(10) && i == FRIENDS_ICON)
@@ -305,11 +402,7 @@ impl Game<'_> {
             // The icon has no label: name it for controller focus and the
             // control socket's widget tree.
             if i == FRIENDS_ICON {
-                horizon_client::widgets::record(
-                    horizon_client::friends_screen::TITLE,
-                    [x, y, 20.0, 20.0],
-                    active,
-                );
+                horizon_client::widgets::record(super::friends::TITLE, [x, y, 20.0, 20.0], active);
             }
             ui::button(
                 batch,
@@ -346,7 +439,7 @@ impl Game<'_> {
             batch.sprite_scaled(atlas, sprite, x + 3.0, y + 3.0, 15.0, 15.0, u32::MAX);
             if hover {
                 tooltip = Some(if i == FRIENDS_ICON {
-                    Text::literal(horizon_client::friends_screen::title())
+                    Text::literal(super::friends::title())
                 } else {
                     Text::translate(ICON_LABELS[i], &[])
                 });
@@ -386,6 +479,10 @@ impl Game<'_> {
             // PauseScreen: `new SocialInteractionsScreen(this)`.
             15 => self.open_social(true),
             30 => self.open_split_settings(),
+            id @ ADDED_PAGES.. => {
+                let page = usize::from(id - ADDED_PAGES);
+                self.open_options_at(false, horizon_client::options_ui::Page::Added(page));
+            }
             // addCustomDialogButtons: DialogConnectionAccess.openDialog of the
             // additions dialog, from the pause menu.
             14 => {
@@ -401,6 +498,23 @@ impl Game<'_> {
         }
         Ok(())
     }
+    /// The pause menu's full-width rows above Options: Splitscreen's settings, then the pages
+    /// crates registered for the pause menu (`horizon_hooks::pages`), by their title.
+    fn pause_rows(&self) -> Vec<(&'static str, u8)> {
+        let split = self.options.split_guest || self.split_hud.menu;
+        let pages = horizon_hooks::pages::engine::all().iter().enumerate();
+        let added = pages
+            .filter(|(i, page)| {
+                page.place() == horizon_hooks::pages::Place::Pause
+                    && *i < usize::from(u8::MAX - ADDED_PAGES)
+            })
+            .map(|(i, page)| (page.title(), ADDED_PAGES + i as u8));
+        split
+            .then_some((SPLIT_SETTINGS, 30))
+            .into_iter()
+            .chain(added)
+            .collect()
+    }
     pub(super) fn pause_click(&mut self) -> Result<()> {
         let (w, h) = {
             let size = self
@@ -412,13 +526,7 @@ impl Game<'_> {
         };
         let links = !self.server_links().is_empty();
         let additions = self.pause_screen_additions();
-        let icons = pause_icons(
-            w,
-            h,
-            links,
-            additions.is_some(),
-            self.options.split_guest || self.split_hud.menu,
-        );
+        let icons = pause_icons(w, h, links, additions.is_some(), &self.pause_rows());
         let friends = icons[FRIENDS_ICON];
         let hit = pause_buttons(
             w,
@@ -426,7 +534,7 @@ impl Game<'_> {
             self.external_server(),
             links,
             additions.is_some(),
-            self.options.split_guest || self.split_hud.menu,
+            &self.pause_rows(),
         )
         .into_iter()
         .find(|b| b.5 && ui::hovered(self.cursor, b.0, b.1, b.2, 20.0))
@@ -439,9 +547,8 @@ impl Game<'_> {
                 .map(|i| 12 + i as u8)
         })
         .or_else(|| {
-            (self.friends_view().shown
-                && ui::hovered(self.cursor, friends.0, friends.1, 20.0, 20.0))
-            .then_some(10)
+            (self.friends_shown() && ui::hovered(self.cursor, friends.0, friends.1, 20.0, 20.0))
+                .then_some(10)
         });
         if let Some(id) = hit {
             self.pause_focus = Some(id);
@@ -466,10 +573,10 @@ impl Game<'_> {
             self.external_server(),
             links,
             self.pause_screen_additions().is_some(),
-            self.options.split_guest || self.split_hud.menu,
+            &self.pause_rows(),
         );
         let mut active_ids: Vec<u8> = buttons.into_iter().filter(|b| b.5).map(|b| b.4).collect();
-        let friends = self.friends_view().shown;
+        let friends = self.friends_shown();
         active_ids.extend(pause_icon_focus_ids(friends));
         if active_ids.is_empty() {
             return Ok(());
@@ -514,20 +621,20 @@ impl Game<'_> {
                     self.external_server(),
                     links,
                     self.pause_screen_additions().is_some(),
-                    self.options.split_guest || self.split_hud.menu,
+                    &self.pause_rows(),
                 );
                 let mut rects: Vec<(u8, f32, f32, f32)> = buttons
                     .into_iter()
                     .filter(|b| b.5)
                     .map(|b| (b.4, b.0, b.1, b.2))
                     .collect();
-                let friends = self.friends_view().shown;
+                let friends = self.friends_shown();
                 for (i, (x, y, _)) in pause_icons(
                     w,
                     h,
                     links,
                     self.pause_screen_additions().is_some(),
-                    self.options.split_guest || self.split_hud.menu,
+                    &self.pause_rows(),
                 )
                 .into_iter()
                 .enumerate()
@@ -686,6 +793,24 @@ impl Game<'_> {
                 hover,
             );
         }
+        // DeathScreen.visitText(HoveredTextEffects.TOOLTIP_AND_CURSOR): a
+        // styled cause shows its hover tooltip, and a clickable one asks for
+        // the hand.
+        if let Some(cause) = &self.ui.death_text
+            && let Some(style) = death_style_at(
+                &|c, style| atlas.font.advance(c, style),
+                cause,
+                w,
+                self.cursor,
+            )
+        {
+            if let Some(hover) = &style.hover {
+                ui::tooltip(batch, atlas, &[(**hover).clone()], self.cursor);
+            }
+            if style.click.is_some() {
+                widgets::request_cursor(widgets::Cursor::PointingHand);
+            }
+        }
     }
     /// LocalPlayer.respawn: the player comes back (the death screen's
     /// button, or at once with `immediate_respawn`).
@@ -722,6 +847,24 @@ impl Game<'_> {
                 self.death_confirm_answer(yes)?;
             }
             return Ok(());
+        }
+        // DeathScreen.mouseClicked first looks for a click event on the
+        // cause line: an open_url link goes through the chat link flow.
+        if let Some(cause) = &self.ui.death_text {
+            let atlas = &self.gui.atlas;
+            let mid = self.gui_size().0;
+            if let Some(text::Style {
+                click: Some(ClickEvent::OpenUrl(url)),
+                ..
+            }) = death_style_at(
+                &|c, style| atlas.font.advance(c, style),
+                cause,
+                mid,
+                self.cursor,
+            ) {
+                self.click_url(url);
+                return Ok(());
+            }
         }
         let size = self
             .renderer
@@ -845,7 +988,10 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Screen, death_buttons, pause_buttons, pause_icon_focus_ids, pause_icons};
+    use super::{
+        ADDED_PAGES, SPLIT_SETTINGS, Screen, death_buttons, pause_buttons, pause_icon_focus_ids,
+        pause_icons,
+    };
 
     #[test]
     fn death_buttons_sit_on_whole_gui_pixels() {
@@ -885,10 +1031,50 @@ mod tests {
         }
     }
 
+    /// `Screen.isPauseScreen` per 26.3: the class default is true, and only
+    /// these classes override it false; the game-master editors keep the
+    /// default. A world with one of the true screens open stops ticking
+    /// (`Minecraft.pause` through `Gui.isPausing`).
+    #[test]
+    fn only_the_screens_that_override_is_pause_screen_keep_the_world_running() {
+        for screen in [
+            Screen::Creative,
+            Screen::Inventory,
+            Screen::Chat,
+            Screen::Dead,
+            Screen::GameModeSwitcher,
+            Screen::Social,
+            Screen::Playing,
+            Screen::EmoteWheel,
+            Screen::Mod,
+            Screen::Studio,
+            Screen::Win,
+        ] {
+            assert!(!screen.is_pause_screen(), "{}", screen.id());
+        }
+        for screen in [
+            Screen::Paused,
+            Screen::Options,
+            Screen::Stats,
+            Screen::Advancements,
+            Screen::WorldOptions,
+            Screen::Friends,
+            Screen::ServerLinks,
+            Screen::ConfirmLink,
+            Screen::DialogWarning,
+            Screen::CommandBlock,
+            Screen::BlockEditor,
+            Screen::DebugOptions,
+            Screen::HudEditor,
+        ] {
+            assert!(screen.is_pause_screen(), "{}", screen.id());
+        }
+    }
+
     #[test]
     fn pause_menu_uses_disconnect_for_servers_and_keeps_world_options() {
         for (remote, label) in [(false, "menu.returnToMenu"), (true, "menu.disconnect")] {
-            let buttons = pause_buttons(427.0, 240.0, remote, false, false, false);
+            let buttons = pause_buttons(427.0, 240.0, remote, false, false, &[]);
             let quit = buttons.iter().find(|b| b.4 == 2).unwrap();
             assert_eq!(quit.3, label);
             assert!(quit.5);
@@ -913,14 +1099,14 @@ mod tests {
 
     #[test]
     fn server_links_adds_a_full_width_row_above_options() {
-        let with = pause_buttons(427.0, 240.0, true, true, false, false);
-        let without = pause_buttons(427.0, 240.0, true, false, false, false);
+        let with = pause_buttons(427.0, 240.0, true, true, false, &[]);
+        let without = pause_buttons(427.0, 240.0, true, false, false, &[]);
         let links = with.iter().find(|b| b.4 == 11).unwrap();
         assert_eq!(links.2, 204.0);
         assert_eq!(links.3, "menu.server_links");
         assert!(links.5);
         // The icon row sits above it; Options and Disconnect move down 24.
-        let icons = pause_icons(427.0, 240.0, true, false, false);
+        let icons = pause_icons(427.0, 240.0, true, false, &[]);
         let y0_icons = ((240.0f32 - 190.0) * 0.25).floor() + 98.0;
         assert_eq!(icons[0].1, y0_icons);
         assert!(links.1 > icons[0].1);
@@ -936,8 +1122,8 @@ mod tests {
     fn pause_screen_additions_takes_the_server_links_row() {
         // getCustomAdditions: one additions button in row 3, never next to the
         // links button, so the grid keeps one extra row either way.
-        let with = pause_buttons(427.0, 240.0, true, true, true, false);
-        let links = pause_buttons(427.0, 240.0, true, true, false, false);
+        let with = pause_buttons(427.0, 240.0, true, true, true, &[]);
+        let links = pause_buttons(427.0, 240.0, true, true, false, &[]);
         assert!(with.iter().all(|b| b.4 != 11));
         let button = with.iter().find(|b| b.4 == 14).unwrap();
         assert_eq!(
@@ -950,14 +1136,42 @@ mod tests {
             assert_eq!(add.1, link.1);
         }
         assert_eq!(
-            pause_icons(427.0, 240.0, true, true, false)[0].1,
-            pause_icons(427.0, 240.0, true, false, false)[0].1
+            pause_icons(427.0, 240.0, true, true, &[])[0].1,
+            pause_icons(427.0, 240.0, true, false, &[])[0].1
         );
+    }
+    #[test]
+    fn registered_pages_stack_above_options_in_the_pause_menu() {
+        let rows = [
+            (SPLIT_SETTINGS, 30),
+            ("test.page.a", ADDED_PAGES),
+            ("test.page.b", ADDED_PAGES + 2),
+        ];
+        let buttons = pause_buttons(427.0, 300.0, true, false, false, &rows);
+        let y = |id| buttons.iter().find(|b| b.4 == id).unwrap().1;
+        assert_eq!(y(ADDED_PAGES), y(30) + 24.0);
+        assert_eq!(y(ADDED_PAGES + 2), y(ADDED_PAGES) + 24.0);
+        assert_eq!(
+            y(1),
+            y(ADDED_PAGES + 2) + 24.0,
+            "Options under the last one"
+        );
+        // The grid stays centred: three more rows start it higher.
+        let without = pause_buttons(427.0, 300.0, true, false, false, &[]);
+        let back = |b: &[(f32, f32, f32, &str, u8, bool)]| b.iter().find(|b| b.4 == 0).unwrap().1;
+        assert!(back(&buttons) < back(&without));
     }
     #[test]
     fn split_settings_preserves_dialog_rows_and_icon_actions() {
         for (links, additions) in [(false, false), (true, false), (false, true), (true, true)] {
-            let buttons = pause_buttons(427.0, 300.0, true, links, additions, true);
+            let buttons = pause_buttons(
+                427.0,
+                300.0,
+                true,
+                links,
+                additions,
+                &[(SPLIT_SETTINGS, 30)],
+            );
             let split = buttons.iter().find(|b| b.4 == 30).unwrap();
             let options = buttons.iter().find(|b| b.4 == 1).unwrap();
             assert_eq!(options.1, split.1 + 24.0);
@@ -970,10 +1184,40 @@ mod tests {
             }
             assert!(buttons.iter().all(|b| b.4 != 12 && b.4 != 13));
             assert!(
-                !pause_buttons(427.0, 300.0, true, links, additions, false)
+                !pause_buttons(427.0, 300.0, true, links, additions, &[])
                     .iter()
                     .any(|b| b.4 == 30)
             );
         }
+    }
+
+    /// `DeathScreen.mouseClicked`'s `ClickableStyleFinder`: the cause line's
+    /// glyph under the pointer decides the link, and the line's edges are no
+    /// link.
+    #[test]
+    fn a_death_causes_link_is_the_glyph_under_the_pointer() {
+        use horizon_client::text::{ClickEvent, Style, Text};
+        let link = Style {
+            click: Some(ClickEvent::OpenUrl("https://example.com".into())),
+            ..Style::default()
+        };
+        let cause = Text::literal("ab").append(Text::styled("cd", link));
+        let advance = |_: char, _: &Style| 6.0;
+        let at = |x: f32, y: f32| {
+            super::death_style_at(&advance, &cause, 427.0, (x, y)).and_then(|s| s.click)
+        };
+        // Four 6-pixel glyphs centred in 427: the line starts at 201.
+        assert_eq!(at(203.0, 86.0), None);
+        assert_eq!(at(209.0, 86.0), None);
+        assert_eq!(
+            at(215.0, 86.0),
+            Some(ClickEvent::OpenUrl("https://example.com".into()))
+        );
+        assert_eq!(
+            at(221.0, 86.0),
+            Some(ClickEvent::OpenUrl("https://example.com".into()))
+        );
+        assert_eq!(at(227.0, 86.0), None);
+        assert_eq!(at(215.0, 84.0), None);
     }
 }

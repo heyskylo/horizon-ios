@@ -8,7 +8,7 @@
 #
 # The token is made on a machine whose gh has admin on the repository, never printed or stored here:
 #   gh api -X POST repos/horizon-rust/horizon/actions/runners/registration-token --jq .token |
-#     ssh ludovic@playhorizon 'bash ~/horizon-install/checks-runners.sh install'
+#     ssh ludovic@playhorizon 'bash ~/horizon-install/checks-runners.sh install'   # git-slim.sh beside it
 #
 # Two kinds of runner, each a systemd user service in ~/.actions-runners/<name>:
 # - horizon-ci-<n> (label playhorizon-ci, CI_RUNNERS of them, default 2): this repository's own verify and launcher
@@ -68,12 +68,14 @@ if [ -n "${CARGO_TARGET_DIR:-}" ] && [ -d "$CARGO_TARGET_DIR" ]; then
     rm -rf "${CARGO_TARGET_DIR:?}"
   fi
 fi
-# The checkout's history: actions/checkout fetches into the same .git every job and never repacks. Without .git it
-# clones again (and replaces the rest of the folder).
+# The checkout's history: actions/checkout fetches into the same .git every job and never repacks. git-slim.sh (beside
+# this hook) collects it past 1.5 GB (a healthy one is ~0.5 GB) and folds many packs; one that is still over MAX_GIT_GB
+# is removed: the checkout then clones again (and replaces the rest of the folder).
 if [ -n "${GITHUB_WORKSPACE:-}" ] && [ -d "$GITHUB_WORKSPACE/.git" ]; then
+  MAX_GIT_MB=${MAX_GIT_MB:-1536} bash "$(dirname "$0")/git-slim.sh" "$GITHUB_WORKSPACE" || true
   size=$(du -s --block-size=1G "$GITHUB_WORKSPACE/.git" | cut -f1)
-  if [ "$size" -gt "${MAX_GIT_GB:-2}" ]; then
-    echo "Checkout's .git at ${size} GB (over ${MAX_GIT_GB:-2}): removed, this job clones again"
+  if [ "$size" -gt "${MAX_GIT_GB:-4}" ]; then
+    echo "Checkout's .git at ${size} GB (over ${MAX_GIT_GB:-4}): removed, this job clones again"
     rm -rf "${GITHUB_WORKSPACE:?}/.git"
   fi
 fi
@@ -121,6 +123,7 @@ install() {
   [ -f "$units/horizon-ci.slice" ] || { echo "No horizon-ci.slice: install tools/ci/linux-runner.sh first"; exit 1; }
   shared_files
   cp "$0" "$shared/checks-runners.sh"
+  cp "$(dirname "$0")/git-slim.sh" "$shared/git-slim.sh"
   # The checks' share of the CI slice's memory: a build that runs out stops there, not the parity runner's jobs.
   cat > "$units/horizon-ci-checks.slice" <<EOF
 [Unit]

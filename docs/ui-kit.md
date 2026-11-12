@@ -14,11 +14,16 @@ The kit grows a piece at a time, each with something on screen that needs it:
 
 | Piece | What it gives |
 |---|---|
-| `hud_kit::room` | `Room`: what of a view an overlay may use, clear of vanilla's boss bars |
-| `hud_kit::plate` | `Plate`: the box behind a notice's text |
+| `hud_kit::room` | `Room`: what of a view an overlay may use, clear of vanilla's boss bars and status rows |
+| `hud_kit::plate` | `Plate`: the box behind a notice's text, or a guide row's backing |
+| `hud_kit::shapes` | triangles, fans, arcs, discs and radial gradients for `HudBatch`; `alpha_since`, `translate_since` |
+| `hud_kit::motion` | `Clock` and `Tween`: quiet motion as pure functions of the frame's time |
+| `hud_kit::icon` | `Icon`: a sprite, an item, a glyph or the player's face, through an `IconPainter` |
+| `hud_kit::tabs` | `collapsed`: a page list in one row, `‹ Name ›` with a pip per page; `tab_strip`: a row of tabs that falls back to it |
 | `pad_glyph`, with `GlyphOf` and `MenuJob` in `gamepad.rs` | `Glyph`: a controller button, asked for by what it does, in the player's `Glyphs` |
+| `hud_kit::fit` | `ellipsize`, `wrap`, `chord` and `fit_in_circle`: text cut or wrapped to the room it has |
+| `hud_kit::hint` | `HintRow`: glyphs and what they do, "(A) Jump", measured, fitted and drawn one way |
 | `settings_shell` | `Shell`: a searchable settings screen (Extras, Graphics, Controller Settings, Shaders) a `Screen` describes; it draws and drives it, binding rows included |
-| `hud_kit::tabs` | `collapsed`: a page list in one row, `‹ Name ›` with a pip per page |
 
 All sizes are GUI px from the view's top left, and an area is `[x, y, w, h]`.
 
@@ -27,11 +32,12 @@ All sizes are GUI px from the view's top left, and an area is `[x, y, w, h]`.
 ### Room
 
 A `Room` is a view's size plus the keep-outs its HUD shows this frame. Each keep-out is a `Keep`
-and an area. Today there is one kind:
+and an area. There are two kinds:
 
 | `Keep` | Where it comes from |
 |---|---|
 | `BossBars` | `hud_overlays::boss_bars_bottom(h, n)`: vanilla's `BossHealthOverlay` layout, y from 12 in steps of 19 until a third of the view's height; as wide as the 182 px bar or its widest name |
+| `StatusRows` | the survival rows above the hotbar (health with its absorption rows, armour, food or the mount's hearts, air), from the highest row's top to the view's bottom, as `hud_layout::draws_top` reports them; `room.bottom()` is the lowest y an overlay may reach |
 
 `Game::hud_room` (`crates/horizon-client/src/game/hud_room.rs`) gathers what is showing.
 Nothing shows while F1 or Replay Studio hides the HUD, or off a world. `hud` empties `ui.room` at
@@ -59,6 +65,23 @@ The other HUD boxes (the minimap, the PvP & HUD widgets, mods' corner panels) do
 yet. Chat, the hotbar, effect icons and subtitles aren't keep-outs yet either. #10125 asks for
 these push-aside points for mods.
 
+### Overlays that hold the view
+
+Some overlays take the middle of the view for themselves, as the radial menu does once it shows.
+What vanilla draws there gives way to them through one query, `Game::overlay_holds_view()`
+(`crates/horizon-client/src/game/hud_room.rs`), not a check per overlay in each piece:
+
+| Gives way | Where |
+|---|---|
+| the 2D crosshair and F3's crosshair | `hud_layers`, `debug_crosshair_drawn` (`game.rs`) |
+| the chat's lines (an open chat still draws) | `hud_layers` (`game.rs`) |
+| every toast: advancements, recipes, tutorials, packs, music | `Game::draw_every_toast` (`hud_room.rs`); they go on timing out, as under F1 |
+| the first-person hands | `Game::hands_shown` (`hud_room.rs`), which `hand_geometry` reads (`game/frame_geometry.rs`) |
+
+A new overlay that holds the view adds its own condition to `overlay_holds_view`. Ask from the moment
+it shows, not from when it owns the pad ([Pad capture](#pad-capture)): a quick tap of the radial
+menu's opener owns the pad for a frame and draws nothing, so nothing should blink.
+
 ### Plates
 
 `hud_kit::plate::draw(batch, atlas, plate, area)` fills an area with a plate's look, then draws
@@ -67,6 +90,7 @@ its 1 px edge inside the area.
 | `Plate` | Look | Used by |
 |---|---|---|
 | `Notice` | dark fill (alpha 210), faint white edge | controller notices, splitscreen's prompts |
+| `Backing { alpha }` | black at the player's Text Background Opacity, no edge | the gameplay guide's rows |
 
 It keeps the colours these overlays had before the kit, so moving them onto it changes nothing on
 screen.
@@ -77,6 +101,153 @@ screen.
   sprites.
 - `hud_kit::room` tests cover an empty room and when an overlay moves.
 - `game/split/hud.rs` tests place the join strip and the notice with 0 to 3 bars.
+
+## Shapes
+
+`hud_kit::shapes` adds non-rectangular fills to `HudBatch` (an `impl HudBatch` in the kit, so
+`hud.rs` stays as it is):
+
+| Method | Draws |
+|---|---|
+| `fill_triangle(atlas, [a, b, c], colour)` | one triangle |
+| `fill_fan(atlas, centre, rim, colour)` | a triangle from the centre to each two neighbouring rim points |
+| `fill_arc(atlas, centre, [r0, r1], [a0, a1], colour)` | an annular sector; `r0 = 0` is a pie slice, a span of `TAU` a ring |
+| `fill_disc(atlas, centre, r, colour)` | a disc |
+| `fill_disc_gradient(atlas, centre, r, &[Stop(fraction, colour)...])` | a disc whose colour runs through the stops from the centre out |
+| `alpha_since(start, factor)` | multiplies the alpha of everything drawn since `start` |
+| `translate_since(start, dx, dy)` | moves everything drawn since `start` |
+
+- **Units.** Every shape is 6-vertex units, as rectangles are: a triangle is the quad `a, b, c, a,
+  c, c`. `clip_since`, blend runs (`blend_since`) and code that reads a batch a quad at a time keep
+  working, and a triangle is never taken for a rectangle (its fourth corner repeats the third).
+- **Angles** are radians from straight up, clockwise, as a stick and the radial dial's slots go.
+- **Radii** snap to whole GUI px. An arc has one segment per 4 GUI px of its outer edge
+  (`arc_segments`, `ARC_STEP`), at most 256.
+
+```rust
+use horizon_client_render::hud_kit::shapes::Stop;
+use std::f32::consts::FRAC_PI_8;
+
+// The radial dial: a dark disc fading out, its track, and the top sector lit.
+batch.fill_disc_gradient(atlas, centre, 90.0, &[Stop(0.0, dark), Stop(1.0, clear)]);
+batch.fill_arc(atlas, centre, [40.0, 70.0], [0.0, TAU], track);
+batch.fill_arc(atlas, centre, [40.0, 70.0], [-FRAC_PI_8, FRAC_PI_8], accent);
+```
+
+Tests (`hud_kit/shapes.rs`): areas against the true circle's, arcs inside their band and span,
+segment counts, a clip that keeps half a disc and its blend run, gradient stops, and that
+`alpha_since` and `translate_since` touch only what came after the mark.
+
+## Motion
+
+`hud_kit::motion` is quiet motion for overlays. It holds no state: the overlay keeps the moments
+things happened and asks where a tween is now.
+
+- `Clock { now, still }` is built once a frame by the game (`Game::hud_clock`). `still` is set
+  while the game is paused, frame-stepped (`HORIZON_STILL`, a screenshot sequence) or a repro
+  recording or replay runs. A still clock shows every tween at its end, so recordings and
+  screenshots are the same every run.
+- `Tween::new(duration, motion)` takes a curve from the design system (`horizon_theme::QUICK` for
+  fades, `MOVE` for things that travel), and `Tween::of(motion)` its duration too. `progress`
+  is 0 to 1, eased; `linear`, `done` and `lerp` are there too.
+- The helpers are `fade` and `fade_out` (an alpha), `scale_in(from)`, `slide(distance)` (an offset
+  back to 0), `flash` (1 falling evenly to 0) and `turn(from, to)` (an angle the short way round).
+
+```rust
+let clock = motion::Clock::new(now, still);
+let open = Tween::new(Duration::from_millis(90), horizon_theme::QUICK);
+let alpha = motion::fade(open, clock, opened_at);
+let scale = motion::scale_in(open, clock, opened_at, 0.94);
+```
+
+Motion never decides what input does: the radial dial selects from the stick, whatever its
+sector is drawing.
+
+## Icons
+
+`hud_kit::icon::Icon` is a small picture filling a square (`[x, y, size]`, 16 or 32 GUI px):
+
+| `Icon` | Drawn by |
+|---|---|
+| `Sprite("statistics/item_dropped")` | the kit, from the atlas's `gui/sprites/`; proportions kept, centred |
+| `Item("minecraft:chest")` | the game's `IconPainter::item` (`game/item_draw.rs`): the item's model, scaled from 16 |
+| `Glyph(glyph)` | the kit, `pad_glyph::draw`, centred |
+| `PlayerFace` | the game's `IconPainter::face`: the player's skin face with its hat |
+
+`icon::draw(batch, atlas, painter, icon, area, alpha)` says whether anything was drawn. The render
+crate never reaches gameplay, so items and the face go through the painter the game passes in;
+tests and sprite-only screens pass `NoItems`. Every picture comes from the player's own resources,
+none is bundled, and a sprite the atlas lacks draws nothing.
+
+## Tabs
+
+`hud_kit::tabs::collapsed(atlas, names, selected, area)` lays out a page list in one row: the
+selected name between `‹ ›` arrows, cut to the room between them, with a pip per page under the
+row, the selected one white. `tabs::draw(batch, atlas, &strip)` paints it.
+
+- `has_prev` and `has_next` say whether there is a page either way; an arrow without one is drawn
+  dimmed (`ARROW_OFF`). A screen may change them, as the settings shell's search does.
+- When the pips don't all fit across the area, the ones shown are a window round the selected
+  page's, so they never leave the row's width.
+- It only lays out and paints: what a click or a bumper does is the screen's.
+
+### A row of tabs
+
+`hud_kit::tabs::tab_strip(atlas, names, selected, area, scroll)` lays out a row of tabs, and
+`tabs::draw_tabs(batch, atlas, &strip, alpha)` paints it, clipped to its area. The radial dial's
+page header uses it.
+
+- The selected tab is white and centred. Its neighbours sit `GAP` (2) apart on each side and fade
+  with distance (`FADE`: 1, 0.7, 0.35, 0.15, 0.1).
+- A tab is `clamp(text + 10, 34, 64)` wide.
+- When the area is narrower than the selected tab plus two 34 px tabs and their gaps, it falls back
+  to `collapsed`: `TabStrip::Collapsed` holds that strip, `TabStrip::Tabs` the row.
+- `scroll` moves every tab sideways, for a page turn's slide: start it at
+  `tabs::distance(atlas, names, from, to)`, how far the new tab's middle was from the old one's, and
+  ease it to 0 (`motion::slide`).
+- `tabs::span(atlas, names)` is the width that holds every tab whichever is centred. An area that
+  wide keeps what sits at its ends (the dial's bumpers) still as the pages turn.
+- A tab crossing the area's edge fades out over its last 12 px (`EDGE_FADE`) instead of being cut
+  mid-word; a neighbour's plate and text fade together by its distance.
+
+It knows nothing of pages or bumpers: the radial dial puts its LB and RB glyphs beside it, and,
+as its pages turn round, lights both arrows of a collapsed strip.
+
+### Where it is used
+
+The settings shell's page list ([The page list](#the-page-list)) collapses into it when its pages
+don't fit: Shaders' pack screens in a short view (four fit at 427x240 GUI px: an 854x480 window at
+GUI scale 2, or 720p at its automatic scale; packs such as BSL have about ten).
+
+Tests: `hud_kit::tabs` (centring, cutting, dimmed ends, the pip window; a row's order, fades,
+scroll, span and its fallback), `settings_shell` (a short view leaves no page out and a tall one
+keeps the list, the arrows walk every page, search skips pages without matches, the parts are `Tab`
+targets), and `tools/pad_menu_e2e.py --only shader_screens` (RB through every screen of a
+twelve-screen pack in a real game).
+
+## Pad capture
+
+Several overlays over play take the controller for themselves. `Game::pad_capture`
+(`crates/horizon-client/src/game/pad/capture.rs`) is the one place that says which owns it now,
+in one priority order:
+
+| `PadCapture` | Owns the pad while |
+|---|---|
+| `Keyboard` | the on-screen keyboard is up |
+| `Prompt` | a prompt is over the world (a server dialog, the code of conduct, a link, command or resource pack prompt) |
+| `Radial` | the radial menu is held open |
+
+Code that routes the pad's presses and sticks (`pad.rs`, `pad_actions.rs`, `pad_menu.rs`,
+`window_handler.rs`), and the controller guide, which gives way to the keyboard, ask
+`pad_radial_captures()` or `pad_keyboard_captures()` rather than the overlays themselves. A new
+overlay that takes the pad adds its variant here, in its place in the order, and a check that asks
+about it gets a `pad_<overlay>_captures()` beside these. What vanilla draws under an overlay gives
+way through `overlay_holds_view` instead ([Overlays that hold the view](#overlays-that-hold-the-view)).
+Screens are not overlays: `pad_in_menu` says when one has the pad.
+
+One change came with it: a prompt that arrives while the radial menu is open owns the pad from that
+poll, so a B in the same poll answers the prompt instead of cancelling the menu (which the prompt
+closes anyway). Before, the menu took that B.
 
 ## Glyphs
 
@@ -136,6 +307,90 @@ family.
   the seeded `horizon-controller.txt`, that is letter mode with no real pad (`tools/pad_menu_e2e.py`,
   `nintendo_letters`). `pad status` lists each declared glyph's part (`button`), `label` and `sprite`.
 
+## Fitting text
+
+`hud_kit::fit` cuts, wraps and fits text for Horizon's own overlays and settings. Widths are GUI px
+in the HUD atlas's font (`Font::width`), so what fits is what draws. Vanilla's screens keep their
+own cutting (`screen_draw::clip`) and sliding labels (`scrolling_text`).
+
+| Function | What it does |
+|---|---|
+| `ellipsize(atlas, text, width) -> Cow<str>` | `text` itself when it fits; else its longest start that fits with `...` after it, trailing spaces dropped. One walk over the characters for plain text; text with `§` codes or right-to-left characters is measured whole at each length |
+| `wrap(text, max, width_fn) -> Vec<String>` | lines no wider than `max`, broken between words; a word wider than `max` keeps a line of its own |
+| `chord(r, dy)` | how wide a circle of radius `r` is `dy` from its centre: `2 * sqrt(r² - dy²)`, 0 past its edge |
+| `room_in_circle(r, top, height)` | the room a line from `top` to `top + height` (from the centre, negative above) has: the chord at its edge farther from the centre |
+| `fit_in_circle(atlas, text, r, top, height, inset)` | `text` ellipsized to that room, less `inset` at each end |
+
+```rust
+use horizon_client::hud_kit::fit;
+
+// A name in a control's room; a short one comes back borrowed, not copied.
+let name = fit::ellipsize(atlas, &row.name, room);
+// A label on a dial's hub of radius 24, its 9 px line across the centre, 2 px clear of the rim.
+let label = fit::fit_in_circle(atlas, "Courtly Bow", 24.0, -4.5, 9.0, 2.0);
+let x = cx - atlas.font.width(&label) / 2.0;
+```
+
+`graphics_style::fit`, which the settings shell, Controller and Shaders use for names and values, is
+`ellipsize` under its old name. It used to rebuild and measure the whole string once per character;
+a test cuts every Horizon string in seven languages, at widths from 0 to 240 px, both ways and
+expects the same text.
+
+## Hint rows
+
+A `HintRow` is a controller's glyphs and what pressing them does: `HintRow::new([glyph], caption)`.
+A `Look` says how it reads, and the kit has one for each overlay that shows them:
+
+| `Look` | Caption | Gap to the glyphs | Used by |
+|---|---|---|---|
+| `hint::GUIDE` | white, shadowed | 3 px (glyphs 1 px apart) | the gameplay guide's rows; the right column's take `Side::Trailing` |
+| `hint::NOTICE` | light grey | 5 px | the controller notice's line under its title |
+| `hint::PROMPT` | a lighter grey | 5 px | splitscreen's join and lost-controller answers |
+
+- `measure(atlas, look)` is the row's width: its glyphs, the gap, its caption.
+- `fitted(atlas, look, width)` cuts the caption with `ellipsize` to the room the glyphs leave. The
+  glyphs always stay: a row is no use without its button.
+- `draw_hint(batch, atlas, row, look, x, y)` draws from `x`, the row's left edge (the first glyph's
+  art, `pad_glyph::rect`), on the text line at `y`.
+- `draw_plated(batch, atlas, row, look, plate, area)` draws a plate over `area` and the row on it,
+  against the glyphs' edge, with `hint::PAD` on the caption's side. `plated_width` is its width.
+- `text()` is the row as plain words, each glyph by its print ("A Type"), for a surface that draws
+  no art: the on-screen keyboard's hint line, in the launcher's font.
+
+```rust
+use horizon_client::hud_kit::hint::{self, HintRow, Look, Side};
+use horizon_client::hud_kit::plate::Plate;
+
+let row = HintRow::new(self.glyph(GlyphOf::Bound("key.jump")), lang::get("key.jump"));
+// Against the view's right edge, cut to the room it has.
+let look = Look { side: Side::Trailing, ..hint::GUIDE };
+let row = row.fitted(atlas, &look, room - hint::PAD);
+let w = hint::plated_width(atlas, &row, &look);
+hint::draw_plated(batch, atlas, &row, &look, Plate::Backing { alpha }, [x, y, w, 11.0]);
+```
+
+Each overlay's captions now fit their room:
+
+- **The gameplay guide.** A row goes as wide as its caption wherever it overlaps nothing. Where it
+  would run into the other column, its caption is cut to the room left beside it
+  (`gameplay_guide::left_room`: the view less the right column's widest row and `COLUMN_GAP`), and
+  only if even that overlaps does it move down, as before. A row wider than the view is cut to it
+  (`row_room`) instead of being dropped. The right column comes first, as before.
+- **The controller notice.** Its title and any word wider than the notice are cut to it.
+- **Splitscreen's prompts.** The title is cut to the view, and when the answers don't fit on one
+  line each caption is cut to an equal share.
+
+### Tests
+
+- `hud_kit::fit` tests: the corpus test against the old `graphics_style::fit`, chords, and lines in
+  a circle getting shorter away from its centre.
+- `hud_kit::hint` tests draw rows by hand (`pad_glyph::draw`, `batch.text`) at the documented
+  places and compare the vertices with `draw_hint` and `draw_plated`, so each migrated overlay draws
+  what it drew before when its text fits.
+- `gameplay_guide` tests place a left row beside a right column it would overlap, keep a row whole
+  where nothing is beside it, and cut a row wider than the view; and
+  `game/split/hud.rs` tests fit a prompt's answers to a narrow view.
+
 ## The settings shell
 
 ### Moving a screen onto the shell
@@ -169,7 +424,9 @@ pages read from a shader pack, rows that link to pages out of the page list, and
    included. **Apply**, for changes that wait: `pending` shows it beside Undo, and `apply` does them.
 6. **Host it**: a `Shell` of it on `OptionsUi`, named in `OptionsUi::shell` and `shell_mut`, and opened
    at its page with `Shell::show`. Every input goes through those two, so a screen can't take the wheel
-   and miss the stick.
+   and miss the stick. They live in `options_ui/shell_pages.rs` with the rest of the hosting glue
+   (`shell_events`, `pad_clicks_step`, `shell_opened_focus`), so hosting a screen touches that file,
+   not `options_ui.rs`.
 7. **Delete** the screen's own drawing, scrolling, focus, search and click code.
 
 What the old screen's tests checked moves to tests on the `Shell` of the new one: press a row with
@@ -189,12 +446,17 @@ or what else its button does, and draws the row's reset.
 - `shared`: what else the same button does, which the strip lists and the row marks "[ ]" in yellow.
 - `reset`: `Reset::None` (no button), `Reset::Default` (greyed) or `Reset::Changed` (live) for a reset
   button at the row's end; pressed (a click, or Right then Enter or A), it calls `Screen::reset`.
+- The strip says the binding's note (unbound, or what else its button does) unless the row has a
+  `chosen` of its own: that outranks the note except while the host waits, so a binding can say why it
+  has no button or shares one (the radial menu's opener says what that means for opening the menu).
+- A `Capture::Pad` row waits on any screen of the shell, not only Controller Settings: the game binds
+  the next button for whatever `selected_pad_action` names.
 
 A press gives `Output::Bind(capture)`; the host's `shell_events` starts the wait, and passes what it waits
 on back to `Hosted::draw`.
 
 ```rust
-// A key, as Extras' sort key and Graphics' HDR shortcut have it:
+// A key, as Extras' sort key has it:
 Row::new(row, name, Value::Binding(Binding::key(extras::SORT_KEY, key_name)))
 
 // A controller button, as Controller Settings > Bindings has each action, in the player's
@@ -211,6 +473,26 @@ let binding = Binding {
 };
 Row::new(Item::Bind(action), name, Value::Binding(binding))
 ```
+
+### Lists, steps and where the focus opens
+
+A screen whose choice has too many values to step through can open a list of them instead, as the
+radial menu's editor does for a slot's action:
+
+- `Screen::choose(s, row)`: a press on a `Choice` row (A, Enter or a click; not Left, Right or a
+  Shift press). `None`, the default, steps it as Right does; outputs (a `Push` of the list's page) open
+  the list instead. Left and Right still step it.
+- `Hosted::clicks_step(on)`: the host marks the clicks that are a controller's D-pad Left or Right
+  (`OptionsUi::pad_clicks_step`, from `game/pad_menu.rs`), so on such a choice they step rather than
+  open the list.
+- `Shell::focus_soon(row)`: put the focus on a row at the next draw, scrolled into view, as the
+  keyboard would. The host reads where it went (`Hosted::opened_focus`, `OptionsUi::shell_opened_focus`)
+  so a controller's focus lands there too: the list opens on the slot's current action, and back on
+  the slot after a pick.
+- `Shell::changed_elsewhere()`: a page pushed over the screen (the list) changed what its Undo puts
+  back.
+- A screen whose pages are the player's (`Sheet`s that come and go) can delete the open one: the shell
+  then shows the first page.
 
 ### The page list
 
@@ -240,26 +522,3 @@ a press or a key picks from the list as last drawn.
 - `settings_shell`'s own tests use small screens of their own: `Pages` has more pages than a short view
   holds, a section line, a page out of the list and Apply. Draw it (`page_places`, `strip_ends`,
   `lit_page`), then press the places.
-
-## Tabs
-
-`hud_kit::tabs::collapsed(atlas, names, selected, area)` lays out a page list in one row: the
-selected name between `‹ ›` arrows, cut to the room between them, with a pip per page under the
-row, the selected one white. `tabs::draw(batch, atlas, &strip)` paints it.
-
-- `has_prev` and `has_next` say whether there is a page either way; an arrow without one is drawn
-  dimmed (`ARROW_OFF`). A screen may change them, as the settings shell's search does.
-- When the pips don't all fit across the area, the ones shown are a window round the selected
-  page's, so they never leave the row's width.
-- It only lays out and paints: what a click or a bumper does is the screen's.
-
-### Where it is used
-
-The settings shell's page list (above) collapses into it when its pages don't fit: Shaders' pack
-screens in a short view (four fit at 427x240 GUI px: an 854x480 window at GUI scale 2, or 720p at its
-automatic scale; packs such as BSL have about ten).
-
-Tests: `hud_kit::tabs` (centring, cutting, dimmed ends, the pip window), `settings_shell` (a short view
-leaves no page out and a tall one keeps the list, the arrows walk every page, search skips pages without
-matches, the parts are `Tab` targets), and `tools/pad_menu_e2e.py --only shader_screens` (RB through
-every screen of a twelve-screen pack in a real game).

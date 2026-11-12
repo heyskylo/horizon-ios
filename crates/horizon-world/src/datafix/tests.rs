@@ -113,3 +113,16 @@ fn block_states_from_before_the_flattening_take_their_new_names() {
         ("minecraft:stone".to_owned(), granite.to_vec())
     );
 }
+
+/// `add_padding` must not divide by zero (`64 / bits`) or shift by 64+
+/// (`1i64 << bits`) for `bits == 0` or `bits >= 64`.
+#[test]
+fn add_padding_rejects_zero_and_large_bits() {
+    let empty: Vec<i64> = Vec::new();
+    assert_eq!(super::fixes_mid::add_padding(10, 0, &[1, 2, 3]), empty);
+    assert_eq!(super::fixes_mid::add_padding(10, 64, &[1, 2, 3]), empty);
+    assert_eq!(super::fixes_mid::add_padding(10, 100, &[1, 2, 3]), empty);
+    // Normal case still pads.
+    let padded = super::fixes_mid::add_padding(10, 4, &[1, 2, 3]);
+    assert!(!padded.is_empty());
+}

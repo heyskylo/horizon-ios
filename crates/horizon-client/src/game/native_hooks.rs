@@ -1008,14 +1008,13 @@ use crate::mod_api::NativeTextField;
 use horizon_assets::item_model::StackView;
 use horizon_client::mod_api::EntityDataValue;
 pub(crate) use horizon_client::mod_api::NativeLootOdds;
-use horizon_client::mod_api::WorldHold;
 use horizon_client::mod_api::{
-    self, BlockProperties, HudMode, NativeBossBar, NativeCamera, NativeCommand, NativeDispensed,
-    NativeFishingMedium, NativeFluidAction, NativeFluidDrain, NativeFluidStack,
-    NativeFluidTankView, NativeLifecycleContext, NativeNoteBlockChange, NativeServerPlayer,
-    RecipeBookCategory, ServerTickPhase, TickSpan, WorldPhase,
+    self, AttachmentResult, Attachments, BlockProperties, Holder, HudMode, LayerDefinition,
+    NativeBossBar, NativeCamera, NativeCommand, NativeDispensed, NativeFishingMedium,
+    NativeFluidAction, NativeFluidDrain, NativeFluidStack, NativeFluidTankView,
+    NativeLifecycleContext, NativeNoteBlockChange, NativeServerPlayer, RecipeBookCategory,
+    ServerTickPhase, Suggestion, TickSpan, WorldHold, WorldPhase,
 };
-use horizon_client::mod_api::{AttachmentResult, Attachments, Holder, LayerDefinition, Suggestion};
 pub(crate) use horizon_client::mod_api::{
     ClientboundPlayPacket, NativeBlockRim, NativeColoredLight, NativeLootDrops, NativeMinimap,
     NativeMod, NativePanelEvent, NativeScreen, NativeScreenView, NativeStack, NativeZoom,
@@ -2243,6 +2242,7 @@ impl Game<'_> {
     /// and on servers), and the server's own (`native_window` is false
     /// there: the single player server thread, a dedicated server).
     pub(super) fn native_tick(&mut self) {
+        self.native_process_tasks();
         mod_api::dispatch_tick(self, mod_api::mods());
     }
     /// Before an eligible targeted block's selection outline is built.
@@ -2535,10 +2535,10 @@ impl Game<'_> {
     /// draw here to put something below the layer, or set `canceled` to hide
     /// it. `layer` is the layer's id, in the order Horizon draws them:
     /// `minecraft:crosshair`, `hotbar`, `effects`, `boss_overlay`,
-    /// `vehicle_health` (only riding a mount), `contextual_info_bar` (the
+    /// `vehicle_health` (only riding a mount), `player_health` (the health,
+    /// armor, food and air rows, drawn in one pass), `contextual_info_bar` (the
     /// mount's jump bar, the locator bar or the experience bar, with the level
-    /// number), `player_health` (the health, armor, food and air rows, drawn in
-    /// one pass), `selected_item_name`, `sleep_overlay`, `overlay_message`
+    /// number), `selected_item_name`, `sleep_overlay`, `overlay_message`
     /// (the action bar), `title`, `scoreboard_sidebar`, `subtitle_overlay`,
     /// `chat` and `tab_list`. A layer F1 hides fires nothing, and the chat
     /// screen draws the focused chat itself, so `chat` is only the unfocused
@@ -10771,11 +10771,11 @@ impl Game<'_> {
             _ => return None,
         };
         if dim == self.dim {
-            Some(&mut self.world.random)
+            Some(&mut *self.world.random)
         } else {
             self.levels
                 .parked_world_mut(dim)
-                .map(|world| &mut world.random)
+                .map(|world| &mut *world.random)
         }
     }
     /// The item entities of the server level `dimension` whose box meets
