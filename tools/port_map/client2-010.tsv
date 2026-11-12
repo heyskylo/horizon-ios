@@ -7,7 +7,7 @@ ChatComponent.addMessageToQueue	port	crates/horizon-client-render/src/chat.rs::C
 ChatComponent.processMessageDeletionQueue	port	crates/horizon-client-render/src/chat.rs::Chat::process_deletions	
 ChatComponent.deleteMessage	port	crates/horizon-client-render/src/chat.rs::Chat::delete_message	
 ChatComponent.deleteMessageOrDelay	port	crates/horizon-client-render/src/chat.rs::Chat::delete_or_delay	
-ChatComponent.refreshTrimmedMessages	port	crates/horizon-client-render/src/chat.rs::Chat::rewrap	gap: minor: rewrap also resets the scroll to 0; vanilla keeps the position
+ChatComponent.refreshTrimmedMessages	port	crates/horizon-client-render/src/chat.rs::Chat::rewrap	keeps the scroll; Chat::rescale is rescaleChat's resetChatScroll first, and the search and qol extras reset their own filters
 ChatComponent.scrollChat	port	crates/horizon-client-render/src/chat.rs::Chat::scroll_by	clamp to the page and clear new-message marker at the bottom
 ChatComponent.getHeight	port	crates/horizon-client-render/src/chat.rs::ChatOptions::height_px	focused or unfocused chat height in px
 ChatComponent.defaultUnfocusedPct	inline	crates/horizon-client-render/src/chat.rs::ChatOptions::default	the default 70/160 is stored as a constant, not computed from the height formula
