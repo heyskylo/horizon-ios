@@ -258,7 +258,7 @@ impl Game<'_> {
                             .get_or_insert_with(random_source::entity)
                             .next_float()
                     };
-                    let stays = {
+                    let (stays, step) = {
                         let audio = &mut self.audio;
                         let mut on_sound = |pos: [f64; 3], pitch: f32| {
                             audio.play("minecraft:entity.generic.burn", Some(pos), 0.4, pitch);
@@ -280,6 +280,7 @@ impl Game<'_> {
                     // orb that is done is removed.
                     let snow = (o.previous, o.position, o.bounds(), o.velocity);
                     self.entity_powder_snow_particles(snow.0, snow.1, snow.2, snow.3, false);
+                    self.orb_moved(i, step);
                     if !stays {
                         self.orbs.remove(i);
                     }
@@ -301,6 +302,30 @@ impl Game<'_> {
             return Ok(());
         }
         self.run_ordered_ticks(cut, false)
+    }
+}
+
+impl Game<'_> {
+    /// `Entity.move`'s fall bookkeeping after orb `i`'s move: a move of a
+    /// block or more casts for a reset block or water, `checkFallDamage` adds
+    /// the drop outside water and, on the ground after a fall, posts
+    /// HIT_GROUND, then forgets it. `Block.fallOn` (farmland's random draw,
+    /// honey's slide) is not run for an orb yet, nor for the other entities
+    /// that are not living.
+    pub(super) fn orb_moved(&mut self, i: usize, step: horizon_client::entities::OrbMove) {
+        let o = &self.orbs[i];
+        let mut fall = self.vehicle_fall_reset(o.fall_distance, step.from, step.moved);
+        if !step.in_water && step.moved.y < 0.0 {
+            fall -= f64::from(step.moved.y as f32);
+        }
+        if o.on_ground {
+            if fall > 0.0 {
+                let (position, bounds) = (o.position, o.bounds());
+                self.post_landing_event(position, bounds, false);
+            }
+            fall = 0.0;
+        }
+        self.orbs[i].fall_distance = fall;
     }
 }
 
