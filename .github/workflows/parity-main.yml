@@ -37,7 +37,9 @@ jobs:
           persist-credentials: false
           # Keeps .local/ (parity state, probe builds, oracle results) and target/ between runs.
           clean: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 2026-11
+        with:
+          toolchain: stable
       - name: Tools from the runner
         run: bash tools/ci/runner-env.sh
       - name: Vanilla data, and resources prepared by this preparer
@@ -58,6 +60,18 @@ jobs:
           echo "Merges since ${BASE_SHA}:"
           git log --first-parent --format='  %h %s' "$BASE_SHA..HEAD"
           python3 tools/parity.py --changed "$BASE_SHA" --timeout 2400
+      - name: Preserve the initial failure logs
+        if: steps.harnesses.outcome == 'failure'
+        run: |
+          rm -rf .local/parity-main-logs && cp -R .local/parity-runner/logs .local/parity-main-logs 2>/dev/null || true
+      - name: Upload the initial failure logs
+        if: steps.harnesses.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: parity-main-logs
+          path: .local/parity-main-logs/
+          if-no-files-found: warn
+          retention-days: 7
       - name: A flake, or the merge that broke them
         if: steps.harnesses.outcome == 'failure'
         env:
@@ -65,13 +79,4 @@ jobs:
           PARITY_HOSTS: ''
           BASE_SHA: ${{ steps.base.outputs.sha }}
         run: |
-          rm -rf .local/parity-main-logs && cp -R .local/parity-runner/logs .local/parity-main-logs 2>/dev/null || true
           python3 tools/parity_main.py bisect "$BASE_SHA" --comment
-      - name: Logs of the failed harnesses
-        if: steps.harnesses.outcome == 'failure'
-        uses: actions/upload-artifact@v7
-        with:
-          name: parity-main-logs
-          path: .local/parity-main-logs/
-          if-no-files-found: ignore
-          retention-days: 7

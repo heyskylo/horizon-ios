@@ -205,7 +205,7 @@ impl Game<'_> {
             if &*s.item == "minecraft:trident" {
                 self.trident_max_damage(s)
             } else {
-                self.items().get(&s.item).map_or(0, |i| i.max_damage)
+                self.items().stack_max_damage(s)
             }
         });
         self.apply_held_damage(amount, max, break_slot);
@@ -224,12 +224,18 @@ impl Game<'_> {
             horizon_world::player_inventory::EquipmentSlot::MainHand,
         );
     }
+    /// `ItemStack.hurtAndBreak`: apply nonzero processed wear to the acting hand.
     pub(super) fn apply_held_damage(
         &mut self,
         amount: u32,
         max: u32,
         break_slot: horizon_world::player_inventory::EquipmentSlot,
     ) {
+        // ItemStack.hurtAndBreak does not apply damage or break a stack when
+        // processDurabilityChange leaves no wear (including Unbreaking).
+        if amount == 0 {
+            return;
+        }
         let cell = self.held_mut();
         if let Some(stack) = cell.as_mut()
             && max > 0

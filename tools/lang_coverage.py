@@ -28,6 +28,7 @@ since, counts as unreviewed. Players see no difference; the record is for review
     python3 tools/lang_coverage.py --game-only
     python3 tools/lang_coverage.py --summary       # one line per file, for a pull request
     python3 tools/lang_coverage.py --show-keys     # the keys behind every count
+    python3 tools/lang_coverage.py --summary --show-keys  # the summary, then the keys behind it
     python3 tools/lang_coverage.py --json          # the same, for a script
     python3 tools/lang_coverage.py --fail-under 95 # exit 1 under that cover (for CI, later)
     python3 tools/lang_coverage.py --unreviewed --lang fr_fr        # what a French reviewer reads
@@ -355,7 +356,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lang", nargs="+", metavar="CODE",
                         help="only these file stems (es_es and fr_fr for the game, es and fr for the launcher)")
     parser.add_argument("--summary", action="store_true", help="one line per file, for a pull request")
-    parser.add_argument("--show-keys", action="store_true", help="list the keys behind every count")
+    parser.add_argument("--show-keys", action="store_true",
+                        help="list the keys behind every count (--json already carries them)")
     parser.add_argument("--json", action="store_true", help="machine output")
     parser.add_argument("--fail-under", type=float, metavar="PERCENT",
                         help="exit 1 when a game language covers less than this")
@@ -444,13 +446,16 @@ def main(argv: list[str] | None = None) -> int:
             if reference:
                 print()
             print_launcher(args.launcher_dir, launcher)
-        if args.show_keys:
-            if reference:
-                print_game_keys(game)
-            for *_, rows in crates:
-                print_game_keys(rows)
-            if launcher:
-                print_launcher_keys(launcher)
+
+    if args.show_keys and not args.json:
+        # the keys behind the counts, after the lines that carry the counts; --json holds
+        # them already, and printing more would break what a script reads.
+        if reference:
+            print_game_keys(game)
+        for *_, rows in crates:
+            print_game_keys(rows)
+        if launcher:
+            print_launcher_keys(launcher)
 
     if args.fail_under is not None:
         every = game + [row for *_, rows in crates for row in rows]
