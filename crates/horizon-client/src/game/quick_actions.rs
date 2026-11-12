@@ -18,7 +18,7 @@ impl Game<'_> {
     fn quick_actions_dialog(&self) -> Option<Tag> {
         let registries = &self.remote.as_ref()?.registries;
         let dialogs = registries.registries.get("minecraft:dialog")?;
-        let tag = registries.dialog_tags.get("minecraft:quick_actions")?;
+        let tag = registries.tag("minecraft:dialog", "minecraft:quick_actions")?;
         match tag.len() {
             0 => None,
             1 => {

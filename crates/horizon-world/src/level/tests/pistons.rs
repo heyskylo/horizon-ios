@@ -406,3 +406,61 @@ fn a_piston_refuses_blocks_that_have_a_block_entity() {
         assert_eq!(w.get(BlockPos::new(1, 5, 0)), block, "{name} stays");
     }
 }
+
+/// `PistonBaseBlock.getNeighborSignal`: a piston is powered by its direct neighbours
+/// on every side but the one it pushes towards, and also (quasi-connectivity) by what
+/// powers the block above it: that block's neighbours in every direction but down, the
+/// pushing side and the block two above included.
+///
+/// A source that is not beside the piston sends it no block update, so it takes
+/// effect only when something beside the piston changes (BUD, the reason quasi-
+/// connectivity is a quirk and not a power source). Each case places the source and
+/// then pokes the piston with a block beside it, which powers nothing.
+#[test]
+fn a_piston_is_powered_by_its_neighbours_except_the_front_and_by_quasi_connectivity() {
+    // (where the redstone block stands relative to the piston, does it extend)
+    let sources: [((i32, i32, i32), bool, &str); 12] = [
+        ((0, 1, 0), true, "above"),
+        ((0, -1, 0), true, "below"),
+        ((-1, 0, 0), true, "behind"),
+        ((0, 0, 1), true, "beside"),
+        ((1, 0, 0), false, "in front: the pushing side is skipped"),
+        (
+            (1, 1, 0),
+            true,
+            "above the front: quasi-connected, the pushing side is not skipped there",
+        ),
+        ((-1, 1, 0), true, "above and behind: quasi-connected"),
+        ((0, 1, 1), true, "above and beside: quasi-connected"),
+        (
+            (0, 2, 0),
+            true,
+            "two above: the above block's own upward neighbour",
+        ),
+        (
+            (-1, -1, 0),
+            false,
+            "below and behind: quasi-connectivity is only upward",
+        ),
+        ((-1, 0, 1), false, "diagonal on its level: not adjacent"),
+        (
+            (1, 2, 0),
+            false,
+            "diagonal above the above block: not adjacent to it",
+        ),
+    ];
+    for ((dx, dy, dz), extends, what) in sources {
+        let mut w = world!();
+        let at = BlockPos::new(0, 5, 0);
+        w.set(at, w.id("piston", &[("facing", "east")]));
+        w.set(BlockPos::new(dx, 5 + dy, dz), w.id("redstone_block", &[]));
+        // The poke: stone beside the piston on the north side, no case's source.
+        w.set(BlockPos::new(0, 5, -1), w.id("stone", &[]));
+        settle(&mut w);
+        assert_eq!(
+            w.prop(at, "extended"),
+            if extends { "true" } else { "false" },
+            "a redstone block {what}"
+        );
+    }
+}

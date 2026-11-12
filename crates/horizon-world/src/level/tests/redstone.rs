@@ -135,3 +135,1479 @@ fn an_observer_ignores_changes_on_the_sides_it_does_not_face() {
         }
     }
 }
+
+/// `ButtonBlock.press` powers the button and schedules a tick `ticksToStayPressed`
+/// out; the tick releases it. Stone buttons stay pressed 20 ticks and every wooden
+/// one 30, bamboo and cherry included. A button that is already pressed answers a
+/// second click with nothing: the timer is not extended.
+#[test]
+fn buttons_stay_pressed_for_their_own_ticks_and_a_second_click_does_not_extend_it() {
+    for (name, stays) in [
+        ("stone_button", 20),
+        ("oak_button", 30),
+        ("bamboo_button", 30),
+        ("cherry_button", 30),
+    ] {
+        let mut w = world!();
+        w.floor(0, 5, "stone");
+        let pos = BlockPos::new(0, 1, 0);
+        w.set(pos, w.id(name, &[("face", "floor"), ("facing", "north")]));
+        assert_eq!(w.prop(pos, "powered"), "false", "{name} starts released");
+        w.use_block(pos);
+        assert_eq!(w.prop(pos, "powered"), "true", "{name} is pressed");
+        for tick in 1..stays {
+            w.tick();
+            assert_eq!(w.prop(pos, "powered"), "true", "{name} after {tick} ticks");
+        }
+        w.tick();
+        assert_eq!(
+            w.prop(pos, "powered"),
+            "false",
+            "{name} is released after {stays} ticks"
+        );
+    }
+
+    // A second click half way through changes nothing about when it releases.
+    let mut w = world!();
+    w.floor(0, 5, "stone");
+    let pos = BlockPos::new(0, 1, 0);
+    w.set(
+        pos,
+        w.id("stone_button", &[("face", "floor"), ("facing", "north")]),
+    );
+    w.use_block(pos);
+    for _ in 0..10 {
+        w.tick();
+    }
+    w.use_block(pos);
+    for _ in 0..9 {
+        w.tick();
+    }
+    assert_eq!(
+        w.prop(pos, "powered"),
+        "true",
+        "19 ticks after the first click"
+    );
+    w.tick();
+    assert_eq!(
+        w.prop(pos, "powered"),
+        "false",
+        "20 ticks after the first click, not after the second"
+    );
+}
+
+/// A lever at `start` and a line of wires after it along `step`: the last wire
+/// carries `power`, since a wire gives up one level a block (a lever's own wire
+/// has 15). Returns the position of that last wire. Levers are switched on by the
+/// caller once everything stands, so nothing settles half built.
+fn signal_line(
+    w: &mut World,
+    start: BlockPos,
+    step: (i32, i32),
+    power: i32,
+) -> (BlockPos, BlockPos) {
+    let lever = w.id("lever", &[("face", "floor"), ("facing", "north")]);
+    let wire = w.id("redstone_wire", &[]);
+    w.set(start, lever);
+    let mut last = start;
+    for n in 1..=(16 - power) {
+        last = BlockPos::new(start.x + step.0 * n, start.y, start.z + step.1 * n);
+        w.set(last, wire);
+    }
+    (start, last)
+}
+
+fn switch_on(w: &mut World, lever: BlockPos) {
+    let on = w
+        .b()
+        .table
+        .set_bool(w.get(lever), w.b().props.powered, true);
+    w.set(lever, on);
+}
+
+/// `ComparatorBlock.calculateOutputSignal`: no input is no output; a side input
+/// above the input silences it; otherwise COMPARE passes the input through and
+/// SUBTRACT outputs `input - side`. `shouldTurnOn` (the `powered` state) agrees,
+/// with one difference: equal inputs turn a COMPARE comparator on and a SUBTRACT
+/// one off. Read from the wire in front of it, which takes the output as its own power.
+#[test]
+fn a_comparator_compares_and_subtracts_by_vanillas_rules() {
+    // (input, side, mode, the output signal, the comparator's `powered`)
+    let cases = [
+        (15, 0, "compare", 15, true),
+        (10, 4, "compare", 10, true),
+        (10, 10, "compare", 10, true),
+        (10, 11, "compare", 0, false),
+        (10, 4, "subtract", 6, true),
+        (10, 10, "subtract", 0, false),
+        (10, 11, "subtract", 0, false),
+        (7, 0, "subtract", 7, true),
+        (0, 5, "compare", 0, false),
+    ];
+    for (input, side, mode, output, powered) in cases {
+        let mut w = world!();
+        w.floor(0, 24, "stone");
+        // The comparator faces west: it reads the wire at its west and outputs east.
+        let comparator_x = if input > 0 { 17 - input } else { 3 };
+        let at = BlockPos::new(comparator_x, 1, 0);
+        let mut levers = Vec::new();
+        if input > 0 {
+            levers.push(signal_line(&mut w, BlockPos::new(0, 1, 0), (1, 0), input).0);
+        }
+        if side > 0 {
+            // From the south side (z = 1), ending beside the comparator.
+            let start = BlockPos::new(comparator_x, 1, 1 + (16 - side));
+            levers.push(signal_line(&mut w, start, (0, -1), side).0);
+        }
+        w.set(
+            at,
+            w.id("comparator", &[("facing", "west"), ("mode", mode)]),
+        );
+        let readout = BlockPos::new(comparator_x + 1, 1, 0);
+        w.set(readout, w.id("redstone_wire", &[]));
+        for lever in levers {
+            switch_on(&mut w, lever);
+        }
+        for _ in 0..10 {
+            w.full_tick();
+        }
+        let case = format!("input {input}, side {side}, {mode}");
+        assert_eq!(
+            w.prop(readout, "power"),
+            output.to_string(),
+            "{case}: output"
+        );
+        assert_eq!(
+            w.prop(at, "powered"),
+            if powered { "true" } else { "false" },
+            "{case}: powered"
+        );
+    }
+}
+/// `CopperBulbBlock.checkAndFlip`: a bulb flips `LIT` only when it becomes powered,
+/// not when it loses power, and `POWERED` follows the signal either way. So the
+/// light alternates on every power-up: on, stays on through the power-down, off, stays
+/// off through the next, on again. Every oxidation and waxed variant does the same.
+#[test]
+fn a_copper_bulb_flips_its_light_only_when_it_becomes_powered() {
+    for name in [
+        "copper_bulb",
+        "exposed_copper_bulb",
+        "weathered_copper_bulb",
+        "oxidized_copper_bulb",
+        "waxed_copper_bulb",
+    ] {
+        let mut w = world!();
+        let (bulb, power, air) = (w.id(name, &[]), w.id("redstone_block", &[]), w.b().air());
+        let (at, source) = (BlockPos::new(0, 5, 0), BlockPos::new(1, 5, 0));
+        w.set(at, bulb);
+        let state = |w: &World| (w.prop(at, "lit"), w.prop(at, "powered"));
+        assert_eq!(
+            state(&w),
+            ("false".into(), "false".into()),
+            "{name} placed unpowered"
+        );
+        // (what the redstone block does, the light and the power the bulb should show)
+        let steps = [
+            (true, "true", "true"),
+            (false, "true", "false"),
+            (true, "false", "true"),
+            (false, "false", "false"),
+            (true, "true", "true"),
+        ];
+        for (powered, lit, follows) in steps {
+            w.set(source, if powered { power } else { air });
+            assert_eq!(
+                state(&w),
+                (lit.to_string(), follows.to_string()),
+                "{name}, power {}",
+                if powered { "on" } else { "off" }
+            );
+        }
+    }
+
+    // Placed beside power, `onPlace` runs the same check: it lights at once.
+    let mut w = world!();
+    w.set(BlockPos::new(1, 5, 0), w.id("redstone_block", &[]));
+    let at = BlockPos::new(0, 5, 0);
+    w.set(at, w.id("copper_bulb", &[]));
+    assert_eq!(w.prop(at, "lit"), "true", "placed beside power");
+    assert_eq!(w.prop(at, "powered"), "true");
+}
+/// `TargetBlock.getRedstoneStrength`: the hit's distance from the face's centre along
+/// the face's two other axes is `|frac(v) - 0.5|`, and the strength is
+/// `max(1, ceil(15 * clamp((0.5 - distance) / 0.5, 0, 1)))`. The expected values are
+/// what vanilla's formula gives in Java for each location (a hit on the block at
+/// 3, 5, 7), double rounding included: the same offset from the centre gives 12 on
+/// one face and 13 on another, because `frac` of 6.6 and of 5.6 are not the same
+/// double.
+#[test]
+fn a_target_block_gives_vanillas_strength_for_where_a_projectile_hit() {
+    let hits: [([i32; 3], [f64; 3], i32); 51] = [
+        ([0, 1, 0], [3.5, 6.0, 7.5], 15),
+        ([0, 1, 0], [3.55, 6.0, 7.5], 14),
+        ([0, 1, 0], [3.6, 6.0, 7.5], 12),
+        ([0, 1, 0], [3.65, 6.0, 7.5], 11),
+        ([0, 1, 0], [3.7, 6.0, 7.5], 9),
+        ([0, 1, 0], [3.75, 6.0, 7.5], 8),
+        ([0, 1, 0], [3.8, 6.0, 7.5], 7),
+        ([0, 1, 0], [3.85, 6.0, 7.5], 5),
+        ([0, 1, 0], [3.9, 6.0, 7.5], 4),
+        ([0, 1, 0], [3.95, 6.0, 7.5], 2),
+        ([0, 1, 0], [3.99, 6.0, 7.5], 1),
+        ([0, 1, 0], [3.0, 6.0, 7.5], 1),
+        ([0, 1, 0], [3.1, 6.0, 7.5], 4),
+        ([0, 1, 0], [3.2, 6.0, 7.5], 7),
+        ([0, 1, 0], [3.3, 6.0, 7.5], 9),
+        ([0, 1, 0], [3.4, 6.0, 7.5], 12),
+        ([0, 1, 0], [3.45, 6.0, 7.5], 14),
+        ([0, 0, -1], [3.5, 5.5, 7.0], 15),
+        ([0, 0, -1], [3.55, 5.5, 7.0], 14),
+        ([0, 0, -1], [3.6, 5.5, 7.0], 12),
+        ([0, 0, -1], [3.65, 5.5, 7.0], 11),
+        ([0, 0, -1], [3.7, 5.5, 7.0], 9),
+        ([0, 0, -1], [3.75, 5.5, 7.0], 8),
+        ([0, 0, -1], [3.8, 5.5, 7.0], 7),
+        ([0, 0, -1], [3.85, 5.5, 7.0], 5),
+        ([0, 0, -1], [3.9, 5.5, 7.0], 4),
+        ([0, 0, -1], [3.95, 5.5, 7.0], 2),
+        ([0, 0, -1], [3.99, 5.5, 7.0], 1),
+        ([0, 0, -1], [3.0, 5.5, 7.0], 1),
+        ([0, 0, -1], [3.1, 5.5, 7.0], 4),
+        ([0, 0, -1], [3.2, 5.5, 7.0], 7),
+        ([0, 0, -1], [3.3, 5.5, 7.0], 9),
+        ([0, 0, -1], [3.4, 5.5, 7.0], 12),
+        ([0, 0, -1], [3.45, 5.5, 7.0], 14),
+        ([1, 0, 0], [4.0, 5.5, 7.5], 15),
+        ([1, 0, 0], [4.0, 5.55, 7.5], 14),
+        ([1, 0, 0], [4.0, 5.6, 7.5], 13),
+        ([1, 0, 0], [4.0, 5.65, 7.5], 11),
+        ([1, 0, 0], [4.0, 5.7, 7.5], 9),
+        ([1, 0, 0], [4.0, 5.75, 7.5], 8),
+        ([1, 0, 0], [4.0, 5.8, 7.5], 7),
+        ([1, 0, 0], [4.0, 5.85, 7.5], 5),
+        ([1, 0, 0], [4.0, 5.9, 7.5], 3),
+        ([1, 0, 0], [4.0, 5.95, 7.5], 2),
+        ([1, 0, 0], [4.0, 5.99, 7.5], 1),
+        ([1, 0, 0], [4.0, 5.0, 7.5], 1),
+        ([1, 0, 0], [4.0, 5.1, 7.5], 3),
+        ([1, 0, 0], [4.0, 5.2, 7.5], 7),
+        ([1, 0, 0], [4.0, 5.3, 7.5], 9),
+        ([1, 0, 0], [4.0, 5.4, 7.5], 13),
+        ([1, 0, 0], [4.0, 5.45, 7.5], 14),
+    ];
+    for (face, location, expected) in hits {
+        let mut w = world!();
+        let pos = BlockPos::new(3, 5, 7);
+        w.set(pos, w.id("target", &[]));
+        let strength = w.f.behaviours.target_projectile_hit(
+            &mut w.level,
+            &mut w.ticks,
+            pos,
+            location,
+            face,
+            false,
+        );
+        assert_eq!(
+            strength,
+            Some(expected),
+            "face {face:?}, hit at {location:?}"
+        );
+        assert_eq!(w.prop(pos, "power"), expected.to_string(), "{location:?}");
+    }
+}
+/// An arrow's hit holds the output 20 ticks and anything else's 8, and a hit while
+/// the output is held changes nothing (`hasScheduledTick`), the new strength
+/// included.
+#[test]
+fn a_target_block_holds_its_output_for_20_ticks_for_an_arrow_and_8_otherwise() {
+    let centre = [3.5, 6.0, 7.5];
+    let edge = [3.99, 6.0, 7.5];
+    for (arrow, held) in [(true, 20), (false, 8)] {
+        let mut w = world!();
+        let pos = BlockPos::new(3, 5, 7);
+        w.set(pos, w.id("target", &[]));
+        let hit = |w: &mut World, at: [f64; 3]| {
+            w.f.behaviours.target_projectile_hit(
+                &mut w.level,
+                &mut w.ticks,
+                pos,
+                at,
+                [0, 1, 0],
+                arrow,
+            )
+        };
+        assert_eq!(hit(&mut w, centre), Some(15));
+        // A second, weaker hit while it is held is answered but changes nothing.
+        w.tick();
+        assert_eq!(hit(&mut w, edge), Some(1), "its strength is still reported");
+        assert_eq!(
+            w.prop(pos, "power"),
+            "15",
+            "arrow: {arrow}: held at the first hit's"
+        );
+        for tick in 2..held {
+            w.tick();
+            assert_eq!(w.prop(pos, "power"), "15", "arrow: {arrow}, tick {tick}");
+        }
+        w.tick();
+        assert_eq!(
+            w.prop(pos, "power"),
+            "0",
+            "arrow: {arrow}, after {held} ticks"
+        );
+    }
+}
+/// One cycle of a lever that switches a torch's support block: on, long enough for
+/// the torch's two-tick delay to go off, then off and long enough to come back.
+///
+/// The lever is clicked, not rewritten: `LeverBlock.pull` is what updates the
+/// neighbours of the block it is attached to, so a plain `setBlock` of a powered
+/// lever never reaches the torch above that block.
+fn torch_cycle(w: &mut World, lever: BlockPos, wait: u32) {
+    w.use_block(lever);
+    for _ in 0..wait {
+        w.tick();
+    }
+    w.use_block(lever);
+    for _ in 0..wait {
+        w.tick();
+    }
+}
+/// `RedstoneTorchBlock`: turning off adds a toggle; with eight of them inside the
+/// last 60 ticks (`MAX_RECENT_TOGGLES`, `RECENT_TOGGLE_TIMER`) the torch burns out
+/// and `isToggledTooFrequently` keeps it dark; the tick it schedules 160 ticks out
+/// (`RESTART_DELAY`) lights it once the toggles have aged. Seven quick cycles leave
+/// it working; eight slow ones, each longer than the window allows, never burn it.
+#[test]
+fn a_torch_toggled_eight_times_in_sixty_ticks_burns_out_and_relights_after_160() {
+    let build = |w: &mut World| -> (BlockPos, BlockPos) {
+        let stone = w.id("stone", &[]);
+        let torch = BlockPos::new(0, 5, 0);
+        w.set(BlockPos::new(0, 4, 0), stone);
+        w.set(torch, w.id("redstone_torch", &[("lit", "true")]));
+        // A lever on the side of the support block powers it strongly, so the torch sees it.
+        let lever = BlockPos::new(1, 4, 0);
+        w.set(
+            lever,
+            w.id("lever", &[("face", "wall"), ("facing", "east")]),
+        );
+        (torch, lever)
+    };
+
+    // Seven cycles of 3 ticks each: 42 ticks, short of eight toggles.
+    let mut w = world!();
+    let (torch, lever) = build(&mut w);
+    for _ in 0..7 {
+        torch_cycle(&mut w, lever, 3);
+    }
+    for _ in 0..4 {
+        w.tick();
+    }
+    assert_eq!(w.prop(torch, "lit"), "true", "seven toggles: still working");
+
+    // The eighth, inside the same window: it goes out and stays out, though nothing
+    // powers its support any longer.
+    torch_cycle(&mut w, lever, 3);
+    for _ in 0..30 {
+        w.tick();
+    }
+    assert_eq!(
+        w.prop(torch, "lit"),
+        "false",
+        "the eighth toggle burned it out"
+    );
+    // 160 ticks after it burned out its restart tick finds the toggles aged and relights it.
+    for _ in 0..200 {
+        w.tick();
+    }
+    assert_eq!(
+        w.prop(torch, "lit"),
+        "true",
+        "relit after the restart delay"
+    );
+
+    // Eight cycles 12 ticks apart: every toggle but the last few has aged out of the 60-tick window.
+    let mut w = world!();
+    let (torch, lever) = build(&mut w);
+    for _ in 0..8 {
+        torch_cycle(&mut w, lever, 6);
+    }
+    for _ in 0..4 {
+        w.tick();
+    }
+    assert_eq!(
+        w.prop(torch, "lit"),
+        "true",
+        "eight toggles spread over 96 ticks never burn it out"
+    );
+}
+/// `RepeaterBlock.isLocked` is `getAlternateSignal > 0` with `sideInputDiodesOnly`:
+/// only a diode beside it that is powered and outputs into it locks a repeater. An
+/// unpowered one does not, and neither does a redstone block, which does feed a
+/// comparator's side input.
+#[test]
+fn a_repeater_is_locked_only_by_a_powered_diode_pointing_into_its_side() {
+    // (what stands beside the repeater, is it fed, is the repeater locked). The
+    // repeater is at z = 0 and the diode at z = 1; a diode faces the side it reads
+    // from and outputs the other way, so facing south it outputs north, into it.
+    let cases = [
+        ("repeater", true, true),
+        ("comparator", true, true),
+        ("repeater", false, false),
+        ("comparator", false, false),
+    ];
+    for (name, fed, locked) in cases {
+        let mut w = world!();
+        w.floor(4, 4, "stone");
+        let repeater = BlockPos::new(0, 5, 0);
+        w.set(repeater, w.id("repeater", &[("facing", "west")]));
+        w.set(BlockPos::new(0, 5, 1), w.id(name, &[("facing", "south")]));
+        if fed {
+            w.set(BlockPos::new(0, 5, 2), w.id("redstone_block", &[]));
+        }
+        for _ in 0..10 {
+            w.full_tick();
+        }
+        assert_eq!(
+            w.prop(repeater, "locked"),
+            if locked { "true" } else { "false" },
+            "a {} {name} beside it",
+            if fed { "powered" } else { "unpowered" }
+        );
+    }
+
+    // A redstone block right beside the repeater is not a diode: no lock.
+    let mut w = world!();
+    w.floor(4, 4, "stone");
+    let repeater = BlockPos::new(0, 5, 0);
+    w.set(repeater, w.id("repeater", &[("facing", "west")]));
+    w.set(BlockPos::new(0, 5, 1), w.id("redstone_block", &[]));
+    for _ in 0..10 {
+        w.full_tick();
+    }
+    assert_eq!(
+        w.prop(repeater, "locked"),
+        "false",
+        "a redstone block beside it"
+    );
+}
+
+/// `PoweredRailBlock.findPoweredRailSignal` gives up at `searchDepth >= 8`: a rail
+/// takes power from a powered neighbour up to eight rails away along the line, in
+/// either direction, and not from the ninth. A redstone block beside the rail at
+/// x = 0 powers the rails from x = -8 to x = 8.
+#[test]
+fn a_powered_rail_passes_power_eight_rails_along_in_both_directions() {
+    let mut w = world!();
+    w.floor(0, 14, "stone");
+    let rail = w.id("powered_rail", &[("shape", "east_west")]);
+    for x in -11..=11 {
+        w.set(BlockPos::new(x, 1, 0), rail);
+    }
+    for x in -11..=11 {
+        assert_eq!(
+            w.prop(BlockPos::new(x, 1, 0), "powered"),
+            "false",
+            "x = {x} before"
+        );
+    }
+    // Beside the middle rail, so only that one has a power source of its own.
+    w.set(BlockPos::new(0, 1, 1), w.id("redstone_block", &[]));
+    for _ in 0..4 {
+        w.full_tick();
+    }
+    for x in -11i32..=11 {
+        let lit = x.abs() <= 8;
+        assert_eq!(
+            w.prop(BlockPos::new(x, 1, 0), "powered"),
+            if lit { "true" } else { "false" },
+            "the rail {} blocks from the powered one",
+            x.abs()
+        );
+    }
+}
+
+/// `RedstoneLampBlock`: a lamp lights the moment it is powered, and loses its light
+/// only on a tick scheduled four ticks after the power goes: lit through the third
+/// tick, dark at the fourth. Power that comes back in time cancels it.
+#[test]
+fn a_redstone_lamp_lights_at_once_and_goes_dark_exactly_four_ticks_after_its_power() {
+    let mut w = world!();
+    let (lamp, power, air) = (
+        w.id("redstone_lamp", &[]),
+        w.id("redstone_block", &[]),
+        w.b().air(),
+    );
+    let (at, source) = (BlockPos::new(0, 5, 0), BlockPos::new(1, 5, 0));
+    w.set(at, lamp);
+    w.set(source, power);
+    assert_eq!(w.prop(at, "lit"), "true", "lit at once, with no tick");
+    w.set(source, air);
+    for tick in 1..4 {
+        w.tick();
+        assert_eq!(w.prop(at, "lit"), "true", "still lit after {tick} ticks");
+    }
+    w.tick();
+    assert_eq!(w.prop(at, "lit"), "false", "dark after four");
+
+    // Power back inside the delay: the scheduled tick finds it powered and keeps the light.
+    w.set(source, power);
+    assert_eq!(w.prop(at, "lit"), "true");
+    w.set(source, air);
+    w.tick();
+    w.tick();
+    w.set(source, power);
+    for _ in 0..6 {
+        w.tick();
+    }
+    assert_eq!(
+        w.prop(at, "lit"),
+        "true",
+        "power returned before the delay ran out"
+    );
+}
+
+/// `HopperBlock.checkPoweredState`: `ENABLED` is `!hasNeighborSignal`, so power at
+/// any of the hopper's six sides switches it off at once, and removing the power
+/// switches it back on. Unlike a piston, power diagonally above does nothing.
+#[test]
+fn a_hopper_is_disabled_by_power_on_any_of_its_six_sides_and_nothing_else() {
+    let sides: [((i32, i32, i32), bool, &str); 8] = [
+        ((0, 1, 0), false, "above"),
+        ((0, -1, 0), false, "below"),
+        ((1, 0, 0), false, "east"),
+        ((-1, 0, 0), false, "west"),
+        ((0, 0, 1), false, "south"),
+        ((0, 0, -1), false, "north"),
+        (
+            (1, 1, 0),
+            true,
+            "diagonally above: a hopper has no quasi-connectivity",
+        ),
+        ((1, 0, 1), true, "diagonally beside"),
+    ];
+    for ((dx, dy, dz), enabled, what) in sides {
+        let mut w = world!();
+        let (at, source) = (BlockPos::new(0, 5, 0), BlockPos::new(dx, 5 + dy, dz));
+        w.set(at, w.id("hopper", &[("facing", "down")]));
+        assert_eq!(w.prop(at, "enabled"), "true", "unpowered hopper");
+        w.set(source, w.id("redstone_block", &[]));
+        if dx.abs() + dy.abs() + dz.abs() > 1 {
+            // A source that is not beside the hopper sends it no block update, so
+            // it never looks. Poke it with a block on a side no case uses, or this
+            // case would pass for any implementation, quasi-connected or not.
+            w.set(BlockPos::new(-1, 5, 0), w.id("stone", &[]));
+        }
+        assert_eq!(
+            w.prop(at, "enabled"),
+            if enabled { "true" } else { "false" },
+            "power {what}"
+        );
+        w.set(source, w.b().air());
+        assert_eq!(w.prop(at, "enabled"), "true", "power gone ({what})");
+    }
+
+    // Placed beside power, `onPlace` runs the same check.
+    let mut w = world!();
+    w.set(BlockPos::new(1, 5, 0), w.id("redstone_block", &[]));
+    w.set(
+        BlockPos::new(0, 5, 0),
+        w.id("hopper", &[("facing", "down")]),
+    );
+    assert_eq!(
+        w.prop(BlockPos::new(0, 5, 0), "enabled"),
+        "false",
+        "placed beside power"
+    );
+}
+
+/// `DoorBlock.neighborChanged`: a door is powered by a signal at either of its
+/// halves, `OPEN` follows `POWERED`, and the other half takes the state through
+/// `updateShape`: the half that has the power beside it runs the check, the other
+/// only copies. Wooden, iron and bamboo doors alike.
+#[test]
+fn a_door_opens_with_power_beside_either_half_and_closes_without_it() {
+    for name in ["oak_door", "iron_door", "bamboo_door"] {
+        for (powered_half, source) in [("upper", (1, 6, 0)), ("lower", (1, 5, 0))] {
+            let mut w = world!();
+            w.floor(4, 4, "stone");
+            let door = |half: &str| {
+                w.id(
+                    name,
+                    &[("facing", "north"), ("half", half), ("hinge", "left")],
+                )
+            };
+            let (lower, upper) = (BlockPos::new(0, 5, 0), BlockPos::new(0, 6, 0));
+            let (lower_state, upper_state) = (door("lower"), door("upper"));
+            w.set(lower, lower_state);
+            w.set(upper, upper_state);
+            for pos in [lower, upper] {
+                assert_eq!(w.prop(pos, "open"), "false", "{name} starts closed");
+            }
+            let source = BlockPos::new(source.0, source.1, source.2);
+            w.set(source, w.id("redstone_block", &[]));
+            for (half, pos) in [("lower", lower), ("upper", upper)] {
+                assert_eq!(
+                    w.prop(pos, "open"),
+                    "true",
+                    "{name}: its {half} half, power beside the {powered_half} half"
+                );
+                assert_eq!(w.prop(pos, "powered"), "true", "{name} {half} half powered");
+            }
+            w.set(source, w.b().air());
+            for (half, pos) in [("lower", lower), ("upper", upper)] {
+                assert_eq!(
+                    w.prop(pos, "open"),
+                    "false",
+                    "{name}: its {half} half closes with the power"
+                );
+            }
+        }
+    }
+}
+
+/// `DoorBlock.neighborChanged`: `signal = hasNeighborSignal(pos) ||
+/// hasNeighborSignal(the other half's position)`. A half also reads the power beside
+/// its other half, which matters when the block update reaches only this one: power
+/// stands beside the lower half (written raw, so nothing was told), a block is then
+/// placed beside the upper half, and the upper half, asked alone, opens.
+#[test]
+fn a_door_half_also_reads_the_power_beside_its_other_half() {
+    for (asked, other, source, poke, what) in [
+        (
+            (0, 6, 0),
+            (0, 5, 0),
+            (1, 5, 0),
+            (-1, 6, 0),
+            "the upper half, power beside the lower",
+        ),
+        (
+            (0, 5, 0),
+            (0, 6, 0),
+            (1, 6, 0),
+            (-1, 5, 0),
+            "the lower half, power beside the upper",
+        ),
+    ] {
+        let mut w = world!();
+        w.floor(4, 4, "stone");
+        let (lower, upper) = (
+            w.id(
+                "oak_door",
+                &[("facing", "north"), ("half", "lower"), ("hinge", "left")],
+            ),
+            w.id(
+                "oak_door",
+                &[("facing", "north"), ("half", "upper"), ("hinge", "left")],
+            ),
+        );
+        w.put(BlockPos::new(0, 5, 0), lower);
+        w.put(BlockPos::new(0, 6, 0), upper);
+        w.put(
+            BlockPos::new(source.0, source.1, source.2),
+            w.id("redstone_block", &[]),
+        );
+        let (asked, other) = (
+            BlockPos::new(asked.0, asked.1, asked.2),
+            BlockPos::new(other.0, other.1, other.2),
+        );
+        assert_eq!(
+            w.prop(asked, "open"),
+            "false",
+            "{what}: nothing has told it yet"
+        );
+        w.set(BlockPos::new(poke.0, poke.1, poke.2), w.id("stone", &[]));
+        assert_eq!(
+            w.prop(asked, "open"),
+            "true",
+            "{what}: asked alone, it opens"
+        );
+        assert_eq!(
+            w.prop(other, "open"),
+            "true",
+            "{what}: and the other half follows"
+        );
+    }
+}
+
+/// `TrapDoorBlock` and `FenceGateBlock` take `POWERED` and `OPEN` from
+/// `hasNeighborSignal` of their own position, and give both up with it.
+#[test]
+fn trapdoors_and_fence_gates_open_with_power_beside_them() {
+    let blocks: [(&str, &[(&str, &str)]); 4] = [
+        ("oak_trapdoor", &[("facing", "north"), ("half", "bottom")]),
+        ("iron_trapdoor", &[("facing", "north"), ("half", "bottom")]),
+        ("oak_fence_gate", &[("facing", "north")]),
+        ("bamboo_fence_gate", &[("facing", "north")]),
+    ];
+    for (name, props) in blocks {
+        let mut w = world!();
+        let (at, source) = (BlockPos::new(0, 5, 0), BlockPos::new(1, 5, 0));
+        w.set(at, w.id(name, props));
+        assert_eq!(w.prop(at, "open"), "false", "{name} starts closed");
+        w.set(source, w.id("redstone_block", &[]));
+        assert_eq!(w.prop(at, "open"), "true", "{name} opens with power");
+        assert_eq!(w.prop(at, "powered"), "true", "{name} is powered");
+        w.set(source, w.b().air());
+        assert_eq!(w.prop(at, "open"), "false", "{name} closes without it");
+        assert_eq!(
+            w.prop(at, "powered"),
+            "false",
+            "{name} is no longer powered"
+        );
+    }
+}
+
+/// `RedStoneWireBlock` connects, through each neighbour's `shouldRedstoneWireConnectTo`,
+/// to any signal source from any side, to a repeater only along its axis, and to an
+/// observer only when it faces the wire (an observer's output is at its back). A wire
+/// whose only connection is on one axis is drawn straight, so `getConnectionState`
+/// connects the opposite side too; one with no connection stays a dot. The neighbour
+/// stands east of the wire and is placed after it, so the wire takes the connection
+/// from the shape update, as in play.
+#[test]
+fn redstone_wire_connects_to_each_neighbour_by_that_blocks_own_rule() {
+    let neighbours: [(&str, &[(&str, &str)], bool); 12] = [
+        ("repeater", &[("facing", "east")], true),
+        ("repeater", &[("facing", "west")], true),
+        ("repeater", &[("facing", "north")], false),
+        ("comparator", &[("facing", "north")], true),
+        ("observer", &[("facing", "east")], true),
+        ("observer", &[("facing", "west")], false),
+        ("observer", &[("facing", "north")], false),
+        ("redstone_block", &[], true),
+        ("redstone_torch", &[("lit", "true")], true),
+        ("redstone_lamp", &[], false),
+        ("stone", &[], false),
+        ("redstone_wire", &[], true),
+    ];
+    for (name, props, connects) in neighbours {
+        let mut w = world!();
+        w.floor(4, 4, "stone");
+        let wire = BlockPos::new(0, 5, 0);
+        w.set(wire, w.id("redstone_wire", &[]));
+        w.set(BlockPos::new(1, 5, 0), w.id(name, props));
+        // Connected: east, and west filled in to make the line. Not: still a dot.
+        let side = if connects { "side" } else { "none" };
+        let what = format!("a {name} {props:?} east of the wire");
+        assert_eq!(w.prop(wire, "east"), side, "east: {what}");
+        assert_eq!(w.prop(wire, "west"), side, "west: {what}");
+        assert_eq!(w.prop(wire, "north"), "none", "north: {what}");
+        assert_eq!(w.prop(wire, "south"), "none", "south: {what}");
+    }
+}
+
+/// `RedStoneWireBlock.getConnectingSide`: a wire climbs onto a block beside it
+/// (`UP`) only if nothing conductive sits on top of the wire itself, and steps down
+/// to a wire below a gap (`SIDE`) only if the block beside it is not conductive: a
+/// solid block there cuts the connection. The wire is placed by an item, which
+/// computes its connections (`getStateForPlacement`); with none at all it is drawn
+/// as a cross, so `north` tells a real connection on the east-west axis (none) from
+/// a cut one (side).
+#[test]
+fn redstone_wire_climbs_and_descends_only_where_nothing_conductive_cuts_it() {
+    type Setup = fn(&mut World);
+    // (what stands, the wire's east side, whether it has a real connection)
+    let cases: [(&str, &str, bool, Setup); 4] = [
+        ("a wire on top of the block beside it", "up", true, |w| {
+            let (stone, wire) = (w.id("stone", &[]), w.id("redstone_wire", &[]));
+            w.set(BlockPos::new(1, 5, 0), stone);
+            w.set(BlockPos::new(1, 6, 0), wire);
+        }),
+        (
+            "the same under a roof over the first wire",
+            "side",
+            false,
+            |w| {
+                let (stone, wire) = (w.id("stone", &[]), w.id("redstone_wire", &[]));
+                w.set(BlockPos::new(1, 5, 0), stone);
+                w.set(BlockPos::new(0, 6, 0), stone);
+                w.set(BlockPos::new(1, 6, 0), wire);
+            },
+        ),
+        ("a wire one step down across a gap", "side", true, |w| {
+            let (stone, wire) = (w.id("stone", &[]), w.id("redstone_wire", &[]));
+            w.set(BlockPos::new(1, 3, 0), stone);
+            w.set(BlockPos::new(1, 4, 0), wire);
+        }),
+        (
+            "a wire one step down under a solid block",
+            "side",
+            false,
+            |w| {
+                let (stone, wire) = (w.id("stone", &[]), w.id("redstone_wire", &[]));
+                w.set(BlockPos::new(1, 3, 0), stone);
+                w.set(BlockPos::new(1, 5, 0), stone);
+                w.set(BlockPos::new(1, 4, 0), wire);
+            },
+        ),
+    ];
+    for (what, east, connected, build) in cases {
+        let mut w = world!();
+        w.set(BlockPos::new(0, 4, 0), w.id("stone", &[]));
+        build(&mut w);
+        let placed = w.place(
+            "redstone",
+            BlockPos::new(0, 4, 0),
+            Direction::Up,
+            0.0,
+            0.0,
+            0.0,
+        );
+        assert!(
+            matches!(placed, PlaceOutcome::Placed { .. }),
+            "{what}: placed"
+        );
+        let wire = BlockPos::new(0, 5, 0);
+        if connected {
+            assert_eq!(w.prop(wire, "east"), east, "{what}: east");
+            assert_eq!(
+                w.prop(wire, "north"),
+                "none",
+                "{what}: a real connection, not a cross"
+            );
+        } else {
+            assert_ne!(w.prop(wire, "east"), "up", "{what}: it does not climb");
+            assert_eq!(
+                w.prop(wire, "north"),
+                "side",
+                "{what}: no connection, so a cross"
+            );
+        }
+    }
+}
+
+/// `DispenserBlock.neighborChanged`: `TRIGGERED` is `hasNeighborSignal(pos) ||
+/// hasNeighborSignal(pos.above())`, so power on any of its six sides, its front
+/// included (a piston skips that one), or beside the block above it, triggers it;
+/// losing the power un-triggers it. A dropper inherits all of it.
+///
+/// As with a piston, a source that is not beside it sends no block update, so each
+/// change is followed by a poke: a block placed and removed beside it, which powers
+/// nothing.
+#[test]
+fn a_dispenser_and_a_dropper_trigger_on_any_side_and_through_the_block_above() {
+    let sources: [((i32, i32, i32), bool, &str); 11] = [
+        ((0, 1, 0), true, "above"),
+        ((0, -1, 0), true, "below"),
+        ((1, 0, 0), true, "east"),
+        ((-1, 0, 0), true, "west"),
+        ((0, 0, 1), true, "south"),
+        (
+            (0, 0, -1),
+            true,
+            "in front: a dispenser, unlike a piston, does not skip it",
+        ),
+        ((1, 1, 0), true, "beside the block above: quasi-connected"),
+        ((0, 1, 1), true, "beside the block above (south)"),
+        ((0, 2, 0), true, "two above"),
+        ((1, 0, 1), false, "diagonal on its level"),
+        (
+            (1, -1, 0),
+            false,
+            "diagonally below: quasi-connectivity is only upward",
+        ),
+    ];
+    for name in ["dispenser", "dropper"] {
+        for ((dx, dy, dz), triggered, what) in sources {
+            let mut w = world!();
+            let at = BlockPos::new(0, 5, 0);
+            w.set(at, w.id(name, &[("facing", "north")]));
+            assert_eq!(
+                w.prop(at, "triggered"),
+                "false",
+                "{name} starts untriggered"
+            );
+            // A block beside it, put there and taken away: the block update that makes
+            // the dispenser look at its surroundings again. West is no case's source
+            // but "west" itself, which is then replaced by the poke's own removal, so
+            // the poke uses the east side for that one.
+            let poke = |w: &mut World| {
+                let side = if (dx, dy, dz) == (-1, 0, 0) {
+                    BlockPos::new(1, 5, 0)
+                } else {
+                    BlockPos::new(-1, 5, 0)
+                };
+                if side == BlockPos::new(dx, 5 + dy, dz) {
+                    return;
+                }
+                let was = w.get(side);
+                w.set(side, w.id("stone", &[]));
+                w.set(side, was);
+            };
+            let source = BlockPos::new(dx, 5 + dy, dz);
+            w.set(source, w.id("redstone_block", &[]));
+            poke(&mut w);
+            let expected = if triggered { "true" } else { "false" };
+            assert_eq!(w.prop(at, "triggered"), expected, "{name}: power {what}");
+            w.set(source, w.b().air());
+            poke(&mut w);
+            assert_eq!(
+                w.prop(at, "triggered"),
+                "false",
+                "{name}: power gone ({what})"
+            );
+        }
+    }
+}
+
+/// `getAnalogOutputSignal` of the blocks whose output is a function of their own
+/// state, read through a comparator as in play: a beehive's honey level, a cake's
+/// `(7 - bites) * 2`, a candle cake's full 14, a composter's level, an end portal
+/// frame's 15 with an eye, a lava cauldron's 3, a water or powder snow cauldron's
+/// level, a respawn anchor's `floor(charges / 4 * 15)` and a lit copper bulb's 15.
+#[test]
+fn a_comparator_reads_the_output_vanilla_gives_each_state_based_block() {
+    type Row = (&'static str, Vec<(&'static str, String)>, i32);
+    let mut rows: Vec<Row> = Vec::new();
+    for honey in 0..=5 {
+        for name in ["beehive", "bee_nest"] {
+            rows.push((name, vec![("honey_level", honey.to_string())], honey));
+        }
+    }
+    for bites in 0..=6 {
+        rows.push(("cake", vec![("bites", bites.to_string())], (7 - bites) * 2));
+    }
+    for name in ["candle_cake", "red_candle_cake"] {
+        rows.push((name, vec![("lit", "false".to_string())], 14));
+    }
+    for level in 0..=8 {
+        rows.push(("composter", vec![("level", level.to_string())], level));
+    }
+    rows.push(("end_portal_frame", vec![("eye", "true".into())], 15));
+    rows.push(("end_portal_frame", vec![("eye", "false".into())], 0));
+    rows.push(("lava_cauldron", vec![], 3));
+    for level in 1..=3 {
+        for name in ["water_cauldron", "powder_snow_cauldron"] {
+            rows.push((name, vec![("level", level.to_string())], level));
+        }
+    }
+    for (charges, signal) in [(0, 0), (1, 3), (2, 7), (3, 11), (4, 15)] {
+        rows.push((
+            "respawn_anchor",
+            vec![("charges", charges.to_string())],
+            signal,
+        ));
+    }
+    for name in ["copper_bulb", "waxed_copper_bulb"] {
+        rows.push((name, vec![("lit", "true".into())], 15));
+        rows.push((name, vec![("lit", "false".into())], 0));
+    }
+    rows.push(("cauldron", vec![], 0));
+
+    let mut wrong = Vec::new();
+    for (name, props, expected) in rows {
+        let mut w = world!();
+        w.floor(0, 4, "stone");
+        let subject = BlockPos::new(0, 1, 0);
+        let props: Vec<(&str, &str)> = props.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        // A comparator facing west reads the block west of it; its output is read
+        // from the block beyond it. The comparator comes first: it computes only when
+        // it is told a neighbour changed, and a block that has an output tells it
+        // when it is placed (`Level.setBlock`), where a bare `setBlock` of the
+        // comparator beside an existing block tells it nothing.
+        w.set(
+            BlockPos::new(1, 1, 0),
+            w.id("comparator", &[("facing", "west")]),
+        );
+        w.set(subject, w.id(name, &props));
+        for _ in 0..4 {
+            w.full_tick();
+        }
+        let output =
+            w.f.behaviours
+                .best_neighbor_signal(&mut w.level, &mut w.ticks, BlockPos::new(2, 1, 0));
+        if output != expected {
+            wrong.push(format!(
+                "{name} {props:?}: read {output}, vanilla {expected}"
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} rows differ:
+{}",
+        wrong.len(),
+        wrong.join(
+            "
+"
+        )
+    );
+}
+
+/// `WaterFluid.getTickDelay` is 5: a source's first spread is five ticks after it is
+/// placed, and each flowing block schedules the next five ticks on, so the water
+/// reaches distance `d` on tick `5 * d`, none sooner, out to its seven blocks.
+#[test]
+fn water_advances_one_block_every_five_ticks() {
+    let mut w = world!();
+    w.floor(0, 12, "stone");
+    w.set(BlockPos::new(0, 1, 0), w.id("water", &[]));
+    let air = w.b().air();
+    let mut arrived = [None; 9];
+    for tick in 1..=60 {
+        w.tick();
+        for (d, slot) in arrived.iter_mut().enumerate().skip(1) {
+            if slot.is_none() && w.get(BlockPos::new(d as i32, 1, 0)) != air {
+                *slot = Some(tick);
+            }
+        }
+    }
+    for d in 1..=7 {
+        assert_eq!(arrived[d], Some(5 * d as i32), "water reaches distance {d}");
+    }
+    assert_eq!(arrived[8], None, "and never the eighth block");
+}
+
+/// `LavaFluid.getDropOff` is 2 outside the Nether (1 in an ultrawarm dimension): lava
+/// loses two levels a block and reaches only three, at levels 2, 4 and 6.
+#[test]
+fn lava_spreads_three_blocks_on_a_floor_in_the_overworld() {
+    let mut w = world!();
+    w.floor(0, 12, "stone");
+    w.set(BlockPos::new(0, 1, 0), w.id("lava", &[]));
+    // Long enough for 30-tick steps, including the random slowdown of a rising level.
+    for _ in 0..800 {
+        w.tick();
+    }
+    for (d, level) in [(1, "2"), (2, "4"), (3, "6")] {
+        let pos = BlockPos::new(d, 1, 0);
+        assert_eq!(
+            w.prop(pos, "level"),
+            level,
+            "lava at distance {d}: {}",
+            w.name(pos)
+        );
+    }
+    assert_eq!(
+        w.get(BlockPos::new(4, 1, 0)),
+        w.b().air(),
+        "the fourth block is dry"
+    );
+}
+
+/// `LavaFluid.spreadTo`: lava spreading *down* into water turns the water's block to
+/// stone. Water below a lava source does not harden the source itself
+/// (`LiquidBlock.shouldSpreadLiquid` skips the side below).
+#[test]
+fn lava_flowing_down_onto_water_makes_stone_and_stays_lava() {
+    let mut w = world!();
+    w.floor(0, 4, "stone");
+    let (water_at, lava_at) = (BlockPos::new(0, 1, 0), BlockPos::new(0, 2, 0));
+    w.set(water_at, w.id("water", &[]));
+    w.set(lava_at, w.id("lava", &[]));
+    assert_eq!(
+        w.get(lava_at),
+        w.id("lava", &[]),
+        "water below does not turn the lava source to obsidian"
+    );
+    for _ in 0..80 {
+        w.tick();
+    }
+    assert_eq!(
+        w.get(water_at),
+        w.id("stone", &[]),
+        "the water it flowed down onto is stone: {}",
+        w.name(water_at)
+    );
+}
+
+/// `FallingBlock.isFree` is `state.isAir() || state.is(BlockTags.FIRE) || state.liquid()
+/// || state.canBeReplaced()`: sand falls through air, either kind of fire, any liquid
+/// and the blocks flagged replaceable (grass, vines, dead bushes, snow), and rests on
+/// everything else, torches, carpets, slabs, saplings and cobwebs included.
+#[test]
+fn sand_falls_through_what_is_free_and_rests_on_what_is_not() {
+    let cases: [(&str, &[(&str, &str)], bool); 18] = [
+        ("air", &[], true),
+        ("water", &[], true),
+        ("lava", &[], true),
+        ("fire", &[], true),
+        ("soul_fire", &[], true),
+        ("short_grass", &[], true),
+        ("tall_grass", &[("half", "lower")], true),
+        ("dead_bush", &[], true),
+        ("vine", &[("up", "true")], true),
+        ("snow", &[("layers", "1")], true),
+        ("stone", &[], false),
+        ("oak_slab", &[("type", "bottom")], false),
+        ("torch", &[], false),
+        ("white_carpet", &[], false),
+        ("oak_sapling", &[], false),
+        ("cobweb", &[], false),
+        ("glass", &[], false),
+        ("lily_pad", &[], false),
+    ];
+    for (name, props, falls) in cases {
+        let mut w = world!();
+        let sand = w.id("sand", &[]);
+        // Written raw, so the block below does nothing of its own before the sand looks.
+        // Each stands on what it needs: placing the sand above is a neighbour update,
+        // and a carpet, sapling or lily pad with nothing to stand on is removed by it,
+        // which would free the sand for a reason that is not the rule under test.
+        w.put(BlockPos::new(0, 4, 0), w.id(name, props));
+        let support = if name == "lily_pad" { "water" } else { "dirt" };
+        w.put(BlockPos::new(0, 3, 0), w.id(support, &[]));
+        w.set(BlockPos::new(0, 5, 0), sand);
+        w.tick();
+        w.tick();
+        let fell = w
+            .level
+            .events
+            .iter()
+            .any(|e| matches!(e, LevelEvent::FallingBlock { state, .. } if *state == sand));
+        assert_eq!(fell, falls, "sand over {name} {props:?}");
+        assert_eq!(
+            w.get(BlockPos::new(0, 5, 0)) == w.b().air(),
+            falls,
+            "and the block {} its place: {name}",
+            if falls { "leaves" } else { "keeps" }
+        );
+    }
+}
+
+/// `NoteBlock.setInstrument`, run when it is placed: a mob head above it decides the
+/// instrument (`worksAboveNoteBlock`), else the block below does, except that a head
+/// below gives harp, and a block with no instrument is harp too. The pairs are
+/// `Blocks.java`'s `.instrument(...)` registrations.
+#[test]
+fn a_note_block_takes_its_instrument_from_the_block_below_or_a_head_above() {
+    // (the block below, the block above, the instrument)
+    let cases: [(&str, &str, &str); 24] = [
+        ("stone", "air", "basedrum"),
+        ("sand", "air", "snare"),
+        ("glass", "air", "hat"),
+        ("oak_planks", "air", "bass"),
+        ("clay", "air", "flute"),
+        ("gold_block", "air", "bell"),
+        ("packed_ice", "air", "chime"),
+        ("bone_block", "air", "xylophone"),
+        ("iron_block", "air", "iron_xylophone"),
+        ("soul_sand", "air", "cow_bell"),
+        ("pumpkin", "air", "didgeridoo"),
+        ("emerald_block", "air", "bit"),
+        ("hay_block", "air", "banjo"),
+        ("glowstone", "air", "pling"),
+        ("white_wool", "air", "guitar"),
+        ("dirt", "air", "harp"),
+        ("stone", "skeleton_skull", "skeleton"),
+        ("stone", "zombie_head", "zombie"),
+        ("stone", "creeper_head", "creeper"),
+        ("stone", "dragon_head", "dragon"),
+        ("stone", "wither_skeleton_skull", "wither_skeleton"),
+        ("stone", "piglin_head", "piglin"),
+        ("stone", "player_head", "custom_head"),
+        ("skeleton_skull", "air", "harp"),
+    ];
+    for (below, above, instrument) in cases {
+        let mut w = world!();
+        let support = BlockPos::new(0, 1, 0);
+        w.set(support, w.id(below, &[]));
+        if above != "air" {
+            w.set(BlockPos::new(0, 3, 0), w.id(above, &[]));
+        }
+        let placed = w.place("note_block", support, Direction::Up, 0.0, 0.0, 0.0);
+        assert!(
+            matches!(placed, PlaceOutcome::Placed { .. }),
+            "placed over {below}"
+        );
+        assert_eq!(
+            w.prop(BlockPos::new(0, 2, 0), "instrument"),
+            instrument,
+            "over {below} under {above}"
+        );
+    }
+}
+
+/// `NoteBlock.useWithoutItem` cycles NOTE through its 25 values and wraps; `powered`
+/// follows the neighbour signal, on and off.
+#[test]
+fn a_note_block_cycles_through_25_notes_and_follows_its_power() {
+    let mut w = world!();
+    let at = BlockPos::new(0, 5, 0);
+    w.set(at, w.id("note_block", &[]));
+    assert_eq!(w.prop(at, "note"), "0");
+    for note in 1..=24 {
+        w.use_block(at);
+        assert_eq!(w.prop(at, "note"), note.to_string(), "click {note}");
+    }
+    w.use_block(at);
+    assert_eq!(
+        w.prop(at, "note"),
+        "0",
+        "the 25th click wraps to the first note"
+    );
+
+    assert_eq!(w.prop(at, "powered"), "false");
+    let source = BlockPos::new(1, 5, 0);
+    w.set(source, w.id("redstone_block", &[]));
+    assert_eq!(
+        w.prop(at, "powered"),
+        "true",
+        "powered by the redstone block"
+    );
+    w.set(source, w.b().air());
+    assert_eq!(w.prop(at, "powered"), "false", "and not without it");
+}
+
+/// `FenceBlock.connectsTo`: `!isExceptionForConnection(state) && faceSolid || sameFence
+/// || gate`. A fence joins any block with a full face towards it (glass and stone
+/// included) except leaves, barriers, pumpkins, melons and carved pumpkins; another
+/// fence only of its own family (wooden or not, `isSameFence`); and a gate only when
+/// the gate's facing lies across the line (`connectsToDirection`).
+#[test]
+fn a_fence_connects_by_vanillas_rules() {
+    // (the fence, what stands east of it, whether it connects)
+    let cases: [(&str, &str, &[(&str, &str)], bool); 18] = [
+        ("oak_fence", "oak_fence", &[], true),
+        ("oak_fence", "spruce_fence", &[], true),
+        ("oak_fence", "bamboo_fence", &[], true),
+        ("oak_fence", "nether_brick_fence", &[], false),
+        ("nether_brick_fence", "nether_brick_fence", &[], true),
+        ("nether_brick_fence", "oak_fence", &[], false),
+        ("oak_fence", "stone", &[], true),
+        ("nether_brick_fence", "stone", &[], true),
+        ("oak_fence", "dirt", &[], true),
+        ("oak_fence", "glass", &[], true),
+        ("oak_fence", "oak_leaves", &[], false),
+        ("oak_fence", "pumpkin", &[], false),
+        ("oak_fence", "melon", &[], false),
+        ("oak_fence", "barrier", &[], false),
+        ("oak_fence", "torch", &[], false),
+        ("oak_fence", "oak_fence_gate", &[("facing", "north")], true),
+        ("oak_fence", "oak_fence_gate", &[("facing", "east")], false),
+        ("oak_fence", "air", &[], false),
+    ];
+    for (fence, neighbour, props, connects) in cases {
+        let mut w = world!();
+        let at = BlockPos::new(0, 5, 0);
+        w.set(at, w.id(fence, &[]));
+        w.set(BlockPos::new(1, 5, 0), w.id(neighbour, props));
+        assert_eq!(
+            w.prop(at, "east"),
+            if connects { "true" } else { "false" },
+            "a {fence} beside a {neighbour} {props:?}"
+        );
+        for other in ["north", "south", "west"] {
+            assert_eq!(w.prop(at, other), "false", "{other}: nothing there");
+        }
+    }
+}
+
+/// `StairBlock.getStairsShape`, recomputed by `updateShape` whenever a horizontal
+/// neighbour changes. For a stair facing east: a stair of the same half on its
+/// facing side (east), turned across it, makes an OUTER corner (LEFT if that stair
+/// faces north, the facing's counter-clockwise, else RIGHT); failing that, one
+/// behind it (west) turned across makes an INNER corner by the same rule. Either
+/// corner is refused when the block on the other side of the corner is a stair that
+/// would make the same shape (`canTakeShape`: same facing and half as the subject),
+/// and the outer test is made first.
+///
+/// The stair under test is placed first, so that each neighbour placed after it
+/// reaches it as a shape update.
+#[test]
+fn a_stair_takes_its_corner_shape_from_the_stairs_beside_it() {
+    // (offset from the subject, block, facing, half)
+    type Beside = ((i32, i32), &'static str, &'static str, &'static str);
+    let east_north: Beside = ((1, 0), "oak_stairs", "north", "bottom");
+    let cases: [(&[Beside], &str, &str); 12] = [
+        (
+            &[east_north],
+            "outer_left",
+            "east, facing north: the facing's counter-clockwise",
+        ),
+        (
+            &[((1, 0), "oak_stairs", "south", "bottom")],
+            "outer_right",
+            "east, facing south",
+        ),
+        (
+            &[((1, 0), "oak_stairs", "east", "bottom")],
+            "straight",
+            "east, same axis",
+        ),
+        (
+            &[((1, 0), "oak_stairs", "north", "top")],
+            "straight",
+            "east, the other half",
+        ),
+        (
+            &[((-1, 0), "oak_stairs", "north", "bottom")],
+            "inner_left",
+            "west, facing north",
+        ),
+        (
+            &[((-1, 0), "oak_stairs", "south", "bottom")],
+            "inner_right",
+            "west, facing south",
+        ),
+        (
+            &[((-1, 0), "oak_stairs", "west", "bottom")],
+            "straight",
+            "west, same axis",
+        ),
+        (
+            &[((-1, 0), "oak_stairs", "north", "top")],
+            "straight",
+            "west, the other half",
+        ),
+        (
+            &[((1, 0), "stone", "", "")],
+            "straight",
+            "a block that is not a stair",
+        ),
+        (
+            &[((-1, 0), "oak_stairs", "south", "bottom"), east_north],
+            "outer_left",
+            "both: the outer corner is tried first",
+        ),
+        (
+            &[((0, 1), "oak_stairs", "east", "bottom"), east_north],
+            "straight",
+            "outer refused: the block across the corner is a stair like the subject",
+        ),
+        (
+            &[
+                ((0, -1), "oak_stairs", "east", "bottom"),
+                ((-1, 0), "oak_stairs", "north", "bottom"),
+            ],
+            "straight",
+            "inner refused for the same reason",
+        ),
+    ];
+    for (around, shape, what) in cases {
+        let mut w = world!();
+        let at = BlockPos::new(0, 5, 0);
+        w.set(
+            at,
+            w.id("oak_stairs", &[("facing", "east"), ("half", "bottom")]),
+        );
+        for &((dx, dz), name, facing, half) in around {
+            let state = if name == "stone" {
+                w.id("stone", &[])
+            } else {
+                w.id(name, &[("facing", facing), ("half", half)])
+            };
+            w.set(BlockPos::new(dx, 5, dz), state);
+        }
+        assert_eq!(w.prop(at, "shape"), shape, "{what}");
+    }
+}
+
+/// `LeavesBlock.updateDistance` and `decaying`: a leaf's DISTANCE is one more than
+/// the smallest of its six face neighbours', where a block of `#minecraft:logs`
+/// counts as 0, any other leaf as its own DISTANCE and everything else as 7, the cap.
+/// It spreads one step per scheduled tick (`updateShape` schedules one). A leaf is
+/// removed by a random tick only when `!PERSISTENT && DISTANCE == 7`.
+#[test]
+fn leaves_count_their_distance_from_a_log_and_decay_only_at_seven() {
+    let settle = |w: &mut World, rounds: usize| (0..rounds).for_each(|_| w.tick());
+
+    // A row leading away from one log: 1, 2, ... 6, then the cap; and back to the
+    // cap everywhere once the log is gone.
+    let mut w = world!();
+    let leaf = w.id("oak_leaves", &[("persistent", "false")]);
+    w.set(BlockPos::new(0, 5, 0), w.id("oak_log", &[]));
+    for x in 1..=9 {
+        w.set(BlockPos::new(x, 5, 0), leaf);
+    }
+    settle(&mut w, 12);
+    for x in 1..=9i32 {
+        assert_eq!(
+            w.prop(BlockPos::new(x, 5, 0), "distance"),
+            x.min(7).to_string(),
+            "the leaf {x} blocks from the log"
+        );
+    }
+    w.set(BlockPos::new(0, 5, 0), w.b().air());
+    settle(&mut w, 40);
+    for x in 1..=9 {
+        assert_eq!(
+            w.prop(BlockPos::new(x, 5, 0), "distance"),
+            "7",
+            "the leaf {x} blocks from where the log was"
+        );
+    }
+
+    // What counts as the zero beside a leaf.
+    let beside: [(&str, &[(&str, &str)], &str); 8] = [
+        ("oak_log", &[], "1"),
+        ("stripped_oak_wood", &[], "1"),
+        ("crimson_stem", &[], "1"),
+        ("stripped_warped_hyphae", &[], "1"),
+        ("oak_planks", &[], "7"),
+        ("stone", &[], "7"),
+        ("oak_fence", &[], "7"),
+        (
+            "oak_leaves",
+            &[("distance", "7"), ("persistent", "false")],
+            "7",
+        ),
+    ];
+    for (name, props, distance) in beside {
+        let mut w = world!();
+        w.set(
+            BlockPos::new(1, 5, 0),
+            w.id("oak_leaves", &[("persistent", "false")]),
+        );
+        w.set(BlockPos::new(0, 5, 0), w.id(name, props));
+        settle(&mut w, 4);
+        assert_eq!(
+            w.prop(BlockPos::new(1, 5, 0), "distance"),
+            distance,
+            "beside {name}"
+        );
+    }
+
+    // Face neighbours only: the six sides count, the edge and corner diagonals do not.
+    let sides: [((i32, i32, i32), &str); 10] = [
+        ((1, 0, 0), "1"),
+        ((-1, 0, 0), "1"),
+        ((0, 1, 0), "1"),
+        ((0, -1, 0), "1"),
+        ((0, 0, 1), "1"),
+        ((0, 0, -1), "1"),
+        ((1, 1, 0), "7"),
+        ((1, 0, 1), "7"),
+        ((0, 1, 1), "7"),
+        ((1, 1, 1), "7"),
+    ];
+    for ((dx, dy, dz), distance) in sides {
+        let mut w = world!();
+        let at = BlockPos::new(0, 5, 0);
+        w.set(at, w.id("oak_leaves", &[("persistent", "false")]));
+        w.set(BlockPos::new(dx, 5 + dy, dz), w.id("oak_log", &[]));
+        settle(&mut w, 4);
+        assert_eq!(
+            w.prop(at, "distance"),
+            distance,
+            "a log at ({dx}, {dy}, {dz})"
+        );
+    }
+
+    // Decay: only a non-persistent leaf at the cap goes.
+    let cases: [(&str, &str, bool); 4] = [
+        ("7", "false", true),
+        ("7", "true", false),
+        ("6", "false", false),
+        ("1", "false", false),
+    ];
+    for (distance, persistent, decays) in cases {
+        let mut w = world!();
+        let at = BlockPos::new(5, 5, 5);
+        w.put(
+            at,
+            w.id(
+                "oak_leaves",
+                &[("distance", distance), ("persistent", persistent)],
+            ),
+        );
+        w.b().random_tick(&mut w.level, &mut w.ticks, at);
+        assert_eq!(
+            w.get(at) == w.b().air(),
+            decays,
+            "distance {distance}, persistent {persistent}"
+        );
+    }
+}

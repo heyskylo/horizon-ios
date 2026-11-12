@@ -286,6 +286,8 @@ pub enum Event {
     Orb(i32),
     /// The villager reached this level (regeneration for 200 ticks).
     LevelUp(i32),
+    /// A level-up recomputed the trading player's special prices.
+    OffersRefreshed,
     /// `notifyTradeUpdated`: the merchant says yes (a result) or no, at
     /// this pitch.
     TradeUpdated(bool, f32),
@@ -402,6 +404,7 @@ impl Session {
                         let more = self.offers_from_set(env, items, &set);
                         self.offers.extend(more);
                         self.update_special_prices();
+                        self.events.push(Event::OffersRefreshed);
                         prices = true;
                     }
                 }

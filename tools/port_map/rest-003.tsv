@@ -133,7 +133,7 @@ OptionInstance.ClampingLazyMaxIntRange.codec	skip:java		codec
 OptionInstance.ClampingLazyMaxIntRange.valueListSupplier	skip:ui		widget value list
 OptionInstance.CycleableValueSet.createButton	port	crates/horizon-client-render/src/options_ui.rs::Opt::cycle	gap: minor: cycle() does not save; the caller decides
 OptionInstance.IntRange.validateValue	port	crates/horizon-client-render/src/options_file.rs::Spec::validate	
-OptionInstance.IntRangeBase.toSliderValue	port	crates/horizon-client-render/src/options_ui.rs::Opt::slider_position	
+OptionInstance.IntRangeBase.toSliderValue	port	crates/horizon-client-render/src/options_ui.rs::Opt::slider_position	the step over min..max; Options.chatDelay's tenths in options_ui_values.rs::kind
 OptionInstance.IntRangeBase.fromSliderValue	port	crates/horizon-client-render/src/options_ui.rs::Opt::set_slider	
 OptionInstance.OptionInstanceSliderButton.updateMessage	skip:ui		label and tooltip text
 OptionInstance.OptionInstanceSliderButton.applyValue	port	crates/horizon-client-render/src/options_ui.rs::delays_apply	gap: minor: values apply at once; the 600 ms delay only holds the handle

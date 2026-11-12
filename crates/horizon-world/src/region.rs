@@ -341,6 +341,9 @@ impl RegionFile {
             .map(|(i, _)| (position(self.position, i), self.timestamps[i]))
     }
 
+    /// `RegionFile.getChunkDataInputStream`: a chunk the file cannot deliver is
+    /// absent (`null`), not an error, so a reader skips it the way vanilla does
+    /// instead of giving up on the whole region.
     pub fn read(&mut self, chunk: ChunkPos) -> io::Result<Option<ChunkRecord>> {
         let i = slot(self.position, chunk)?;
         let offset = self.offsets[i];
@@ -350,10 +353,15 @@ impl RegionFile {
         self.file
             .seek(SeekFrom::Start(u64::from(offset >> 8) * SECTOR as u64))?;
         let mut header = [0; 5];
-        self.file.read_exact(&mut header)?;
+        if self.file.read(&mut header)? < header.len() {
+            return Ok(None); // "Chunk header is truncated"
+        }
         let len = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
-        if len < 1 || len as u64 + 4 > (u64::from(offset & 255) * SECTOR as u64) {
-            return Err(invalid("invalid chunk payload length"));
+        if len == 0 {
+            return Ok(None); // "Chunk is allocated, but stream is missing"
+        }
+        if len as u64 + 4 > (u64::from(offset & 255) * SECTOR as u64) {
+            return Ok(None); // "Chunk stream is truncated"
         }
         let compression = Compression::try_from(header[4] & 127)?;
         let compressed = if header[4] & 128 != 0 {
@@ -375,8 +383,11 @@ impl RegionFile {
             data
         } else {
             let mut data = vec![0; len - 1];
-            self.file.read_exact(&mut data)?;
-            data
+            match self.file.read_exact(&mut data) {
+                Ok(()) => data,
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+                Err(e) => return Err(e),
+            }
         };
         Ok(Some(ChunkRecord {
             compression,
