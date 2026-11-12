@@ -481,6 +481,16 @@ fn rotate_toward_max(from: f32, to: f32, max: f32) -> f32 {
     from + wrap(to - from).clamp(-max, max)
 }
 
+impl Mob {
+    /// The end of `Entity.applyEffectsFromBlocks`: an entity that is not burning
+    /// and was not just ignited gets `setRemainingFireTicks(-getFireImmuneTicks())`.
+    /// `getFireImmuneTicks` is 0 outside `Player`, so a negative `Fire` ends at 0;
+    /// a fresh ignition is positive and an extinguish already leaves 0.
+    pub(super) fn reset_unlit_fire(&mut self) {
+        self.fire_ticks = self.fire_ticks.max(0);
+    }
+}
+
 #[cfg(test)]
 mod goat_head_tests {
     use super::*;
@@ -521,15 +531,5 @@ mod goat_head_tests {
             turned(Species::Cow).abs() > 15.0,
             "a cow is not held to the goat's 15 degrees"
         );
-    }
-}
-
-impl Mob {
-    /// The end of `Entity.applyEffectsFromBlocks`: an entity that is not burning
-    /// and was not just ignited gets `setRemainingFireTicks(-getFireImmuneTicks())`.
-    /// `getFireImmuneTicks` is 0 outside `Player`, so a negative `Fire` ends at 0;
-    /// a fresh ignition is positive and an extinguish already leaves 0.
-    pub(super) fn reset_unlit_fire(&mut self) {
-        self.fire_ticks = self.fire_ticks.max(0);
     }
 }
