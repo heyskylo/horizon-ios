@@ -3472,7 +3472,7 @@ pub fn owner_uuid(tag: &Tag) -> Option<[i32; 4]> {
 pub fn fireball_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Projectile> {
     let kind = match kind(tag)?.as_str() {
         "minecraft:fireball" => ProjectileKind::LargeFireball {
-            power: number(tag.get("ExplosionPower")).unwrap_or(1) as i32,
+            power: i32::from(number(tag.get("ExplosionPower")).unwrap_or(1) as i8),
         },
         "minecraft:small_fireball" => ProjectileKind::SmallFireball,
         "minecraft:dragon_fireball" => ProjectileKind::DragonFireball,
@@ -9429,6 +9429,25 @@ mod stand_fall_save_tests {
             assert_eq!(
                 mob_from_nbt(&input, &types, 1, None).unwrap().fire_ticks,
                 expected
+            );
+        }
+    }
+
+    /// `LargeFireball.readAdditionalSaveData` reads `ExplosionPower` with
+    /// `getByteOr`: an int tag is narrowed (`(byte)(value & 255)`), so 300 is
+    /// 44 and 200 is -56.
+    #[test]
+    fn a_fireball_narrows_its_explosion_power_to_a_byte() {
+        for (saved, expected) in [(Tag::Int(300), 44), (Tag::Int(200), -56), (Tag::Byte(4), 4)] {
+            let input = Tag::compound([
+                ("id", string("minecraft:fireball")),
+                ("Pos", doubles(&[4.5, 205.0, 4.5])),
+                ("ExplosionPower", saved),
+            ]);
+            let fireball = fireball_from_nbt(&input, None).unwrap();
+            assert!(
+                matches!(fireball.kind, ProjectileKind::LargeFireball { power } if power == expected),
+                "{expected}"
             );
         }
     }
