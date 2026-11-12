@@ -137,5 +137,8 @@ Shulker.ShulkerNearestAttackGoal.getTargetSearchArea	inline	crates/horizon-clien
 Shulker.ShulkerPeekGoal.canContinueToUse	port	crates/horizon-client/src/mobs/shulker.rs::Peek::can_continue	
 Silverfish.registerGoals	port	crates/horizon-client/src/mobs/hostile.rs::register	
 Silverfish.createAttributes	skip:data		attribute defaults come from data tables
-Silverfish.getWalkTargetValue	inline	crates/horizon-client/src/mobs/ai.rs::walk_target_value	a block standing on an infested host is worth 10, else the monster light value (with its own test)
+Silverfish.getWalkTargetValue	inline	crates/horizon-client/src/mobs/ai/walk_target.rs::walk_target_value	a block standing on an infested host is worth 10, else the monster light value (with its own test)
+Enderman.getWalkTargetValue	port	crates/horizon-client/src/mobs/ai/walk_target.rs::walk_target_value	0 everywhere, so its stroll picks one of the ten at random
+Pillager.getWalkTargetValue	port	crates/horizon-client/src/mobs/ai/walk_target.rs::walk_target_value	0 everywhere
+Warden.getWalkTargetValue	port	crates/horizon-client/src/mobs/ai/walk_target.rs::walk_target_value	0 everywhere
 Silverfish.checkSilverfishSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	the Endermite and Silverfish arm

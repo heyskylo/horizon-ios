@@ -1,0 +1,1 @@
+SetEnchantmentsFunction.run	port	crates/horizon-world/src/loot.rs::set_enchantments	Set Enchantments replaces the levels component read from the stack

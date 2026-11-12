@@ -1,0 +1,1 @@
+FoodProperties.nutrition	port	crates/horizon-client/src/item_sync.rs::food	nutrition and saturation from the stack's food component

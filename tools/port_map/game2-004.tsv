@@ -134,6 +134,7 @@ WardenSpawnTracker.hasNearbyWarden	inline	crates/horizon-client/src/game/sculk.r
 WardenSpawnTracker.getNearbyPlayers	inline	crates/horizon-client/src/game/sculk.rs::Game::try_to_warn	gap: minor: only the player who set off the shrieker is counted, not other players within 16 blocks
 WardenSpawnTracker.copyData	inline	crates/horizon-client-render/src/sculk.rs::WardenSpawnTracker::try_warn	every tracker takes the highest one's level, cooldown and tick count
 Drowned.checkDrownedSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	water below, spawner or deep enough, dark enough, frequency roll
+Drowned.isPushedByFluid	port	crates/horizon-client/src/mobs/living.rs::Mob::pushed_by_fluid	`!isSwimming()`: a drowned swimming after its target is not carried by the current
 Drowned.isDeepEnoughToSpawn	inline	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	below sea level minus 5
 Drowned.populateDefaultEquipmentSlots	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::populate	10 percent chance of a trident (10 in 16) or fishing rod
 Drowned.canReplaceCurrentItem	port	crates/horizon-client/src/game/mob_looting.rs::Game::can_replace	the mob pickup compare (armour, toughness, attack damage) with the drowned's nautilus shell guard; called before a mob swaps what it holds
