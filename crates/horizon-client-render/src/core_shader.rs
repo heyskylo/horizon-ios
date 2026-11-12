@@ -734,7 +734,8 @@ mod tests {
     #[test]
     fn a_packs_gl_vertex_index_reads_the_glues_vertex_number() {
         let vsh = "#version 330\n#include <minecraft:dynamictransforms.glsl>\n#include <minecraft:projection.glsl>\n\
-            in vec3 Position;\nin vec4 Color;\nin vec2 UV0;\nout vec4 vertexColor;\nout vec2 texCoord0;\n\
+            layout(location = 0) in vec3 Position;\nlayout(location = 1) in vec4 Color;\nlayout(location = 2) in vec2 UV0;\n\
+            layout(location = 2) out vec4 vertexColor;\nlayout(location = 3) out vec2 texCoord0;\n\
             void main() {\n    int corner = gl_VertexIndex % 4;\n\
                 gl_Position = ProjMat * ModelViewMat * vec4(Position + vec3(float(corner), 0.0, 0.0), 1.0);\n\
                 vertexColor = Color;\n    texCoord0 = UV0;\n}\n";
