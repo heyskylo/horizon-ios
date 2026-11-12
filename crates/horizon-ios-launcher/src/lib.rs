@@ -377,6 +377,17 @@ pub fn set_touch_context(context: u64) {
     #[cfg(not(target_os = "ios"))]
     let _ = context;
 }
+/// Live virtual modifiers, read only from the UIKit/game main thread.
+pub fn touch_modifiers() -> u32 {
+    #[cfg(target_os = "ios")]
+    {
+        ios::touch_modifiers()
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        0
+    }
+}
 /// Whether this bundle contains the native recognizer bridge. Older launcher
 /// frameworks keep the engine's existing direct-touch fallback.
 pub fn native_gestures_available() -> bool {
@@ -461,6 +472,27 @@ mod ios {
         snapshot.map_or(0, |call| call(positions.as_mut_ptr(), 100))
     }
 
+    pub fn touch_modifiers() -> u32 {
+        type Read = extern "C" fn() -> u32;
+        static READ: std::sync::OnceLock<Option<Read>> = std::sync::OnceLock::new();
+        let read = READ.get_or_init(|| {
+            let path = framework()?;
+            // SAFETY: bundled export with a scalar-only C signature. UIKit and
+            // the game invoke this accessor exclusively on the main thread.
+            unsafe {
+                let handle = libc::dlopen(path.as_ptr(), libc::RTLD_NOW);
+                if handle.is_null() {
+                    return None;
+                }
+                let symbol = libc::dlsym(handle, c"horizon_touch_modifiers_v1".as_ptr());
+                if symbol.is_null() {
+                    return None;
+                }
+                Some(std::mem::transmute::<*mut c_void, Read>(symbol))
+            }
+        });
+        read.map_or(0, |read| read())
+    }
     type Poll = extern "C" fn(u64, u32, f64, f64, f64, *mut f64, u32) -> u32;
     pub fn gesture_poll() -> Option<&'static Poll> {
         static POLL: std::sync::OnceLock<Option<Poll>> = std::sync::OnceLock::new();
@@ -529,7 +561,7 @@ mod ios {
             .take(count as usize)
             .filter_map(|v| {
                 if !v.iter().all(|x| x.is_finite())
-                    || !(0.0..=6.0).contains(&v[0])
+                    || !(0.0..=7.0).contains(&v[0])
                     || !(0.0..=5.0).contains(&v[1])
                     || !(-1.0..=8.0).contains(&v[4])
                     || v[5] < 0.0

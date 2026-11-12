@@ -6971,17 +6971,12 @@ impl Renderer {
             flat.set_translucent_page_vertices(arena.page_vertices());
         }
     }
-    /// Uploads solid quads in the compact layout (`packed_quads`) unless a pack reads the
-    /// arena's vertices as `TerrainVertex`es: Horizon's own packs' stages, and a `shaders/`
-    /// pack's terrain and shadow programs outside flat draws (flat ones unpack the records,
-    /// `pack_atlas::PULL_FLAT`). Leaving it drops every section and far tile for the game to
-    /// mesh again, as `follow_translucent_layout` does.
+    /// Shader packs need the rich per-quad identity and lighting sidecar, which
+    /// `Mesh::upload_states` supplies only for raw terrain. Keep compact terrain
+    /// for ordinary rendering; switching a pack on remeshes into the full layout.
     fn follow_packed_layout(&mut self) {
         let pack = self.pack_post.as_ref().and_then(|p| p.1.as_ref()).is_some();
-        let want = self.flat.is_some()
-            && (!pack || self.pack_terrain_flat)
-            && self.native.is_none()
-            && self.packed_on;
+        let want = self.flat.is_some() && !pack && self.native.is_none() && self.packed_on;
         if want == self.packed_quads {
             return;
         }

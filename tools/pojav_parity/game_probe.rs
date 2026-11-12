@@ -3,7 +3,7 @@
 use crate::touch::{Control, Out};
 use serde_json::{Value, json};
 mod horizon_ios_launcher {pub fn native_gestures_available()->bool{true}}
-mod horizon_client {pub mod keybinds {pub fn mouse_name(button:super::super::MouseButton)->String {if matches!(button,super::super::MouseButton::Left){"key.mouse.left"}else{"key.mouse.right"}.into()}}}
+mod horizon_client {pub mod debug_keys {pub enum KeyAction {Press,Release}} pub mod keybinds {pub fn mouse_name(button:super::super::MouseButton)->String {if matches!(button,super::super::MouseButton::Left){"key.mouse.left"}else{"key.mouse.right"}.into()}}}
 #[derive(Default)]struct Bindings;
 impl Bindings {
  fn translate_all(&self,key:KeyCode)->Vec<std::result::Result<KeyCode,MouseButton>>{vec![Ok(key)]}
@@ -14,16 +14,16 @@ type Result<T> = std::result::Result<T, ()>;
 #[derive(Clone, Copy)]
 #[repr(i32)]
 pub enum KeyCode { KeyW=87, KeyA=65, KeyS=83, KeyD=68, Space=32, ShiftLeft=340,
-    F5=294, KeyT=84, Escape=256, KeyE=69 }
+    F5=294, F3=292, ControlLeft=341, Tab=258, KeyT=84, Escape=256, KeyE=69 }
 #[derive(Clone, Copy)]
-pub enum MouseButton {Left, Right}
+pub enum MouseButton {Left, Right, Middle}
 #[derive(Clone, Copy)]
 enum Source {Touch}
 #[derive(Default)]
 struct Mouse {motion:Vec<Value>}
 impl Mouse {fn add_motion(&mut self,x:f64,y:f64) {self.motion.push(json!(["cursor",3,x,y]));}}
 #[derive(Default)]
-struct Touch {late:Vec<(MouseButton,u64)>,holding:Option<MouseButton>}
+struct Touch {more:bool,hidden:bool,fingers:crate::touch::Touches,toggle_keys:Vec<KeyCode>,late:Vec<(MouseButton,u64)>,holding:Option<MouseButton>}
 #[derive(Default)]
 pub struct Game {pub events:Vec<Value>,selected:usize,ticks:u64,settings:Settings,touch:Touch,mouse:Mouse}
 GAME_KEY_OF
@@ -40,6 +40,8 @@ impl Game {
         self.events.push(json!(["button",if matches!(b,MouseButton::Right){1}else{0},i32::from(down),0]));Ok(())
     }
     fn shared_default_acts(&self,_:MouseButton,_:Option<&str>)->bool{true}
+    fn touch_key_held(&self,_:KeyCode)->bool{false}
+    fn debug_key(&mut self,_:KeyCode,_:horizon_client::debug_keys::KeyAction)->bool{false}
     fn touch_holds_mouse_mapping(&self,_:MouseButton)->bool{false}
 GAME_TOUCH_RAW_KEY
 GAME_TOUCH_RAW_BUTTON

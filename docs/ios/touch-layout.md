@@ -41,10 +41,10 @@ The native launcher editor remains the layout editor. The world overlay now uses
 rounded translucent labels and a circular joystick, with Amethyst default positions.
 Movement remains selectable between directional buttons and joystick. The More drawer
 contains perspective, chat, debug, and player list; Runtime Menu opens the pause menu.
-Sprint and Shift toggle while playing; Shift remains a held modifier in menus.
+Sprint and Shift send held key presses; Minecraft’s own toggle settings decide gameplay behavior.
 Middle Click uses the pick-block binding. Hide GUI leaves its own restore button.
 
-The editor supports resizing (pinch or Size controls), opacity, and optional forward
+The editor supports resizing (pinch or a Size slider), opacity, and optional forward
 lock. Save applies the draft; Cancel discards it; Reset restores positions, sizes,
 opacity and lock. Existing saved centres and movement selection remain readable.
 The first thirteen button identifiers are unchanged. The v2 snapshot appends new
@@ -55,3 +55,11 @@ behavior. Forward lock starts only when the finger lifts over its target while m
 forward; touch cancellation and leaving gameplay release it. Menu cursor placement,
 frozen click context, and keyboard/mouse ownership remain handled by the current adapter.
 The older checkout's standalone in-game editor is deliberately not copied into this build.
+
+## Custom buttons
+
+In the layout editor’s selector, choose **Add custom button**. Tap the button to rename it and choose up to four ordered keyboard or mouse bindings. There is no six-button limit: buttons are stored as a list, and each can be moved, duplicated or deleted. Width, height and opacity use sliders. Menu and gameplay visibility are independent. Save persists the layout; Cancel discards the draft.
+
+Bindings include letters, numbers, F1–F24, modifiers, navigation/editing keys, punctuation, keypad keys, all three mouse buttons, scrolling, keyboard visibility, control visibility and menu cursor mode. Raw keys reach the normal game and menu input handlers; they do not synthesize typed characters. Minecraft’s key bindings determine gameplay actions. Hold is the default; an explicit per-button toggle is optional. Shared keys and mouse buttons stay held until their final owning control releases them. Cancellation, screen changes and hardware takeover release stale inputs.
+
+The custom-button design was compared with Amethyst’s `CustomControlsViewController.m` (`actionMenuAddButtonWithDrawer:` and binding picker) and `SurfaceViewController.m` (`executebtn`): a data-driven list, four ordered input slots, and ordinary down/up behavior unless toggle is explicitly selected. It is not an Amethyst layout-file importer.

@@ -1,4 +1,4 @@
-"""Actual touch toggle dispatch retains independent hardware key ownership."""
+"""Touch buttons emit hold/release edges; game options own toggle behavior."""
 from pathlib import Path
 import shutil
 import subprocess
@@ -13,8 +13,8 @@ class TouchToggleTests(unittest.TestCase):
         if not shutil.which('rustc'):
             self.skipTest('requires Rust')
         source = (ROOT / 'crates/horizon-client/src/game/touch.rs').read_text()
-        begin = source.index('                Out::Press(control @ (Control::Sprint | Control::Sneak)) => {')
-        end = source.index('                #[cfg(target_os = "ios")]', begin)
+        begin = source.index('                Out::Press(control) | Out::Release(control) => {')
+        end = source.index('                Out::Look(', begin)
         arms = source[begin:end]
         fixture = r'''
 #![allow(dead_code)]
@@ -24,10 +24,11 @@ mod actions{pub struct Action;impl Action{pub fn key(self)->Option<crate::keyboa
 #[path="HELD"]mod held;
 use keyboard::KeyCode;use held::{HeldKeys,Source};
 #[derive(Clone,Copy,PartialEq)]enum Control{Sprint,Sneak}
-enum Out{Press(Control),Release(Control)}
+#[derive(Clone,Copy)]enum Out{Press(Control),Release(Control)}
 #[derive(Default)]struct Input{toggle_keys:Vec<KeyCode>}
 #[derive(Default)]struct Settings{toggle_crouch:bool,toggle_sprint:bool}
 #[derive(Default)]struct Game{touch:Input,settings:Settings,keys:HeldKeys,edges:Vec<(KeyCode,bool,Source)>}
+fn key_of(c:Control)->Option<KeyCode>{Some(if c==Control::Sneak{KeyCode::ShiftLeft}else{KeyCode::ControlLeft})}
 impl Game{
  fn mapped_key(&mut self,k:KeyCode,down:bool,_repeat:bool,_raw:KeyCode,source:Source)->Result<(),()>{
   self.edges.push((k,down,source));if down{self.keys.press(k,source);}else{self.keys.release(&k,source);}Ok(())
@@ -38,15 +39,15 @@ fn main(){
  for (control,key) in [(Control::Sneak,KeyCode::ShiftLeft),(Control::Sprint,KeyCode::ControlLeft)]{
   let mut g=Game::default();g.keys.press(key,Source::Keyboard);
   g.input(vec![Out::Press(control),Out::Release(control)]).unwrap();
-  assert_eq!(g.edges,[(key,true,Source::Touch)]);assert!(g.keys.held_by(&key,Source::Touch));
+  assert_eq!(g.edges,[(key,true,Source::Touch),(key,false,Source::Touch)]);assert!(!g.keys.held_by(&key,Source::Touch));
   g.input(vec![Out::Press(control),Out::Release(control)]).unwrap();
-  assert_eq!(g.edges,[(key,true,Source::Touch),(key,false,Source::Touch)]);
+  assert_eq!(g.edges,[(key,true,Source::Touch),(key,false,Source::Touch),(key,true,Source::Touch),(key,false,Source::Touch)]);
   assert!(!g.keys.held_by(&key,Source::Touch));assert!(g.keys.held_by(&key,Source::Keyboard));
   for option in [false,true]{
    let mut g=Game::default();g.settings.toggle_crouch=option;g.settings.toggle_sprint=option;
    for _ in 0..2{g.input(vec![Out::Press(control),Out::Release(control)]).unwrap();}
    if option{assert_eq!(g.edges,[(key,true,Source::Touch),(key,false,Source::Touch),(key,true,Source::Touch),(key,false,Source::Touch)]);assert!(g.touch.toggle_keys.is_empty());}
-   else{assert_eq!(g.edges,[(key,true,Source::Touch),(key,false,Source::Touch)]);}
+   else{assert_eq!(g.edges,[(key,true,Source::Touch),(key,false,Source::Touch),(key,true,Source::Touch),(key,false,Source::Touch)]);}
   }
  }
 }

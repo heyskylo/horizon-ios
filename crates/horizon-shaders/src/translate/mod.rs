@@ -373,6 +373,24 @@ fn translate(
         )
     });
     let fragment = patch_fragment.as_ref().unwrap_or(fragment);
+    // Compatibility line programs can use loader-provided position/normal
+    // without declarations. Explicit pack globals keep their authored meaning.
+    let implicit_vertex = gbuffers.and_then(|inputs| {
+        let scan = Stage::scan(vertex, ShaderStage::Vertex);
+        let declarations = ["vaPosition", "vaNormal"]
+            .into_iter()
+            .filter(|name| {
+                uses_name(&vertex.code, name)
+                    && !scan.globals.contains(*name)
+                    && !scan.attributes.iter().any(|(n, _, _)| n == name)
+                    && inputs.attributes.iter().any(|(n, _)| n == name)
+            })
+            .map(|name| format!("in vec3 {name};"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        (!declarations.is_empty()).then(|| with_declaration(vertex, &declarations))
+    });
+    let vertex = implicit_vertex.as_ref().unwrap_or(vertex);
     let mut v = Stage::scan(vertex, ShaderStage::Vertex);
     let mut f = Stage::scan(fragment, ShaderStage::Fragment);
     v.gbuffers = gbuffers.is_some();
@@ -1899,6 +1917,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn compatibility_geometry_accepts_implicit_position_and_normal() {
+        core_matrix_program(
+            "#version 130\nvoid main() { gl_Position = vec4(vaPosition, 1.0); }",
+            false,
+        )
+        .unwrap();
+        core_matrix_program(
+            "#version 130\nvoid main() { gl_Position = vec4(vaPosition + vaNormal, 1.0); }",
+            false,
+        )
+        .unwrap();
+        core_matrix_program("#version 330\nin vec3 vaPosition;\nvoid main() { gl_Position = vec4(vaPosition, 1.0); }", false).unwrap();
+        core_matrix_program("#version 130\nvec3 vaPosition = vec3(2.0);\nvoid main() { gl_Position = vec4(vaPosition, 1.0); }", false).unwrap();
+    }
+
     fn core_matrix_program(source: &str, shadow: bool) -> Result<Program, Vec<Error>> {
         let files = [
             ("shaders/gbuffers_line.vsh", source),
@@ -1913,7 +1947,10 @@ mod tests {
         let fragment = preprocess(&pack, "gbuffers_line.fsh", &macros);
         let inputs = GbuffersInputs {
             body: "hz_Vertex = vec4(0.25, 0.5, -2.0, 1.0);".into(),
-            attributes: vec![("vaPosition".into(), "hz_Vertex.xyz".into())],
+            attributes: vec![
+                ("vaPosition".into(), "hz_Vertex.xyz".into()),
+                ("vaNormal".into(), "hz_Normal".into()),
+            ],
             ..Default::default()
         };
         if shadow {

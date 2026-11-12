@@ -102,6 +102,7 @@ struct TouchSize: Codable, Equatable {
 
 struct TouchConfiguration: Codable, Equatable {
     var centres: [String: TouchCentre] = [:]
+    var customButtons: [CustomTouchButton] = []
     var sizes: [String: TouchSize] = [:]
     var opacities: [String: Double] = [:]
     var forwardLock = false
@@ -112,10 +113,11 @@ struct TouchConfiguration: Codable, Equatable {
     var hotbarGestures = true
     var slideableHotbar = false
     var holdDuration = 0.4
-    enum CodingKeys: String, CodingKey { case centres, sizes, opacities, forwardLock, showControls, virtualMouse, joystick, mouseGestures, hotbarGestures, slideableHotbar, holdDuration }
+    enum CodingKeys: String, CodingKey { case customButtons, centres, sizes, opacities, forwardLock, showControls, virtualMouse, joystick, mouseGestures, hotbarGestures, slideableHotbar, holdDuration }
     init() {}
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        customButtons = try c.decodeIfPresent([CustomTouchButton].self, forKey: .customButtons) ?? []
         centres = try c.decodeIfPresent([String: TouchCentre].self, forKey: .centres) ?? [:]
         sizes = try c.decodeIfPresent([String: TouchSize].self, forKey: .sizes) ?? [:]
         opacities = try c.decodeIfPresent([String: Double].self, forKey: .opacities) ?? [:]
@@ -311,6 +313,8 @@ private struct TouchLayoutEditor: View {
     @State private var dragStart: CGPoint?
     @State private var selected: TouchButton?
     @State private var confirmReset = false
+    @State private var editingCustom: UUID?
+    @State private var customDrag: CGPoint?
     let finish: (TouchConfiguration?) -> Void
     init(initial: TouchConfiguration, finish: @escaping (TouchConfiguration?) -> Void) {
         _draft = State(initialValue: initial); self.finish = finish
@@ -373,6 +377,23 @@ private struct TouchLayoutEditor: View {
                             }.onEnded { _ in pinchScale = 1 })
                     }
 
+                ForEach($draft.customButtons) { $custom in
+                    let rect = custom.rect(in:gui)
+                    Text(custom.name).foregroundStyle(.white)
+                        .frame(width:rect.width*scale,height:rect.height*scale)
+                        .background(.white.opacity(0.2),in:RoundedRectangle(cornerRadius:6))
+                        .position(x:rect.midX*scale,y:rect.midY*scale)
+                        .onTapGesture {editingCustom=custom.id}
+                        .gesture(DragGesture(minimumDistance:1).onChanged { value in
+                            let start=customDrag ?? CGPoint(x:rect.midX,y:rect.midY);customDrag=start
+                            custom.centre=TouchCentre(x:min(1,max(0,(start.x+value.translation.width/scale)/gui.width)),y:min(1,max(0,(start.y+value.translation.height/scale)/gui.height)))
+                        }.onEnded{_ in customDrag=nil})
+                        .contextMenu {
+                            Button("Edit bindings"){editingCustom=custom.id}
+                            Button("Duplicate"){var copy=custom;copy.id=UUID();draft.customButtons.append(copy)}
+                            Button("Delete",role:.destructive){let id=custom.id;draft.customButtons.removeAll{$0.id==id}}
+                        }
+                }
                 VStack(spacing: 0) {
                     Image(systemName: "line.3.horizontal")
                         .frame(maxWidth: .infinity).frame(height: 28)
@@ -391,6 +412,8 @@ private struct TouchLayoutEditor: View {
                     .accessibilityIdentifier("touch-editor-cancel")
                 Spacer(minLength: 4)
                 Menu {
+                    Button("Add custom button") {var button=CustomTouchButton();button.centre=TouchCentre(x:0.5,y:0.75);draft.customButtons.append(button);editingCustom=button.id}
+                    ForEach(draft.customButtons) { button in Button(button.name){editingCustom=button.id} }
                     ForEach(draft.buttons) { button in
                         Button(button.title) { selected = button; dragStart = nil }
                     }
@@ -404,8 +427,14 @@ private struct TouchLayoutEditor: View {
             }.padding(.horizontal, 12).frame(height: 54)
                     if let selected {
                         HStack {
-                            Button("Size −") { draft.resize(selected,factor:0.9,in:gui) }
-                            Button("Size +") { draft.resize(selected,factor:1.1,in:gui) }
+                            Text("Size")
+                            Slider(value: Binding(get: {
+                                draft.rect(selected,in:gui).width / min(gui.width,gui.height)
+                            }, set: { value in
+                                let current = draft.rect(selected,in:gui).width
+                                draft.resize(selected,factor:value * min(gui.width,gui.height) / current,in:gui)
+                            }), in:0.02...0.8)
+                                .accessibilityIdentifier("touch-button-size")
                             Text("Opacity")
                             Slider(value:Binding(get:{ draft.opacity(selected) },set:{ draft.opacities[String(selected.rawValue)] = $0 }),in:0.1...1)
                         }.padding(.horizontal,16).padding(.bottom,12)
@@ -423,6 +452,14 @@ private struct TouchLayoutEditor: View {
         .ignoresSafeArea()
         .background(Color.black)
         .foregroundStyle(.white).preferredColorScheme(.dark)
+        .sheet(isPresented:Binding(get:{editingCustom != nil},set:{if !$0 {editingCustom=nil}})) {
+            NavigationStack {
+                if let id=editingCustom,let index=draft.customButtons.firstIndex(where:{$0.id==id}) {
+                    CustomTouchEditor(button:$draft.customButtons[index])
+                        .toolbar {Button("Done"){editingCustom=nil}}
+                }
+            }
+        }
         .confirmationDialog("Reset all button positions?", isPresented: $confirmReset, titleVisibility: .visible) {
             Button("Reset Layout", role: .destructive) { draft.centres = [:]; draft.sizes = [:]; draft.opacities = [:]; draft.forwardLock = false; selected = nil; dragStart = nil }
         } message: { Text("Save to keep the default positions, or Cancel to keep your current layout.") }
@@ -458,10 +495,24 @@ final class TouchGestureBridge: NSObject, UIGestureRecognizerDelegate {
     static let shared = TouchGestureBridge()
     private weak var surface: UIView?
     private var recognizers: [UIGestureRecognizer] = []
+    private var customViews: [UUID:CustomTouchView] = [:]
+    private let customHolds=CustomTouchHolds()
+    private var customPressed = Set<Int>()
+    var customModifierBits: UInt32 {
+        (customPressed.contains(340)||customPressed.contains(344) ? 1 : 0)
+        | (customPressed.contains(341)||customPressed.contains(345) ? 2 : 0)
+        | (customPressed.contains(342)||customPressed.contains(346) ? 4 : 0)
+        | (customPressed.contains(343)||customPressed.contains(347) ? 8 : 0)
+    }
     private var screen: UInt64 = 0
     private var active = false
     private var playing = false
     private var noWorld = false
+    private var controlsHidden = false
+    private var moreOpen = false
+    private var closeShown = false
+    private var keyboardShown = false
+    private var hideCustomPaint = false
     private let configuration: () -> TouchConfiguration
     private var gui = CGSize.zero
     private var guiScale: Double = 1
@@ -480,6 +531,8 @@ final class TouchGestureBridge: NSObject, UIGestureRecognizerDelegate {
 
     func attach(to view: UIView) {
         guard surface !== view else { return }
+        for button in customViews.values {button.release();button.removeFromSuperview()}
+        customViews.removeAll()
         if let surface { for recognizer in recognizers { surface.removeGestureRecognizer(recognizer) } }
         surface = view
         let tap = TouchSurfaceTap(target: self, action: #selector(tapped(_:)))
@@ -504,13 +557,19 @@ final class TouchGestureBridge: NSObject, UIGestureRecognizerDelegate {
     }
 
     func poll(screen: UInt64, flags: UInt32, width: Double, height: Double, scale: Double, capacity: Int, withContext: Bool = false) -> [[Double]] {
-        if flags & 4 != 0 { pending.removeAll(); return [] }
+        if flags & 4 != 0 {
+            for button in customViews.values {button.release()}
+            pending.removeAll();return []
+        }
         hotbarHold?.minimumPressDuration = configuration().holdDuration
         let enabled = flags & 2 == 0
-        if self.screen != screen || active != enabled { pending.removeAll(); hotbarSlot = -1; suppressTap = false }
+        if self.screen != screen || active != enabled { for button in customViews.values {button.release()}; pending.removeAll(); hotbarSlot = -1; suppressTap = false }
         self.screen = screen; active = enabled; playing = flags & 1 != 0
         noWorld = flags & 8 != 0
+        controlsHidden = flags & 16 != 0; moreOpen = flags & 32 != 0
+        closeShown = flags & 64 != 0; keyboardShown = flags & 128 != 0; hideCustomPaint = flags & 256 != 0
         gui = CGSize(width: width, height: height); guiScale = max(1, scale)
+        updateCustomControls()
         let now = ProcessInfo.processInfo.systemUptime
         let count = min(max(0, capacity), pending.count)
         let output = pending.prefix(count).map { timestamp, values, context, modifiers, touch in
@@ -522,6 +581,40 @@ final class TouchGestureBridge: NSObject, UIGestureRecognizerDelegate {
         return output
     }
 
+    private func updateCustomControls() {
+        guard let surface else{return}
+        let config=configuration(), valid=Set(config.customButtons.map(\.id))
+        for id in Array(customViews.keys) where !valid.contains(id) {
+            customViews[id]?.release();customViews.removeValue(forKey:id)?.removeFromSuperview()
+        }
+        let unit=guiScale/Double(surface.window?.screen.scale ?? UIScreen.main.scale)
+        for definition in config.customButtons {
+            if let old=customViews[definition.id],old.definition != definition {old.release();old.removeFromSuperview();customViews.removeValue(forKey:definition.id)}
+            if customViews[definition.id] == nil {
+                let button=CustomTouchView(definition) { [weak self] id,keys,down,flags in
+                    guard let self else{return}
+                    for (code,pressed) in self.customHolds.set(id,keys:keys,down:down) {
+                        if pressed {self.customPressed.insert(code)} else {self.customPressed.remove(code)}
+                        if code == -5 {
+                            if !pressed && !self.playing {
+                                var config=TouchPreferences.shared.configuration;config.virtualMouse.toggle();TouchPreferences.shared.save(config)
+                            }
+                            continue
+                        }
+                        self.emit(7,phase:pressed ? 1 : 3,location:CGPoint(x:code,y:0),modifiers:flags)
+                    }
+                }
+                customViews[definition.id]=button;surface.addSubview(button)
+            }
+            guard let button=customViews[definition.id] else{continue}
+            let hidden = !active || (controlsHidden && !definition.keys.contains(-2) && !definition.keys.contains(-5)) || (playing ? !definition.inGame : !definition.inMenu)
+            if hidden {button.release()}
+            button.isHidden=hidden
+            let rect=definition.rect(in:gui)
+            button.frame=CGRect(x:rect.minX*unit,y:rect.minY*unit,width:rect.width*unit,height:rect.height*unit)
+            button.layer.opacity=config.showControls && !hideCustomPaint ? Float(min(1,max(0.1,definition.opacity))) : 0
+        }
+    }
     private func point(_ location: CGPoint) -> CGPoint {
         guard let surface, surface.bounds.width > 0, surface.bounds.height > 0 else { return .zero }
         let factor = Double(surface.window?.screen.scale ?? UIScreen.main.scale) / guiScale
@@ -537,10 +630,16 @@ final class TouchGestureBridge: NSObject, UIGestureRecognizerDelegate {
     }
     private func emit(_ kind: Double, phase: Int, location: CGPoint = .zero, slot: Int = -1,
                       modifiers: UIKeyModifierFlags = [], touch: UInt64 = 0) {
-        guard active else { return }
+        guard active || (kind == 7 && phase == 3) else { return }
         // If an event storm exhausts the bounded queue, cancel the old gesture
         // state rather than lose an up edge and leave a button held forever.
         if pending.count >= 128 { pending = [(ProcessInfo.processInfo.systemUptime, [0, 4, 0, 0, -1], inputContext, 0, 0)] }
+        var virtualFlags:UIKeyModifierFlags=[]
+        if customPressed.contains(340)||customPressed.contains(344){virtualFlags.insert(.shift)}
+        if customPressed.contains(341)||customPressed.contains(345){virtualFlags.insert(.control)}
+        if customPressed.contains(342)||customPressed.contains(346){virtualFlags.insert(.alternate)}
+        if customPressed.contains(343)||customPressed.contains(347){virtualFlags.insert(.command)}
+        let modifiers = modifiers.union(virtualFlags)
         let bits: UInt32 = (modifiers.contains(.shift) ? 1 : 0) | (modifiers.contains(.control) ? 2 : 0)
             | (modifiers.contains(.alternate) ? 4 : 0) | (modifiers.contains(.command) ? 8 : 0)
         pending.append((ProcessInfo.processInfo.systemUptime, [kind, Double(phase), location.x, location.y, Double(slot)], inputContext, bits, touch))
@@ -548,11 +647,19 @@ final class TouchGestureBridge: NSObject, UIGestureRecognizerDelegate {
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         guard active, gui.width > 0, gui.height > 0, let surface,
               surface.window?.rootViewController?.presentedViewController == nil else { return false }
+        if touch.view is CustomTouchView {return false}
         let location = touch.location(in: surface), p = point(location)
         let configuration = configuration()
-        if !noWorld && configuration.buttons.contains(where: { configuration.rect($0, in: gui).contains(p) }) { return false }
-        // The existing close/keyboard affordances own their touches.
-        if p.y < 38 && p.x > gui.width - 76 { return false }
+        let visible = configuration.buttons.filter { button in
+            if noWorld { return false }
+            if controlsHidden { return button == .hide }
+            return moreOpen || ![TouchButton.perspective, .chat, .debug, .playerList].contains(button)
+        }
+        if visible.contains(where: { configuration.rect($0, in: gui).contains(p) }) { return false }
+        let auxiliarySize = (min(48, max(26, gui.height * 0.14)) * 0.75).rounded()
+        let closeRect = CGRect(x: gui.width - auxiliarySize - 4, y: 4, width: auxiliarySize, height: auxiliarySize)
+        if closeShown && closeRect.contains(p) { return false }
+        if keyboardShown && closeRect.offsetBy(dx: -auxiliarySize - 4, dy: 0).contains(p) { return false }
         hotbarSlot = slot(location)
         suppressTap = false
         if gestureRecognizer is TouchHotbarTracker { return playing && hotbarSlot >= 0 }
@@ -686,3 +793,6 @@ final class TouchHotbarTracker: UIGestureRecognizer {
     override func reset() { finger = nil; lastSlot = -1; super.reset() }
     override func location(in view: UIView?) -> CGPoint { finger?.location(in: view) ?? .zero }
 }
+
+@_cdecl("horizon_touch_modifiers_v1")
+public func horizonTouchModifiers() -> UInt32 { TouchGestureBridge.shared.customModifierBits }

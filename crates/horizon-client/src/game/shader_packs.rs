@@ -190,6 +190,11 @@ thread_local! {
     static OPTIONS_REVISION: Cell<u64> = const { Cell::new(0) };
 }
 pub(super) fn record_report(name: &str, dimension: i32, programs: &[String], notes: &[String]) {
+    // The summary refusal alone cannot diagnose a pack: keep the parser/compiler
+    // notes in the exported game log as well as the in-game report.
+    for note in notes {
+        log::info!("shader pack {name} (dimension {dimension}): {note}");
+    }
     REPORT.with_borrow_mut(|report| {
         *report = Some(json!({
             "pack": name, "dimension": dimension, "programs": programs, "notes": notes,

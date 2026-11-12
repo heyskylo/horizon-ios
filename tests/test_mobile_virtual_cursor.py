@@ -10,7 +10,7 @@ class VirtualCursorTests(unittest.TestCase):
  def test_menu_drag_buttons_screen_change_and_cancel(self):
   if not shutil.which('rustc'): self.skipTest('requires Rust')
   code=(ROOT/'crates/horizon-client/src/game/touch.rs').read_text()
-  methods='\n'.join(method(code,n) for n in ['touch_menu_cursor_mode','visible_touch_layout','touch_click_context','touch_record_click_context','touch_cursor_flush','touch_cursor_reset','touch_cursor_motion','touch_cursor_event','touch_cursor_frame','touch_queue_cursor_button'])
+  methods='\n'.join(method(code,n) for n in ['touch_menu_cursor_mode','visible_touch_layout','touch_render_point','touch_click_context','touch_record_click_context','touch_cursor_flush','touch_cursor_reset','touch_cursor_motion','touch_cursor_event','touch_cursor_frame','touch_menu_mouse_held','touch_queue_cursor_button'])
   window=(ROOT/'crates/horizon-client/src/game/window_handler.rs').read_text()
   a=window.index('        if let WindowEvent::MouseInput { state, button, .. } = &event {')
   b=window.index('        let mouse =',a)
@@ -52,6 +52,7 @@ enum WindowEvent{MouseInput{state:ElementState,button:MouseButton},Other}
 #[derive(Default)]struct Pvp{editor:Option<Editor>}
 #[derive(Default)]struct Settings{horizon:Horizon,saved:std::cell::Cell<usize>}
 impl Settings{fn save(&self,_:&str){self.saved.set(self.saved.get()+1);}}
+struct RenderBatch{scale:f32}
 trait EventLoopCtl{} struct Loop;impl EventLoopCtl for Loop{}
 struct Batch{width:f32,height:f32}
 type HudBatch=Batch;
@@ -67,10 +68,10 @@ impl Graph{fn draw(&self,_:(),_:&mut Batch,_:&()){}}
 
 TYPES
 #[derive(Default)]struct Input{more:bool,hidden:bool,cursor:actual::desktop::Cursor,cursor_screen:Option<u64>,cursor_pending:Vec<CursorEdge>,fingers:actual::Touches,
- cursor_down:[bool;3],cursor_cancelled:[bool;3],cursor_delivery:Option<ClickContext>,cursor_drawn:Option<(u64,(f32,f32))>,
+ cursor_down:[bool;3],native_mouse:[bool;3],custom_mouse:[bool;3],cursor_cancelled:[bool;3],cursor_delivery:Option<ClickContext>,cursor_drawn:Option<(u64,(f32,f32))>,
  click_contexts:Vec<(u64,ClickContext)>,native_surface:Option<(u64,(f32,f32))>,cursor_keys:Vec<Control>}
 /// `clicks` records (right, down, pointer, modifiers) as the screen receives each mouse edge.
-#[derive(Default)]struct Game{title:Option<()>,ui:Ui,server_packs:Packs,code_of_conduct:Option<()>,command_prompt:Option<()>,player:Option<()>,gui:Gui,frame_graph:Graph,rendered:usize,pvp:Pvp,settings:Settings,touch:Input,frames:u64,key:u64,point:(f32,f32),clicks:Vec<(bool,bool,(f32,f32),u8)>,switch_on_down:bool,
+#[derive(Default)]struct Game{render_scale:f32,title:Option<()>,ui:Ui,server_packs:Packs,code_of_conduct:Option<()>,command_prompt:Option<()>,player:Option<()>,gui:Gui,frame_graph:Graph,rendered:usize,pvp:Pvp,settings:Settings,touch:Input,frames:u64,key:u64,point:(f32,f32),clicks:Vec<(bool,bool,(f32,f32),u8)>,switch_on_down:bool,
  keys:Vec<(KeyCode,bool)>,modifiers:winit::keyboard::ModifiersState,physical_buttons:std::collections::HashSet<MouseButton>,size:(f32,f32)}
 impl Game{
  fn advance_skin_frame(&mut self){}
@@ -91,9 +92,11 @@ impl Game{
  fn touch_now(&mut self)->f64{self.frames as f64/60.0}
  fn key_screen(&self)->u64{self.key}
  fn touch_batch(&self)->Option<Batch>{Some(Batch{width:self.size.0,height:self.size.1})}
+ fn screen_batch(&self)->Option<RenderBatch>{Some(RenderBatch{scale:self.render_scale.max(1.)})}
+ fn touch_effective_modifiers(&self)->winit::keyboard::ModifiersState{self.modifiers}
  fn screen_point(&self,at:(f32,f32))->(f32,f32){at}
  fn hardware_hides_touch(&self)->bool{false}
- fn touch_pointer(&mut self,_:&dyn EventLoopCtl,at:(f32,f32)){self.point=at;}
+ fn touch_pointer(&mut self,_:&dyn EventLoopCtl,at:(f32,f32)){let s=self.render_scale.max(1.);self.point=((at.0*s)/s,(at.1*s)/s);}
  fn touch_mouse_button(&mut self,_:&dyn EventLoopCtl,b:MouseButton,down:bool){
   let event=WindowEvent::MouseInput{state:if down{ElementState::Pressed}else{ElementState::Released},button:b};
 LEDGER
@@ -106,6 +109,34 @@ LEDGER
 METHODS
 }
 fn main(){
+ // An idle touch frame must not warp the pointer back and cancel a virtual
+ // Tab/arrow key's screen focus. Only a delivered queued pointer needs restore.
+ let mut idle=Game::new();idle.touch.cursor.position=Some((100.,100.));idle.point=(300.,150.);idle.frame();assert_eq!(idle.point,(300.,150.));
+
+ for (index,button,control) in [(0,MouseButton::Left,Control::LeftClick),(1,MouseButton::Right,Control::RightClick),(2,MouseButton::Middle,Control::MiddleClick)] {
+  let layout=actual::layout(512.,300.);let r=layout.iter().find(|(c,_)|*c==control).unwrap().1;let point=(r[0]+r[2]/2.,r[1]+r[3]/2.);
+  for custom_first in [false,true] {
+   let mut g=Game::new();g.touch.cursor_screen=Some(g.key);
+   if custom_first {g.touch.custom_mouse[index]=true;g.touch_queue_cursor_button(button,true);}else{g.input(1,TouchPhase::Started,point);}
+   for _ in 0..3{g.frame();}assert!(g.physical_buttons.contains(&button));
+   if custom_first {g.input(1,TouchPhase::Started,point);g.touch.custom_mouse[index]=false;g.touch_queue_cursor_button(button,false);}else{g.touch.custom_mouse[index]=true;g.touch_queue_cursor_button(button,true);g.input(1,TouchPhase::Ended,point);}
+   for _ in 0..3{g.frame();}assert!(g.physical_buttons.contains(&button));assert_eq!(g.clicks.len(),1);
+   if custom_first {g.input(1,TouchPhase::Ended,point);}else{g.touch.custom_mouse[index]=false;g.touch_queue_cursor_button(button,false);}for _ in 0..3{g.frame();}
+   assert!(!g.physical_buttons.contains(&button));assert_eq!(g.clicks.len(),2);
+  }
+ }
+
+ // Fractional positions must survive the same physical-pixel round trip as
+ // the real renderer; otherwise the pending press never acknowledges a draw.
+ let mut fractional=Game::new();fractional.render_scale=5.;
+ fractional.input(99,TouchPhase::Started,(200.,100.));
+ fractional.input(99,TouchPhase::Moved,(364.0010070800781,100.));
+ let left=actual::layout(512.,300.).into_iter().find(|(c,_)|*c==Control::LeftClick).unwrap().1;
+ let at=(left[0]+left[2]/2.,left[1]+left[3]/2.);
+ fractional.input(100,TouchPhase::Started,at);fractional.input(100,TouchPhase::Ended,at);
+ for _ in 0..6 {fractional.frame();}
+ assert_eq!(fractional.edges(),[(false,true),(false,false)]);assert!(fractional.touch.cursor_pending.is_empty());
+
  use horizon_client::widgets::WIDGET;use std::sync::atomic::Ordering::Relaxed;
  let layout=actual::layout(512.,300.);let centre=|c|{let r=layout.iter().find(|(b,_)|*b==c).unwrap().1;(r[0]+r[2]/2.,r[1]+r[3]/2.)};
  assert!(!layout.iter().any(|(c,_)|*c==Control::Runtime));

@@ -319,15 +319,15 @@ impl Game<'_> {
     /// and a sneak the key no longer held: #4166's in-game report), so a
     /// cached key set is not vanilla's answer.
     pub(super) fn has_shift_down(&self) -> bool {
-        self.modifiers.shift_key() || self.touch_shift_held()
+        self.touch_effective_modifiers().shift_key() || self.touch_shift_held()
     }
     /// The same live word for Control (`InputWithModifiers.hasControlDown`).
     pub(super) fn has_control_down(&self) -> bool {
-        self.modifiers.control_key()
+        self.touch_effective_modifiers().control_key()
     }
     /// The same live word for Alt (`InputWithModifiers.hasAltDown`).
     pub(super) fn has_alt_down(&self) -> bool {
-        self.modifiers.alt_key()
+        self.touch_effective_modifiers().alt_key()
     }
     /// Real events word the modifiers by their own `ModifiersChanged`; a
     /// control socket's `key` is synthesized, so it words the bit directly

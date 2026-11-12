@@ -17,6 +17,8 @@ enum Bridge {
     /// Send `line` to the game and wait for its JSON answer. A game that cannot answer gives `["error": ...]`.
     @MainActor
     static func send(_ line: String) async -> [String: Any] {
+        let verb = String(line.prefix(while: { !$0.isWhitespace }))
+        if verb != "launcher-state" {Diagnostics.record("Launcher request: \(verb)")}
         guard let submit else {
             return ["error": "no game is running under the launcher"]
         }
@@ -55,6 +57,7 @@ private let replied: HorizonDone = { context, text in
     let answer = text
         .flatMap { String(cString: $0).data(using: .utf8) }
         .flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
+    if let error = answer?["error"] as? String { Diagnostics.record("Launcher error: \(error)") }
     reply.continuation.resume(returning: answer ?? ["error": "the game's answer was not JSON"])
 }
 

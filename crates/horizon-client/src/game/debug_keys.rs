@@ -153,7 +153,8 @@ impl Game<'_> {
         let crash_down = keybinds::key_code(self.settings.keys.get("key.debug.crash"))
             .is_some_and(|k| self.physical_keys.contains(&k));
         let shift = self.physical_keys.contains(&KeyCode::ShiftLeft)
-            || self.physical_keys.contains(&KeyCode::ShiftRight);
+            || self.physical_keys.contains(&KeyCode::ShiftRight)
+            || self.has_shift_down();
         let now = self.debug_millis();
         let binds = self.settings.keys.clone();
         let mut keys = std::mem::take(&mut self.debug_keys);

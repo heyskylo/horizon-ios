@@ -3288,6 +3288,22 @@ impl Breath {
     }
 }
 impl Game<'_> {
+    /// These vertices join the final entity buffer: shader span offsets must use
+    /// that buffer, never a zero-based temporary list or the preceding particle's span.
+    pub(super) fn dragon_frame_geometry(
+        &self,
+        camera: glam::DVec3,
+        alpha: f64,
+        out: &mut Vec<Vertex>,
+        additive: &mut Vec<Vertex>,
+    ) {
+        self.mark_entity(out.len(), "minecraft:ender_dragon");
+        self.dragon_geometry(camera, alpha, out, additive);
+        self.mark_entity(out.len(), "minecraft:dragon_fireball");
+        self.dragon_fireball_geometry(camera, alpha, out);
+        self.mark_stage(out.len(), "NONE");
+    }
+
     /// `EnderDragonRenderer` and `EnderDragonModel.setupAnim`.
     pub(super) fn dragon_geometry(
         &self,
@@ -3493,6 +3509,9 @@ impl Game<'_> {
         if let Some(c) = d.nearest_crystal.and_then(|i| self.crystals.get(i)) {
             let bob = f64::from(horizon_client::end_crystal::y(c.time as f32 + a));
             let to = glam::DVec3::new(c.position.x, c.position.y + bob, c.position.z);
+            // Wrapped beam UVs are not plain entity-atlas coordinates. Give the
+            // beam its own span so it cannot disqualify the dragon's entire skin.
+            self.mark_stage(out.len(), "NONE");
             self.crystal_beam(pos, to - pos, self.visual_ticks() as f32 + a, camera, out);
         }
     }

@@ -19,6 +19,18 @@ final class LauncherLayoutTests: XCTestCase {
         XCTAssertTrue(app.buttons["launcher-play-button"].waitForExistence(timeout: 15))
         return app
     }
+    func testLogsExportPresentsFileSavePicker() {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = launch(signedIn:false)
+        app.buttons.matching(NSPredicate(format:"label == %@","Settings")).firstMatch.tap()
+        let export = app.buttons["export-diagnostics"]
+        XCTAssertTrue(export.waitForExistence(timeout:10))
+        for _ in 0..<5 {if export.isHittable {break};app.swipeUp()}
+        export.tap()
+        XCTAssertTrue(app.otherElements["diagnostic-file-export"].waitForExistence(timeout:15), app.debugDescription)
+        app.buttons["Cancel"].firstMatch.tap()
+        XCTAssertTrue(export.waitForExistence(timeout:5))
+    }
     func testNativeTapHoldAndHotbarRecognizersReachTheCBridge() {
         XCUIDevice.shared.orientation = .landscapeLeft
         let app = XCUIApplication()
@@ -49,6 +61,43 @@ final class LauncherLayoutTests: XCTestCase {
         expectation(for:NSPredicate(format:"label CONTAINS %@","2:1:4"),evaluatedWith:events)
         waitForExpectations(timeout:5)
         XCTAssertTrue(events.label.contains("2:3:4"))
+    }
+
+    func testAddBindAndReloadCustomButton() {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app=launch(signedIn:false)
+        app.buttons.matching(NSPredicate(format:"label == %@","Settings")).firstMatch.tap()
+        let edit=app.buttons["touch-edit-layout"]
+        XCTAssertTrue(edit.waitForExistence(timeout:5));edit.tap()
+        XCTAssertTrue(app.buttons["touch-editor-select"].waitForExistence(timeout:5))
+        app.buttons["touch-editor-select"].tap();app.buttons["Add custom button"].tap()
+        let name=app.textFields["custom-button-name"]
+        XCTAssertTrue(name.waitForExistence(timeout:5));name.tap()
+        let old=(name.value as? String) ?? ""
+        name.typeText(String(repeating:XCUIKeyboardKey.delete.rawValue,count:old.count)+"My action")
+        app.buttons["custom-binding-0"].tap();app.buttons["Left mouse"].firstMatch.tap()
+        app.buttons["Done"].firstMatch.tap()
+        app.buttons["touch-editor-save"].tap()
+        XCTAssertTrue(edit.waitForExistence(timeout:5));edit.tap()
+        app.buttons["touch-editor-select"].tap();app.buttons["My action"].firstMatch.tap()
+        XCTAssertTrue(name.waitForExistence(timeout:5));XCTAssertEqual(name.value as? String,"My action")
+        XCTAssertTrue(app.buttons["custom-binding-0"].label.contains("Left mouse"))
+        app.buttons["Done"].firstMatch.tap();app.buttons["touch-editor-cancel"].tap()
+    }
+
+    func testCustomButtonChordUsesNativePressAndRelease() {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app=XCUIApplication()
+        let root=NSTemporaryDirectory()+"horizon-custom-"+UUID().uuidString
+        app.launchEnvironment=["PREVIEW_NATIVE_GESTURES":"world","PREVIEW_CUSTOM_CONTROLS":"1",
+            "HORIZON_HOME":root+"/game","HORIZON_LAUNCHER_HOME":root+"/launcher","XDG_DATA_HOME":root+"/data","XDG_CONFIG_HOME":root+"/config","HORIZON_NO_AUDIO":"1","HORIZON_LAUNCHER_NO_SELF_UPDATE":"1"]
+        app.launch()
+        let button=app.buttons["Custom chord"]
+        XCTAssertTrue(button.waitForExistence(timeout:10));button.press(forDuration:0.2)
+        let output=app.staticTexts["native-gesture-events"]
+        expectation(for:NSPredicate(format:"label CONTAINS %@","7:3:-1:86"),evaluatedWith:output);waitForExpectations(timeout:5)
+        for edge in ["7:1:-1:341","7:1:-1:86","7:3:-1:341","7:3:-1:86"] {XCTAssertTrue(output.label.contains(edge))}
+        XCTAssertFalse(output.label.contains("1:3:-1"),"Custom controls must not also generate surface clicks")
     }
 
     func testTouchEditorLandscapeSaveCancelResetAndPortraitReturn() {

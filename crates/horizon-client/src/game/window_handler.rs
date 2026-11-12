@@ -104,6 +104,7 @@ impl Game<'_> {
         // window's own keys, never the ones the socket made up.
         self.trace_window_event(origin, &event);
         if let WindowEvent::KeyboardInput { event, .. } = &event
+            && !self.touch_synthetic_input()
             && let PhysicalKey::Code(key) = event.physical_key
         {
             if event.state == ElementState::Pressed {

@@ -8,9 +8,15 @@
 //! Messages go through the `log` facade. Horizon's own still print their plain text on stderr,
 //! as they did before the log existed. Other crates, including native mods and their helper
 //! crates, reach the file through INFO too, with their target prefixed to identify the source.
+#[cfg(target_os = "ios")]
+#[path = "mobile_log.rs"]
+mod mobile_log;
+
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Write};
+#[cfg(not(target_os = "ios"))]
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
@@ -203,6 +209,7 @@ pub fn format_line(
 }
 
 /// Gzips `text` into the next archive for `date` in `dir`.
+#[cfg(not(target_os = "ios"))]
 fn archive(dir: &Path, date: NaiveDate, text: &[u8]) -> io::Result<()> {
     let names: Vec<String> = fs::read_dir(dir)?
         .flatten()
@@ -226,15 +233,23 @@ fn archive(dir: &Path, date: NaiveDate, text: &[u8]) -> io::Result<()> {
 /// Moves what `file` holds into an archive dated `date` and empties it. The file stays open
 /// (and locked), so this works on Windows too.
 fn roll(file: &mut File, dir: &Path, date: NaiveDate) -> io::Result<()> {
-    let mut text = Vec::new();
-    file.seek(SeekFrom::Start(0))?;
-    file.read_to_end(&mut text)?;
-    if !text.is_empty() {
-        archive(dir, date, &text)?;
+    #[cfg(target_os = "ios")]
+    {
+        let _ = date;
+        return mobile_log::rotate(file, dir);
     }
-    file.set_len(0)?;
-    file.seek(SeekFrom::Start(0))?;
-    Ok(())
+    #[cfg(not(target_os = "ios"))]
+    {
+        let mut text = Vec::new();
+        file.seek(SeekFrom::Start(0))?;
+        file.read_to_end(&mut text)?;
+        if !text.is_empty() {
+            archive(dir, date, &text)?;
+        }
+        file.set_len(0)?;
+        file.seek(SeekFrom::Start(0))?;
+        Ok(())
+    }
 }
 
 /// The open `latest.log` and the lock that keeps it this game's.
@@ -258,6 +273,17 @@ pub fn open_latest(dir: &Path) -> io::Result<Option<Latest>> {
         Ok(()) => {}
         Err(fs::TryLockError::WouldBlock) => return Ok(None),
         Err(fs::TryLockError::Error(e)) => return Err(e),
+    }
+    #[cfg(target_os = "ios")]
+    for entry in fs::read_dir(dir)?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if let Some(stem) = name.strip_suffix(".log.gz")
+            && let Some((date, index)) = stem.rsplit_once('-')
+            && NaiveDate::parse_from_str(date, "%Y-%m-%d").is_ok()
+            && index.parse::<u32>().is_ok()
+        {
+            let _ = fs::remove_file(entry.path());
+        }
     }
     let mut file = OpenOptions::new()
         .read(true)
@@ -325,6 +351,9 @@ impl Writer {
                     if let Some(latest) = &mut self.file {
                         let mut text = lines.join("\n");
                         text.push('\n');
+                        #[cfg(target_os = "ios")]
+                        let _ = mobile_log::append(&mut latest.file, &self.dir, &text);
+                        #[cfg(not(target_os = "ios"))]
                         let _ = latest.file.write_all(text.as_bytes());
                     }
                     // After the file has it. A callback that panics is not called again: the
@@ -494,6 +523,12 @@ impl Logger {
     }
 
     fn send(&self, thread: &str, level: log::Level, message: &str, stderr: Option<String>) {
+        #[cfg(target_os = "ios")]
+        let safe = mobile_log::redact(message);
+        #[cfg(target_os = "ios")]
+        let message = safe.as_str();
+        #[cfg(target_os = "ios")]
+        let stderr = stderr.map(|s| mobile_log::redact(&s));
         let now = Local::now();
         // As log4j writes a multi-line message: the pattern once, the rest as it is.
         let lines: Vec<String> = message

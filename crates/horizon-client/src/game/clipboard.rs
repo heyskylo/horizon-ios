@@ -12,7 +12,7 @@ impl Game<'_> {
         if event.state != ElementState::Pressed {
             return None;
         }
-        let m = self.modifiers;
+        let m = self.touch_effective_modifiers();
         let held = |keys: [KeyCode; 2]| keys.iter().any(|k| self.physical_keys.contains(k));
         clipboard::edit_shortcut(
             clipboard::shortcut_letter(&event.logical_key, event.physical_key),
@@ -29,9 +29,11 @@ impl Game<'_> {
     pub(super) fn has_control_down_with_quirk(&self) -> bool {
         let held = |keys: [KeyCode; 2]| keys.iter().any(|k| self.physical_keys.contains(k));
         if cfg!(any(target_os = "macos", target_os = "ios")) {
-            self.modifiers.super_key() || held([KeyCode::SuperLeft, KeyCode::SuperRight])
+            self.touch_effective_modifiers().super_key()
+                || held([KeyCode::SuperLeft, KeyCode::SuperRight])
         } else {
-            self.modifiers.control_key() || held([KeyCode::ControlLeft, KeyCode::ControlRight])
+            self.touch_effective_modifiers().control_key()
+                || held([KeyCode::ControlLeft, KeyCode::ControlRight])
         }
     }
     /// Whether the held keys let a key's text through to the focused field

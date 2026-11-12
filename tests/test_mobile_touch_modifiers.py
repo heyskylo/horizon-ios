@@ -20,11 +20,12 @@ class TouchModifierTests(unittest.TestCase):
 #![allow(dead_code)]
 #[path="SOURCE"]mod touch;
 use touch::Control;
+#[derive(PartialEq)]enum KeyCode{ShiftLeft,ShiftRight}
 #[derive(Default)]struct Modifiers(bool);impl Modifiers{fn shift_key(&self)->bool{self.0}}
 struct ClickContext{touch_shift:bool}
-#[derive(Default)]struct Input{fingers:touch::Touches,cursor_keys:Vec<Control>,cursor_delivery:Option<ClickContext>}
+#[derive(Default)]struct Input{fingers:touch::Touches,cursor_keys:Vec<Control>,native_keys:Vec<KeyCode>,cursor_delivery:Option<ClickContext>}
 #[derive(Default)]struct Game{touch:Input,modifiers:Modifiers}
-impl Game{METHODS}
+impl Game{fn touch_effective_modifiers(&self)->&Modifiers{&self.modifiers}METHODS}
 fn main(){
  let mut game=Game::default();let layout=[(Control::Sneak,[0.,0.,40.,40.])];
  assert!(!game.has_shift_down());

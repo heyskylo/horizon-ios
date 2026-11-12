@@ -617,9 +617,12 @@ mod tests {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Physical {
     Key(u16, bool),
+    CustomKey(u16,bool),
+    CustomMouse(u8,bool),
     Mouse(u8, bool),
     Scroll(f64, f64),
     Keyboard,
+    ToggleControls,
     Cancel,
 }
 #[derive(Clone, Copy, Debug)]
@@ -634,6 +637,20 @@ impl Recognized {
         let slot = (0..9).contains(&self.slot);
         match self.kind {
             0 => vec![(0.0, Physical::Cancel)],
+            7 if self.phase == 1 || self.phase == 3 => {
+                let down = self.phase == 1;
+                match self.point.0 as i32 {
+                    key @ 1..=65535 => vec![(0.0, Physical::CustomKey(key as u16, down))],
+                    -3 => vec![(0.0, Physical::CustomMouse(0, down))],
+                    -4 => vec![(0.0, Physical::CustomMouse(1, down))],
+                    -6 => vec![(0.0, Physical::CustomMouse(2, down))],
+                    -7 if !down => vec![(0.0, Physical::Scroll(0.0, -1.0))],
+                    -8 if !down => vec![(0.0, Physical::Scroll(0.0, 1.0))],
+                    -1 if !down => vec![(0.0, Physical::Keyboard)],
+                    -2 if !down => vec![(0.0, Physical::ToggleControls)],
+                    _ => vec![],
+                }
+            }
             1 if self.phase == 3 => {
                 if slot {
                     let key = 49 + self.slot as u16;

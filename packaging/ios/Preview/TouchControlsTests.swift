@@ -34,6 +34,25 @@ final class TouchControlsTests: XCTestCase {
         _ = bridge.poll(screen: 72, flags: 8, width: 600, height: 300, scale: scale, capacity: 64)
         XCTAssertTrue(bridge.gestureRecognizer(tap, shouldReceive: PositionedTouch(CGPoint(x: 300, y: 150))))
     }
+    @MainActor func testMoreAndHideOnlyExcludeVisibleControlsFromGestures() {
+        var config = TouchConfiguration()
+        let size = CGSize(width:600,height:300)
+        config.move(.debug,to:CGPoint(x:300,y:150),in:size)
+        let bridge = TouchGestureBridge(configuration:{config})
+        let view = UIView(frame:CGRect(origin:.zero,size:size)); bridge.attach(to:view)
+        let tap = TouchSurfaceTap(), point = PositionedTouch(CGPoint(x:300,y:150))
+        let scale = Double(UIScreen.main.scale)
+        _ = bridge.poll(screen:1,flags:0,width:600,height:300,scale:scale,capacity:64)
+        XCTAssertTrue(bridge.gestureRecognizer(tap,shouldReceive:point))
+        _ = bridge.poll(screen:1,flags:32,width:600,height:300,scale:scale,capacity:64)
+        XCTAssertFalse(bridge.gestureRecognizer(tap,shouldReceive:point))
+        _ = bridge.poll(screen:1,flags:16|32,width:600,height:300,scale:scale,capacity:64)
+        XCTAssertTrue(bridge.gestureRecognizer(tap,shouldReceive:point))
+        let corner = PositionedTouch(CGPoint(x:590,y:25))
+        XCTAssertTrue(bridge.gestureRecognizer(tap,shouldReceive:corner))
+        _ = bridge.poll(screen:1,flags:64,width:600,height:300,scale:scale,capacity:64)
+        XCTAssertFalse(bridge.gestureRecognizer(tap,shouldReceive:corner))
+    }
     func testNewInstallAndResetUseDefaultButtonsVisibleInCaptures() {
         var config = TouchPreferences(defaults: defaults).configuration
         XCTAssertTrue(config.showControls)
@@ -206,6 +225,53 @@ final class TouchControlsTests: XCTestCase {
         let loaded=TouchPreferences(defaults:defaults).configuration
         XCTAssertFalse(loaded.mouseGestures);XCTAssertFalse(loaded.hotbarGestures)
         XCTAssertEqual(loaded.snapshot().1 & 24,24)
+    }
+
+    @MainActor func testCustomHoldToggleAndCancellationEdges() {
+        var definition=CustomTouchButton();definition.bindings=[-3,0,0,0]
+        var edges:[Bool]=[]
+        let held=CustomTouchView(definition){_,_,down,_ in edges.append(down)}
+        held.sendActions(for:.touchDown);held.sendActions(for:.touchUpOutside)
+        XCTAssertEqual(edges,[true,false]);edges=[]
+        definition.toggle=true
+        let toggle=CustomTouchView(definition){_,_,down,_ in edges.append(down)}
+        toggle.sendActions(for:.touchDown);XCTAssertTrue(edges.isEmpty)
+        toggle.sendActions(for:.touchUpInside);XCTAssertEqual(edges,[true]);XCTAssertTrue(toggle.isSelected)
+        toggle.sendActions(for:.touchUpOutside);XCTAssertEqual(edges,[true])
+        toggle.sendActions(for:.touchCancel);XCTAssertEqual(edges,[true,false]);XCTAssertFalse(toggle.isSelected)
+    }
+    func testCustomControlsPersistBeyondSixAndKeepOrderedChords() throws {
+        var config = TouchConfiguration()
+        for index in 0..<40 {
+            var button=CustomTouchButton();button.name="Action \(index)";button.bindings=[341,86,0,0]
+            config.customButtons.append(button)
+        }
+        let model=TouchPreferences(defaults:defaults);model.save(config)
+        let restored=TouchPreferences(defaults:defaults).configuration
+        XCTAssertEqual(restored.customButtons.count,40)
+        XCTAssertEqual(Set(restored.customButtons.map(\.id)).count,40)
+        XCTAssertEqual(restored.customButtons[0].keys,[341,86])
+        XCTAssertFalse(restored.customButtons[0].toggle)
+        let old=try JSONDecoder().decode(TouchConfiguration.self,from:Data(#"{"centres":{}}"#.utf8))
+        XCTAssertTrue(old.customButtons.isEmpty)
+    }
+    func testCustomSharedHoldsReleaseOnlyTheirOwnInputs() {
+        let holds=CustomTouchHolds(), a=UUID(), b=UUID()
+        XCTAssertEqual(holds.set(a,keys:[341,86],down:true).map{$0.0},[341,86])
+        _ = holds.set(b,keys:[341,67],down:true)
+        let first=holds.set(a,keys:[341,86],down:false)
+        XCTAssertEqual(first.map{$0.0},[86]);XCTAssertTrue(first.allSatisfy{!$0.1})
+        XCTAssertTrue(holds.modifiers.contains(.control))
+        XCTAssertEqual(holds.set(b,keys:[341,67],down:false).map{$0.0},[341,67])
+        XCTAssertTrue(holds.modifiers.isEmpty)
+    }
+    func testCustomRectUsesTheSameNormalizedCanvasAfterRotation() {
+        var button=CustomTouchButton();button.centre=TouchCentre(x:0.5,y:0.5)
+        for size in [CGSize(width:600,height:300),CGSize(width:300,height:600)] {
+            let r=button.rect(in:size)
+            XCTAssertEqual(r.midX,size.width/2);XCTAssertEqual(r.midY,size.height/2)
+            XCTAssertEqual(r.width,45);XCTAssertEqual(r.height,36)
+        }
     }
 
 }

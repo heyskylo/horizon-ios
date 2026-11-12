@@ -166,10 +166,15 @@ impl Game<'_> {
         pressed: bool,
         repeat: bool,
     ) -> Result<()> {
+        let source = if self.touch_synthetic_input() {
+            Source::Touch
+        } else {
+            Source::Keyboard
+        };
         for mapped in self.settings.keys.translate_all(key) {
             match mapped {
                 Ok(k) => {
-                    self.mapped_key(k, pressed, repeat, key, Source::Keyboard)?;
+                    self.mapped_key(k, pressed, repeat, key, source)?;
                 }
                 Err(button) => {
                     let action = match (pressed, repeat) {
@@ -187,7 +192,7 @@ impl Game<'_> {
                     ) {
                         if self.shared_default_acts(button, horizon_client::keybinds::key_name(key))
                         {
-                            self.mouse_mapping(button, pressed, Source::Keyboard)?;
+                            self.mouse_mapping(button, pressed, source)?;
                         }
                     } else if container_key_clones(button, action) {
                         self.inventory_pick_key();

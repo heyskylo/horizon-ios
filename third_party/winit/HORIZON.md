@@ -10,7 +10,7 @@ The upstream Apache-2.0 license and copyright notices are retained in LICENSE.
 
 The patch is confined to Cargo.toml (UIKit binding features), src/lib.rs (host mapping tests),
 and src/platform_impl/ios/{mod,view,view_controller,window,event_loop,scene,hardware_keyboard,hardware_mouse}.rs.
-All other files are the unmodified published crate. Root Cargo.toml patches crates.io so local
+`src/event.rs` also provides the iOS-only virtual-key constructor described below. All other files are the unmodified published crate. Root Cargo.toml patches crates.io so local
 and CI builds use the same input backend; Cargo.lock removes only winit's registry source/checksum.
 
 UIKit UIKey physical HID usages produce ordinary winit keyboard events, with layout text,
@@ -54,3 +54,7 @@ bounds multiplied by its content scale. Safe-area insets must not shrink the Met
 which fills that view: doing so stretches the image and shifts rendered button locations away
 from their input regions after renderer recreation. Touches and indirect-pointer clicks use
 view-local coordinates, matching hover events, including across orientation changes.
+
+## Custom touch key transport
+
+`KeyEvent::from_virtual_key` creates an iOS-only physical key press/release without invented text or repeat events. Custom touch bindings use it to reach the same menu/edit-box handlers as physical keys. Horizon marks this dispatch as touch input so it neither claims hardware ownership nor adds virtual keys to the physical keyboard ledger.

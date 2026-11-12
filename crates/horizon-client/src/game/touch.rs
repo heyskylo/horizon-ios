@@ -65,7 +65,11 @@ pub(super) struct TouchInput {
     #[cfg(target_os = "ios")]
     native_keys: Vec<KeyCode>,
     #[cfg(target_os = "ios")]
-    native_mouse: [bool; 2],
+    native_mouse: [bool; 3],
+    #[cfg(target_os = "ios")]
+    custom_keys: Vec<KeyCode>,
+    #[cfg(target_os = "ios")]
+    custom_mouse: [bool; 3],
     #[cfg(target_os = "ios")]
     native_screen: Option<u64>,
     clock: Option<Instant>,
@@ -441,6 +445,26 @@ impl Game<'_> {
         }
     }
 
+    pub(super) fn touch_effective_modifiers(&self) -> winit::keyboard::ModifiersState {
+        #[cfg(target_os = "ios")]
+        {
+            if let Some(context) = &self.touch.cursor_delivery {
+                return context.modifiers;
+            }
+            let mut modifiers =
+                self.modifiers | gesture_modifiers(horizon_ios_launcher::touch_modifiers());
+            if self.touch.fingers.held(Control::Sprint)
+                || self.touch.cursor_keys.contains(&Control::Sprint)
+            {
+                modifiers.insert(winit::keyboard::ModifiersState::CONTROL);
+            }
+            modifiers
+        }
+        #[cfg(not(target_os = "ios"))]
+        {
+            self.modifiers
+        }
+    }
     pub(super) fn touch_shift_held(&self) -> bool {
         #[cfg(target_os = "ios")]
         {
@@ -497,7 +521,44 @@ impl Game<'_> {
     }
 
     #[cfg(target_os = "ios")]
+    fn touch_key_held(&self, key: KeyCode) -> bool {
+        (self.touch.native_keys.contains(&key) || self.touch.custom_keys.contains(&key))
+            || [
+                Control::Forward,
+                Control::Back,
+                Control::Left,
+                Control::Right,
+                Control::Jump,
+                Control::Sneak,
+                Control::Sprint,
+                Control::Perspective,
+                Control::Chat,
+                Control::Pause,
+                Control::Inventory,
+                Control::Debug,
+                Control::PlayerList,
+            ]
+            .into_iter()
+            .any(|c| {
+                key_of(c) == Some(key)
+                    && (self.touch.fingers.held(c) || self.touch.cursor_keys.contains(&c))
+            })
+    }
+    #[cfg(target_os = "ios")]
     fn touch_raw_key(&mut self, key: KeyCode, pressed: bool) -> Result<()> {
+        if !pressed && self.touch_key_held(key) {
+            return Ok(());
+        }
+        // Virtual keys must pass the same debug-key state machine as hardware:
+        // F3 toggles its overlay on release, before ordinary key mappings.
+        let action = if pressed {
+            horizon_client::debug_keys::KeyAction::Press
+        } else {
+            horizon_client::debug_keys::KeyAction::Release
+        };
+        if self.debug_key(key, action) {
+            return Ok(());
+        }
         for mapped in self.settings.keys.translate_all(key) {
             match mapped {
                 Ok(mapped) => self.mapped_key(mapped, pressed, false, key, Source::Touch)?,
@@ -551,31 +612,6 @@ impl Game<'_> {
                         self.mapped_key(key, false, false, key, Source::Touch)?;
                     }
                 }
-                Out::Press(control @ (Control::Sprint | Control::Sneak)) => {
-                    let key = if control == Control::Sneak {
-                        KeyCode::ShiftLeft
-                    } else {
-                        KeyCode::ControlLeft
-                    };
-                    let option = if control == Control::Sneak {
-                        self.settings.toggle_crouch
-                    } else {
-                        self.settings.toggle_sprint
-                    };
-                    if option {
-                        self.mapped_key(key, true, false, key, Source::Touch)?;
-                        self.mapped_key(key, false, false, key, Source::Touch)?;
-                        continue;
-                    }
-                    let down = !self.touch.toggle_keys.contains(&key);
-                    if down {
-                        self.touch.toggle_keys.push(key);
-                    } else {
-                        self.touch.toggle_keys.retain(|k| *k != key);
-                    }
-                    self.mapped_key(key, down, false, key, Source::Touch)?;
-                }
-                Out::Release(Control::Sprint | Control::Sneak) => {}
                 #[cfg(target_os = "ios")]
                 Out::Press(Control::Hotbar(_))
                     if horizon_ios_launcher::native_gestures_available() => {}
@@ -1021,14 +1057,17 @@ impl Game<'_> {
                 .cursor
                 .position
                 .unwrap_or((batch.width / 2.0, batch.height / 2.0));
-            for y in 0..if self.touch_menu_cursor_mode() { 9 } else { 0 } {
-                batch.fill(
+            if self.touch_menu_cursor_mode() {
+                use horizon_client::pad_cursor;
+                let (left, top) = pad_cursor::origin(at);
+                batch.sprite_scaled(
                     &self.gui.atlas,
-                    at.0,
-                    at.1 + y as f32,
-                    (y as f32 * 0.55 + 1.0).ceil(),
-                    1.0,
-                    rgba(255, 255, 255, 255),
+                    pad_cursor::SPRITE,
+                    left,
+                    top,
+                    pad_cursor::DRAWN,
+                    pad_cursor::DRAWN,
+                    u32::MAX,
                 );
             }
         }
@@ -1186,6 +1225,18 @@ fn shadowed(r: touch::Rect, mut mark: impl FnMut(touch::Rect, u32)) {
 }
 #[cfg(target_os = "ios")]
 impl Game<'_> {
+    fn touch_render_point(&self, at: (f32, f32)) -> (f32, f32) {
+        let at = self.screen_point(at);
+        let Some(batch) = self.screen_batch() else {
+            return at;
+        };
+        // Match CursorMoved's physical-pixel round trip exactly. Comparing an
+        // unrounded point with the rendered cursor can stall a press forever.
+        (
+            (at.0 * batch.scale) / batch.scale,
+            (at.1 * batch.scale) / batch.scale,
+        )
+    }
     fn touch_click_context(&self) -> Option<ClickContext> {
         let batch = self.touch_batch()?;
         let at = self
@@ -1193,13 +1244,13 @@ impl Game<'_> {
             .cursor
             .position
             .unwrap_or((batch.width / 2.0, batch.height / 2.0));
-        let screen_at = self.screen_point(at);
+        let screen_at = self.touch_render_point(at);
         Some(ClickContext {
             at,
             screen_at,
             size: (batch.width, batch.height),
             screen: self.key_screen(),
-            modifiers: self.modifiers,
+            modifiers: self.touch_effective_modifiers(),
             touch_shift: self.touch.fingers.held(Control::Sneak)
                 || self.touch.cursor_keys.contains(&Control::Sneak),
             guard: horizon_client::widgets::capture_pointer(screen_at),
@@ -1356,7 +1407,40 @@ impl Game<'_> {
         }
         self.touch_record_click_context();
     }
-    fn touch_queue_cursor_button(&mut self, button: MouseButton, down: bool) {
+    fn touch_menu_mouse_held(&self, button: MouseButton) -> bool {
+        let (index, control) = match button {
+            MouseButton::Left => (0, Control::LeftClick),
+            MouseButton::Right => (1, Control::RightClick),
+            MouseButton::Middle => (2, Control::MiddleClick),
+            _ => return false,
+        };
+        (index < 2 && self.touch.cursor.held(index == 1))
+            || self.touch.cursor_keys.contains(&control)
+            || self.touch.native_mouse[index]
+            || self.touch.custom_mouse[index]
+    }
+    fn touch_queue_cursor_button(&mut self, button: MouseButton, _down: bool) {
+        let down = self.touch_menu_mouse_held(button);
+        let index = match button {
+            MouseButton::Left => 0,
+            MouseButton::Right => 1,
+            MouseButton::Middle => 2,
+            _ => return,
+        };
+        let previous = self
+            .touch
+            .cursor_pending
+            .iter()
+            .rev()
+            .find_map(|edge| {
+                edge.button
+                    .filter(|(b, _)| *b == button)
+                    .map(|(_, down)| down)
+            })
+            .unwrap_or(self.touch.cursor_down[index]);
+        if previous == down {
+            return;
+        }
         let Some(context) = self
             .touch
             .cursor_delivery
@@ -1396,6 +1480,7 @@ impl Game<'_> {
         if let Some(touch::desktop::Action::Move(x, y)) = self.touch.cursor.tick(now) {
             self.touch_cursor_motion(event_loop, (x, y));
         }
+        let had_pending=!self.touch.cursor_pending.is_empty();
         while let Some(edge) = self.touch.cursor_pending.first() {
             if edge.due > self.frames {
                 break;
@@ -1460,7 +1545,7 @@ impl Game<'_> {
                 break;
             }
         }
-        if self.touch.cursor_pending.is_empty()
+        if had_pending && self.touch.cursor_pending.is_empty()
             && !self.hardware_hides_touch()
             && let Some(at) = self.touch.cursor.position
         {
@@ -1482,20 +1567,65 @@ fn gesture_modifiers(bits: u32) -> winit::keyboard::ModifiersState {
 
 #[cfg(target_os = "ios")]
 fn gesture_key(code: u16) -> Option<KeyCode> {
-    Some(match code {
-        49 => KeyCode::Digit1,
-        50 => KeyCode::Digit2,
-        51 => KeyCode::Digit3,
-        52 => KeyCode::Digit4,
-        53 => KeyCode::Digit5,
-        54 => KeyCode::Digit6,
-        55 => KeyCode::Digit7,
-        56 => KeyCode::Digit8,
-        57 => KeyCode::Digit9,
-        70 => KeyCode::KeyF,
-        81 => KeyCode::KeyQ,
-        _ => return None,
-    })
+    let name = match code {
+        65..=90 => format!("key.keyboard.{}", char::from_u32(u32::from(code) + 32)?),
+        48..=57 => format!("key.keyboard.{}", char::from_u32(u32::from(code))?),
+        290..=314 => format!("key.keyboard.f{}", code - 289),
+        320..=329 => format!("key.keyboard.keypad.{}", code - 320),
+        _ => format!(
+            "key.keyboard.{}",
+            match code {
+                39 => "apostrophe",
+                44 => "comma",
+                45 => "minus",
+                46 => "period",
+                47 => "slash",
+                59 => "semicolon",
+                61 => "equal",
+                91 => "left.bracket",
+                92 => "backslash",
+                93 => "right.bracket",
+                96 => "grave.accent",
+                280 => "caps.lock",
+                281 => "scroll.lock",
+                282 => "num.lock",
+                283 => "print.screen",
+                284 => "pause",
+                330 => "keypad.period",
+                331 => "keypad.divide",
+                332 => "keypad.multiply",
+                333 => "keypad.subtract",
+                334 => "keypad.add",
+                335 => "keypad.enter",
+                336 => "keypad.equal",
+                32 => "space",
+                256 => "escape",
+                257 => "enter",
+                258 => "tab",
+                259 => "backspace",
+                260 => "insert",
+                261 => "delete",
+                262 => "right",
+                263 => "left",
+                264 => "down",
+                265 => "up",
+                266 => "page.up",
+                267 => "page.down",
+                268 => "home",
+                269 => "end",
+                340 => "left.shift",
+                341 => "left.control",
+                342 => "left.alt",
+                343 => "left.win",
+                344 => "right.shift",
+                345 => "right.control",
+                346 => "right.alt",
+                347 => "right.win",
+                _ => return None,
+            }
+        ),
+    };
+    horizon_client::keybinds::key_code(&name)
 }
 
 #[cfg(target_os = "ios")]
@@ -1504,11 +1634,14 @@ impl Game<'_> {
         for (index, raw, control) in [
             (0, MouseButton::Left, Control::LeftClick),
             (1, MouseButton::Right, Control::RightClick),
+            (2, MouseButton::Middle, Control::MiddleClick),
         ] {
             let held = self.touch.fingers.held(control)
-                || self.touch.cursor.held(index == 1)
+                || (index < 2 && self.touch.cursor.held(index == 1))
+                || self.touch.cursor_keys.contains(&control)
                 || self.touch.cursor_down[index]
-                || self.touch.native_mouse[index];
+                || self.touch.native_mouse.get(index).copied().unwrap_or(false)
+                || self.touch.custom_mouse[index];
             if held
                 && self
                     .settings
@@ -1530,6 +1663,9 @@ impl Game<'_> {
             Control::Chat,
             Control::Pause,
             Control::Inventory,
+            Control::Sprint,
+            Control::Debug,
+            Control::PlayerList,
         ] {
             if (self.touch.fingers.held(control) || self.touch.cursor_keys.contains(&control))
                 && let Some(raw) = key_of(control)
@@ -1538,12 +1674,16 @@ impl Game<'_> {
                 return true;
             }
         }
-        self.touch.native_keys.iter().any(|raw| {
-            self.settings
-                .keys
-                .translate_all(*raw)
-                .contains(&Err(button))
-        })
+        self.touch
+            .native_keys
+            .iter()
+            .chain(self.touch.custom_keys.iter())
+            .any(|raw| {
+                self.settings
+                    .keys
+                    .translate_all(*raw)
+                    .contains(&Err(button))
+            })
     }
     fn touch_native_handoff(&mut self) {
         self.touch_native_reset();
@@ -1554,17 +1694,50 @@ impl Game<'_> {
     fn touch_native_reset(&mut self) {
         self.touch.native_pending.clear();
         self.touch.native_screen = None;
-        for raw in std::mem::take(&mut self.touch.native_keys) {
+        let mut keys = std::mem::take(&mut self.touch.native_keys);
+        keys.extend(std::mem::take(&mut self.touch.custom_keys));
+        for raw in keys {
             let _ = self.touch_raw_key(raw, false);
         }
-        for (i, button) in [MouseButton::Left, MouseButton::Right]
+        for (i, button) in [MouseButton::Left, MouseButton::Right, MouseButton::Middle]
             .into_iter()
             .enumerate()
         {
-            if std::mem::take(&mut self.touch.native_mouse[i]) {
+            let native = std::mem::take(&mut self.touch.native_mouse[i]);
+            let custom = std::mem::take(&mut self.touch.custom_mouse[i]);
+            if native || custom {
                 let _ = self.touch_raw_button(button, false);
             }
         }
+    }
+    fn touch_custom_activity(&mut self) {
+        self.touch.seen = true;
+        self.touch.hardware.touch();
+        self.last_input = Instant::now();
+    }
+    fn touch_custom_keyboard(&mut self, event_loop: &dyn EventLoopCtl, key: KeyCode, down: bool) {
+        if down {
+            self.touch_custom_activity();
+        }
+        let Some(id) = self.window.as_ref().map(|window| window.id()) else {
+            return;
+        };
+        self.touch_window_event(
+            event_loop,
+            id,
+            WindowEvent::KeyboardInput {
+                device_id: DeviceId::dummy(),
+                is_synthetic: true,
+                event: winit::event::KeyEvent::from_virtual_key(
+                    key,
+                    if down {
+                        ElementState::Pressed
+                    } else {
+                        ElementState::Released
+                    },
+                ),
+            },
+        );
     }
     fn touch_native_input(
         &mut self,
@@ -1573,26 +1746,55 @@ impl Game<'_> {
     ) {
         use touch::desktop::Physical;
         match input {
-            Physical::Key(code, down) => {
+            Physical::Key(code, down) | Physical::CustomKey(code, down) => {
+                let custom = matches!(input, Physical::CustomKey(..));
                 if let Some(raw) = gesture_key(code) {
+                    let owners = if custom {
+                        &mut self.touch.custom_keys
+                    } else {
+                        &mut self.touch.native_keys
+                    };
+                    if !down && !owners.contains(&raw) {
+                        return;
+                    }
                     if down {
-                        if !self.touch.native_keys.contains(&raw) {
-                            self.touch.native_keys.push(raw);
+                        if !owners.contains(&raw) {
+                            owners.push(raw);
                         }
                     } else {
-                        self.touch.native_keys.retain(|key| *key != raw);
+                        owners.retain(|key| *key != raw);
+                    }
+                    if !down && self.touch_key_held(raw) {
+                        return;
+                    }
+                    if custom {
+                        self.touch_custom_keyboard(event_loop, raw, down);
+                        return;
                     }
                     if let Err(error) = self.touch_raw_key(raw, down) {
                         log::warn!("Horizon: touch key: {error}");
                     }
                 }
             }
-            Physical::Mouse(index, down) if index < 2 => {
-                self.touch.native_mouse[index as usize] = down;
-                let button = if index == 0 {
-                    MouseButton::Left
+            Physical::Mouse(index, down) | Physical::CustomMouse(index, down) if index < 3 => {
+                if matches!(input, Physical::CustomMouse(..)) {
+                    if down {
+                        self.touch_custom_activity();
+                    }
+                    self.touch.custom_mouse[index as usize] = down;
                 } else {
-                    MouseButton::Right
+                    self.touch.native_mouse[index as usize] = down;
+                }
+                if !down
+                    && (self.touch.custom_mouse[index as usize]
+                        || self.touch.native_mouse[index as usize])
+                {
+                    return;
+                }
+                let button = match index {
+                    0 => MouseButton::Left,
+                    1 => MouseButton::Right,
+                    _ => MouseButton::Middle,
                 };
                 if self.touch_playing() {
                     if down {
@@ -1608,6 +1810,10 @@ impl Game<'_> {
             }
             Physical::Scroll(x, y) => self.touch_scroll(event_loop, x as f32, y as f32),
             Physical::Keyboard => self.toggle_system_keyboard(),
+            Physical::ToggleControls => {
+                let scale = self.touch_batch().map_or(1.0, |b| b.scale);
+                let _ = self.touch_act(vec![Out::Press(Control::Hide)], scale);
+            }
             Physical::Cancel => self.touch_native_reset(),
             _ => {}
         }
@@ -1625,7 +1831,16 @@ impl Game<'_> {
         let no_world = self.player.is_none() || self.title.is_some();
         let flags = u32::from(self.touch_playing())
             | if blocked { 2 } else { 0 }
-            | if no_world { 8 } else { 0 };
+            | if no_world { 8 } else { 0 }
+            | if self.touch.hidden { 16 } else { 0 }
+            | if self.touch.more { 32 } else { 0 }
+            | if self.touch_close_shown() { 64 } else { 0 }
+            | if self.touch_shown() && self.field_focused() {
+                128
+            } else {
+                0
+            }
+            | if self.hardware_hides_touch() { 256 } else { 0 };
         self.touch_record_click_context();
         let events = horizon_ios_launcher::touch_gestures(
             screen,
@@ -1671,7 +1886,7 @@ impl Game<'_> {
                         context.at.1 =
                             (context.at.1 + event.point.1 as f32 - at.1).clamp(0.0, context.size.1);
                     }
-                    let screen_at = self.screen_point(context.at);
+                    let screen_at = self.touch_render_point(context.at);
                     if context.screen_at != screen_at {
                         context.screen_at = screen_at;
                         context.guard = horizon_client::widgets::capture_pointer(screen_at);

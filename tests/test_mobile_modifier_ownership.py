@@ -24,10 +24,7 @@ def program():
     ))
     methods = '\n'.join(method(game, name) for name in ('sync_toggle', 'heal_hold_latches', 'mapped_key', 'toggle_held_elsewhere', 'input_holds'))
     helpers = '\n'.join(method(game, name) for name in ('studio_replay_shortcut', 'studio_freecam_movement_key'))
-    touch = (ROOT / 'crates/horizon-client/src/game/touch.rs').read_text()
-    arm = touch.index('Out::Press(control @ (Control::Sprint | Control::Sneak)) => {')
-    sneak = block(touch, touch.index('{', arm))
-    methods += '\nfn touch_sneak(&mut self)->Result<()> { let control = Control::Sneak; for _ in 0..1 {' + sneak + '} Ok(()) }'
+    methods += '\nfn touch_sneak(&mut self, down:bool)->Result<()> { self.mapped_key(KeyCode::ShiftLeft,down,false,KeyCode::ShiftLeft,Source::Touch) }'
     actions = (ROOT / 'crates/horizon-client-input/src/actions.rs').read_text()
     codes = sorted(set(re.findall(r'KeyCode::(\w+)', actions + methods + helpers + STUBS + CASES)))
     stubs = STUBS.replace('enum KeyCode{KEY_CODES}', 'enum KeyCode{' + ','.join(codes) + '}')
@@ -102,11 +99,10 @@ fn main(){
  let mut g=Game::new();let key=KeyCode::ShiftLeft;
  g.mapped_key(key,true,false,key,Source::Touch).unwrap();g.mapped_key(key,true,true,key,Source::Touch).unwrap();g.mapped_key(key,false,false,key,Source::Touch).unwrap();
  assert!(!g.toggles.is_down(0));assert!(!g.keys.contains(&key));assert_eq!(g.dispatched,vec![key]);
- // The real touch-sneak dispatcher toggles this source's hold, rather
- // than mistaking an already-held physical Shift for a prior touch latch.
+ // A touch Shift hold and release preserve independent hardware ownership.
  let mut g=Game::new();g.mapped_key(key,true,false,key,Source::Keyboard).unwrap();
- g.touch_sneak().unwrap();assert!(g.keys.held_by(&key,Source::Touch));assert!(g.keys.held_by(&key,Source::Keyboard));
- g.touch_sneak().unwrap();assert!(!g.keys.held_by(&key,Source::Touch));assert!(g.toggles.is_down(0));
+ g.touch_sneak(true).unwrap();assert!(g.keys.held_by(&key,Source::Touch));assert!(g.keys.held_by(&key,Source::Keyboard));
+ g.touch_sneak(false).unwrap();assert!(!g.keys.held_by(&key,Source::Touch));assert!(g.toggles.is_down(0));
  g.mapped_key(key,false,false,key,Source::Keyboard).unwrap();assert!(!g.toggles.is_down(0));
  // Healing a stale physical hold while touch remains down removes only the
  // stale keyboard ownership. The subsequent touch release ends the action.

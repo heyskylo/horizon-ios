@@ -9782,10 +9782,7 @@ impl Game<'_> {
         // The dragon is drawn in every dimension, as any entity: a dragon
         // summoned outside the End (the server's AddEntity) is shown too.
         if !title {
-            let mut dragon = Vec::new();
-            self.dragon_geometry(camera, alpha, &mut dragon, &mut additive);
-            self.dragon_fireball_geometry(camera, alpha, &mut dragon);
-            entities.extend(dragon);
+            self.dragon_frame_geometry(camera, alpha, &mut entities, &mut additive);
         }
         pr.lap("pr_dragon_bolts");
         let (celestial, stars) = if title {
@@ -10181,7 +10178,7 @@ impl Game<'_> {
                 )
             )
         {
-            self.input_keyboard_used();
+            if !self.touch_synthetic_input() {self.input_keyboard_used();}
         }
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && event.state == ElementState::Pressed

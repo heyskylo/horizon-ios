@@ -655,6 +655,18 @@ pub struct KeyEvent {
     pub(crate) platform_specific: platform_impl::KeyEventExtra,
 }
 
+/// Construct raw virtual-control key edges on iOS, without a character event.
+/// This lets an embedded touch keyboard use the ordinary screen key handlers.
+#[cfg(target_os="ios")]
+impl KeyEvent {
+    pub fn from_virtual_key(key:crate::keyboard::KeyCode,state:ElementState)->Self {
+        Self{physical_key:crate::keyboard::PhysicalKey::Code(key),
+            logical_key:crate::keyboard::Key::Unidentified(crate::keyboard::NativeKey::Unidentified),
+            text:None,location:crate::keyboard::KeyLocation::Standard,state,repeat:false,
+            platform_specific:platform_impl::KeyEventExtra{},}
+    }
+}
+
 /// Describes keyboard modifiers event.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Modifiers {

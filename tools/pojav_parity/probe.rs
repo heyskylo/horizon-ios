@@ -57,11 +57,12 @@ fn main() {
             for (delay, input) in recognized.inputs(grabbed, c["mouse"].as_bool().unwrap()) {
                 use touch::desktop::Physical;
                 let input = match input {
-                    Physical::Key(key, down) => json!(["key", key, i32::from(down), 0]),
-                    Physical::Mouse(button, down) => json!(["button", button, i32::from(down), 0]),
+                    Physical::Key(key, down) | Physical::CustomKey(key,down) => json!(["key", key, i32::from(down), 0]),
+                    Physical::Mouse(button, down) | Physical::CustomMouse(button,down) => json!(["button", button, i32::from(down), 0]),
                     Physical::Scroll(x, y) => json!(["scroll", x, y]),
                     Physical::Keyboard => json!(["keyboard"]),
                     Physical::Cancel => json!(["cancel"]),
+                    Physical::ToggleControls => json!(["toggle-controls"]),
                 };
                 events.push(json!([delay, input]));
             }

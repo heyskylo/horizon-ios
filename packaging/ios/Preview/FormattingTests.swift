@@ -3,6 +3,32 @@ import UIKit
 @testable import LauncherPreview
 
 final class FormattingTests: XCTestCase {
+    func testDiagnosticsAreBoundedRedactedAndExportOnlyLogs() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer {try? FileManager.default.removeItem(at:root)}
+        let launcher = root.appendingPathComponent("launcher")
+        let game = root.appendingPathComponent("game")
+        try FileManager.default.createDirectory(at:game.appendingPathComponent("logs"),withIntermediateDirectories:true)
+        try Data("private-account-fixture".utf8).write(to:game.appendingPathComponent("accounts.json"))
+        for text in ["Authorization: Bearer confidential-value", "refresh_token:\nshort-value", "cookie=abc"] {
+            XCTAssertTrue(Diagnostics.redact(text).contains("redacted"))
+        }
+        XCTAssertTrue(Diagnostics.redact("shader: unexpected token in vertex stage").contains("unexpected token"))
+        for _ in 0..<90 {Diagnostics.record(String(repeating:"shader diagnostic ",count:1000),folder:launcher)}
+        for name in ["launcher.log","launcher-previous.log"] {
+            XCTAssertLessThanOrEqual(try Data(contentsOf:launcher.appendingPathComponent(name)).count,Diagnostics.limit)
+        }
+        try Data("shader Complementary: pipeline failed\naccess_token=confidential-value\n".utf8).write(to:game.appendingPathComponent("logs/latest.log"))
+        let result = try Diagnostics.export(folder:launcher,gameFolder:game)
+        let bytes = try Data(contentsOf:result)
+        XCTAssertLessThanOrEqual(bytes.count,4*Diagnostics.limit)
+        let text = String(decoding:bytes,as:UTF8.self)
+        XCTAssertTrue(text.contains("Complementary: pipeline failed"))
+        XCTAssertFalse(text.contains("confidential-value"))
+        XCTAssertFalse(text.contains("private-account-fixture"))
+        XCTAssertEqual(try Diagnostics.export(folder:launcher,gameFolder:game),result)
+    }
+
     func testColorsDecorationsAndReset() {
         let r = MinecraftFormatting.runs("§aGreen §lBold§oItalic§nUnder§mStrike§rPlain")
         XCTAssertEqual(r[0].style.color, 0x55FF55)

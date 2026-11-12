@@ -182,7 +182,12 @@ private final class NativeGestureFixtureController: UIViewController {
         target.text = "Hotbar"; target.textAlignment = .center; target.textColor = .yellow
         target.accessibilityIdentifier = "native-gesture-hotbar"
         view.addSubview(output); view.addSubview(target)
-        TouchPreferences.shared.save(TouchConfiguration())
+        var config=TouchConfiguration()
+        if ProcessInfo.processInfo.environment["PREVIEW_CUSTOM_CONTROLS"] == "1" {
+            var button=CustomTouchButton();button.name="Custom chord";button.bindings=[341,86,0,0]
+            config.customButtons=[button]
+        }
+        TouchPreferences.shared.save(config)
     }
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
@@ -208,7 +213,8 @@ private final class NativeGestureFixtureController: UIViewController {
         }
         for index in 0..<Int(count) {
             let offset = index * 6
-            events.append("\(Int(buffer[offset])):\(Int(buffer[offset + 1])):\(Int(buffer[offset + 4]))")
+            let base="\(Int(buffer[offset])):\(Int(buffer[offset + 1])):\(Int(buffer[offset + 4]))"
+            events.append(Int(buffer[offset]) == 7 ? base+":\(Int(buffer[offset+2]))" : base)
         }
         if !events.isEmpty {
             output.text = events.suffix(20).joined(separator: " ")

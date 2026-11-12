@@ -785,10 +785,18 @@ impl PackAtlas {
             scale[0], scale[1],
         );
         let mut body = body;
+        declarations.push_str(CORNER_FN);
+        if flat {
+            body.insert_str(0, PULL_FLAT);
+        } else {
+            // Attribute draws still need the quad corners for normals and UV centres.
+            body.insert_str(0, "    uint hz_av = uint(gl_VertexIndex) & ~3u;\n    uvec3 hz_cp0, hz_cp1, hz_cp2, hz_cp3;\n    uint hz_uv0, hz_uv1, hz_uv2, hz_uv3;\n    hz_arena_corner(hz_av, hz_cp0, hz_uv0);\n    hz_arena_corner(hz_av + 1u, hz_cp1, hz_uv1);\n    hz_arena_corner(hz_av + 2u, hz_cp2, hz_uv2);\n    hz_arena_corner(hz_av + 3u, hz_cp3, hz_uv3);\n");
+        }
         body.push_str(FACE);
         body.push_str(r#"    hz_mc_entity=vec4(-1.0,0.0,0.0,0.0); hz_mid_block=vec3(0.0); hz_emission=0.0;
     uint hz_meta=(uint(gl_VertexIndex)>>2u)*hz_quad_words;
-    uvec2 hz_source=uvec2(hz_quad_states[hz_meta],hz_quad_states[hz_meta+1u]);
+    uvec2 hz_source=uvec2(0xffffffffu,0u);
+    if(hz_meta+7u<uint(hz_quad_states.length())) hz_source=uvec2(hz_quad_states[hz_meta],hz_quad_states[hz_meta+1u]);
     if(hz_source.x!=0xffffffffu){
         vec3 hz_cell_origin=vec3(uvec3(hz_source.y&15u,(hz_source.y>>4u)&15u,(hz_source.y>>8u)&15u));
         hz_mid_block=(hz_cell_origin+vec3(0.5)-hz_v_pos)*64.0;
@@ -806,12 +814,7 @@ impl PackAtlas {
             else{hz_Color=vec4(hz_old_lighting?mix(hz_shaded_tint.rgb,hz_v_color.rgb,hz_ao_strength):mix(hz_tint.rgb,hz_no_dir.rgb,hz_ao_strength),1.0);}
         }
     }
-    vec2 hz_avg_uv=vec2(0.0);
-    for(uint hz_c=0u;hz_c<4u;++hz_c){
-        uint hz_uv_word=hz_vertices[hz_q+hz_c*6u+3u];
-        hz_avg_uv+=clamp(vec2(float(hz_uv_word&65535u),float(hz_uv_word>>16u))*(hz_origin.w > 0.0 ? uintBitsToFloat(floatBitsToUint(hz_origin.w) & 0xff800000u) : fract(abs(hz_origin.w))),0.0,1.0)*0.25;
-    }
-    hz_mid_uv=(hz_cell+hz_avg_uv)*hz_scale;
+    hz_mid_uv=(hz_cell+hz_mid)*hz_scale;
 "#);
         declarations.push_str(
             "vec2 hz_cell; vec2 hz_scale; vec2 hz_mid; float hz_uv_scale; vec4 hz_tangent;\n",

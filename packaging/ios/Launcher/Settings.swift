@@ -145,6 +145,7 @@ struct SettingsPage: View {
             SectionHeader(title: "About")
             SecondaryButton(title: "What's New", icon: "sparkles") { showingNews = true }
             About(version: link.version)
+            LogsSettings()
         }
         .sheet(isPresented: $showingNews) {
             ScrollView {

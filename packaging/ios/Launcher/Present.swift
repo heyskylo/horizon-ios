@@ -7,6 +7,7 @@ import UIKit
 /// being set up.
 @_cdecl("horizon_launcher_present")
 public func horizonLauncherPresent(_ submit: HorizonSubmit?) -> Bool {
+    Diagnostics.record("Launcher presented")
     Bridge.submit = submit
     Theme.registerFonts()
     DispatchQueue.main.async { present(attempts: 20) }
