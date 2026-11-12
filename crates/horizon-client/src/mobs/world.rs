@@ -375,6 +375,46 @@ impl MobWorld<'_> {
         });
         matches!(result, Ok(None))
     }
+    /// Level.clip with OUTLINE shapes and no fluids for a mob (`getShape`
+    /// with its random offset, `CollisionContext.of(mob)`): the block the
+    /// segment first hits, if it does.
+    pub fn outline_hit(&self, from: Vec3, to: Vec3) -> Option<[i32; 3]> {
+        use horizon_world::collision_context::EntityContextKind;
+        let mut cache = RaycastBlockCache::new();
+        let result = traverse_blocks(from, to, 512, |p: BlockPos| {
+            let state = cache.block(self.world, p.x, p.y, p.z);
+            if cache.section_uniform_air || self.facts.is_air(state) {
+                return None;
+            }
+            let f = self.facts.get(state);
+            let o = if f.outline_offset {
+                f.offset_at(p.x, p.z)
+            } else {
+                [0.0; 3]
+            };
+            let o = Vec3::new(o[0], o[1], o[2]);
+            let declared = self
+                .collision
+                .cached_shapes()
+                .context_outline_shape(state, EntityContextKind::Living);
+            let hit = match declared {
+                Some(shape) => {
+                    VoxelShape::clip_boxes(shape.boxes().iter().map(|b| b.move_by(o)), from, to, p)
+                }
+                None => VoxelShape::clip_boxes(
+                    f.outline.iter().map(|b| {
+                        Aabb::new(Vec3::new(b[0], b[1], b[2]), Vec3::new(b[3], b[4], b[5]))
+                            .move_by(o)
+                    }),
+                    from,
+                    to,
+                    p,
+                ),
+            };
+            hit.map(|_| [p.x, p.y, p.z])
+        });
+        result.ok().flatten()
+    }
     /// Level.clip with VISUAL shapes and no fluids: true on a miss.
     pub fn visual_clear_between(&self, from: Vec3, to: Vec3) -> bool {
         self.visual_clip(from, to) == Some(None)
@@ -604,13 +644,14 @@ impl MobWorld<'_> {
         }
     }
     pub fn seen(&self, id: u32) -> Option<&Seen> {
-        match self.others_index {
+        let own = match self.others_index {
             Some(index) => index
                 .get(&id)
                 .and_then(|&i| self.others.get(i as usize))
                 .filter(|s| s.id == id),
             None => self.others.iter().find(|s| s.id == id),
-        }
+        };
+        own.or_else(|| self.foreign?.seen(id))
     }
     /// Living mobs of the given species within `range` of `from`, nearest first.
     pub fn nearby<'s>(
@@ -773,6 +814,7 @@ pub(crate) fn with_resource_test_world(
         dragon: None,
         leash_boats: &[],
         who_lookup: None,
+        foreign: None,
         others_grid: None,
         others_index: None,
         others_villagers: None,

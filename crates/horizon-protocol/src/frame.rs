@@ -55,11 +55,11 @@ thread_local! {
     static DEFLATER: RefCell<Option<Compress>> = const { RefCell::new(None) };
 }
 
-/// `body` as one zlib stream at the default level, appended to `out`: the
+/// `body` as one zlib stream at level 2, appended to `out`: the
 /// bytes a new `ZlibEncoder` writes for it, from a reset compressor.
 fn deflate_into(body: &[u8], out: &mut Vec<u8>) -> Result<()> {
     DEFLATER.with_borrow_mut(|deflater| {
-        let z = deflater.get_or_insert_with(|| Compress::new(Compression::default(), true));
+        let z = deflater.get_or_insert_with(|| Compress::new(Compression::new(2), true));
         z.reset();
         let start = z.total_in();
         // ZlibEncoder's calls: the whole input without a flush, then finish.
@@ -123,12 +123,32 @@ impl Inflater {
     /// The zlib stream at the front of `input`, which must hold exactly `size` bytes.
     fn inflate(&mut self, input: &[u8], size: usize) -> Result<Vec<u8>> {
         self.0.reset(true);
-        // One byte more than declared: a longer stream fills it.
-        let mut out = Vec::with_capacity(size + 1);
-        let status = self
-            .0
-            .decompress_vec(input, &mut out, FlushDecompress::Finish)
-            .map_err(|e| Error::new(format!("Badly compressed packet - {e}")))?;
+        // One byte more than declared: a longer stream fills it. Reserved as the output grows, not
+        // all at once: a few bytes declaring 8 MiB would otherwise allocate 8 MiB per frame.
+        // DEFLATE expands at most about 1032:1.
+        let limit = size + 1;
+        let mut out =
+            Vec::with_capacity(limit.min(input.len().saturating_mul(1032).saturating_add(64)));
+        let status = loop {
+            let consumed = usize::try_from(self.0.total_in()).unwrap_or(input.len());
+            let status = self
+                .0
+                .decompress_vec(
+                    input.get(consumed..).unwrap_or_default(),
+                    &mut out,
+                    FlushDecompress::Finish,
+                )
+                .map_err(|e| Error::new(format!("Badly compressed packet - {e}")))?;
+            // Done, past the limit, or stopped with room left (the input ran out).
+            if matches!(status, Status::StreamEnd)
+                || out.len() >= limit
+                || out.len() < out.capacity()
+            {
+                break status;
+            }
+            let more = out.len().max(4096).min(limit - out.len());
+            out.reserve_exact(more);
+        };
         if out.len() != size || !matches!(status, Status::StreamEnd) {
             return Err(Error::new(format!(
                 "Badly compressed packet - actual length {} does not match declared size {size}",
@@ -181,7 +201,7 @@ mod tests {
     fn fresh_contents(body: &[u8]) -> Vec<u8> {
         let mut v = Vec::new();
         write_varint(&mut v, body.len() as i32);
-        let mut z = ZlibEncoder::new(v, Compression::default());
+        let mut z = ZlibEncoder::new(v, Compression::new(2));
         z.write_all(body).unwrap();
         z.finish().unwrap()
     }
@@ -226,6 +246,28 @@ mod tests {
             }
             bodies.reverse();
         }
+    }
+
+    #[test]
+    fn large_bodies_inflate_whole_and_short_streams_are_refused() {
+        // 2 MiB of zeros deflate to a few KiB: inflated whole as the buffer grows.
+        let body = vec![0u8; 2 << 20];
+        let frame = contents(&body, Some(256)).unwrap();
+        let mut inflater = Inflater::default();
+        let Body::Inflated(out) = super::body(&frame, Some(256), &mut inflater).unwrap() else {
+            panic!("compressed");
+        };
+        assert!(out == body);
+        // A few bytes declaring 8 MiB: refused (and no longer 8 MiB reserved for them).
+        let mut lying = Vec::new();
+        write_varint(&mut lying, MAX_UNCOMPRESSED as i32);
+        lying.extend_from_slice(&frame[3..20]);
+        assert!(super::body(&lying, Some(256), &mut inflater).is_err());
+        // The same inflater still reads a good frame after.
+        assert!(matches!(
+            super::body(&frame, Some(256), &mut inflater).unwrap(),
+            Body::Inflated(_)
+        ));
     }
 
     /// Split one complete frame off the front of `buffer`, if available.

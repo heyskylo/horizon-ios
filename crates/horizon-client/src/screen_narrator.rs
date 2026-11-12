@@ -504,6 +504,11 @@ fn run(open: &mut Open, ctx: &Ctx<'_>, only_changed: bool, trigger: Trigger) -> 
 }
 
 impl ScreenNarrator {
+    /// `Minecraft.getLastInputType`: widgets also use it for focused tooltips.
+    pub fn input_type(&self) -> InputType {
+        self.input
+    }
+
     fn now(&self) -> i64 {
         self.clock
             .unwrap_or_else(|| self.epoch.elapsed().as_millis() as i64)

@@ -126,3 +126,59 @@ fn a_transfer_of_all_fills_as_many_sets_as_the_items_allow() {
         assert_eq!(station.sources, vec![vec![stack("oak_planks", 2)]]);
     });
 }
+
+/// A quick-moved crafting result counts only the items that moved, not the
+/// whole result stack (`ResultSlot.onQuickCraft`).
+#[test]
+fn quick_move_crafting_records_only_items_moved() {
+    for kind in [Kind::Crafting, Kind::Inventory] {
+        with_menu(kind, |env, menu| {
+            menu.creative = false;
+            menu.set_slot(env, 1, stack("oak_log", 1));
+            let start = if kind == Kind::Crafting { 10 } else { 9 };
+            let end = if kind == Kind::Crafting { 46 } else { 45 };
+            for slot in start..end {
+                menu.set_slot(env, slot, stack("stone", 64));
+            }
+            menu.set_slot(env, end - 1, stack("oak_planks", 62));
+            menu.settle(env);
+            menu.click(env, 0, 0, crate::menu::Input::QuickMove)
+                .unwrap();
+            assert_eq!(menu.slot(end - 1).unwrap().count, 64);
+            assert_eq!(menu.item_crafted[0].1.count, 2);
+        });
+    }
+}
+
+/// A viewer's transfer takes a worn tool, as crafting by hand does (JEI's
+/// "+"), while the recipe book's placement keeps vanilla's
+/// `isUsableForCrafting` and leaves it.
+#[test]
+fn a_transfer_takes_a_worn_tool() {
+    let worn = || {
+        let mut rod = stack("fishing_rod", 1).unwrap();
+        rod.damage = 40;
+        Some(rod)
+    };
+    with_menu(Kind::Inventory, |env, menu| {
+        menu.set_player_item(0, worn());
+        menu.set_player_item(1, stack("carrot", 1));
+        assert_eq!(
+            menu.transfer_recipe(env, "minecraft:carrot_on_a_stick", false),
+            Ok(())
+        );
+        let filled: Vec<_> = (1..5).filter_map(|s| menu.slot(s).cloned()).collect();
+        assert!(
+            filled
+                .iter()
+                .any(|s| &*s.item == "minecraft:fishing_rod" && s.damage == 40)
+        );
+        assert_eq!(menu.player_item(0), None);
+    });
+    with_menu(Kind::Inventory, |env, menu| {
+        menu.set_player_item(0, worn());
+        menu.set_player_item(1, stack("carrot", 1));
+        let _ = menu.place_recipe(env, "minecraft:carrot_on_a_stick", false, false, None);
+        assert!(menu.player_item(0).is_some_and(|s| s.damage == 40));
+    });
+}
