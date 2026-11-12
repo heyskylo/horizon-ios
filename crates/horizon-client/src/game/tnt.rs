@@ -503,6 +503,8 @@ impl Game<'_> {
                 },
                 |id| self.mob_display_name(id),
             );
+            self.combat.blast_owner_player =
+                owner == Some(Who::Player) && self.combat.blast_owner.is_some();
             let result = self.with_hive_emptying_blast(|g| {
                 g.server_explode_from(
                     center,
@@ -515,6 +517,7 @@ impl Game<'_> {
                 )
             });
             self.combat.blast_owner = None;
+            self.combat.blast_owner_player = false;
             self.combat.blast_guest = None;
             self.combat.explosion_in_water = false;
             result?;
@@ -1776,7 +1779,7 @@ mod tests {
             for seed in [0, 1, -1, 42, i64::MIN, i64::MAX] {
                 let mut audible = None;
                 for silent in [false, true] {
-                    game.world.random = horizon_core::random::LegacyRandom::new(seed);
+                    game.world.random.set_seed(seed);
                     game.orbs.clear();
                     let mut projectile = Projectile::new(
                         ProjectileKind::ExperienceBottle,

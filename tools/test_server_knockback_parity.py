@@ -65,7 +65,6 @@ PROPERTIES = {
 }
 # Cases Horizon still gets wrong, and why.
 KNOWN = {
-    'pvp-mace': "a smash on a player runs none of MaceItem.hurtEnemy (the attacker's fall goes on)",
 }
 
 A = (0.5, -60.0, 0.5)  # Alice, facing east (yaw -90)

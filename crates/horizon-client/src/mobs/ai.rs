@@ -2,8 +2,8 @@
 //! `LivingEntity.baseTick/tick/aiStep`, `Mob.serverAiStep`) and the
 //! dispatch to each species family's goals and special behaviour.
 pub(crate) use freezing::{can_freeze, in_powder_snow};
-mod freezing;
 mod feeding;
+mod freezing;
 
 pub use feeding::takes_food;
 
@@ -18,7 +18,6 @@ use super::{
     undead,
 };
 use crate::blocks::Fluid;
-use crate::breathing::{Breath, breathe, drown};
 use horizon_core::{
     geometry::{Aabb, ShapeOp, Vec3, VoxelShape},
     random::{LegacyRandom, RandomSource},
@@ -34,6 +33,7 @@ use glide::update_fall_flying;
 #[path = "wet_fire_tests.rs"]
 mod wet_fire_tests;
 
+mod air;
 mod step;
 pub(crate) use step::step_sound;
 
@@ -659,7 +659,7 @@ pub fn tick(
     m.previous_head_pitch = m.head_pitch;
     m.previous_swell = m.swell;
     m.anim.begin_tick();
-    m.age += 1;
+    super::camel::tick_age(m, w.game_time);
     m.ai.seen_cache.clear();
     if m.ai.last_hurt_by_player > 0 {
         m.ai.last_hurt_by_player -= 1;
@@ -1263,7 +1263,7 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
         }
     }
     // Entity.checkBelowWorld: LivingEntity.onBelowWorld hurts 4 a tick.
-    if m.position.y < f64::from(w.world.bottom_y() - 64) {
+    if m.position.y < w.world.below_world_y() {
         hurt(m, w, events, 4.0, Damage::of(DamageKind::OutOfWorld));
     }
     m.first_tick = false;
@@ -1306,54 +1306,8 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
         {
             hurt(m, w, events, 1.0, Damage::of(DamageKind::InWall));
         }
-        // Air supply and drowning (WaterAnimal.handleAirSupply for aquatic mobs).
-        // Nautilus.baseTick: NoAI skips only the custom handler; the
-        // superclass Breath/drown path must still process its air.
-        if m.species() == Species::Axolotl {
-            axolotl_air_supply(m, w);
-        } else if m.species() == Species::Nautilus {
-            nautilus_air_supply(m);
-        } else if m.kind.flags.needs_water {
-            if !m.fluids.in_water {
-                m.air -= 1;
-                if m.air == -20 {
-                    m.air = 0;
-                    hurt(m, w, events, 2.0, Damage::of(DamageKind::Drown));
-                }
-            } else {
-                m.air = 300;
-            }
-        } else {
-            // LivingEntity.baseTick / MobEffectUtil: bubble columns and breathing
-            // effects protect submerged mobs. Nautilus alone holds air rather
-            // than refilling it; Water Breathing or Conduit Power still refill.
-            let submerged = (m.fluids.eye_in_water || m.eye_in_drowning_fluid())
-                && w.block_name(
-                    m.position.x.floor() as i32,
-                    m.eye_y().floor() as i32,
-                    m.position.z.floor() as i32,
-                ) != "minecraft:bubble_column";
-            let water_breathing = m.has_effect("minecraft:water_breathing")
-                || m.has_effect("minecraft:conduit_power");
-            let nautilus = m.has_effect("minecraft:breath_of_the_nautilus");
-            let drowns = submerged && !m.kind.flags.breathes_water && !water_breathing && !nautilus;
-            let held = submerged && nautilus && !water_breathing;
-            let vanilla = Breath {
-                can_breathe: !drowns,
-                consume: 1,
-                refill: if drowns || held { 0 } else { 4 },
-            };
-            let breath = breathe(m.id, &m.kind.id, vanilla);
-            if let Some(drowning) = drown(m.id, &m.kind.id, &mut m.air, breath, true) {
-                events.push(MobEvent::Drown {
-                    mob: m.id,
-                    at: [m.position.x, m.position.y, m.position.z],
-                });
-                if let Some(damage) = drowning.damage {
-                    hurt(m, w, events, damage, Damage::of(DamageKind::Drown));
-                }
-            }
-        }
+        air::tick_air(m, w, events);
+        freeze_tick(m, w, events);
     }
     if m.species() == Species::Illusioner {
         super::illusioner::tick(m, events);
@@ -2788,10 +2742,7 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
     amount += super::gear::melee_bonus(m, target_species);
     let burn = super::gear::fire_aspect(m);
     if burn > 0 {
-        cx.events.push(MobEvent::Ignite {
-            target: who,
-            seconds: burn,
-        });
+        cx.events.push(MobEvent::Ignite(who, burn));
     }
     // `Mob.doHurtTarget`: `causeExtraKnockback(target, getKnockback(...))`. `getKnockback` is the
     // `attack_knockback` attribute plus the Knockback enchantment, halved; the push goes along the
@@ -2809,13 +2760,6 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
             apply_blocking: None,
         });
         m.velocity = Vec3::new(m.velocity.x * 0.6, m.velocity.y, m.velocity.z * 0.6);
-    }
-    // Zombies set their target on fire while burning (Zombie.doHurtTarget).
-    if m.fire_ticks > 0 && matches!(m.species(), Species::Zombie) && m.random.next_float() < 0.3 {
-        cx.events.push(MobEvent::Ignite {
-            target: who,
-            seconds: 2,
-        });
     }
     // The effect picked above goes with the hit: it applies only when the
     // target takes damage (a shield-blocked hit gives none), for a mob as for
@@ -2886,6 +2830,16 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
         let at = [m.position.x, m.position.y, m.position.z];
         cx.events
             .push(MobEvent::Sound("entity.dolphin.attack", at, 1.0, 1.0));
+    }
+    // `Zombie.doHurtTarget` (every zombie): drawn here, lit if the blow hurt.
+    let difficulty = cx.w.difficulty.effective;
+    if m.is_on_fire()
+        && m.extra.main_hand.is_none()
+        && super::doors::is_zombie(m.species())
+        && m.random.next_float() < difficulty * 0.3
+    {
+        cx.events
+            .push(MobEvent::ZombieIgnite(who, 2 * difficulty as i32));
     }
     let _ = Fluid::None;
 }
@@ -3471,7 +3425,7 @@ mod poison_effect_tests {
             let mut pig = Mob::new(2, pig_kind.clone(), Vec3::new(0.0, 4.0, 0.0), 0.0);
             pig.extra.effects.push(("minecraft:poison", 25, 0));
             pig.extra.effects.push(("minecraft:infested", -1, 0));
-            pig.random = horizon_core::random::LegacyRandom::new(seed);
+            pig.random.set_seed(seed);
             tick_effects(&mut pig, None, &mut |_| {});
             pig.outbox
                 .iter()
@@ -4895,7 +4849,7 @@ mod burn_and_rose_tests {
         let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
         register(&mut m);
         m.no_ai = true;
-        m.random = LegacyRandom::new(3);
+        m.random = horizon_core::random::EntityRandom::own(LegacyRandom::new(3));
         m
     }
 
@@ -6219,7 +6173,7 @@ mod hurt_teleport_contact_tests {
         let kind = Arc::new(types.types["minecraft:enderman"].clone());
         let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
         register(&mut m);
-        m.random = LegacyRandom::new(seed);
+        m.random.set_seed(seed);
         m.on_ground = true;
         m.stuck_multiplier = Vec3::ZERO;
         m

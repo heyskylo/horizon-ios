@@ -806,11 +806,11 @@ pub fn max_health(m: &Mob) -> f32 {
 }
 /// `LivingEntity.onAttributeUpdated(MAX_HEALTH)` after a Health Boost
 /// change: the cached maximum follows the attribute model again, and Health
-/// above it is lowered (nothing is healed). Sulfur cubes and wolves write
-/// their maximum straight into the cache (`sulfur_cube::set_size`,
-/// `tame::set_tame`), outside the model, so they keep theirs.
+/// above it is lowered (nothing is healed). Wolves write their maximum
+/// straight into the cache (`tame::set_tame`), outside the model, so they
+/// keep theirs.
 pub fn health_boost_changed(m: &mut Mob) {
-    if matches!(m.species(), Species::SulfurCube | Species::Wolf) {
+    if m.species() == Species::Wolf {
         return;
     }
     refresh(m, Attr::MaxHealth);
@@ -2282,17 +2282,9 @@ pub fn panda_variant(main: u8, hidden: u8) -> u8 {
     if recessive && main != hidden { 0 } else { main }
 }
 /// `AbstractCubeMob.setSize(size, true)` for slimes and magma cubes.
-/// `SulfurCube.setSize(size, true)`, with the attribute bases it sets.
+/// `SulfurCube.setSize(size, true)`.
 fn sulfur_size(m: &mut Mob, size: i32) {
     super::sulfur_cube::set_size(m, size, true);
-    let size = m.extra.size;
-    set_base(m, Attr::MaxHealth, f64::from(4 * size));
-    set_base(
-        m,
-        Attr::MovementSpeed,
-        f64::from(0.2f32 + 0.1f32 * size as f32),
-    );
-    m.health = max_health(m);
 }
 fn cube_size(m: &mut Mob, size: i32) {
     super::cube::set_size(m, size);

@@ -263,6 +263,8 @@ pub struct Guest {
     pub chunk_queue: Vec<(i32, i32)>,
     /// The far ring's chunks still to send, past the view distance (`lan::far`), closest first.
     pub far_queue: Vec<(i32, i32)>,
+    /// Where the bounded far-ring scan resumes; reset when the view changes.
+    pub far_cursor: usize,
     /// PlayerChunkSender: batches sent but not yet acknowledged, how many
     /// may be (1 until the client's first acknowledgement, then 10), the
     /// rate the client asks for and the chunks the next batch may hold.
@@ -540,6 +542,7 @@ impl Guest {
             far_sent_chunks: Default::default(),
             chunk_queue: Vec::new(),
             far_queue: Vec::new(),
+            far_cursor: 0,
             unacknowledged: 0,
             max_unacknowledged: 1,
             chunks_per_tick: 9.0,
@@ -661,6 +664,16 @@ impl Guest {
             })),
             Err(e) => log::debug!("Horizon: attachment sync not sent: {e}"),
         }
+    }
+    /// [`Self::send`] of a `ChunksBiomes` whose body is `packet.encode()`, the same
+    /// bytes for each guest with those columns. `note_change` ignores that packet.
+    pub fn send_chunks_biomes_body(&self, body: Vec<u8>) {
+        if self.fake
+            && !super::conn::fake_wants_id(horizon_protocol::ids::play::clientbound::CHUNKS_BIOMES)
+        {
+            return;
+        }
+        self.sender.send(body);
     }
     /// What `packet` changes about how the client moves, for the prediction's replay: kept until
     /// the tick's ping places it (`Hub::anticheat_ping`).
@@ -891,6 +904,22 @@ impl Guest {
     pub fn inventory_told(&mut self) {
         for slot in 9..45 {
             self.menu_sent[slot] = self.menu_slot(slot);
+        }
+    }
+    /// `ServerPlayer.drop(boolean)`: `setRemoteSlot` on the selected hotbar
+    /// slot of the open menu (the inventory menu without one) records what the
+    /// dropping client already predicted, so the next broadcast sends the slot
+    /// again once it changes back (a pickup refilling the stack).
+    pub fn told_selected(&mut self) {
+        let slot = 36 + self.selected;
+        self.menu_sent[slot] = self.menu_slot(slot);
+        let told = self.inventory.get(self.selected).cloned().flatten();
+        if let Some(m) = self.menu.as_mut() {
+            let at = m.size + 27 + self.selected;
+            if m.sent.len() <= at {
+                m.sent.resize(at + 1, None);
+            }
+            m.sent[at] = told;
         }
     }
     pub fn set_menu_slot(&mut self, slot: usize, item: Option<ItemStack>) {
@@ -2289,5 +2318,39 @@ mod tests {
                 &format!("scale {scale}"),
             );
         }
+    }
+
+    #[test]
+    fn told_selected_records_the_predicted_drop() {
+        use crate::lan::PlayerSender;
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicI32;
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut guest = Guest::new(
+            Joined {
+                conn: 2,
+                uuid: 2,
+                name: "Dropper".into(),
+                properties: Vec::new(),
+                info: horizon_protocol::packets::configuration::ClientInformation::new(2),
+                brand: "test".into(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
+            },
+            2,
+            [0.5, 64.0, 0.5],
+            0,
+        );
+        guest.selected = 3;
+        guest.inventory[3] = Some(ItemStack::new("minecraft:netherrack", 63));
+        guest.told_selected();
+        // Dropping one is already known to the client (63); the pickup that
+        // refills the slot must then differ from `menu_sent` and be sent.
+        assert_eq!(guest.menu_sent[39].as_ref().map(|s| s.count), Some(63));
+        guest.inventory[3].as_mut().unwrap().count = 64;
+        assert_ne!(guest.menu_sent[39], guest.menu_slot(39));
     }
 }

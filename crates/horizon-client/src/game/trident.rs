@@ -32,9 +32,14 @@ pub(super) struct ThrownTrident {
     pub(super) yaw: f32,
     pub(super) pitch: f32,
     pub(super) in_ground: bool,
-    pub(super) in_ground_time: u32,
+    /// `AbstractArrow.inGroundTime`: the ticks it has been stuck, from 0 on
+    /// load; past 4, Loyalty calls the trident back.
+    pub(super) in_ground_time: i32,
+    /// `AbstractArrow.life`, the saved despawn count: kept apart from
+    /// `in_ground_time`, as loaded (negative too).
+    life: i32,
     /// `AbstractArrow.shakeTime`: seven ticks after sticking, no pickup.
-    shake: u32,
+    shake: i32,
     dealt_damage: bool,
     pub(super) loyalty: u32,
     pub(super) no_physics: bool,
@@ -112,7 +117,8 @@ impl ThrownTrident {
         self.stack = n.item;
         self.velocity = n.motion;
         self.in_ground = n.in_ground;
-        self.in_ground_time = n.life.max(0) as u32;
+        self.life = n.life;
+        self.in_ground_time = 0;
         self.shake = n.shake;
         self.dealt_damage = n.dealt_damage;
         self.pickup = n.pickup;
@@ -139,7 +145,7 @@ impl ThrownTrident {
                 yaw: self.yaw,
                 pitch: self.pitch,
                 in_ground: self.in_ground,
-                life: self.in_ground_time as i32,
+                life: self.life,
                 shake: self.shake,
                 dealt_damage: self.dealt_damage,
                 pickup: self.pickup,
@@ -182,6 +188,7 @@ impl ThrownTrident {
             pitch,
             in_ground: false,
             in_ground_time: 0,
+            life: 0,
             shake: 0,
             dealt_damage: false,
             loyalty: 0,
@@ -266,6 +273,7 @@ impl ThrownTrident {
         let z = f64::from(self.random.next_float() * 0.2);
         self.velocity = Vec3::new(v.x * x, v.y * y, v.z * z);
         // `this.life = 0`; and a LAN client hears of it.
+        self.life = 0;
         self.in_ground_time = 0;
         self.needs_sync = true;
     }
@@ -292,7 +300,7 @@ impl ThrownTrident {
     /// server decides what it hits.
     pub(super) fn remote_tick(&mut self, w: &impl ProjectileWorld, owner_eye: Option<Vec3>) {
         self.previous = self.position;
-        self.shake = self.shake.saturating_sub(1);
+        self.shake -= i32::from(self.shake > 0);
         if self.in_ground_time > 4 {
             self.dealt_damage = true;
         }
@@ -596,6 +604,7 @@ impl Game<'_> {
             pitch: projectile.pitch,
             in_ground: false,
             in_ground_time: 0,
+            life: 0,
             shake: 0,
             dealt_damage: false,
             no_physics: false,
@@ -829,7 +838,7 @@ impl Game<'_> {
             t.previous = t.position;
             t.age += 1;
             // AbstractArrow.tick: `if (shakeTime > 0) --shakeTime;`.
-            t.shake = t.shake.saturating_sub(1);
+            t.shake -= i32::from(t.shake > 0);
             if t.in_ground_time > 4 {
                 t.dealt_damage = true;
             }
@@ -896,14 +905,20 @@ impl Game<'_> {
             if t.in_ground {
                 // AbstractArrow.tick: `if (lastState != blockState && shouldFall())
                 // startFalling();` (`blockState` is the block at its position).
-                // Its `else tickDespawn()` has no counterpart here: no `life`.
+                // Its `else tickDespawn()` counts `life` (`ThrownTrident.tickDespawn`:
+                // not for a Loyalty trident that can be picked up); the discard
+                // at 1200 has no counterpart here.
+                let mut falls = false;
                 if !t.no_physics {
                     let rain = self.arrow_rain();
                     let scene = self.arrow_scene(&rain);
                     let state = scene.block(BlockPos::containing(t.position));
-                    if t.last_state != Some(state) && t.should_fall(&scene) {
-                        t.start_falling();
-                    }
+                    falls = t.last_state != Some(state) && t.should_fall(&scene);
+                }
+                if falls {
+                    t.start_falling();
+                } else if t.loyalty == 0 || t.pickup != Pickup::Allowed {
+                    t.life += 1;
                 }
                 t.in_ground_time += 1;
                 if !t.no_physics {
@@ -1069,12 +1084,16 @@ impl Game<'_> {
                         }
                         self.thrower_dealt_absorbed(t.guest);
                         // ThrownTrident.onHitEntity on a boat or minecart:
-                        // VehicleEntity.hurtServer takes the damage.
+                        // VehicleEntity.hurtServer takes the damage; an item
+                        // frame's ItemFrame.hurtServer.
                         let creative = t.guest.is_none() && self.creative;
                         if let Some(i) = self.boats.iter().position(|b| b.id == id) {
                             self.hurt_boat(i, damage, creative);
                         } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
                             self.hurt_cart(i, damage, creative, false);
+                        } else {
+                            // ItemFrame.hurtServer: the item comes out, or the frame breaks.
+                            self.projectile_hurts_frame(id, true, creative);
                         }
                         // ThrownTrident.onHitEntity on another player.
                         if let Some(conn) = self.trident_guest_conn(id) {
@@ -1212,7 +1231,7 @@ impl Game<'_> {
             // ThrownTrident.playerTouch: only its owner takes it, or anyone
             // once the owner is not in this level (`getOwner() == null`), and
             // not while `AbstractArrow.shakeTime` still runs.
-            if (t.in_ground || t.no_physics) && t.shake == 0 {
+            if (t.in_ground || t.no_physics) && t.shake <= 0 {
                 let near = |c: &&Catcher| {
                     c.touches
                         && (owner_who.is_none() || c.uuid == t.owner_uuid)
@@ -1439,6 +1458,38 @@ mod tests {
             let n = horizon_client::entity_nbt::trident_from_nbt(&tag).unwrap();
             assert_eq!(n.sound_event, "minecraft:item.trident.hit_ground");
         }
+    }
+
+    /// `AbstractArrow.readAdditionalSaveData` keeps a negative `life` as it
+    /// was saved (it only counts up while the trident is in a block) and reads
+    /// `shake` as `& 255`, so `-1b` is 255 ticks and saves as `-1b` again.
+    #[test]
+    fn a_trident_keeps_a_negative_life_and_shake_across_a_reload() {
+        use horizon_world::nbt::Tag;
+        let registry = stone_registry();
+        let tag = Tag::compound([
+            ("Pos", Tag::List(vec![Tag::Double(0); 3])),
+            ("life", Tag::Short(-1)),
+            ("shake", Tag::Byte(-1)),
+        ]);
+        let loaded = horizon_client::entity_nbt::trident_from_nbt(&tag).unwrap();
+        assert_eq!((loaded.life, loaded.shake), (-1, 255));
+        // `Entity.load` reads `Fire` with `getShortOr` as well: 40000 is -25536.
+        let burning = Tag::compound([
+            ("Pos", Tag::List(vec![Tag::Double(0); 3])),
+            ("Fire", Tag::Int(40000)),
+        ]);
+        let fire = horizon_client::entity_nbt::trident_from_nbt(&burning)
+            .unwrap()
+            .fire_ticks;
+        assert_eq!(fire, -25536);
+        let back = ThrownTrident::from_nbt(loaded, &tag, &registry);
+        // `inGroundTime` is not saved: Loyalty's count starts at 0 whatever
+        // `life` was, so a negative `life` does not hold the trident back.
+        assert_eq!((back.life, back.in_ground_time), (-1, 0));
+        let saved = back.to_nbt([1; 4], &registry, None);
+        assert_eq!(saved.get("life"), Some(&Tag::Short(-1)));
+        assert_eq!(saved.get("shake"), Some(&Tag::Byte(-1)));
     }
 
     /// `AbstractArrow` saves `lastState` as `inBlockState` and reads it back.
