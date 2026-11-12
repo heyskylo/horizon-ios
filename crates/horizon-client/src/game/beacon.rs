@@ -15,6 +15,7 @@ use horizon_client::{
     mesher::Vertex,
     mobs::render::{DYE, DYE_NAMES},
     test_instance_block::Status,
+    text::Text,
 };
 use horizon_protocol::packets::play::{self, Serverbound as S};
 
@@ -30,12 +31,15 @@ pub(super) const EFFECTS: [(&str, i32); 6] = [
     ("strength", 3),
     ("regeneration", 4),
 ];
-const PAYMENT: [&str; 5] = [
-    "minecraft:iron_ingot",
-    "minecraft:gold_ingot",
-    "minecraft:emerald",
-    "minecraft:diamond",
-    "minecraft:netherite_ingot",
+/// `BeaconScreen.extractBackground`'s payment row in drawing order, with each
+/// item's x: netherite, emerald, diamond, gold, iron. Not by value: the
+/// emerald is left of the diamond.
+const PAYMENT_ROW: [(&str, f32); 5] = [
+    ("minecraft:netherite_ingot", 20.0),
+    ("minecraft:emerald", 41.0),
+    ("minecraft:diamond", 63.0),
+    ("minecraft:gold_ingot", 86.0),
+    ("minecraft:iron_ingot", 108.0),
 ];
 /// `BeaconMenu.PaymentSlot` and the player inventory, relative to the 176 origin.
 pub(super) fn slot_position(i: usize) -> Option<(f32, f32)> {
@@ -72,6 +76,43 @@ fn upgrade_button() -> (f32, f32) {
 }
 fn inside(p: (f32, f32), x: f32, y: f32, w: f32, h: f32) -> bool {
     p.0 >= x && p.1 >= y && p.0 < x + w && p.1 < y + h
+}
+/// `BeaconPowerButton.setEffect`'s tooltip: the effect's description, and for
+/// `BeaconUpgradePowerButton` (`createEffectDescription`) " II" after it.
+fn effect_tooltip(e: usize, upgraded: bool) -> Text {
+    let effect = Text::translate(&format!("effect.minecraft.{}", EFFECTS[e].0), &[]);
+    if upgraded {
+        effect.append(" II")
+    } else {
+        effect
+    }
+}
+/// `BeaconScreen`: every button's tooltip whichever one the cursor is over
+/// (`BeaconPowerButton`'s its effect, `BeaconSpriteScreenButton`'s its label),
+/// hovered whether or not it is active.
+fn hovered_tooltip(
+    local: (f32, f32),
+    primary: Option<usize>,
+    buttons: &[(usize, f32, f32, bool)],
+) -> Option<Text> {
+    for &(e, x, y, _) in buttons {
+        if inside(local, x, y, 22.0, 22.0) {
+            return Some(effect_tooltip(e, false));
+        }
+    }
+    if let Some(p) = primary {
+        let (x, y) = upgrade_button();
+        if inside(local, x, y, 22.0, 22.0) {
+            return Some(effect_tooltip(p, true));
+        }
+    }
+    if inside(local, 164.0, 107.0, 22.0, 22.0) {
+        return Some(Text::translate("gui.done", &[]));
+    }
+    if inside(local, 190.0, 107.0, 22.0, 22.0) {
+        return Some(Text::translate("gui.cancel", &[]));
+    }
+    None
 }
 fn effect_id(name: &str) -> Option<&'static str> {
     let n = name.strip_prefix("minecraft:").unwrap_or(name);
@@ -502,12 +543,12 @@ impl Game<'_> {
                 false,
             );
         }
-        for (i, item) in PAYMENT.iter().rev().enumerate() {
-            let x = [20.0, 41.0, 63.0, 86.0, 108.0][i];
+        for (item, x) in PAYMENT_ROW {
             self.draw_item(batch, &ItemStack::new(item, 1), bx + x, by + 109.0);
         }
         let atlas = &self.gui.atlas;
-        let mut tooltip = None;
+        let buttons = buttons();
+        let tooltip = hovered_tooltip(local, sel[0], &buttons);
         let button =
             |batch: &mut HudBatch, x: f32, y: f32, active: bool, selected: bool, icon: &str| {
                 let hover = inside(local, x, y, 22.0, 22.0);
@@ -535,9 +576,8 @@ impl Game<'_> {
                     18.0,
                     u32::MAX,
                 );
-                hover
             };
-        for (e, x, y, primary) in buttons() {
+        for (e, x, y, primary) in buttons {
             let tier = EFFECTS[e].1;
             let active = if primary {
                 tier <= levels && tier < 4
@@ -550,16 +590,12 @@ impl Game<'_> {
                 sel[1] == Some(e)
             };
             let icon = format!("mob_effect/{}", EFFECTS[e].0);
-            if button(batch, x, y, active, selected, &icon) {
-                tooltip = Some(format!("effect.minecraft.{}", EFFECTS[e].0));
-            }
+            button(batch, x, y, active, selected, &icon);
         }
         if let Some(p) = sel[0] {
             let (x, y) = upgrade_button();
             let icon = format!("mob_effect/{}", EFFECTS[p].0);
-            if button(batch, x, y, levels >= 4, sel[1] == Some(p), &icon) {
-                tooltip = Some(format!("effect.minecraft.{}", EFFECTS[p].0));
-            }
+            button(batch, x, y, levels >= 4, sel[1] == Some(p), &icon);
         }
         button(
             batch,
@@ -597,14 +633,8 @@ impl Game<'_> {
             }
         } else if let Some(stack) = stack_tip {
             self.draw_stack_tooltip(batch, &stack, self.cursor.0, self.cursor.1);
-        } else if let Some(key) = tooltip {
-            let text = self.translate(&key, &key);
-            self.draw_tooltip_lines(
-                batch,
-                &[(horizon_client::text::Text::literal(text), u32::MAX)],
-                self.cursor.0,
-                self.cursor.1,
-            );
+        } else if let Some(text) = tooltip {
+            self.draw_tooltip_lines(batch, &[(text, u32::MAX)], self.cursor.0, self.cursor.1);
         }
     }
     /// `BeaconRenderer`: each section's rotating solid beam and its glow.
@@ -707,6 +737,66 @@ fn effect_box_hits(p: [i32; 3], range: f64, height: f64, lo: [f64; 3], hi: [f64;
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `BeaconScreen.extractBackground`: netherite 20, emerald 41, diamond
+    /// 41+22, gold 42+44, iron 42+66.
+    #[test]
+    fn the_payment_row_reads_netherite_emerald_diamond_gold_iron() {
+        assert_eq!(
+            PAYMENT_ROW,
+            [
+                ("minecraft:netherite_ingot", 20.0),
+                ("minecraft:emerald", 41.0),
+                ("minecraft:diamond", 63.0),
+                ("minecraft:gold_ingot", 86.0),
+                ("minecraft:iron_ingot", 108.0),
+            ]
+        );
+    }
+    /// `BeaconUpgradePowerButton.createEffectDescription` appends " II"; the
+    /// primary buttons' description is the bare effect.
+    #[test]
+    fn only_the_upgrade_button_names_the_second_level() {
+        for e in 0..EFFECTS.len() {
+            let primary = effect_tooltip(e, false).plain();
+            let upgrade = effect_tooltip(e, true).plain();
+            assert!(!primary.is_empty());
+            assert!(!primary.ends_with(" II"));
+            assert_eq!(upgrade, format!("{primary} II"));
+        }
+    }
+    /// `BeaconScreenButton.setTooltip`: every button has one while hovered,
+    /// and the sprite buttons' is their label whether or not they are active
+    /// (the tick is disabled without a payment and a chosen power).
+    #[test]
+    fn every_hovered_beacon_button_shows_its_tooltip() {
+        let at = |(x, y): (f32, f32)| (x + 11.0, y + 11.0);
+        let name =
+            |e: usize| horizon_client::lang::get(&format!("effect.minecraft.{}", EFFECTS[e].0));
+        let buttons = buttons();
+        for &(e, x, y, _) in &buttons {
+            let tip = hovered_tooltip(at((x, y)), None, &buttons).unwrap_or_default();
+            assert_eq!(tip.plain(), name(e), "button {e}");
+        }
+        let upgrade = at(upgrade_button());
+        assert!(hovered_tooltip(upgrade, None, &buttons).is_none());
+        assert_eq!(
+            hovered_tooltip(upgrade, Some(0), &buttons).unwrap().plain(),
+            format!("{} II", name(0))
+        );
+        assert_eq!(
+            hovered_tooltip(at((164.0, 107.0)), None, &buttons)
+                .unwrap_or_default()
+                .plain(),
+            horizon_client::lang::get("gui.done")
+        );
+        assert_eq!(
+            hovered_tooltip(at((190.0, 107.0)), Some(0), &buttons)
+                .unwrap_or_default()
+                .plain(),
+            horizon_client::lang::get("gui.cancel")
+        );
+        assert!(hovered_tooltip((0.0, 0.0), Some(0), &buttons).is_none());
+    }
     #[test]
     fn only_active_beacons_have_beams() {
         let mut b = Beacon::default();
