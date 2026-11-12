@@ -1381,6 +1381,57 @@ fn memory_connection_first_view_sends_every_ready_column() {
     );
 }
 
+/// The equipment as it was before the cache: every equipped slot converted in turn.
+fn equipment_converted_every_time(
+    hub: &mut Hub,
+) -> Vec<(u8, Option<horizon_protocol::item::Stack>)> {
+    let g = &hub.guests[0];
+    let sources = [
+        (0u8, g.inventory.get(g.selected).cloned().flatten()),
+        (1, g.offhand.clone()),
+        (5, g.armor[0].clone()),
+        (4, g.armor[1].clone()),
+        (3, g.armor[2].clone()),
+        (2, g.armor[3].clone()),
+    ];
+    let mut out = Vec::new();
+    for (slot, item) in sources {
+        if item.is_some() {
+            out.push((slot, hub.stack(&item)));
+        }
+    }
+    out
+}
+
+#[test]
+fn equipment_is_converted_again_only_when_a_stack_changes() {
+    use crate::items::ItemStack;
+    let stack = |item: &str, count: u32| ItemStack {
+        item: item.into(),
+        count,
+        damage: 0,
+        extra: None,
+    };
+    let (mut hub, _rx) = hub_with_a_guest();
+    hub.guests[0].inventory[0] = Some(stack("minecraft:stone", 1));
+    hub.guests[0].offhand = Some(stack("minecraft:shield", 1));
+    hub.guests[0].armor[0] = Some(stack("minecraft:iron_helmet", 1));
+    let first = equipment_converted_every_time(&mut hub);
+    for _ in 0..3 {
+        assert_eq!(hub.guest_equipment(0), first);
+    }
+
+    hub.guests[0].inventory[0] = Some(stack("minecraft:stone", 3));
+    let changed = equipment_converted_every_time(&mut hub);
+    assert_ne!(changed, first);
+    assert_eq!(hub.guest_equipment(0), changed);
+
+    hub.guests[0].offhand = None;
+    let cleared = equipment_converted_every_time(&mut hub);
+    assert_eq!(cleared.len(), changed.len() - 1);
+    assert_eq!(hub.guest_equipment(0), cleared);
+}
+
 /// `ServerGamePacketListenerImpl.handleAcceptTeleportPacket`: an accept whose id is
 /// the last teleport's (`awaitingTeleport`) while none is awaited any more
 /// (`awaitingPositionFromClient` is null) disconnects with

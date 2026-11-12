@@ -9,6 +9,7 @@ use super::{
     chunks::ChunkEncoder,
     data::SyncData,
     entity::{Entities, EntityState, Viewer},
+    equipment_cache,
     guest::{Guest, SentEffect, stack_to_network},
 };
 use crate::{
@@ -3279,28 +3280,19 @@ impl Hub {
         }
     }
 
-    fn equipment_of(
-        &mut self,
-        main: &Option<ItemStack>,
-        off: &Option<ItemStack>,
-        armor: [&Option<ItemStack>; 4],
-    ) -> Vec<(u8, Option<horizon_protocol::item::Stack>)> {
-        // Armor is stored head..feet; the wire slots are feet(2) legs(3) chest(4) head(5).
-        let mut out = Vec::new();
-        let slots = [
-            (0u8, main),
-            (1, off),
-            (5, armor[0]),
-            (4, armor[1]),
-            (3, armor[2]),
-            (2, armor[3]),
-        ];
-        for (slot, item) in slots {
-            if item.is_some() {
-                out.push((slot, self.stack(item)));
+    /// The equipment of a placed guest; only the stacks that changed since the last call are converted.
+    fn guest_equipment(&mut self, i: usize) -> Vec<(u8, Option<horizon_protocol::item::Stack>)> {
+        for index in 0..equipment_cache::SLOTS {
+            let g = &self.guests[i];
+            let source = equipment_source(g, index);
+            if !g.equipment.is_stale(index, source) {
+                continue;
             }
+            let source = source.cloned();
+            let converted = self.stack(&source);
+            self.guests[i].equipment.store(index, source, converted);
         }
-        out
+        self.guests[i].equipment.equipment()
     }
 
     /// Whether an entity is tracked by the current dimension's level.
@@ -3379,16 +3371,7 @@ impl Hub {
         let guest_states: Vec<_> = placed
             .into_iter()
             .map(|i| {
-                let (main, off, armor) = {
-                    let g = &self.guests[i];
-                    (
-                        g.inventory.get(g.selected).cloned().flatten(),
-                        g.offhand.clone(),
-                        g.armor.clone(),
-                    )
-                };
-                let equipment =
-                    self.equipment_of(&main, &off, [&armor[0], &armor[1], &armor[2], &armor[3]]);
+                let equipment = self.guest_equipment(i);
                 let g = &self.guests[i];
                 let mut state = self.player_state(
                     g.entity_id,
@@ -3752,6 +3735,8 @@ impl Hub {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as i64);
         for g in &mut self.guests {
+            // Converted under the old registries: convert again under the new ones.
+            g.equipment = Default::default();
             let mut granted = Vec::new();
             // PlayerAdvancements.reload: isFirstPacket again, the progress
             // read against the new tree; a player whose advancements were
@@ -5263,6 +5248,15 @@ fn listed_properties(
     match profile {
         Some(profile) if owner && logged_in.is_empty() => profile.properties().to_vec(),
         _ => logged_in.to_vec(),
+    }
+}
+
+/// The stack in equipment slot `index` (`equipment_cache::SLOTS`): held, offhand, armor head..feet.
+fn equipment_source(g: &Guest, index: usize) -> Option<&ItemStack> {
+    match index {
+        0 => g.inventory.get(g.selected)?.as_ref(),
+        1 => g.offhand.as_ref(),
+        _ => g.armor.get(index - 2)?.as_ref(),
     }
 }
 
