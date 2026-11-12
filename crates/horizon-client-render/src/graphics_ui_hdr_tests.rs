@@ -164,7 +164,7 @@ fn auto_levels_and_setup_read_their_own_renderers_report() {
 }
 
 /// The setup rows' label and description for each kind of report: none, a compositor's
-/// (Wayland), and Windows', whose peak is the display's own guess.
+/// (Wayland), and Windows', whose peak may be the display's or a calibration profile's.
 #[test]
 fn the_setup_rows_ask_to_calibrate_unless_the_system_set_the_display_up() {
     let trusted = offering(true, Some(true));
@@ -200,7 +200,7 @@ fn the_setup_rows_ask_to_calibrate_unless_the_system_set_the_display_up() {
         [
             (
                 calibrate.into(),
-                "Your display's reported peak is often too high: calibrate to set it up."
+                "Auto uses the peak Windows reports. Calibrate if highlights look clipped."
             ),
             ("Peak Brightness: Auto (1000)".into(), "-"),
             ("Paper White: Auto (400)".into(), "-"),
@@ -219,7 +219,7 @@ fn the_setup_rows_ask_to_calibrate_unless_the_system_set_the_display_up() {
     );
     // Calibrated or set by hand, either report offers its automatic setup back.
     s.horizon.hdr_peak = 800;
-    // Peak's Auto stays a guess on Windows: only Paper White is said to be set up there.
+    // Peak's Auto has no known source on Windows: only Paper White is said to be set up there.
     let changed = |peak| {
         [
             (
@@ -347,4 +347,31 @@ fn undo_never_restores_a_held_hdr_start() {
     s.horizon.fxaa = !s.horizon.fxaa;
     screen.undo(&mut s, &opened);
     assert_eq!(s.horizon, opened.horizon);
+}
+
+/// The Calibrate row's descriptions fit the strip's two lines at vanilla's 427-wide GUI (a
+/// 1080p window at scale 4 is wider): a longer one would end in "…".
+#[test]
+fn the_calibrate_descriptions_fit_the_strip() {
+    let atlas = crate::hud::HudAtlas::build(std::path::Path::new("/nonexistent")).unwrap();
+    let mut guessed = offering(true, Some(true));
+    guessed.reported = guessed.reported.map(|r| crate::graphics::Reported {
+        peak_guessed: true,
+        ..r
+    });
+    let mut changed = Settings::default();
+    changed.horizon.hdr_peak = 800;
+    let item = Item::Horizon(H::HdrCalibrate);
+    let width = Columns::of(427.0, 240.0).dock[2] - 24.0;
+    for (s, out) in [
+        (Settings::default(), NONE),
+        (Settings::default(), guessed),
+        (Settings::default(), offering(true, Some(true))),
+        (changed, guessed),
+    ] {
+        let text = description(item, &s, &out, "-");
+        assert_ne!(text, "-");
+        let lines = atlas.font.split(&Text::literal(text.to_owned()), width);
+        assert!(lines.len() <= 2, "{text}");
+    }
 }

@@ -1,16 +1,16 @@
-# Changes to these files wait for Ludovic's review once branch protection requires code owners' reviews
+# Changes to these files wait for a council member's review (council poll P35, 2026-11-10) once branch protection requires code owners' reviews
 # (tools/ci/protect_pipeline.sh, docs/security.md). They are what builds, signs and ships releases, the code that
 # checks downloads before installing them (backend.rs downloads, installs and updates the launcher itself; links.json
 # says where from; the Cargo.toml files pick the crates that do it), and this file. Everything else merges as soon as
 # `verify` passes.
-/.github/                                @ludovic111
-/tools/ci/                               @ludovic111
-/tools/release_train.py                  @ludovic111
-/crates/horizon-release-sign/            @ludovic111
-/crates/horizon-server/src/update.rs     @ludovic111
-/crates/horizon-server/Cargo.toml        @ludovic111
-/launcher/src/signed.rs                  @ludovic111
-/launcher/src/backend.rs                 @ludovic111
-/launcher/links.json                     @ludovic111
-/launcher/Cargo.toml                     @ludovic111
-/packaging/                              @ludovic111
+/.github/                                @horizon-rust/council
+/tools/ci/                               @horizon-rust/council
+/tools/release_train.py                  @horizon-rust/council
+/crates/horizon-release-sign/            @horizon-rust/council
+/crates/horizon-server/src/update.rs     @horizon-rust/council
+/crates/horizon-server/Cargo.toml        @horizon-rust/council
+/launcher/src/signed.rs                  @horizon-rust/council
+/launcher/src/backend.rs                 @horizon-rust/council
+/launcher/links.json                     @horizon-rust/council
+/launcher/Cargo.toml                     @horizon-rust/council
+/packaging/                              @horizon-rust/council

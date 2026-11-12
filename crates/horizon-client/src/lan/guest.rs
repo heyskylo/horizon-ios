@@ -1,6 +1,7 @@
 //! A remote player: connection, position, chunk and entity views, and the
 //! player state (inventory, health, game mode) that the host's gameplay code
 //! operates on when it acts for them.
+use super::prediction::record::{Change, Record};
 use super::{Joined, PlayerSender, entity::Tracker};
 use crate::{
     items::ItemStack,
@@ -221,10 +222,19 @@ pub struct Guest {
     pub position_this_tick: bool,
     /// Violation levels and the checks' state (the anticheat, when on).
     pub anticheat: horizon_anticheat::Player,
+    /// The client ticks the movement prediction plays again (only while it records).
+    pub record: Option<Box<Record>>,
+    /// Sprinting as the client's own commands left it (ServerboundPlayerCommandPacket's
+    /// START_SPRINTING and STOP_SPRINTING: LocalPlayer.wasSprinting), which the record's ticks take.
+    /// Not the server's player: a hit with extra knockback stops its sprint
+    /// (Player.causeExtraKnockback), the client's own `Player.attack` doesn't (a mob's `hurtClient`
+    /// is false), and once the server's flag reaches it LocalPlayer.aiStep starts the sprint again
+    /// while the sprint key is held, with nothing to say: wasSprinting never changed.
+    pub client_sprinting: bool,
     /// The movement prediction's replay of the client's own moves (only while it runs).
     pub replay: Option<Box<super::prediction::Replay>>,
     /// What the server sent this tick that changes how the client moves (only while it records).
-    pub changes: std::sync::Mutex<Vec<horizon_anticheat::prediction::Change>>,
+    pub changes: std::sync::Mutex<Vec<Change>>,
     /// It accepted a move since the last entity range checks
     /// (ServerChunkCache.move), which then check all of its pairs again.
     pub moved: bool,
@@ -253,6 +263,8 @@ pub struct Guest {
     pub chunk_queue: Vec<(i32, i32)>,
     /// The far ring's chunks still to send, past the view distance (`lan::far`), closest first.
     pub far_queue: Vec<(i32, i32)>,
+    /// Where the bounded far-ring scan resumes; reset when the view changes.
+    pub far_cursor: usize,
     /// PlayerChunkSender: batches sent but not yet acknowledged, how many
     /// may be (1 until the client's first acknowledgement, then 10), the
     /// rate the client asks for and the chunks the next batch may hold.
@@ -515,6 +527,8 @@ impl Guest {
             support_blocks_sent: 0,
             position_this_tick: false,
             anticheat: Default::default(),
+            record: None,
+            client_sprinting: false,
             replay: None,
             changes: Default::default(),
             moved: false,
@@ -528,6 +542,7 @@ impl Guest {
             far_sent_chunks: Default::default(),
             chunk_queue: Vec::new(),
             far_queue: Vec::new(),
+            far_cursor: 0,
             unacknowledged: 0,
             max_unacknowledged: 1,
             chunks_per_tick: 9.0,
@@ -626,7 +641,7 @@ impl Guest {
         if self.fake && !super::conn::fake_wants_id(packet.id()) {
             return;
         }
-        if self.anticheat.record.is_some() {
+        if self.record.is_some() {
             self.note_change(packet);
         }
         self.sender.send(packet.encode());
@@ -650,10 +665,19 @@ impl Guest {
             Err(e) => log::debug!("Horizon: attachment sync not sent: {e}"),
         }
     }
+    /// [`Self::send`] of a `ChunksBiomes` whose body is `packet.encode()`, the same
+    /// bytes for each guest with those columns. `note_change` ignores that packet.
+    pub fn send_chunks_biomes_body(&self, body: Vec<u8>) {
+        if self.fake
+            && !super::conn::fake_wants_id(horizon_protocol::ids::play::clientbound::CHUNKS_BIOMES)
+        {
+            return;
+        }
+        self.sender.send(body);
+    }
     /// What `packet` changes about how the client moves, for the prediction's replay: kept until
     /// the tick's ping places it (`Hub::anticheat_ping`).
     fn note_change(&self, packet: &play::Clientbound) {
-        use horizon_anticheat::prediction::Change;
         use play::Clientbound as C;
         let own = |id: i32| id == self.entity_id;
         let change = match packet {

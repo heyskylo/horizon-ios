@@ -317,8 +317,35 @@ def identity(date: str) -> dict:
             "GIT_COMMITTER_EMAIL": email, "GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date}
 
 
+# `git merge-tree --write-tree` (the trial merge, in the object database) only exists since git 2.38.
+MIN_GIT_VERSION = (2, 38)
+
+
+def git_version() -> tuple[int, ...]:
+    """The local git's version as numbers, e.g. (2, 38, 1); empty when it cannot be read."""
+    try:
+        result = subprocess.run(["git", "--version"], capture_output=True, text=True)
+    except OSError:
+        return ()
+    match = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", result.stdout)
+    return tuple(int(part) for part in match.groups(default="0")) if match else ()
+
+
+def require_git_version() -> tuple[int, ...]:
+    """The local git's version, or a plain failure when it is too old for the trial merge."""
+    version = git_version()
+    if version < MIN_GIT_VERSION:
+        found = ".".join(str(part) for part in version) if version else None
+        detail = f"this git is {found}." if found else "this git's version could not be read."
+        raise RuntimeError(
+            f"git {'.'.join(str(part) for part in MIN_GIT_VERSION)} or newer is required: this tool trial-merges "
+            f"the pull requests with `git merge-tree --write-tree`, which only exists since git 2.38; {detail}")
+    return version
+
+
 def merge_tree(a: str, b: str, cwd: str | None = None) -> tuple[str | None, list[str]]:
     """The merged tree of commits a and b, or None and the conflicted paths. Objects only, no working tree."""
+    require_git_version()
     r = git("merge-tree", "--write-tree", "--name-only", "--no-messages", a, b, cwd=cwd, check=False)
     if r.returncode == 0:
         return r.stdout.split()[0], []

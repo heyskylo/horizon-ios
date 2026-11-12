@@ -631,7 +631,10 @@ fn do_animate_tick(
             } else {
                 T::DrippingLava
             };
-            let top_solid = ctx.sturdy(pos);
+            // `trySpawnDripParticles(.., state.isFaceSturdy(this, pos, DOWN))`:
+            // the fluid block's own down face, not whether it is a full cube (a
+            // waterlogged bottom slab's face is sturdy and has no fluid below).
+            let top_solid = facts.sturdy_full & 1 != 0;
             try_spawn_drip(tables, engine, ctx, [x, y - 1, z], drip, top_solid);
         }
     }
@@ -1840,13 +1843,15 @@ fn dripstone_drip(
     };
     let above = ctx.facts.get(ctx.state([root[0], root[1] + 1, root[2]]));
     // Mud above the root counts as a water source unless water evaporates here.
-    let (fluid, source) = if &*above.name == "minecraft:mud" && !ctx.ultrawarm {
-        (Fluid::Water, true)
+    let fluid = if &*above.name == "minecraft:mud" && !ctx.ultrawarm {
+        Fluid::Water
     } else {
-        (above.fluid, above.fluid_level >= 8 && !above.fluid_falling)
+        above.fluid
     };
-    // canFillCauldron: only a water or lava source passes below a 2% roll.
-    if roll >= 0.02 && !(fluid != Fluid::None && source) {
+    // canFillCauldron is `fluid == Fluids.LAVA || fluid == Fluids.WATER`: the
+    // fluid above the root by its type, not by whether it is still a source, so
+    // a flowing fluid drips under the same 2% roll a source does.
+    if roll >= 0.02 && fluid == Fluid::None {
         return;
     }
     // getDripParticle: no fluid drips what the dimension's default says.

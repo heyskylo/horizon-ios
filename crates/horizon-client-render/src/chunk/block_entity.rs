@@ -513,6 +513,10 @@ pub struct SignData {
     pub waxed: bool,
     /// `allow_op_features`: the sign's click events may run commands.
     pub allow_op_features: bool,
+    /// `playerWhoMayEdit`: the one player whose editor is on this sign, as a
+    /// UUID. Every other player's click, write and applicator is refused
+    /// while it is set. Not saved (vanilla keeps it out of the NBT).
+    pub allowed_editor: Option<u128>,
 }
 /// `VibrationInfo`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -539,6 +543,7 @@ pub struct Data {
     pub current: Option<Info>,
     pub travel: i32,
     pub selector: Selector,
+    pub reload_particle: bool,
 }
 /// Which sculk block entity this is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

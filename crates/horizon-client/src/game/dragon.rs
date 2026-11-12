@@ -581,7 +581,7 @@ impl Dragon {
     /// `EnderDragon`'s constructor: full health, hovering (`EnderDragonPhase.HOVERING`). Only
     /// `EnderDragonFight.createNewDragon` sets the holding pattern; a dragon from `/summon`, a
     /// spawn egg or a save without `DragonPhase` keeps hovering where it was put.
-    fn new(position: Vec3, yaw: f32, seed: i64) -> Self {
+    pub(super) fn new(position: Vec3, yaw: f32, seed: i64) -> Self {
         Self {
             id: 0,
             position,
@@ -1768,30 +1768,6 @@ impl Game<'_> {
         }
         best
     }
-    pub(super) fn attack_dragon(&mut self) -> bool {
-        let Some((id, d)) = self.dragon_hit() else {
-            return false;
-        };
-        if !self.before_block(d) || self.mob_hit().is_some_and(|m| m.1 < d) {
-            return false;
-        }
-        // A dragon part is no LivingEntity: `canCriticalAttack` is false.
-        let (amount, _, _, _) = self.melee_damage("minecraft:ender_dragon", false);
-        self.swing_arm();
-        // The part's box.
-        let area = self
-            .special_targets()
-            .into_iter()
-            .find(|(part, _)| *part == id)
-            .map(|(_, b)| b);
-        let hurt = self.hit_special(id, amount, true, DamageKind::PlayerAttack, None);
-        // The sweep and the sounds read the charge, which the hit then spends.
-        if let (Some(area), Hurt::Landed { .. }) = (area, hurt) {
-            self.attack_effects(area, None, false, super::mace::Spared::Nothing, None);
-        }
-        self.attack_ticks = 0;
-        true
-    }
     /// The 24 nodes (`findClosestNode` builds them on first use).
     fn dragon_nodes(&mut self) -> [[i32; 3]; 24] {
         if let Some(n) = self.dragon.as_ref().and_then(|d| d.nodes) {
@@ -2308,12 +2284,12 @@ impl Game<'_> {
                     let look = glam::DVec2::new(head.x - pos.x, head.z - pos.z).normalize_or_zero();
                     let (x, z) = (head.x + look.x * 2.5, head.z + look.y * 2.5);
                     let mut y = head.y + 0.5;
+                    let (xi, zi) = (x.floor() as i32, z.floor() as i32);
                     while y > 0.0
-                        && self.res.facts().is_air(self.world.block(
-                            x.floor() as i32,
-                            y.floor() as i32,
-                            z.floor() as i32,
-                        ))
+                        && self
+                            .res
+                            .facts()
+                            .is_air(self.world.block(xi, y.floor() as i32, zi))
                     {
                         y -= 1.0;
                     }
@@ -2321,6 +2297,7 @@ impl Game<'_> {
                     self.breath_clouds.push(Breath {
                         id,
                         at: [x, y.floor() + 1.0, z],
+                        motion: [0.0; 3],
                         radius: 5.0,
                         age: 0,
                         duration: 200,
@@ -2956,27 +2933,26 @@ impl Game<'_> {
     /// cloud and level event 2006, as the fireballs of the dragon's own list
     /// burst before they joined the other projectiles.
     pub(super) fn dragon_fireball_on_hit(&mut self, next: Vec3) {
-        let mobs: Vec<(Aabb, Vec3)> = self
-            .mobs
-            .iter()
-            .filter(|m| m.alive())
-            .map(|m| (m.bounds(), m.position))
-            .collect();
         let snap_targets: Vec<(Aabb, Vec3)> = self
             .fight_players()
             .iter()
             .filter(|p| p.alive)
             .map(|p| (p.bounds, p.position))
-            .chain(mobs.iter().copied())
+            .chain(
+                self.mobs
+                    .iter()
+                    .filter(|m| m.alive())
+                    .map(|m| (m.bounds(), m.position)),
+            )
             .collect();
         let id = self.take_entity_id();
         // The cloud starts at the fireball's feet; DragonFireball.onHit
         // then moves it to the first living entity within 4 blocks.
-        let feet = [next.x, next.y - 0.5, next.z];
-        let at = fireball_cloud_origin(feet, &snap_targets);
+        let at = fireball_cloud_origin([next.x, next.y - 0.5, next.z], &snap_targets);
         self.breath_clouds.push(Breath {
             id,
             at,
+            motion: [0.0; 3],
             radius: 3.0,
             age: 0,
             duration: 600,
@@ -3108,18 +3084,8 @@ impl Game<'_> {
         if hurts {
             self.note_dragon_attacker("minecraft:mob_attack");
         }
-        let (health, rules) = (&self.health_resources, self.world.health_rules);
-        let id = health.damage.id("minecraft:mob_attack");
-        let mut canceled = false;
-        if let Some(p) = self.player.as_mut() {
-            push_seen_with_hurt(p, push, |p| {
-                if let Some(id) = id.filter(|_| hurts)
-                    && let Ok(o) = p.hurt_blocking(health, rules, id, 5.0, None)
-                {
-                    canceled = o.canceled;
-                }
-            });
-        }
+        let id = self.health_resources.damage.id("minecraft:mob_attack");
+        let canceled = self.push_seen_with_equipment_hurt(push, id.filter(|_| hurts), 5.0);
         self.combat.forget_noted(canceled);
         if !sitting
             && !hurt_lately
@@ -3281,6 +3247,7 @@ pub(super) struct Breath {
     /// Its entity id once a server's players track it (0 until then).
     pub(super) id: u32,
     pub(super) at: [f64; 3],
+    pub(super) motion: [f64; 3],
     pub(super) radius: f32,
     pub(super) age: i32,
     pub(super) duration: i32,
@@ -3323,11 +3290,8 @@ impl Game<'_> {
         ) else {
             return;
         };
-        let pos = glam::DVec3::new(
-            d.previous.x + (d.position.x - d.previous.x) * alpha,
-            d.previous.y + (d.position.y - d.previous.y) * alpha,
-            d.previous.z + (d.position.z - d.previous.z) * alpha,
-        );
+        let p = d.previous.lerp(d.position, alpha);
+        let pos = glam::DVec3::new(p.x, p.y, p.z);
         let h = |delay: usize| d.sample_lerp(delay, a);
         let yr = h(7).1;
         let rot2 = (h(5).0 - h(10).0) as f32;
@@ -3682,9 +3646,9 @@ impl Dragon {
         let mut d = Self::new(position, yaw, seed);
         d.velocity = velocity;
         // Vanilla getFloatOr/getIntOr accept any numeric tag type.
-        if let Some(h) = nbt_value::float(tag.get("Health")) {
-            d.health = h as f32;
-        }
+        d.health = nbt_value::float(tag.get("Health")).map_or(d.health, |h| h as f32);
+        d.sitting_damage =
+            nbt_value::float(tag.get("sitting_damage_received")).unwrap_or(0.0) as f32;
         if let Some(p) = nbt_value::number(tag.get("DragonPhase")) {
             d.phase = Phase::from_id(p as i32);
         }
@@ -4815,6 +4779,7 @@ use death_render::{dissolve_color, dissolve_mask, dragon_rays};
 /// reaches the players tracking them, not them. So the push moves the player
 /// only together with a hurt that lands outside the hurt cooldown, and is
 /// dropped otherwise.
+#[cfg(test)]
 fn push_seen_with_hurt(
     p: &mut horizon_client::motion::PlayerMotion,
     push: Vec3,
@@ -5090,6 +5055,25 @@ mod tests {
         let mut d = Dragon::new(Vec3::new(0.0, 70.0, 0.0), 0.0, 1);
         d.phase = phase;
         d
+    }
+
+    /// `EnderDragon.readAdditionalSaveData` reads `sitting_damage_received`
+    /// (`getFloatOr`, 0 when absent); the writer already saved it. Horizon
+    /// only wrote it, so a perched dragon that took a quarter of its health
+    /// but was saved before taking off came back with the damage forgotten.
+    #[test]
+    fn a_perched_dragons_damage_survives_the_chunk_save() {
+        let mut d = dragon(Phase::Flaming { ticks: 0 });
+        d.sitting_damage = 12.5;
+        let tag = d.to_nbt([1, 2, 3, 4], None);
+        let back = Dragon::from_nbt(&tag, 0).unwrap();
+        assert_eq!(back.sitting_damage, 12.5);
+        // No key at all reads as no damage accumulated.
+        let mut bare = tag.clone();
+        if let horizon_world::nbt::Tag::Compound(fields) = &mut bare {
+            fields.remove(&"sitting_damage_received".into());
+        }
+        assert_eq!(Dragon::from_nbt(&bare, 0).unwrap().sitting_damage, 0.0);
     }
     fn flying() -> Phase {
         Phase::Holding {
