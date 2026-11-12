@@ -215,35 +215,15 @@ fn load_anticheat() -> horizon_anticheat::Config {
     }
 }
 
-/// `server.toml`'s `[chat_filter]` (docs/chat-filter.md), like `[anticheat]`: on by default, off (with an
-/// error logged) when the section is wrong. The mutes are kept beside server.properties.
-fn load_chat_filter() -> Option<horizon_chat_filter::Guard> {
+/// `server.toml`'s `[chat_filter]` (docs/chat-filter.md), through the filter the executable installed
+/// (`horizon_server_files::chat_guard`): none without one.
+fn load_chat_filter() -> Option<Box<dyn horizon_server_files::chat_guard::ChatGuard>> {
     let text = std::fs::read_to_string("server.toml").unwrap_or_default();
-    let config = match horizon_chat_filter::Config::from_server_toml(&text) {
-        Ok(config) => config,
-        Err(e) => {
-            log(
-                "ERROR",
-                &format!("server.toml: {e}; the chat filter stays off"),
-            );
-            return None;
-        }
-    };
-    if !config.enabled {
-        return None;
+    let loaded = horizon_server_files::chat_guard::load(&text, std::path::Path::new("."));
+    for (level, line) in &loaded.log {
+        log(level, line);
     }
-    let (guard, problem) = horizon_chat_filter::Guard::load(config, std::path::Path::new("."));
-    if let Some(problem) = problem {
-        log("WARN", &problem);
-    }
-    log(
-        "INFO",
-        &format!(
-            "Chat filter on: {} words (server.toml [chat_filter]; enabled = false turns it off)",
-            guard.filter.len()
-        ),
-    );
-    Some(guard)
+    loaded.guard
 }
 
 /// `server.toml`'s `[combat]` (docs/pvp.md): `legacy = true` resolves melee hits by 1.8.9's rules. Off without
@@ -1256,7 +1236,7 @@ impl Game<'_> {
         self.sync_ops(&lists);
         let anticheat = load_anticheat();
         let chat_filter = load_chat_filter();
-        self.settings.extras.pvp.combat.rules = load_combat();
+        self.set_pvp_legacy_rules(load_combat());
         // Horizon's far ring (docs/hosting.md): server.toml's `max_view_distance`.
         let far = props
             .raw
@@ -2372,9 +2352,25 @@ impl Game<'_> {
     /// swapped in, so its record is older than what the game holds, and writing it would put
     /// back older data than the last autosave; that guest keeps the file it has. A hub that the
     /// panic took with it (`self.lan.take()` was in progress) saves no players at all. The
-    /// levels, the scoreboard and the other state are saved as in a normal stop.
-    fn stop_after_crash(&mut self, message: &str) -> Result<()> {
-        log("ERROR", &format!("The server thread panicked: {message}"));
+    /// levels, the scoreboard and the other state are saved as in a normal stop. Single
+    /// player's server thread ends here too, after a tick that panicked or failed
+    /// (`integrated_tick_loop`), and then stops as `stop_integrated` does.
+    pub(super) fn stop_after_crash(&mut self, message: &str) -> Result<()> {
+        // Single player's server thread (`integrated.rs`) has no console: it logs to the game's log.
+        let integrated = self.serving.is_some();
+        let warn = |message: &str| {
+            if integrated {
+                log::warn!("Horizon: {message}");
+            } else {
+                log("WARN", message);
+            }
+        };
+        if integrated {
+            // `message` already says whether the tick panicked or failed.
+            log::error!("Horizon: {message}");
+        } else {
+            log("ERROR", &format!("The server thread panicked: {message}"));
+        }
         let acting = self.lan_acting;
         let hub_lost = self.lan.is_none();
         if let (Some(conn), Some(host)) = (acting, self.lan.as_mut())
@@ -2383,15 +2379,13 @@ impl Game<'_> {
             guest.placed = false;
         }
         if hub_lost {
-            log(
-                "WARN",
-                "The panic interrupted the network tick: players are not saved, only the world",
-            );
+            warn("The panic interrupted the network tick: players are not saved, only the world");
         } else if acting.is_some() {
-            log(
-                "WARN",
-                "The panic interrupted a player's turn: that player keeps the last saved file",
-            );
+            warn("The panic interrupted a player's turn: that player keeps the last saved file");
+        }
+        if integrated {
+            // `IntegratedServer.stopServer`'s steps; `save_guest` skips the guest unplaced above.
+            return self.stop_integrated();
         }
         self.native_lifecycle.begin_close();
         log("INFO", "Saving worlds");
@@ -2455,7 +2449,7 @@ pub(super) fn crash_fixture(point: &str, armed: impl FnOnce() -> bool) {
 }
 
 /// The text of a panic payload (`panic!("..")` is a `&str`, a formatted one a `String`).
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+pub(super) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     payload
         .downcast_ref::<&str>()
         .map(|s| (*s).to_owned())

@@ -8,9 +8,12 @@ use super::commands;
 #[cfg(test)]
 #[path = "revenge_home_tests.rs"]
 mod revenge_home_tests;
+#[cfg(test)]
+#[path = "zombie_ignite_tests.rs"]
+mod zombie_ignite_tests;
 use horizon_client::{
     health::HealthEvent,
-    mobs::{Mob, Species},
+    mobs::{Mob, Species, Who},
     motion::MotionEvent,
     particles::{ParticleOptions, ParticleType},
     text::Text,
@@ -34,6 +37,14 @@ struct Entry {
     /// (`DamageSource.directEntity`: a potion with no thrower, a cloud).
     direct: Option<Text>,
 }
+struct PendingAttacker {
+    damage_type: String,
+    attacker: (u32, Text),
+    item: Option<Text>,
+    living: bool,
+    credit: bool,
+}
+
 /// What is stuck in a player's body: `LivingEntity.DATA_ARROW_COUNT_ID` and
 /// `DATA_STINGER_COUNT_ID` with the timers that pull them out
 /// (`removeArrowTime`, `removeStingerTime`). Kept with the combat record,
@@ -84,7 +95,7 @@ pub(super) struct CombatTracker {
     in_combat: bool,
     /// Attackers of damage dealt this tick, claimed by the matching
     /// `RecordedDamage` event.
-    pending: Vec<(String, (u32, Text), Option<Text>)>,
+    pending: Vec<PendingAttacker>,
     /// `pending` for a direct entity with no causing entity: only its name.
     pending_direct: Vec<(String, Text)>,
     /// The lengths of `pending` and `pending_direct` before the first
@@ -104,6 +115,9 @@ pub(super) struct CombatTracker {
     /// The player whose primed TNT is going off now (`PrimedTnt.getOwner`):
     /// its entity id and display name, the blast's causing entity.
     pub(super) blast_owner: Option<(u32, Text)>,
+    /// `Some(None)` is an explicitly ownerless crystal/cart DamageSource.
+    pub(super) explicit_explosion_cause: Option<Option<super::explosion::ExplosionCause>>,
+    pub(super) explicit_explosion_direct: Option<Text>,
     /// The guest behind `blast_owner`, when that player is a LAN guest; the
     /// host's own blast leaves it None.
     pub(super) blast_guest: Option<u32>,
@@ -118,6 +132,11 @@ pub(super) struct CombatTracker {
     /// it the attacker is the mob nearest to where the hit came from, which
     /// walks every mob.
     pub(super) melee_mob: Option<u32>,
+    /// The attack event handled last hurt its target (`doHurtTarget` returned
+    /// true). The events of one blow read it: `Zombie.doHurtTarget` burns only
+    /// once `super.doHurtTarget` did (`MobEvent::ZombieIgnite` follows the
+    /// attack it rides).
+    pub(super) hit_landed: bool,
     /// A firework rocket's burst is hurting the player now: the rocket is
     /// the direct entity (`rocket_hurt_player`).
     pub(super) rocket_hit: bool,
@@ -222,6 +241,29 @@ impl CombatTracker {
     }
 }
 impl Game<'_> {
+    /// `Entity.igniteForSeconds`: `seconds * 20` ticks of fire, scaled by the
+    /// target's burning-time attribute.
+    pub(super) fn ignite_entity(
+        &mut self,
+        target: Who,
+        seconds: i32,
+    ) -> horizon_client::Result<()> {
+        match target {
+            Who::Player => {
+                if !self.creative
+                    && let Some(p) = self.player.as_mut()
+                {
+                    p.ignite_for_ticks(seconds * 20)?;
+                }
+            }
+            Who::Mob(id) => {
+                if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+                    m.ignite_for_ticks(seconds * 20);
+                }
+            }
+        }
+        Ok(())
+    }
     /// `LivingEntity.makeDrownParticles`: eight bubbles around the entity,
     /// moving with it.
     pub(super) fn drown_particles(&mut self, at: [f64; 3], velocity: [f64; 3]) {
@@ -288,9 +330,32 @@ impl Game<'_> {
         item: Option<Text>,
     ) {
         self.combat.mark();
-        self.combat
-            .pending
-            .push((damage_type.to_owned(), (id, name), item));
+        self.combat.pending.push(PendingAttacker {
+            damage_type: damage_type.to_owned(),
+            attacker: (id, name),
+            item,
+            living: true,
+            credit: true,
+        });
+    }
+    /// A non-living or already removed cause remains in the damage source,
+    /// but cannot resolve as an EntityReference for kill credit.
+    pub(super) fn note_uncredited_attacker(
+        &mut self,
+        damage_type: &str,
+        id: u32,
+        name: Text,
+        item: Option<Text>,
+        living: bool,
+    ) {
+        self.combat.mark();
+        self.combat.pending.push(PendingAttacker {
+            damage_type: damage_type.to_owned(),
+            attacker: (id, name),
+            item,
+            living,
+            credit: false,
+        });
     }
     /// The `DamageSource.directEntity` of the next `damage_type` damage when
     /// nothing caused it (a splash potion nobody threw): the death message
@@ -327,14 +392,20 @@ impl Game<'_> {
                 }
                 _ => continue,
             };
-            let (attacker, item) = self
+            let (attacker, item, living, credit) = self
                 .combat
                 .pending
                 .iter()
-                .position(|(t, _, _)| *t == name)
+                .position(|p| p.damage_type == name)
                 .map(|i| {
-                    let (_, attacker, item) = self.combat.pending.remove(i);
-                    (Some(attacker), item)
+                    let PendingAttacker {
+                        attacker,
+                        item,
+                        living,
+                        credit,
+                        ..
+                    } = self.combat.pending.remove(i);
+                    (Some(attacker), item, living, credit)
                 })
                 .unwrap_or_default();
             let direct = match attacker {
@@ -349,8 +420,10 @@ impl Game<'_> {
             let (fall_location, fall_distance) = self.fall_location();
             let now = self.world.game_time;
             if let Some(a) = &attacker {
-                self.combat.last_hurt_by = Some((a.clone(), now));
-                if !self.combat.in_combat {
+                if living {
+                    self.combat.last_hurt_by = credit.then(|| (a.clone(), now));
+                }
+                if living && !self.combat.in_combat {
                     self.combat.in_combat = true;
                 }
             }
@@ -449,7 +522,7 @@ impl Game<'_> {
         }
     }
     /// The display component of a custom-named held stack.
-    fn mob_main_hand_name(&self, id: u32) -> Option<Text> {
+    pub(super) fn mob_main_hand_name(&self, id: u32) -> Option<Text> {
         let m = self.mobs.iter().find(|m| m.id == id)?;
         let mut stack = m.extra.main_hand_stack()?.clone();
         if !has_custom_name(&stack) {
@@ -469,7 +542,7 @@ impl Game<'_> {
     /// `main_hand_custom_name` of a player who is not in place: the guest
     /// `conn` between turns, or none for the host while a guest acts (their
     /// hotbar slot is kept by the swap).
-    fn player_main_hand_custom_name(&self, player: Option<u32>) -> Option<Text> {
+    pub(super) fn player_main_hand_custom_name(&self, player: Option<u32>) -> Option<Text> {
         if player == self.lan_acting {
             return self.main_hand_custom_name();
         }
@@ -864,7 +937,7 @@ mod held_item_tests {
 }
 #[cfg(test)]
 mod noted_tests {
-    use super::CombatTracker;
+    use super::{CombatTracker, PendingAttacker};
     use horizon_client::text::Text;
 
     /// A canceled hit forgets what was noted for it, also before its hurt
@@ -874,11 +947,13 @@ mod noted_tests {
         let mut c = CombatTracker::default();
         let arrow = |c: &mut CombatTracker, id| {
             c.mark();
-            c.pending.push((
-                "minecraft:arrow".into(),
-                (id, Text::literal("skeleton")),
-                None,
-            ));
+            c.pending.push(PendingAttacker {
+                damage_type: "minecraft:arrow".into(),
+                attacker: (id, Text::literal("skeleton")),
+                item: None,
+                living: true,
+                credit: true,
+            });
         };
         arrow(&mut c, 1);
         c.forget_noted(false);
@@ -887,7 +962,10 @@ mod noted_tests {
         c.pending_direct
             .push(("minecraft:arrow".into(), Text::literal("arrow")));
         c.forget_noted(true);
-        assert_eq!(c.pending.iter().map(|p| p.1.0).collect::<Vec<_>>(), [1]);
+        assert_eq!(
+            c.pending.iter().map(|p| p.attacker.0).collect::<Vec<_>>(),
+            [1]
+        );
         assert!(c.pending_direct.is_empty());
         // A hit noted and landed, then one noted and canceled: the landed
         // one keeps its attacker.
@@ -896,7 +974,10 @@ mod noted_tests {
         c.forget_noted(false);
         arrow(&mut c, 4);
         c.forget_noted(true);
-        assert_eq!(c.pending.iter().map(|p| p.1.0).collect::<Vec<_>>(), [1, 3]);
+        assert_eq!(
+            c.pending.iter().map(|p| p.attacker.0).collect::<Vec<_>>(),
+            [1, 3]
+        );
     }
 }
 #[cfg(test)]
@@ -979,7 +1060,7 @@ mod guest_hit_tests {
             game.combat.pending.clear();
             game.guest_mob_event(5, hit);
             let noted: Vec<u32> = (game.combat.pending.iter())
-                .map(|(_, (id, _), _)| *id)
+                .map(|pending| pending.attacker.0)
                 .collect();
             assert_eq!(noted, [5]);
             assert_eq!(game.combat.melee_mob, None, "the hit used it up");

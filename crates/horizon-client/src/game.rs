@@ -147,6 +147,7 @@ mod event_loop;
 mod events;
 mod execution_role;
 mod explosion;
+mod extinguish;
 mod extras;
 mod falling_blocks;
 mod falling_damage;
@@ -157,6 +158,7 @@ mod first_tick_registration_tests;
 mod fishing;
 mod fov;
 mod foxes;
+mod frame_autotune;
 mod frame_geometry;
 mod frames;
 #[cfg(feature = "friends")]
@@ -383,7 +385,6 @@ mod potions;
 mod powder_snow;
 mod prediction;
 mod pumpkin;
-mod pvp;
 mod quick_actions;
 mod raids;
 mod random_textures;
@@ -433,6 +434,8 @@ mod social;
 mod spawner;
 mod spear;
 mod spear_players;
+mod special_attack_fixture;
+mod special_attacks;
 mod spectator;
 mod spill;
 mod splash_water;
@@ -719,10 +722,10 @@ struct Mining {
     ticks: u32,
 }
 #[derive(Clone, Copy)]
-struct Hit {
-    pos: [i32; 3],
-    face: [i32; 3],
-    point: [f64; 3],
+pub(crate) struct Hit {
+    pub(crate) pos: [i32; 3],
+    pub(crate) face: [i32; 3],
+    pub(crate) point: [f64; 3],
 }
 impl Hit {
     /// The block the clicked face leads to (`pos.relative(direction)`).
@@ -2815,8 +2818,8 @@ struct Game<'a> {
     frame_graph: horizon_client::perf_overlay::FrameGraph,
     /// Horizon's extras (minimap, auto-reconnect; mods' counters): `game/extras.rs`.
     extras: extras::ExtrasState,
-    /// The PvP & HUD options' state (`game/pvp.rs`).
-    pvp: pvp::PvpState,
+    /// The PvP & HUD options' state (`game/extras/pvp.rs`).
+    pvp: extras::pvp::PvpState,
     /// Horizon mods (`game/mods.rs`), none running unless turned on.
     mods: mods::ModsState,
     /// Every item and recipe, for mods (`game/native_recipes.rs`), made once.
@@ -2938,6 +2941,8 @@ struct Game<'a> {
     gpu_utilization: f64,
     /// GPU Culling's Auto mode: what it has decided from the frames' CPU and GPU times.
     gpu_culling_auto: horizon_client::autotune::GpuCullingAuto,
+    /// Dynamic Resolution: the scale it has the world at (`frame_autotune`).
+    dynamic_resolution: horizon_client::dynamic_resolution::DynamicResolution,
     /// The mobs `mob_geometry` drew last frame (`lastEntityRenderStateCount`).
     rendered_mobs: std::cell::Cell<usize>,
     /// Whether a native mod requested background blur for this frame (`apply_screen_blur`).
@@ -5836,7 +5841,7 @@ impl Game<'_> {
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
         self.input_hud_begin();
         let mut batch = HudBatch::new(size);
-        batch.glint_colour = self.settings.extras.pvp.tweaks.glint_texel();
+        batch.glint_colour = self.pvp_glint_texel();
         // GlobalSettingsUniform's GameTime, for a resource pack's text shader.
         batch.game_time = ((self.world.game_time.rem_euclid(24000)) as f32
             + self.clock.fraction() as f32)
@@ -5948,8 +5953,7 @@ impl Game<'_> {
             // Hud.extractCrosshair / extractItemHotbar / extractPlayerHealth /
             // extractVehicleHealth and the experience bar, laid out by hud_layout.
             // Combat feel Legacy hides the attack indicator unless the player keeps it.
-            let combat = self.settings.extras.pvp.combat;
-            let indicator = if combat.legacy && !combat.indicator {
+            let indicator = if self.pvp_hides_attack_indicator() {
                 0
             } else {
                 self.settings.attack_indicator
@@ -7202,8 +7206,7 @@ impl Game<'_> {
         if particle_mode == horizon_client::graphics::ParticleCullingMode::Off {
             self.particles.render(
                 camera,
-                self.yaw,
-                self.pitch,
+                self.particle_rotation(),
                 alpha as f32,
                 &|b| world.light(b[0], b[1], b[2]),
                 &mut out,
@@ -7222,8 +7225,7 @@ impl Game<'_> {
                 let mut particle_culling = self.particle_occlusion_context(camera);
                 self.particles.render_culled(
                     camera,
-                    self.yaw,
-                    self.pitch,
+                    self.particle_rotation(),
                     alpha as f32,
                     pixel_focal_length,
                     true,
@@ -7342,45 +7344,6 @@ impl Game<'_> {
             }
         }
         best
-    }
-    /// `Player.attack`'s damage against `target_kind` (with the attack
-    /// strength and whether it is a critical hit): the weapon and effects
-    /// scaled by the attack strength, a mace's smash, the critical hit, then
-    /// enchantments.
-    pub(super) fn melee_damage(
-        &mut self,
-        target_kind: &str,
-        living: bool,
-    ) -> (f32, f32, bool, bool) {
-        if self.legacy_rules() {
-            return self.legacy_melee_damage(target_kind, living);
-        }
-        let hand_damage = self.attack_damage();
-        // Riptide's spin replaces the attack damage attribute.
-        let spin = self.player.as_ref().map_or(0.0, |p| p.auto_spin_attack_dmg);
-        let damage = if spin > 0.0 { spin } else { hand_damage };
-        let scale = self.attack_strength_scale();
-        // getEnchantedDamage(target, damage, source) - damage, taken before the
-        // attack strength scales the base damage.
-        let enchant_bonus = self.enchanted_damage(target_kind, damage) - damage;
-        let mut amount = damage * (0.2 + scale * scale * 0.8);
-        // Player.attack decides the critical hit only for a hit with base or
-        // enchantment damage: checked before the mace's smash bonus is added.
-        let damaging = amount > 0.0 || enchant_bonus * scale > 0.0;
-        // Item.getAttackDamageBonus (a mace's smash), before the critical hit.
-        amount += self.smash_damage_bonus(target_kind);
-        let vanilla_crit = living && self.critical_attack(scale);
-        let mut crit = vanilla_crit;
-        let mut multiplier = if vanilla_crit { 1.5 } else { 1.0 };
-        if living && damaging {
-            self.native_critical_hit(target_kind, vanilla_crit, &mut crit, &mut multiplier);
-        }
-        if crit {
-            amount *= multiplier;
-        }
-        // Enchantment damage (sharpness, smite, bane) scaled by the attack strength.
-        amount += enchant_bonus * scale;
-        (amount, scale, crit, enchant_bonus * scale > 0.0)
     }
     /// `Player.attack`'s sounds when a vehicle takes the hit (it always does,
     /// and can't be hit critically): knockback when sprinting at full
@@ -7991,59 +7954,6 @@ impl Game<'_> {
         self.level_set(pos, id)?;
         Ok(true)
     }
-    /// `LayeredCauldronBlock.handleEntityOnFireInside` for a burning player
-    /// in the cauldron at `pos` (`mayInteract`: not a spectator): the fill
-    /// level drops (`lowerFillLevel`, a `block_change` with no source). A
-    /// server's cauldron is the server's.
-    pub(super) fn cauldron_extinguish(&mut self, pos: BlockPos) {
-        if self.remote.is_some() {
-            return;
-        }
-        let at = [pos.x, pos.y, pos.z];
-        let registry = self.pack.assets.registry;
-        let Some(old) = registry
-            .state(self.world.block(at[0], at[1], at[2]))
-            .filter(|s| {
-                matches!(
-                    s.name.as_str(),
-                    "minecraft:water_cauldron" | "minecraft:powder_snow_cauldron"
-                )
-            })
-            .cloned()
-        else {
-            return;
-        };
-        let Ok(new) = registry.resolve(&horizon_client::cauldron::extinguished(&old)) else {
-            return;
-        };
-        let level = |state: &horizon_world::chunk::BlockState| {
-            if matches!(state.name.as_str(), "minecraft:cauldron") {
-                0
-            } else if state.name == "minecraft:lava_cauldron" {
-                3
-            } else {
-                state
-                    .properties
-                    .get("level")
-                    .and_then(|level| level.parse().ok())
-                    .unwrap_or(1)
-            }
-        };
-        let Some(new_state) = registry.state(new).cloned() else {
-            return;
-        };
-        if !self.native_cauldron_level_change_allowed(
-            pos,
-            level(&old),
-            level(&new_state),
-            "extinguishing",
-        ) {
-            return;
-        }
-        if self.level_set(at, new).is_ok() {
-            self.post_block_game_event("minecraft:block_change", at, None, Some(new));
-        }
-    }
     /// Block tool use: distinguish success, failure and fall-through for hand feedback.
     fn use_tool(
         &mut self,
@@ -8338,7 +8248,7 @@ impl Game<'_> {
         }
         Ok(UseResult::Pass)
     }
-    fn can_place_used_fire(&mut self, target: [i32; 3]) -> bool {
+    pub(super) fn can_place_used_fire(&mut self, target: [i32; 3]) -> bool {
         let pos = BlockPos::new(target[0], target[1], target[2]);
         let direction = match ((self.yaw / 90.0 + 0.5).floor() as i32).rem_euclid(4) {
             0 => Direction::South,
@@ -9793,7 +9703,7 @@ impl Game<'_> {
             outline,
             outline_after_terrain,
             outline_high_contrast: self.settings.file.bool("highContrastBlockOutline"),
-            pvp: self.settings.extras.pvp.frame(),
+            pvp: self.pvp_render_frame(),
             debug_lines: &debug_lines,
             debug_lines_on_top: &debug_lines_on_top,
             debug_crosshair: &debug_crosshair,
@@ -9961,12 +9871,8 @@ impl Game<'_> {
         if let WindowEvent::Focused(false) = &event {
             self.update_modifiers(winit::keyboard::ModifiersState::empty());
         }
-        // `PackSelectionScreen.onFilesDrop` on the Create New World screen.
-        if let WindowEvent::DroppedFile(path) = &event
-            && self.title_input_active()
-            && let Some(title) = &mut self.title
-        {
-            title.drop_file(path.clone());
+        if let WindowEvent::DroppedFile(path) = &event {
+            self.drop_pack_file(path);
         }
         // GLFW never hands a field the keys an input method consumes: while a
         // composition is open, and the Enter or Escape that ends it (winit on
@@ -11328,30 +11234,16 @@ impl Game<'_> {
                                 self.gpu_utilization =
                                     f64::from(gpu) * 100.0 / f64::from(ms(cpu).max(0.001));
                             }
-                            // GPU Culling's Auto: only frames of a world that has settled
-                            // count, and only where it can be switched.
-                            if self.settings.horizon.gpu_culling
-                                == horizon_client::graphics::GpuCullingMode::Auto
-                                && self.screen == Screen::Playing
-                                && !self.streaming.terrain_loading()
-                                && horizon_client::graphics::gpu_culling_offer()
-                                    .reason()
-                                    .is_none()
-                                && let Some(on) = self.gpu_culling_auto.observe(
-                                    ms(cpu),
-                                    r.gpu_times.last().copied(),
-                                    ms(elapsed),
-                                )
-                            {
-                                log::info!(
-                                    "Horizon: GPU Culling Auto turns it {} ({})",
-                                    if on { "on" } else { "off" },
-                                    self.gpu_culling_auto.state()
-                                );
-                                if r.set_gpu_culling(on).is_err() {
-                                    self.gpu_culling_auto.reset();
-                                }
-                            }
+                            let settled =
+                                self.screen == Screen::Playing && !self.streaming.terrain_loading();
+                            frame_autotune::observe(
+                                &self.settings.horizon,
+                                settled,
+                                (&mut self.gpu_culling_auto, &mut self.dynamic_resolution),
+                                &mut self.frame_graph,
+                                r,
+                                (ms(cpu), ms(elapsed)),
+                            );
                             self.frame_stats.record_cpu(ms(cpu));
                             let render = r.last_encode;
                             self.frame_stats.record_phases([
@@ -11375,7 +11267,7 @@ impl Game<'_> {
                             self.settings.simulation_distance,
                             self.settings.entity_distance,
                         );
-                        server.set_legacy_rules(self.settings.extras.pvp.combat.rules);
+                        server.set_legacy_rules(self.pvp_legacy_rules());
                     }
                     self.clock.end_frame(self.pause);
                     let saved = self
@@ -12000,6 +11892,7 @@ impl<'a> Game<'a> {
             debug_refresh: Default::default(),
             gpu_utilization: 0.0,
             gpu_culling_auto: horizon_client::autotune::GpuCullingAuto::new(),
+            dynamic_resolution: Default::default(),
             rendered_mobs: Default::default(),
             screen_blur_requested: Default::default(),
             spawn_counts: HashMap::new(),
