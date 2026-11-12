@@ -174,6 +174,7 @@ fn a_mob_bounces_off_a_bouncy_block_and_not_off_stone() {
             dragon: None,
             leash_boats: &[],
             who_lookup: None,
+            foreign: None,
             others_grid: None,
             others_index: None,
             others_villagers: None,
@@ -291,6 +292,7 @@ fn a_ridden_horse_floats_in_deep_water() {
         dragon: None,
         leash_boats: &[],
         who_lookup: None,
+        foreign: None,
         others_grid: None,
         others_index: None,
         others_villagers: None,
@@ -353,6 +355,39 @@ fn a_ridden_horse_floats_in_deep_water() {
     );
 }
 
+/// `Drowned.isPushedByFluid`: a drowned answers `!isSwimming()`, so the current
+/// of a stream pushes a drowned walking its bottom and leaves one swimming after
+/// its target alone, where every land mob feels it.
+#[test]
+fn a_swimming_drowned_is_not_pushed_by_the_current() {
+    use crate::mobs::Species;
+    let mob = |species| {
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.species = species;
+        Mob::new(1, std::sync::Arc::new(kind), Vec3::ZERO, 0.0)
+    };
+    // Drowned.updateSwimming keeps `isSwimming` on `extra.flag`.
+    let mut swimming = mob(Species::Drowned);
+    swimming.extra.flag = true;
+    assert!(
+        !swimming.pushed_by_fluid(),
+        "a swimming drowned holds still"
+    );
+    swimming.extra.flag = false;
+    assert!(swimming.pushed_by_fluid(), "one on the bottom is pushed");
+    // The water mobs answer false either way.
+    for quiet in [
+        Species::Cod,
+        Species::Squid,
+        Species::Turtle,
+        Species::Nautilus,
+    ] {
+        assert!(!mob(quiet).pushed_by_fluid(), "{quiet:?}");
+    }
+    // A land mob is pushed.
+    assert!(mob(Species::Zombie).pushed_by_fluid());
+}
+
 /// `Entity.collide` takes `getEntityCollisions` too: a zombie dropping
 /// onto a living shulker or a happy ghast held still (a player on its
 /// back) lands on it; a dead shulker, a happy ghast that is not held, or
@@ -411,6 +446,7 @@ fn a_falling_mob_lands_on_a_shulker_or_a_held_happy_ghast() {
             nearest_player: None,
             others: &others,
             who_lookup: None,
+            foreign: None,
             dragon: None,
             leash_boats: &[],
             others_grid: None,
@@ -1176,37 +1212,62 @@ fn a_steered_mount_moves_through_the_air_at_a_tenth_of_its_speed() {
     assert_eq!(m.flying_speed(), 0.3_f32 * 0.1);
 }
 
-/// `Drowned.isPushedByFluid`: a drowned answers `!isSwimming()`, so the current
-/// of a stream pushes a drowned walking its bottom and leaves one swimming after
-/// its target alone, where every land mob feels it.
+/// `Entity.getFluidInteractionBox` with `AbstractBoat.modifyPassengerFluidInteractionBox`:
+/// a drowned sitting in a boat on a lake, its legs below the water's surface,
+/// isn't in the water (so it burns in daylight), while the same drowned
+/// without the boat, in a boat that sank, or with a boat it has since left, is.
+/// A boat reaching above its head keeps all fluids off it.
 #[test]
-fn a_swimming_drowned_is_not_pushed_by_the_current() {
-    use crate::mobs::Species;
-    let mob = |species| {
-        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
-        kind.species = species;
-        Mob::new(1, std::sync::Arc::new(kind), Vec3::ZERO, 0.0)
+fn a_mob_in_a_boat_on_water_is_not_in_the_water() {
+    let build = |world: &mut crate::world::World,
+                 registry: &horizon_world::registry::BlockRegistry| {
+        world.chunks.insert(
+            (0, 0),
+            std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+        );
+        let water = registry.default_state("minecraft:water").unwrap();
+        for x in 0..=4 {
+            for z in 0..=4 {
+                // Sources up to y 3: the surface is at 3 + 8/9.
+                for y in 1..=3 {
+                    world.set(x, y, z, water).unwrap();
+                }
+            }
+        }
     };
-    // Drowned.updateSwimming keeps `isSwimming` on `extra.flag`.
-    let mut swimming = mob(Species::Drowned);
-    swimming.extra.flag = true;
-    assert!(
-        !swimming.pushed_by_fluid(),
-        "a swimming drowned holds still"
-    );
-    swimming.extra.flag = false;
-    assert!(swimming.pushed_by_fluid(), "one on the bottom is pushed");
-    // The water mobs answer false either way.
-    for quiet in [
-        Species::Cod,
-        Species::Squid,
-        Species::Turtle,
-        Species::Nautilus,
-    ] {
-        assert!(!mob(quiet).pushed_by_fluid(), "{quiet:?}");
-    }
-    // A land mob is pushed.
-    assert!(mob(Species::Zombie).pushed_by_fluid());
+    let boat = |under_water, max_y| crate::motion::RiddenBoat { under_water, max_y };
+    crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+        let kind = std::sync::Arc::new(types.types["minecraft:drowned"].clone());
+        let wet = |mount: Option<u32>, ridden: Option<crate::motion::RiddenBoat>| {
+            let mut m = Mob::new(1, kind.clone(), Vec3::new(2.5, 3.5, 2.5), 0.0);
+            m.extra.mount = mount;
+            m.fluids.boat = ridden.map(|b| (7, b));
+            m.update_fluids(w, &mut Vec::new());
+            (m.fluids.in_water, m.fluids.water)
+        };
+        assert!(
+            wet(None, None).0,
+            "its legs are in the water without a boat"
+        );
+        assert_eq!(
+            wet(Some(7), Some(boat(false, 3.95))),
+            (false, 0.0),
+            "a boat afloat keeps only what is above its top, clear of the water"
+        );
+        assert_eq!(
+            wet(Some(7), Some(boat(false, 6.0))),
+            (false, 0.0),
+            "a boat reaching above its head keeps all of it out"
+        );
+        assert!(
+            wet(Some(7), Some(boat(true, 3.95))).0,
+            "a boat under water shelters nothing"
+        );
+        assert!(
+            wet(None, Some(boat(false, 3.95))).0,
+            "a boat it no longer rides shelters nothing"
+        );
+    });
 }
 
 /// `Strider.checkFallDamage`: in lava the fall is reset before the base runs, so

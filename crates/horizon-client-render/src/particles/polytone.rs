@@ -1971,7 +1971,7 @@ mod tests {
         // The camera 5 blocks south, at the particle's height.
         let camera = DVec3::new(p.position[0], p.position[1], p.position[2] + 5.0);
         let mut out = Vec::new();
-        engine.render(camera, 0.0, 0.0, 0.0, &|_| 0xF0, &mut out);
+        engine.render(camera, glam::Quat::IDENTITY, 0.0, &|_| 0xF0, &mut out);
         assert_eq!(out.len(), 4);
         for v in &out {
             // The texture's top row (v 0) under the centre, its bottom row over it.
@@ -2023,8 +2023,7 @@ mod tests {
         let mut out = Vec::new();
         engine.render(
             DVec3::new(1.0, 64.0, 6.0),
-            0.0,
-            0.0,
+            glam::Quat::IDENTITY,
             0.0,
             &|_| 0xF0,
             &mut out,
@@ -2138,8 +2137,7 @@ mod tests {
         let mut out = Vec::new();
         engine.render(
             DVec3::new(1.0, 70.0, 1.0),
-            0.0,
-            0.0,
+            glam::Quat::IDENTITY,
             0.0,
             &|_| 0xF0,
             &mut out,

@@ -530,7 +530,6 @@
   "HDR Calibration %s/%s: %s": "การปรับเทียบ HDR %s/%s: %s",
   "Sets the three below full screen, one test picture at a time.": "ตั้งค่าสามภาพด้านล่างแบบเต็มหน้าจอ ครั้งละหนึ่งภาพทดสอบ",
   "Your display didn't say how bright it gets: calibrate to set it up.": "จอแสดงผลของคุณไม่ได้บอกว่าสว่างแค่ไหน: ปรับเทียบเพื่อตั้งค่า",
-  "Your display's reported peak is often too high: calibrate to set it up.": "ค่าความสว่างสูงสุดที่จอภาพรายงานมักจะสูงเกินไป: ปรับเทียบเพื่อตั้งค่าให้เหมาะสม",
   "Already set up for your display. Only calibrate if HDR looks wrong.": "ตั้งค่าการแสดงผลของคุณเรียบร้อยแล้ว ปรับเทียบเฉพาะในกรณีที่ HDR ดูผิดปกติ",
   "Puts Peak Brightness and Paper White back to your display's setup.": "ปรับความสว่างสูงสุดและสีขาวกระดาษกลับไปที่การตั้งค่าจอแสดงผลของคุณ",
   "Set up for your display. Leave on Auto unless it looks wrong.": "ตั้งค่าสำหรับจอแสดงผลของคุณ ปล่อยให้เป็นอัตโนมัติเว้นแต่จะดูผิด",
