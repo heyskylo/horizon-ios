@@ -1036,7 +1036,8 @@ impl Game<'_> {
         }
         // The widgets are drawn; the port box's tooltip goes over them.
         if let Some(tip) = WorldOptions::port_tooltip(&o.port, cursor, o.remote) {
-            ui::tooltip(batch, atlas, &[tip], cursor);
+            // Tooltip.splitTooltip: font.split(message, 170).
+            ui::tooltip(batch, atlas, &atlas.font.split(&tip, 170.0), cursor);
         }
     }
 
