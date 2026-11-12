@@ -104,6 +104,7 @@ EditBox.applyFormat	port	crates/horizon-client-render/src/ui.rs::EditBox::draw	t
 EditBox.updateTextPosition	port	crates/horizon-client-render/src/ui.rs::EditBox::text_x	text_x of the shown part; text_y is its sibling
 EditBox.setMaxLength	port	crates/horizon-client-render/src/ui.rs::Caret::sync	gap: minor: sets the limit only; a longer value is not cut to it
 EditBox.setFocused	port	crates/horizon-client-render/src/ui.rs::Caret::draw	focus restarts the blink clock here; gap: minor: no IME or narration side effects
+EditBox.handleCursor	port	crates/horizon-client-render/src/widgets.rs::text_cursor	IBEAM over an editable field, NOT_ALLOWED otherwise
 EditBox.setEditable	missing		minor: unsure: no read-only flag on the box in ui.rs; a box vanilla locks would accept typing
 EditBox.setHighlightPos	port	crates/horizon-client-render/src/ui.rs::EditBox::set_cursor	sets the highlight and scrolls
 EditBox.setCentered	port	crates/horizon-client-render/src/ui.rs::EditBox::text_start_x	the text and a click start (width - text width) / 2 in; BookSignScreen's title box sets it
