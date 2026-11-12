@@ -393,6 +393,24 @@ impl<'a, 'w> Drop for Finder<'a, 'w> {
     }
 }
 
+/// Classify one swim cell without reading the block below when it already
+/// contains water. The below-block lookup is only needed for a breach.
+#[inline]
+fn swim_cell_type(
+    fluid: Fluid,
+    below_water: impl FnOnce() -> bool,
+    is_air: impl FnOnce() -> bool,
+) -> Option<PathType> {
+    if fluid == Fluid::Water {
+        return None;
+    }
+    if fluid == Fluid::None && below_water() && is_air() {
+        Some(PathType::Breach)
+    } else {
+        Some(PathType::Blocked)
+    }
+}
+
 impl<'a, 'w> Finder<'a, 'w> {
     pub fn new(w: &'a MobWorld<'w>, mob: &'a PathMob, eval: Evaluator) -> Self {
         let (nodes, index, heap, types, statics, collisions) = TLS_BUFFERS.with(|cell| {
@@ -634,15 +652,12 @@ impl<'a, 'w> Finder<'a, 'w> {
             for yy in y..y + self.entity_height {
                 for zz in z..z + self.entity_depth {
                     let fluid = self.fluid(xx, yy, zz);
-                    let below = self.state(xx, yy - 1, zz);
-                    if fluid == Fluid::None
-                        && below.flags & data::WATER != 0
-                        && self.is_air(xx, yy, zz)
-                    {
-                        return PathType::Breach;
-                    }
-                    if fluid != Fluid::Water {
-                        return PathType::Blocked;
+                    if let Some(t) = swim_cell_type(
+                        fluid,
+                        || self.state(xx, yy - 1, zz).flags & data::WATER != 0,
+                        || self.is_air(xx, yy, zz),
+                    ) {
+                        return t;
                     }
                     last = (xx, yy, zz);
                 }
@@ -1502,6 +1517,39 @@ impl<'a, 'w> Finder<'a, 'w> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn swim_cells_only_check_below_for_missing_fluid() {
+        use std::cell::Cell;
+
+        let below_reads = Cell::new(0);
+        let below_water = || {
+            below_reads.set(below_reads.get() + 1);
+            true
+        };
+        assert_eq!(swim_cell_type(Fluid::Water, below_water, || false), None);
+        assert_eq!(below_reads.get(), 0);
+
+        assert_eq!(
+            swim_cell_type(Fluid::None, below_water, || true),
+            Some(PathType::Breach)
+        );
+        assert_eq!(below_reads.get(), 1);
+
+        assert_eq!(
+            swim_cell_type(Fluid::None, || false, || panic!("not queried")),
+            Some(PathType::Blocked)
+        );
+        assert_eq!(
+            swim_cell_type(
+                Fluid::Lava,
+                || panic!("not queried"),
+                || panic!("not queried")
+            ),
+            Some(PathType::Blocked)
+        );
+        assert_eq!(below_reads.get(), 1);
+    }
 
     fn node(x: i32, y: i32, z: i32) -> PathNode {
         PathNode {

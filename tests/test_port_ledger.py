@@ -1,5 +1,8 @@
 import json
+import os
 import struct
+import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -7,8 +10,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
-from tests.test_class_index import Pool
+from test_class_index import Pool
 from tools import port_ledger
+
+SCRIPT = Path(port_ledger.__file__).resolve()
 
 
 def class_bytes(name: str, parent: str, fields: tuple[str, ...] = (), methods: tuple[str, ...] = ()) -> bytes:
@@ -71,6 +76,44 @@ class PortLedgerJarOnlyTests(unittest.TestCase):
                         self.assertNotIn("Child.sourceOnly", stale)
                         self.assertNotIn("Child.tick", stale)
                         self.assertIn("Child.missing", stale)
+
+
+class PortLedgerCliTests(unittest.TestCase):
+    """--json is read the same before or after the query's name (port_ledger.py's docstring)."""
+
+    # A ledger with one class, enough for `where` to answer without a built ledger.
+    LEDGER = {
+        "classes": {"net/minecraft/world/Foo": {"file": "net/minecraft/world/Foo.java", "name": "Foo"}},
+        "methods": {"net/minecraft/world/Foo#tick": {
+            "class": "net/minecraft/world/Foo", "name": "tick", "file": "net/minecraft/world/Foo.java",
+            "lines": [[10, 20]], "callees": [], "client": False}},
+        "class_cites": {}, "ported": {}, "mentioned": {}, "inferred": {},
+    }
+
+    def run_cli(self, out_dir, *args):
+        env = dict(os.environ, PORT_LEDGER_OUT=str(out_dir))
+        return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True, env=env)
+
+    def test_json_flag_read_before_or_after_the_query(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "ledger.json").write_text(json.dumps(self.LEDGER), encoding="utf-8")
+            for args, want_json in ((["where", "Foo", "--json"], True),
+                                    (["--json", "where", "Foo"], True),
+                                    (["where", "Foo"], False)):
+                with self.subTest(args=args):
+                    done = self.run_cli(tmp, *args)
+                    self.assertNotIn("unrecognized arguments", done.stderr)
+                    self.assertEqual(done.returncode, 0, done.stderr)
+                    if want_json:
+                        self.assertEqual(json.loads(done.stdout)[0]["path"], "net/minecraft/world/Foo")
+                    else:
+                        with self.assertRaises(json.JSONDecodeError):
+                            json.loads(done.stdout)
+                        self.assertIn("class: Foo", done.stdout)
+            # The query's own help offers the flag, so it is where a reader looks for it.
+            helped = self.run_cli(tmp, "where", "--help")
+            self.assertEqual(helped.returncode, 0, helped.stderr)
+            self.assertIn("--json", helped.stdout)
 
 
 if __name__ == "__main__":

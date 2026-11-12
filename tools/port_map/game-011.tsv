@@ -98,7 +98,7 @@ Cat.canMate	inline	crates/horizon-client/src/mobs/goals.rs::Breed::can_use	both 
 Cat.removeWhenFarAway	port	crates/horizon-client/src/mobs/ai.rs::feline_removed_when_far	`!isTame() && tickCount > 2400`, read by check_despawn's removable flag
 Cat.reassessTameGoals	inline	crates/horizon-client/src/mobs/tame.rs::register_cat	the player avoidance goal is conditioned on being untamed instead of added and removed
 Cat.tryToTame	inline	crates/horizon-client/src/game/creatures.rs::Game::interact_mob	one chance in three, then tame, sitting, event 7 or 6 and the advancement trigger
-Cat.CatAvoidEntityGoal.canContinueToUse	inline	crates/horizon-client/src/mobs/goals.rs::AvoidEntity::can_continue	gap: minor: a cat tamed mid flight finishes its escape path, the untamed check is only in can_use
+Cat.CatAvoidEntityGoal.canContinueToUse	port	crates/horizon-client/src/mobs/tame.rs::CatAvoid::can_continue	the untamed check is repeated on continue
 Cat.CatRelaxOnOwnerGoal.spaceIsOccupied	port	crates/horizon-client/src/mobs/tame.rs::CatRelaxOnOwner::occupied	another lying or relaxing cat within 2 blocks of the spot
 Cat.CatRelaxOnOwnerGoal.canContinueToUse	port	crates/horizon-client/src/mobs/tame.rs::CatRelaxOnOwner::can_continue	tame, not sitting, owner still asleep and the spot free
 Cat.CatTemptGoal.canScare	port	crates/horizon-client/src/mobs/tame.rs::CatTempt::can_continue	the player that tempted it is never the one that scares it
@@ -148,3 +148,5 @@ TropicalFish.applyImplicitComponents	port	crates/horizon-client/src/entity_nbt.r
 TropicalFish.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	one in ten is a lone random fish, else a shared common variant
 TropicalFish.checkTropicalFishSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	water below and above, and any height biomes or the surface rule
 TropicalFish.Pattern.addToTooltip	port	crates/horizon-client/src/item_tooltip.rs::PlayerHeadName::tropical_fish_lines	ticked in #3512; `TropicalFish.Pattern.addToTooltip` is cited at crates/horizon-client/src/item_tooltip.rs:362
+TraderLlama.TraderLlamaDefendWanderingTraderGoal.canUse	port	crates/horizon-client/src/mobs/caravan.rs::DefendTrader::can_use	spectator attackers are refused by TargetingConditions.DEFAULT
+OwnerHurtByTargetGoal.canUse	port	crates/horizon-client/src/mobs/tame.rs::wants_to_attack	dead attackers are refused by canBeSeenByAnyone

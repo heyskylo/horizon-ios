@@ -200,6 +200,7 @@ pub fn forgive_dead_player(m: &mut Mob) {
 /// `NeutralMob.stopBeingAngry`.
 fn stop_being_angry(m: &mut Mob) {
     m.ai.last_hurt_by = None;
+    m.ai.last_hurt_by_ref = None;
     m.ai.target = None;
     super::neutral_anger::stop(m);
     m.extra.flag2 = false;

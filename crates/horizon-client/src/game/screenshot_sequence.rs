@@ -138,10 +138,7 @@ impl Game<'_> {
             return Err("a screenshot sequence is already running".into());
         }
         let renderer = self.renderer.as_ref().ok_or("no renderer yet")?;
-        if self.pending_screenshot.is_some()
-            || self.ui.screenshot_message.is_some()
-            || renderer.screenshot.is_some()
-        {
+        if self.pending_screenshot.is_some() || renderer.screenshot.is_some() {
             return Err("a screenshot is already pending".into());
         }
         if let Some(refusal) = self.sequence_refusal() {
@@ -233,6 +230,7 @@ impl Game<'_> {
                 path,
                 size: None,
                 scaled: false,
+                background: false,
             });
             renderer.screenshot_result = None;
         }

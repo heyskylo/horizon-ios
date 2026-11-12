@@ -33,7 +33,8 @@ horizon-protocol = { path = "../horizon-protocol" }
 horizon-server-files = { path = "../horizon-server-files" }
 # The dedicated server's anticheat, off unless server.toml's [anticheat] turns it on (docs/anticheat.md).
 horizon-anticheat = { path = "../horizon-anticheat" }
-# The dedicated server's chat filter: [chat_filter], the slur list, mutes (docs/chat-filter.md).
+# The dedicated server's chat filter: [chat_filter], the slur list, mutes (docs/chat-filter.md);
+# `entry` installs it into the engine's hook (`horizon_server_files::chat_guard`).
 horizon-chat-filter = { path = "../horizon-chat-filter" }
 # Shader packs: reading them and turning their GLSL into naga modules.
 horizon-shaders = { path = "../horizon-shaders" }
@@ -119,14 +120,11 @@ audio = ["horizon-client-render/audio", "horizon-client-lib/audio"]
 controllers = ["horizon-client-lib/controllers", "dep:gilrs", "dep:horizon-dualsense", "horizon-client-input/controllers"]
 # Horizon's own extras over the vanilla game, for a fork that wants them out (docs/forking.md):
 # cosmetics and emotes, the "Horizon player" presence, the official server added to
-# the server list, the Horizon Settings and Mods pages, Discord and Play with Friends, and ray
-# tracing on request (`HORIZON_RAY_TRACING=1`). Players always get them; there is no switch. `grep -rn horizon-extras crates/` lists
+# the server list, the Horizon Settings and Mods pages and Play with Friends, and ray tracing on
+# request (`HORIZON_RAY_TRACING=1`). Players always get them; there is no switch. `grep -rn horizon-extras crates/` lists
 # every place it gates. Without it (`--no-default-features --features audio,controllers`) the
 # client is best effort: CI builds only the default.
-horizon-extras = ["horizon-client-lib/horizon-extras", "horizon-client-render/horizon-extras", "discord", "friends"]
-# Online extras a server or a port can leave out; the server build has none of them. "Playing Horizon"
-# on Discord (game/discord.rs).
-discord = ["horizon-client-lib/discord"]
+horizon-extras = ["horizon-client-render/horizon-extras", "friends"]
 # Play with Friends: sharing a world behind an invite code (game/friends.rs). Joining one is
 # horizon-friends' `game` side, which horizon-official registers (`horizon_hooks::tunnel`).
 friends = ["dep:horizon-friends"]

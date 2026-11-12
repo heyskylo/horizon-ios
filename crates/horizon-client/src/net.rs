@@ -149,8 +149,20 @@ pub struct Session {
     far: Arc<crate::lod_net::Inbox>,
     /// The recording running, if any.
     recorder: RecorderSlot,
+    /// This connection's number, new for each one ([`Session::serial`]).
+    serial: u64,
+}
+/// The next [`Session::serial`].
+static NEXT_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+fn next_serial() -> u64 {
+    NEXT_SERIAL.fetch_add(1, Ordering::Relaxed)
 }
 impl Session {
+    /// A number of its own for each connection, never 0: entity ids are per connection, so what
+    /// is kept by id goes when it changes (`horizon_hooks::players::PlayerModels::connection`).
+    pub fn serial(&self) -> u64 {
+        self.serial
+    }
     /// The negotiated wire release, once the connection has been established.
     pub fn server_version(&self) -> horizon_protocol::adapter::ServerVersion {
         self.writer.lock().unwrap().as_ref().map_or(
@@ -256,6 +268,7 @@ impl Session {
             debug: false,
             far: Arc::new(crate::lod_net::Inbox::default()),
             recorder: Arc::new(Mutex::new(None)),
+            serial: next_serial(),
         }
     }
     fn start(
@@ -333,6 +346,7 @@ impl Session {
             debug,
             far,
             recorder,
+            serial: next_serial(),
         }
     }
     /// Everything received since the last poll.
@@ -507,6 +521,22 @@ pub const FRIEND: &str = tunnel::PREFIX;
 /// relay code could also be a host name). Without a resolver nothing is one.
 pub fn is_invite(code: &str, full: bool) -> bool {
     horizon_hooks::engine::tunnel().is_some_and(|r| r.is_code(code, full))
+}
+
+/// Whether an invite code can be joined: a resolver is registered (horizon-official registers
+/// horizon-friends'). The title screen's Friends icon, which opens Join a Friend, is inactive
+/// without one, as the pause menu's is without a page to share from.
+pub fn joins_friends() -> bool {
+    #[cfg(test)]
+    if JOINS_FRIENDS_IN_TEST.get() {
+        return true;
+    }
+    horizon_hooks::engine::tunnel().is_some()
+}
+#[cfg(test)]
+thread_local! {
+    /// A test's stand-in for a registered resolver: the registry is the process's and sealed.
+    pub(crate) static JOINS_FRIENDS_IN_TEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// An address as players and logs see it: a friend's invite code stays
@@ -1262,13 +1292,31 @@ fn brand() -> Vec<u8> {
 }
 
 /// Flatten a JSON chat component (login disconnects are JSON).
+/// At most `horizon_protocol::text::MAX_TEXT` bytes, as `plain`: a login-phase reason from a
+/// server is any JSON it likes.
 pub fn json_text(v: &serde_json::Value, lang: &Language) -> String {
+    use horizon_protocol::text::{MAX_TEXT, push_capped};
     match v {
-        serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Array(a) => a.iter().map(|e| json_text(e, lang)).collect(),
+        serde_json::Value::String(s) => {
+            let mut out = String::new();
+            push_capped(&mut out, s);
+            out
+        }
+        serde_json::Value::Array(a) => {
+            let mut out = String::new();
+            for e in a {
+                if out.len() >= MAX_TEXT {
+                    break;
+                }
+                push_capped(&mut out, &json_text(e, lang));
+            }
+            out
+        }
         serde_json::Value::Object(o) => {
             let mut out = if let Some(t) = o.get("text").and_then(|t| t.as_str()) {
-                t.to_owned()
+                let mut out = String::new();
+                push_capped(&mut out, t);
+                out
             } else if let Some(key) = o.get("translate").and_then(|t| t.as_str()) {
                 let args: Vec<String> = o
                     .get("with")
@@ -1290,7 +1338,10 @@ pub fn json_text(v: &serde_json::Value, lang: &Language) -> String {
             };
             if let Some(extra) = o.get("extra").and_then(|e| e.as_array()) {
                 for e in extra {
-                    out.push_str(&json_text(e, lang));
+                    if out.len() >= MAX_TEXT {
+                        break;
+                    }
+                    push_capped(&mut out, &json_text(e, lang));
                 }
             }
             out
@@ -1444,6 +1495,18 @@ fn continues_after_failed_join(lan: bool, signed_in: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_login_reason_repeating_its_argument_stays_bounded() {
+        let pattern = "%1$s".repeat(16_000);
+        let mut v = serde_json::json!({ "text": "A" });
+        for _ in 0..3 {
+            v = serde_json::json!({ "translate": "x.unknown", "fallback": pattern, "with": [v] });
+        }
+        let v = serde_json::json!({ "text": "", "extra": [v.clone(), v] });
+        let text = json_text(&v, &Language::default());
+        assert!(text.len() <= horizon_protocol::text::MAX_TEXT);
+    }
 
     fn pack(namespace: &str, id: &str, version: &str) -> cfg::KnownPack {
         cfg::KnownPack {
@@ -1829,6 +1892,7 @@ mod tests {
                 debug: false,
                 far: Arc::default(),
                 recorder: Arc::new(Mutex::new(None)),
+                serial: next_serial(),
             };
             let started = std::time::Instant::now();
             if explicit_disconnect {
@@ -1932,6 +1996,7 @@ mod tests {
             debug: false,
             far: Arc::default(),
             recorder: Arc::new(Mutex::new(None)),
+            serial: next_serial(),
         };
         let (thread_writer, thread_configuring, thread_recorder) = (
             session.writer.clone(),
@@ -2215,6 +2280,7 @@ mod tests {
             debug: false,
             far: Arc::default(),
             recorder: Arc::new(Mutex::new(None)),
+            serial: next_serial(),
         };
         let recorder = TestRecorder::default();
         session.start_recording(recorder.clone(), |_| {});

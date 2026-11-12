@@ -14,7 +14,7 @@ The kit grows a piece at a time, each with something on screen that needs it:
 
 | Piece | What it gives |
 |---|---|
-| `hud_kit::room` | `Room`: what of a view an overlay may use, clear of vanilla's boss bars |
+| `hud_kit::room` | `Room`: what of a view an overlay may use, clear of vanilla's boss bars and status rows |
 | `hud_kit::plate` | `Plate`: the box behind a notice's text, or a guide row's backing |
 | `hud_kit::shapes` | triangles, fans, arcs, discs and radial gradients for `HudBatch`; `alpha_since`, `translate_since` |
 | `hud_kit::motion` | `Clock` and `Tween`: quiet motion as pure functions of the frame's time |
@@ -32,11 +32,12 @@ All sizes are GUI px from the view's top left, and an area is `[x, y, w, h]`.
 ### Room
 
 A `Room` is a view's size plus the keep-outs its HUD shows this frame. Each keep-out is a `Keep`
-and an area. Today there is one kind:
+and an area. There are two kinds:
 
 | `Keep` | Where it comes from |
 |---|---|
 | `BossBars` | `hud_overlays::boss_bars_bottom(h, n)`: vanilla's `BossHealthOverlay` layout, y from 12 in steps of 19 until a third of the view's height; as wide as the 182 px bar or its widest name |
+| `StatusRows` | the survival rows above the hotbar (health with its absorption rows, armour, food or the mount's hearts, air), from the highest row's top to the view's bottom, as `hud_layout::draws_top` reports them; `room.bottom()` is the lowest y an overlay may reach |
 
 `Game::hud_room` (`crates/horizon-client/src/game/hud_room.rs`) gathers what is showing.
 Nothing shows while F1 or Replay Studio hides the HUD, or off a world. `hud` empties `ui.room` at
@@ -63,6 +64,23 @@ assert_eq!(room.below_top(18.0), 38.0); // below two bars
 The other HUD boxes (the minimap, the PvP & HUD widgets, mods' corner panels) don't use the room
 yet. Chat, the hotbar, effect icons and subtitles aren't keep-outs yet either. #10125 asks for
 these push-aside points for mods.
+
+### Overlays that hold the view
+
+Some overlays take the middle of the view for themselves, as the radial menu does once it shows.
+What vanilla draws there gives way to them through one query, `Game::overlay_holds_view()`
+(`crates/horizon-client/src/game/hud_room.rs`), not a check per overlay in each piece:
+
+| Gives way | Where |
+|---|---|
+| the 2D crosshair and F3's crosshair | `hud_layers`, `debug_crosshair_drawn` (`game.rs`) |
+| the chat's lines (an open chat still draws) | `hud_layers` (`game.rs`) |
+| every toast: advancements, recipes, tutorials, packs, music | `Game::draw_every_toast` (`hud_room.rs`); they go on timing out, as under F1 |
+| the first-person hands | `Game::hands_shown` (`hud_room.rs`), which `hand_geometry` reads (`game/frame_geometry.rs`) |
+
+A new overlay that holds the view adds its own condition to `overlay_holds_view`. Ask from the moment
+it shows, not from when it owns the pad ([Pad capture](#pad-capture)): a quick tap of the radial
+menu's opener owns the pad for a frame and draws nothing, so nothing should blink.
 
 ### Plates
 
@@ -206,6 +224,30 @@ scroll, span and its fallback), `settings_shell` (a short view leaves no page ou
 keeps the list, the arrows walk every page, search skips pages without matches, the parts are `Tab`
 targets), and `tools/pad_menu_e2e.py --only shader_screens` (RB through every screen of a
 twelve-screen pack in a real game).
+
+## Pad capture
+
+Several overlays over play take the controller for themselves. `Game::pad_capture`
+(`crates/horizon-client/src/game/pad/capture.rs`) is the one place that says which owns it now,
+in one priority order:
+
+| `PadCapture` | Owns the pad while |
+|---|---|
+| `Keyboard` | the on-screen keyboard is up |
+| `Prompt` | a prompt is over the world (a server dialog, the code of conduct, a link, command or resource pack prompt) |
+| `Radial` | the radial menu is held open |
+
+Code that routes the pad's presses and sticks (`pad.rs`, `pad_actions.rs`, `pad_menu.rs`,
+`window_handler.rs`), and the controller guide, which gives way to the keyboard, ask
+`pad_radial_captures()` or `pad_keyboard_captures()` rather than the overlays themselves. A new
+overlay that takes the pad adds its variant here, in its place in the order, and a check that asks
+about it gets a `pad_<overlay>_captures()` beside these. What vanilla draws under an overlay gives
+way through `overlay_holds_view` instead ([Overlays that hold the view](#overlays-that-hold-the-view)).
+Screens are not overlays: `pad_in_menu` says when one has the pad.
+
+One change came with it: a prompt that arrives while the radial menu is open owns the pad from that
+poll, so a B in the same poll answers the prompt instead of cancelling the menu (which the prompt
+closes anyway). Before, the menu took that B.
 
 ## Glyphs
 
@@ -382,7 +424,9 @@ pages read from a shader pack, rows that link to pages out of the page list, and
    included. **Apply**, for changes that wait: `pending` shows it beside Undo, and `apply` does them.
 6. **Host it**: a `Shell` of it on `OptionsUi`, named in `OptionsUi::shell` and `shell_mut`, and opened
    at its page with `Shell::show`. Every input goes through those two, so a screen can't take the wheel
-   and miss the stick.
+   and miss the stick. They live in `options_ui/shell_pages.rs` with the rest of the hosting glue
+   (`shell_events`, `pad_clicks_step`, `shell_opened_focus`), so hosting a screen touches that file,
+   not `options_ui.rs`.
 7. **Delete** the screen's own drawing, scrolling, focus, search and click code.
 
 What the old screen's tests checked moves to tests on the `Shell` of the new one: press a row with
@@ -402,6 +446,11 @@ or what else its button does, and draws the row's reset.
 - `shared`: what else the same button does, which the strip lists and the row marks "[ ]" in yellow.
 - `reset`: `Reset::None` (no button), `Reset::Default` (greyed) or `Reset::Changed` (live) for a reset
   button at the row's end; pressed (a click, or Right then Enter or A), it calls `Screen::reset`.
+- The strip says the binding's note (unbound, or what else its button does) unless the row has a
+  `chosen` of its own: that outranks the note except while the host waits, so a binding can say why it
+  has no button or shares one (the radial menu's opener says what that means for opening the menu).
+- A `Capture::Pad` row waits on any screen of the shell, not only Controller Settings: the game binds
+  the next button for whatever `selected_pad_action` names.
 
 A press gives `Output::Bind(capture)`; the host's `shell_events` starts the wait, and passes what it waits
 on back to `Hosted::draw`.
@@ -424,6 +473,26 @@ let binding = Binding {
 };
 Row::new(Item::Bind(action), name, Value::Binding(binding))
 ```
+
+### Lists, steps and where the focus opens
+
+A screen whose choice has too many values to step through can open a list of them instead, as the
+radial menu's editor does for a slot's action:
+
+- `Screen::choose(s, row)`: a press on a `Choice` row (A, Enter or a click; not Left, Right or a
+  Shift press). `None`, the default, steps it as Right does; outputs (a `Push` of the list's page) open
+  the list instead. Left and Right still step it.
+- `Hosted::clicks_step(on)`: the host marks the clicks that are a controller's D-pad Left or Right
+  (`OptionsUi::pad_clicks_step`, from `game/pad_menu.rs`), so on such a choice they step rather than
+  open the list.
+- `Shell::focus_soon(row)`: put the focus on a row at the next draw, scrolled into view, as the
+  keyboard would. The host reads where it went (`Hosted::opened_focus`, `OptionsUi::shell_opened_focus`)
+  so a controller's focus lands there too: the list opens on the slot's current action, and back on
+  the slot after a pick.
+- `Shell::changed_elsewhere()`: a page pushed over the screen (the list) changed what its Undo puts
+  back.
+- A screen whose pages are the player's (`Sheet`s that come and go) can delete the open one: the shell
+  then shows the first page.
 
 ### The page list
 

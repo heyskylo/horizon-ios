@@ -7,6 +7,10 @@ pub mod boot_paint;
 pub mod heap_census;
 pub mod jobs;
 pub mod process_memory;
+pub mod stack_dump;
+/// Alt+Space and a bare Alt never open the window's system menu, as in GLFW.
+#[cfg(target_os = "windows")]
+pub mod system_menu;
 
 use std::sync::{
     OnceLock,
@@ -150,8 +154,10 @@ fn workers_for(cores: usize, performance: impl FnOnce() -> Option<usize>) -> usi
     cores.min(fast).saturating_sub(1).max(1)
 }
 
-/// The machine's performance cores (`hw.perflevel0.physicalcpu`), where it has more than one
-/// kind of core: Apple silicon. `None` where the OS doesn't say (an Intel Mac).
+/// The machine's performance cores:
+/// - on Apple silicon via `hw.perflevel0.physicalcpu`
+/// - on Linux by comparing max frequencies in `/sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq`
+///   (Intel Alder Lake, Raptor Lake, Meteor Lake, big.LITTLE ARM)
 #[cfg(target_vendor = "apple")]
 fn performance_cores() -> Option<usize> {
     let mut count: libc::c_int = 0;
@@ -169,7 +175,44 @@ fn performance_cores() -> Option<usize> {
     (read == 0 && count > 0).then_some(count as usize)
 }
 
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(target_os = "linux")]
+fn performance_cores() -> Option<usize> {
+    // Read max frequencies across CPUs from sysfs
+    let mut max_freq = 0u64;
+    let mut freqs = Vec::new();
+    let mut cpu_idx = 0;
+    loop {
+        let path = format!("/sys/devices/system/cpu/cpu{cpu_idx}/cpufreq/cpuinfo_max_freq");
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                if let Ok(freq) = content.trim().parse::<u64>() {
+                    max_freq = max_freq.max(freq);
+                    freqs.push(freq);
+                }
+                cpu_idx += 1;
+            }
+            Err(_) => break,
+        }
+    }
+
+    if freqs.is_empty() {
+        return None;
+    }
+
+    // Check if there is frequency disparity indicating asymmetric cores (hybrid architecture)
+    let min_freq = *freqs.iter().min()?;
+    if min_freq < max_freq {
+        // Count performance cores (within 5% of max frequency)
+        let threshold = max_freq.saturating_sub(max_freq / 20);
+        let p_threads = freqs.iter().filter(|&&f| f >= threshold).count();
+        if p_threads > 0 && p_threads < freqs.len() {
+            return Some(p_threads);
+        }
+    }
+    None
+}
+
+#[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
 fn performance_cores() -> Option<usize> {
     None
 }
@@ -696,11 +739,11 @@ mod tests {
         assert_eq!(workers_for(2, || Some(1)), 1);
     }
 
-    /// Off Apple the machine is never asked: the count is the one the pool always had.
+    /// Platforms without asymmetric core detection (Windows, etc.) are unchanged: the count is the one the pool always had.
     #[test]
-    fn default_workers_are_unchanged_off_apple() {
+    fn default_workers_are_unchanged_on_uniform_systems() {
         let before = super::worker_count().saturating_sub(1).max(1);
-        if cfg!(target_vendor = "apple") {
+        if cfg!(any(target_vendor = "apple", target_os = "linux")) {
             assert!((1..=before).contains(&super::default_workers()));
         } else {
             assert_eq!(super::performance_cores(), None);
