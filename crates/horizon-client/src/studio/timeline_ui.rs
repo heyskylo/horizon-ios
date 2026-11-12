@@ -408,7 +408,7 @@ impl TimelineUi {
             let tx = start_x + sec * px_per_sec;
             if tx <= start_x + w {
                 // Major tick line
-                style::fill(batch, atlas, [tx, y + 8.0, 1.0, 8.0], style::HEAD_RULE);
+                style::fill(batch, atlas, [tx, y + 8.0, 1.0, 8.0], style::head_rule());
                 // Label every 2 or 5 seconds depending on width
                 let is_labeled = if total_secs > 60.0 {
                     (sec as u32).is_multiple_of(10)
@@ -424,7 +424,7 @@ impl TimelineUi {
                         "horizon.studio.timeline.seconds",
                         &[Text::literal(seconds)],
                     );
-                    batch.text_styled(atlas, &label, tx + 2.0, y + 1.0, style::SOFT, true);
+                    batch.text_styled(atlas, &label, tx + 2.0, y + 1.0, style::soft(), true);
                 }
             }
             sec += sec_step;
@@ -459,7 +459,7 @@ impl TimelineUi {
         // Base lane well
         let lane_rect = [start_x, y, track_w, bar_h];
         style::fill(batch, atlas, lane_rect, 0xFF14_171F);
-        style::ring(batch, atlas, lane_rect, style::ROW_RULE);
+        style::ring(batch, atlas, lane_rect, style::row_rule());
 
         let total_dur = self.duration_ms.max(1) as f32;
 
@@ -514,7 +514,7 @@ impl TimelineUi {
                     &scene_title,
                     seg_x + 5.0,
                     y + 5.0,
-                    style::MUTED,
+                    style::muted(),
                     true,
                 );
             }
@@ -577,7 +577,7 @@ impl TimelineUi {
         let px = start_x + norm * track_w;
 
         // Scrubber line from ruler through bottom of tracks
-        style::fill(batch, atlas, [px - 1.0, y, 2.0, h], style::ACCENT);
+        style::fill(batch, atlas, [px - 1.0, y, 2.0, h], style::accent());
 
         // Inverted triangle marker at ruler top
         let tri_color = style::WHITE;

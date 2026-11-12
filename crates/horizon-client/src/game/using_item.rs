@@ -12,7 +12,8 @@ impl Game<'_> {
             return false;
         };
         // Consumable.canConsume asks the stack's own `food`.
-        if info.consumable.is_none()
+        let consumable = self.consumable(&stack);
+        if consumable.is_none()
             || (horizon_client::item_sync::food(&stack, info.food).is_some()
                 && (self.player.is_none()
                     || !self.can_eat(
@@ -24,10 +25,8 @@ impl Game<'_> {
         }
         // as Consumable.startConsuming does, no time is eaten at once, without a use
         // (the server's eating reaches a client through the inventory).
-        if let Some(consumable) = info.consumable.as_ref()
-            && item_use::consumes_at_once(
-                horizon_client::item_sync::stack_consumable(&stack, consumable).ticks(),
-            )
+        if let Some(consumable) = consumable.as_ref()
+            && item_use::consumes_at_once(consumable.ticks())
         {
             if self.remote.is_none() {
                 // the cooldown of ItemStack.use's applyAfterUseComponentSideEffects.
@@ -178,7 +177,7 @@ impl Game<'_> {
             self.tick_mod_use(slot, ticks, &stack);
             return;
         }
-        let Some(consumable) = info.consumable.as_ref() else {
+        let Some(consumable) = self.consumable(&stack) else {
             self.using = None;
             return;
         };
@@ -187,7 +186,6 @@ impl Game<'_> {
         // the duration is getUseDuration's when the use started, as a mod's
         // Start and Tick left it.
         let remaining = self.use_duration - ticks as i32;
-        let consumable = horizon_client::item_sync::stack_consumable(&stack, consumable);
         if consumable.should_emit(remaining) {
             self.emit_consume(&consumable, &stack, 5);
         }

@@ -30,6 +30,23 @@ fn marker_driver(text: &str) -> &str {
 pub struct Reported {
     pub paper_white: u32,
     pub peak: u32,
+    /// The peak is the system's own figure (DXGI's `MaxLuminance`): the display's, or a
+    /// calibration profile's (Windows HDR Calibration), which Horizon can't tell apart. Auto
+    /// uses it, and the HDR page offers calibration.
+    pub peak_guessed: bool,
+}
+
+/// Whether HDR is set up for the display, and whether the player kept the system's setup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HdrSetup {
+    /// The system says nothing: the player calibrates.
+    Unknown,
+    /// The system says, but not where its peak comes from: the page offers calibration.
+    Guessed,
+    /// Peak Brightness and Paper White follow the system.
+    Automatic,
+    /// The system said, and the player changed them anyway.
+    Changed,
 }
 
 /// The top of Peak Brightness's scale: `peak_nits_at(PEAK_STEPS)` is PQ's 10 000 nits.
@@ -807,6 +824,11 @@ pub struct Graphics {
     pub overlay: Overlay,
     /// World resolution as a percentage of the window's (50..=200).
     pub resolution_scale: u32,
+    /// Dynamic Resolution: below 100%, `resolution_scale` is the floor, and the scale rises
+    /// toward 100% while the GPU keeps `target_fps` (`crate::dynamic_resolution`). Off by default.
+    pub dynamic_resolution: bool,
+    /// The frame rate Dynamic Resolution keeps (30..=240).
+    pub target_fps: u32,
     /// FXAA over the world.
     pub fxaa: bool,
     /// TAA over the world (FXAA is off while it is on).
@@ -903,6 +925,8 @@ impl Default for Graphics {
             workers: 0,
             overlay: Overlay::Off,
             resolution_scale: 100,
+            dynamic_resolution: false,
+            target_fps: 60,
             fxaa: false,
             taa: false,
             upscaling: Upscaling::Native,
@@ -1064,6 +1088,8 @@ impl Graphics {
                 }
                 "workers" => g.workers = number(g.workers).min(64),
                 "resolutionScale" => g.resolution_scale = number(g.resolution_scale).clamp(50, 200),
+                "dynamicResolution" => g.dynamic_resolution = flag(g.dynamic_resolution),
+                "targetFps" => g.target_fps = number(g.target_fps).clamp(30, 240),
                 "fxaa" => g.fxaa = flag(g.fxaa),
                 "taa" => g.taa = flag(g.taa),
                 "upscaling" => g.upscaling = Upscaling::parse(value),
@@ -1118,7 +1144,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrLighting:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\ndynamicResolution:{}\ntargetFps:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrLighting:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -1155,6 +1181,8 @@ impl Graphics {
                 Overlay::Graph => "graph",
             },
             self.resolution_scale,
+            bool_text(self.dynamic_resolution),
+            self.target_fps,
             bool_text(self.fxaa),
             bool_text(self.taa),
             self.upscaling.name(),
@@ -1205,6 +1233,15 @@ impl Graphics {
         match self.hdr_peak {
             0 => reported.map_or(1000, |r| r.peak),
             n => n,
+        }
+    }
+    /// How HDR is set up for the display the system `reported`.
+    pub fn hdr_setup(&self, reported: Option<Reported>) -> HdrSetup {
+        match reported {
+            None => HdrSetup::Unknown,
+            Some(_) if self.hdr_peak != 0 || self.hdr_paper_white != 0 => HdrSetup::Changed,
+            Some(r) if r.peak_guessed => HdrSetup::Guessed,
+            Some(_) => HdrSetup::Automatic,
         }
     }
     /// The black level, in nits. Not the system's: files from before saved 0 for that
@@ -1320,12 +1357,40 @@ mod tests {
         let reported = Some(Reported {
             paper_white: 300,
             peak: 1000,
+            peak_guessed: false,
         });
         assert_eq!(g.ui_nits(reported), 300);
         g.hdr_paper_white = 120;
         assert_eq!(g.ui_nits(reported), 120);
         g.hdr_ui_nits = 400;
         assert_eq!((g.ui_nits(None), g.ui_nits(reported)), (400, 400));
+    }
+
+    #[test]
+    fn hdr_setup_offers_calibration_where_the_peaks_source_is_unknown() {
+        let wayland = Reported {
+            paper_white: 203,
+            peak: 1015,
+            peak_guessed: false,
+        };
+        let windows = Reported {
+            paper_white: 400,
+            peak: 1000,
+            peak_guessed: true,
+        };
+        let mut g = Graphics::default();
+        assert_eq!(g.hdr_setup(None), HdrSetup::Unknown);
+        assert_eq!(g.hdr_setup(Some(wayland)), HdrSetup::Automatic);
+        assert_eq!(g.hdr_setup(Some(windows)), HdrSetup::Guessed);
+        // Auto still takes the reported peak, over the 1000-nit default.
+        assert_eq!(g.peak_nits(Some(windows)), 1000);
+        assert_eq!(g.paper_white_nits(Some(windows)), 400);
+        for (peak, paper_white) in [(800, 0), (0, 240)] {
+            (g.hdr_peak, g.hdr_paper_white) = (peak, paper_white);
+            assert_eq!(g.hdr_setup(Some(windows)), HdrSetup::Changed);
+            assert_eq!(g.hdr_setup(Some(wayland)), HdrSetup::Changed);
+            assert_eq!(g.hdr_setup(None), HdrSetup::Unknown);
+        }
     }
 
     #[test]
@@ -1483,6 +1548,8 @@ mod tests {
             workers: 6,
             overlay: Overlay::Graph,
             resolution_scale: 75,
+            dynamic_resolution: false,
+            target_fps: 60,
             fxaa: true,
             taa: true,
             upscaling: Upscaling::Balanced,
@@ -1843,10 +1910,12 @@ mod tests {
         let g = Graphics::default();
         assert_eq!(g.workers, 0);
         let cores = horizon_threads::worker_count();
+        // Vanilla's bound: one core is always left for the render and server threads.
         assert!((1..=cores.saturating_sub(1).max(1)).contains(&g.worker_threads()));
-        if !cfg!(target_vendor = "apple") {
-            assert_eq!(g.worker_threads(), cores.saturating_sub(1).max(1));
-        }
+        // The count itself is `horizon_threads::default_workers`, which is one less than
+        // the *smaller* of the machine's cores and its performance cores (a Linux hybrid
+        // CPU reports fewer of the latter), so it is not always `cores - 1`.
+        assert_eq!(g.worker_threads(), horizon_threads::default_workers());
         // A manual count is the player's own choice, kept as asked.
         let manual = Graphics { workers: 3, ..g };
         assert_eq!(manual.worker_threads(), 3);

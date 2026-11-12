@@ -30,6 +30,63 @@ pub struct TargetInfo {
     /// `isPassenger`.
     pub passenger: bool,
 }
+thread_local! {
+    static NEAR_BUF_POOL: std::cell::RefCell<Vec<Vec<u32>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+pub struct NearIter<'a> {
+    others: &'a [Seen],
+    indices: Option<Vec<u32>>,
+    pos: usize,
+    fallback: Option<std::slice::Iter<'a, Seen>>,
+}
+
+impl<'a> Iterator for NearIter<'a> {
+    type Item = &'a Seen;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(indices) = &self.indices
+            && self.pos < indices.len()
+        {
+            let idx = indices[self.pos];
+            self.pos += 1;
+            return Some(&self.others[idx as usize]);
+        }
+        if let Some(all) = &mut self.fallback {
+            return all.next();
+        }
+        None
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        if let Some(indices) = &self.indices {
+            let rem = indices.len().saturating_sub(self.pos);
+            (rem, Some(rem))
+        } else if let Some(all) = &self.fallback {
+            all.size_hint()
+        } else {
+            (0, Some(0))
+        }
+    }
+}
+
+impl Drop for NearIter<'_> {
+    fn drop(&mut self) {
+        if let Some(mut buf) = self.indices.take() {
+            buf.clear();
+            NEAR_BUF_POOL.with(|pool| {
+                if let Ok(mut pool) = pool.try_borrow_mut()
+                    && pool.len() < 8
+                {
+                    pool.push(buf);
+                }
+            });
+        }
+    }
+}
+
 /// Chunk and section cache for raycast block traversals.
 /// Caches the current section to avoid section index checks and hashmap lookups
 /// for consecutive voxels in the same 16x16x16 section.
@@ -318,6 +375,46 @@ impl MobWorld<'_> {
         });
         matches!(result, Ok(None))
     }
+    /// Level.clip with OUTLINE shapes and no fluids for a mob (`getShape`
+    /// with its random offset, `CollisionContext.of(mob)`): the block the
+    /// segment first hits, if it does.
+    pub fn outline_hit(&self, from: Vec3, to: Vec3) -> Option<[i32; 3]> {
+        use horizon_world::collision_context::EntityContextKind;
+        let mut cache = RaycastBlockCache::new();
+        let result = traverse_blocks(from, to, 512, |p: BlockPos| {
+            let state = cache.block(self.world, p.x, p.y, p.z);
+            if cache.section_uniform_air || self.facts.is_air(state) {
+                return None;
+            }
+            let f = self.facts.get(state);
+            let o = if f.outline_offset {
+                f.offset_at(p.x, p.z)
+            } else {
+                [0.0; 3]
+            };
+            let o = Vec3::new(o[0], o[1], o[2]);
+            let declared = self
+                .collision
+                .cached_shapes()
+                .context_outline_shape(state, EntityContextKind::Living);
+            let hit = match declared {
+                Some(shape) => {
+                    VoxelShape::clip_boxes(shape.boxes().iter().map(|b| b.move_by(o)), from, to, p)
+                }
+                None => VoxelShape::clip_boxes(
+                    f.outline.iter().map(|b| {
+                        Aabb::new(Vec3::new(b[0], b[1], b[2]), Vec3::new(b[3], b[4], b[5]))
+                            .move_by(o)
+                    }),
+                    from,
+                    to,
+                    p,
+                ),
+            };
+            hit.map(|_| [p.x, p.y, p.z])
+        });
+        result.ok().flatten()
+    }
     /// Level.clip with VISUAL shapes and no fluids: true on a miss.
     pub fn visual_clear_between(&self, from: Vec3, to: Vec3) -> bool {
         self.visual_clip(from, to) == Some(None)
@@ -512,24 +609,49 @@ impl MobWorld<'_> {
     }
     /// The other mobs whose boxes may meet `area` (callers test the boxes),
     /// in snapshot order: through the grid when there is one, else all.
-    pub fn others_near(&self, area: Aabb) -> impl Iterator<Item = &Seen> {
-        let mut near = Vec::new();
+    pub fn others_near(&self, area: Aabb) -> NearIter<'_> {
+        let mut buf = NEAR_BUF_POOL.with(|pool| {
+            pool.try_borrow_mut()
+                .ok()
+                .and_then(|mut p| p.pop())
+                .unwrap_or_default()
+        });
         let indexed = self
             .others_grid
-            .is_some_and(|grid| grid.candidates(area, &mut near));
-        let all = (!indexed).then(|| self.others.iter());
-        near.into_iter()
-            .map(|i| &self.others[i as usize])
-            .chain(all.into_iter().flatten())
+            .is_some_and(|grid| grid.candidates(area, &mut buf));
+        if indexed {
+            NearIter {
+                others: self.others,
+                indices: Some(buf),
+                pos: 0,
+                fallback: None,
+            }
+        } else {
+            buf.clear();
+            NEAR_BUF_POOL.with(|pool| {
+                if let Ok(mut pool) = pool.try_borrow_mut()
+                    && pool.len() < 8
+                {
+                    pool.push(buf);
+                }
+            });
+            NearIter {
+                others: self.others,
+                indices: None,
+                pos: 0,
+                fallback: Some(self.others.iter()),
+            }
+        }
     }
     pub fn seen(&self, id: u32) -> Option<&Seen> {
-        match self.others_index {
+        let own = match self.others_index {
             Some(index) => index
                 .get(&id)
                 .and_then(|&i| self.others.get(i as usize))
                 .filter(|s| s.id == id),
             None => self.others.iter().find(|s| s.id == id),
-        }
+        };
+        own.or_else(|| self.foreign?.seen(id))
     }
     /// Living mobs of the given species within `range` of `from`, nearest first.
     pub fn nearby<'s>(
@@ -692,6 +814,7 @@ pub(crate) fn with_resource_test_world(
         dragon: None,
         leash_boats: &[],
         who_lookup: None,
+        foreign: None,
         others_grid: None,
         others_index: None,
         others_villagers: None,

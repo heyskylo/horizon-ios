@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
+mod noise;
+
 pub struct Environment {
     system: System,
     /// What the packs' expressions read; the frame sets it before sampling.
@@ -559,16 +561,31 @@ impl<'a> BlockHost<'a> {
     }
 }
 
-/// The simplex noise `r.noise(x, y)` reads, the same for blocks and particles.
-pub(crate) fn polytone_noise() -> &'static horizon_core::noise::SimplexNoise {
-    static NOISE: std::sync::OnceLock<horizon_core::noise::SimplexNoise> =
-        std::sync::OnceLock::new();
-    NOISE.get_or_init(|| {
-        horizon_core::noise::SimplexNoise::new(&mut horizon_core::random::LegacyRandom::new(0))
-    })
+/// The noise `r.noise(x, y)` reads, the same for blocks and particles.
+pub(crate) fn polytone_noise() -> &'static noise::PerlinSimplex {
+    noise::builtin()
 }
 
 impl horizon_polytone::expr::Host for BlockHost<'_> {
+    fn field(
+        &mut self,
+        root: horizon_polytone::expr::Root,
+        field: horizon_polytone::expr::Field,
+    ) -> Option<horizon_polytone::expr::Value> {
+        use horizon_polytone::expr::Field as F;
+        if root != horizon_polytone::expr::Root::Object {
+            return None;
+        }
+        Some(horizon_polytone::expr::Value::Num(match field {
+            F::X => f64::from(self.at[0]),
+            F::Y => f64::from(self.at[1]),
+            F::Z => f64::from(self.at[2]),
+            F::Temperature => f64::from(self.biome.temperature),
+            F::Downfall => f64::from(self.biome.downfall),
+            _ => return None,
+        }))
+    }
+
     fn root(&mut self, root: horizon_polytone::expr::Root) -> horizon_polytone::expr::Value {
         use horizon_polytone::expr::Root;
         horizon_polytone::expr::Value::Object(match root {
@@ -596,7 +613,7 @@ impl horizon_polytone::expr::Host for BlockHost<'_> {
             (V::Object(2), "noise") => {
                 let mut coords = args.iter().filter(|v| !matches!(v, V::Str(_))).map(V::num);
                 let (x, y) = (coords.next().unwrap_or(0.0), coords.next().unwrap_or(0.0));
-                num(f64::from(polytone_noise().get2(x, y)))
+                num(polytone_noise().get(x, y))
             }
             _ => Err(format!("{name} is not available to block colormaps")),
         }

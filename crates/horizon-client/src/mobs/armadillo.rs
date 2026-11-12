@@ -12,10 +12,7 @@ use super::{
         goal_clone,
     },
 };
-use horizon_core::{
-    geometry::{Aabb, Vec3},
-    random::RandomSource,
-};
+use horizon_core::{geometry::Vec3, random::RandomSource};
 
 pub const IDLE: u8 = 0;
 pub const ROLLING: u8 = 1;
@@ -86,18 +83,20 @@ struct BabyFollowAdult {
 const FOLLOW_MIN: f64 = 5.0;
 const FOLLOW_MAX: f64 = 16.0;
 const FOLLOW_SPEED: f64 = 1.25;
+/// The armadillo's `FOLLOW_RANGE` attribute, the sensor's reach.
+const FOLLOW_RANGE: f64 = 16.0;
 impl BabyFollowAdult {
-    /// `NearestVisibleLivingEntities.findClosest(same type and not a baby)`.
+    /// `NearestVisibleLivingEntities.findClosest(same type and not a baby)`, of the living
+    /// entities `NearestLivingEntitySensor.doTick` finds: those whose boxes meet the baby's box
+    /// inflated by its `FOLLOW_RANGE` (16, `Mob.createMobAttributes`).
     fn nearest_adult(m: &mut Mob, cx: &mut Cx) -> Option<u32> {
         let species = m.species();
-        let p = m.position;
-        let area = Aabb::new(
-            Vec3::new(p.x - FOLLOW_MAX, p.y - FOLLOW_MAX, p.z - FOLLOW_MAX),
-            Vec3::new(p.x + FOLLOW_MAX, p.y + FOLLOW_MAX, p.z + FOLLOW_MAX),
-        );
+        let area = m
+            .bounds()
+            .inflate(Vec3::new(FOLLOW_RANGE, FOLLOW_RANGE, FOLLOW_RANGE));
         let ids: Vec<(u32, f64)> =
             cx.w.others_near(area)
-                .filter(|s| s.alive && !s.baby && s.species == species)
+                .filter(|s| s.alive && !s.baby && s.species == species && s.bounds.intersects(area))
                 .map(|s| (s.id, m.distance_sqr(s.position)))
                 .collect();
         let mut best: Option<(u32, f64)> = None;
@@ -778,6 +777,29 @@ mod tests {
                 "not as a ball"
             );
         });
+    }
+
+    #[test]
+    fn a_baby_follows_only_adults_its_sensor_box_meets() {
+        // NearestLivingEntitySensor.doTick: the entities whose boxes meet the baby's box inflated
+        // by FOLLOW_RANGE (16). Both adults are within BabyFollowAdult's 17 blocks. The baby's box
+        // (0.35 to 0.7 wide, by its age scale) inflated reaches x = 16.675 to 16.85: the adult at
+        // x = 17.0 (0.7 wide, its box from 16.65) is found, the one at x = 17.2 (from 16.85) is
+        // not, though a scan of every mob returns it.
+        for (x, follows) in [(17.0, true), (17.2, false)] {
+            let Some([mut baby, adult]) = real([[0.5, 64.0, 0.5], [x, 64.0, 0.5]]) else {
+                return;
+            };
+            baby.extra.age = -24000;
+            crate::mobs::world::with_test_world(&[adult.seen(None)], |w, _| {
+                run_goals(&mut baby, w, 1);
+                assert_eq!(
+                    baby.ai.goals.is_running("BabyFollowAdult"),
+                    follows,
+                    "x = {x}"
+                );
+            });
+        }
     }
 
     #[test]

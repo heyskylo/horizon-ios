@@ -8,8 +8,6 @@ description = "Shader packs (the shaders/ folder format): reading packs, their .
 
 [dependencies]
 horizon-core = { path = "../horizon-core" }
-# The pipeline description this crate fills (engine).
-horizon-render-pipeline = { path = "../horizon-render-pipeline" }
 naga = { version = "30.0.1", features = ["glsl-in", "wgsl-in"] }
 half = "2"
 png = "0.18"

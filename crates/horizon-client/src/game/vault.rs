@@ -13,7 +13,7 @@ use horizon_client::{
     mesher::Vertex,
     vault::{Vault, VaultEvent, VaultLevel, VaultPlayer, VaultState},
 };
-use horizon_core::random::LegacyRandom;
+use horizon_core::random::{LegacyRandom, LevelRandom};
 
 type Pos = (i32, i32, i32);
 
@@ -84,7 +84,10 @@ impl Game<'_> {
         ) -> T,
     ) -> Option<Result<T>> {
         let (mut vault, current, ominous) = self.take_vault(key)?;
-        let mut random = std::mem::replace(&mut self.world.random, LegacyRandom::new(0));
+        let mut random = std::mem::replace(
+            &mut self.world.random,
+            LevelRandom::for_level(LegacyRandom::new(0)),
+        );
         let mut sequences = std::mem::take(&mut self.rand_sequences);
         let players = Players {
             time: self.world.game_time,
@@ -198,7 +201,11 @@ impl Game<'_> {
                 // Vec3.atBottomCenterOf(pos).relative(UP, 1.2), lowered by spawnItem.
                 VaultEvent::Eject(stack, v) => {
                     self.native_vault_loot(pos, &stack.item);
-                    self.spawn_item(stack, [center[0], center[1] + 0.7 - 0.125, center[2]], v, 0)
+                    self.spawn_item_thrown(
+                        stack,
+                        [center[0], center[1] + 0.7 - 0.125, center[2]],
+                        v,
+                    )
                 }
             }
         }

@@ -37,6 +37,7 @@ mod image_parameters;
 mod integer_bounds;
 mod interface_blocks;
 mod ordering;
+mod reachability;
 mod rewrite;
 mod scan;
 mod varyings;
@@ -169,8 +170,11 @@ pub struct GbuffersInputs {
     /// GLSL statements run last in `main`, with `gl_Position` in wgpu's clip space.
     pub after: String,
     /// The alpha test applied to output 0 (`gl_FragData[0]`, `gl_FragColor`), the loader's
-    /// (3.2 `alphaTest.<program>`): `None` keeps every fragment.
+    /// (3.2 `alphaTest.<program>`): `None` keeps every fragment. With `parts`, solid terrain's.
     pub alpha_test: Option<AlphaTest>,
+    /// Solid and cutout terrain in one draw: each quad's fragments get its own part's alpha
+    /// test, and `alphaTestRef` reads that test's reference.
+    pub parts: Option<Parts>,
     /// The program may read `currentRenderedItemId` without declaring it, as Iris 1.11.7
     /// lets the hand's (observed with probe packs; terrain's may not).
     pub item_id_declared: bool,
@@ -190,6 +194,16 @@ pub struct GbuffersInputs {
     /// (`horizonWaterPatch*`, camera-relative boxes) is discarded, so no water casts its light
     /// into a hull. Not with a geometry stage.
     pub water_patches: bool,
+}
+
+/// Terrain's two parts drawn in one pass (`GbuffersInputs::parts`).
+#[derive(Clone, Debug)]
+pub struct Parts {
+    /// A GLSL `bool` expression of the vertex's inputs (set by `body`): its quad is solid
+    /// terrain, not cutout. All four vertices of a quad agree.
+    pub solid: String,
+    /// Cutout terrain's alpha test.
+    pub cutout_alpha_test: Option<AlphaTest>,
 }
 
 /// The sampler of the boats' water patches' depth (`GbuffersInputs::water_mask`).
@@ -304,19 +318,10 @@ fn translate(
     } else {
         GBUFFERS_MATRICES.to_owned()
     };
-    // Struct types without a name get one (`anonymous_structs`), interface blocks travel
-    // as plain varyings (`interface_blocks`), and buffer vectors that atomic functions use by
-    // component become arrays (`atomic_vectors`).
-    let flat = |pp: &Preprocessed| {
-        let named = anonymous_structs::name(&pp.code);
-        let code = named.as_deref().unwrap_or(&pp.code);
-        let flat = interface_blocks::flatten(code)
-            .or(named)
-            .map(|code| Preprocessed { code, ..pp.clone() });
-        let split = atomic_vectors::rewrite(flat.as_ref().unwrap_or(pp));
-        split.or(flat)
-    };
-    let (vertex_flat, fragment_flat) = (flat(vertex), flat(fragment));
+    let (vertex_flat, fragment_flat) = (
+        reachability::prepare(vertex),
+        reachability::prepare(fragment),
+    );
     let vertex = vertex_flat.as_ref().unwrap_or(vertex);
     let fragment = fragment_flat.as_ref().unwrap_or(fragment);
     // A `bool` member of a storage buffer travels as a `uint` (`buffer_bools`).
@@ -437,10 +442,28 @@ fn translate(
             uniforms.remove("textureMatrix");
         }
     }
-    // `alphaTestRef` is the program's alpha test reference: a constant of the program.
+    // Terrain's parts whose alpha tests differ: the vertex stage tells the fragment stage its
+    // quad's part (`hz_cutout`, flat), which picks the test and `alphaTestRef`.
+    let parts = gbuffers.and_then(|g| {
+        let p = g.parts.as_ref()?;
+        let tests = [g.alpha_test, p.cutout_alpha_test];
+        (tests[0] != tests[1]).then_some((p.solid.as_str(), tests))
+    });
+    // `alphaTestRef` is the program's alpha test reference: a constant of the program, or
+    // with `parts` the quad's part's, set first in each stage's `main`.
+    let reference = |t: Option<AlphaTest>| t.map_or(0.0, |t| t.reference);
     let alpha_test_ref = gbuffers
         .filter(|_| uniforms.get("alphaTestRef").is_some_and(|t| t == "float"))
-        .map(|g| g.alpha_test.map_or(0.0, |t| t.reference));
+        .map(|g| reference(g.alpha_test));
+    let part_ref = parts
+        .filter(|_| alpha_test_ref.is_some())
+        .map(|(_, [solid, cutout])| {
+            format!(
+                "    alphaTestRef = hz_cutout == 0u ? {:?} : {:?};\n",
+                reference(solid),
+                reference(cutout)
+            )
+        });
     if alpha_test_ref.is_some() {
         uniforms.remove("alphaTestRef");
     }
@@ -488,8 +511,24 @@ fn translate(
         .filter(|_| uses_name(&vertex.code, "mc_chunkFade") && !v.globals.contains("mc_chunkFade"));
     let header = |stage: &Stage| {
         let mut h = resources(&uniforms, &samplers, &images);
-        if let Some(reference) = alpha_test_ref {
-            writeln!(h, "const float alphaTestRef = {reference:?};").unwrap();
+        match (alpha_test_ref, &part_ref) {
+            (Some(_), Some(_)) => h.push_str("float alphaTestRef;\n"),
+            (Some(reference), None) => {
+                writeln!(h, "const float alphaTestRef = {reference:?};").unwrap()
+            }
+            (None, _) => {}
+        }
+        if parts.is_some() {
+            let direction = match stage.kind {
+                ShaderStage::Vertex => "out",
+                _ => "in",
+            };
+            writeln!(
+                h,
+                "layout(location = {}) flat {direction} uint hz_cutout;",
+                locations.len()
+            )
+            .unwrap();
         }
         if draw {
             h.push_str(
@@ -545,6 +584,10 @@ fn translate(
     if let Some((_, value)) = chunk_fade {
         writeln!(vertex_main, "    mc_chunkFade = {value};").unwrap();
     }
+    if let Some((solid, _)) = parts {
+        writeln!(vertex_main, "    hz_cutout = ({solid}) ? 0u : 1u;").unwrap();
+        vertex_main.push_str(part_ref.as_deref().unwrap_or_default());
+    }
     for (name, value, ty) in &v.attributes {
         let value = match gbuffers {
             // Our quad's values for a composite.
@@ -587,6 +630,7 @@ fn translate(
     if gbuffers.is_some() {
         fragment_main.push_str(&matrices);
     }
+    fragment_main.push_str(part_ref.as_deref().unwrap_or_default());
     fragment_main.push_str(fog);
     if f.frag_coord {
         fragment_main.push_str(match target {
@@ -610,28 +654,28 @@ fn translate(
     }
     // Inside a boat's water patch (`GbuffersInputs::water_patches`): each box is a corner and
     // its y range, then its two horizontal edges; water there, a little below and above (waves),
-    // casts nothing.
+    // casts nothing. Direct unrolled checks avoid local array allocations and spilling (#14782).
     if patches {
-        let boxes: Vec<String> = (0..2 * WATER_PATCHES)
-            .map(|k| format!("horizonWaterPatch{k}"))
-            .collect();
-        writeln!(
-            fragment_main,
-            "    vec4 hz_patches[{}] = vec4[{}]({});\n    \
-             for (int hz_i = 0; hz_i < {WATER_PATCHES}; hz_i++) {{\n        \
-             if (hz_i >= horizonWaterPatchCount) {{ break; }}\n        \
-             vec4 hz_a = hz_patches[2 * hz_i];\n        vec4 hz_b = hz_patches[2 * hz_i + 1];\n        \
-             vec2 hz_d = horizonPatchPos.xz - hz_a.xy;\n        \
-             float hz_s = dot(hz_d, hz_b.xy) / max(dot(hz_b.xy, hz_b.xy), 1e-6);\n        \
-             float hz_t = dot(hz_d, hz_b.zw) / max(dot(hz_b.zw, hz_b.zw), 1e-6);\n        \
-             if (hz_s >= 0.0 && hz_s <= 1.0 && hz_t >= 0.0 && hz_t <= 1.0\n            \
-             && horizonPatchPos.y >= hz_a.z - 0.5 && horizonPatchPos.y <= hz_a.w + 0.25) {{ discard; }}\n    \
-             }}",
-            2 * WATER_PATCHES,
-            2 * WATER_PATCHES,
-            boxes.join(", ")
-        )
-        .unwrap();
+        fragment_main.push_str("    if (horizonWaterPatchCount > 0) {\n        vec2 hz_p = horizonPatchPos.xz;\n        float hz_y = horizonPatchPos.y;\n");
+        for k in 0..WATER_PATCHES {
+            let (a, b) = (2 * k, 2 * k + 1);
+            let prefix = if k == 0 {
+                String::new()
+            } else {
+                format!("if (horizonWaterPatchCount > {k}) ")
+            };
+            writeln!(
+                fragment_main,
+                "        {prefix}{{\n            \
+                 vec2 hz_d = hz_p - horizonWaterPatch{a}.xy;\n            \
+                 float hz_s = dot(hz_d, horizonWaterPatch{b}.xy) / max(dot(horizonWaterPatch{b}.xy, horizonWaterPatch{b}.xy), 1e-6);\n            \
+                 float hz_t = dot(hz_d, horizonWaterPatch{b}.zw) / max(dot(horizonWaterPatch{b}.zw, horizonWaterPatch{b}.zw), 1e-6);\n            \
+                 if (hz_s >= 0.0 && hz_s <= 1.0 && hz_t >= 0.0 && hz_t <= 1.0\n                \
+                 && hz_y >= horizonWaterPatch{a}.z - 0.5 && hz_y <= horizonWaterPatch{a}.w + 0.25) {{ discard; }}\n        }}"
+            )
+            .unwrap();
+        }
+        fragment_main.push_str("    }\n");
     }
     // Behind a boat's water patch, within 3% of its distance (the water's surface lies at the
     // patch, and packs wave it): no water there. Depth 1 is no patch.
@@ -649,18 +693,19 @@ fn translate(
         writeln!(fragment_main, "    {copy}").unwrap();
     }
     // With `out` variables the pack tests alpha itself.
-    if let Some(t) = gbuffers.and_then(|g| g.alpha_test)
+    if let Some(g) = gbuffers
         && f.outputs.contains(&0)
         && !f.frag_outs.iter().any(|(n, _)| *n == 0)
     {
-        match t.op {
-            "false" => fragment_main.push_str("    discard;\n"),
-            op => writeln!(
+        match parts {
+            Some((_, [solid, cutout])) => writeln!(
                 fragment_main,
-                "    if (!(hz_out0.a {op} {:?})) {{ discard; }}",
-                t.reference
+                "    if (hz_cutout == 0u) {{\n    {}    }} else {{\n    {}    }}",
+                alpha_test(solid),
+                alpha_test(cutout)
             )
             .unwrap(),
+            None => fragment_main.push_str(&alpha_test(g.alpha_test)),
         }
     }
     fragment_main.push_str("}\n");
@@ -720,6 +765,17 @@ fn translate(
         vertex,
         fragment,
     })
+}
+
+/// GLSL: `test` applied to output 0, a statement of `main`.
+fn alpha_test(test: Option<AlphaTest>) -> String {
+    match test {
+        None => String::new(),
+        Some(AlphaTest { op: "false", .. }) => "    discard;\n".to_owned(),
+        Some(AlphaTest { op, reference }) => {
+            format!("    if (!(hz_out0.a {op} {reference:?})) {{ discard; }}\n")
+        }
+    }
 }
 
 /// Images an atomic function uses (naga gave them atomic access) are bound for atomics.
@@ -3671,6 +3727,42 @@ in VertexData {{ {member} }} vIn;
     /// A work group size given as a constant expression (GLSL 4.60, 4.4 and 4.4.1), kept within
     /// the implementation's: the program compiles with its value.
     #[test]
+    fn quad_swaps_translate() {
+        let csh = "#version 460\n#extension GL_KHR_shader_subgroup_quad : enable\n\
+                   layout(local_size_x = 64) in;\n\
+                   layout(rgba16f) writeonly uniform image2D colorimg4;\n\
+                   void main() { vec4 v = vec4(gl_LocalInvocationID.x);\n\
+                   v = subgroupQuadSwapHorizontal(v) + subgroupQuadSwapVertical(v) \
+                   + subgroupQuadSwapDiagonal(v);\n\
+                   imageStore(colorimg4, ivec2(gl_GlobalInvocationID.xy), v); }\n";
+        let pack = Pack::from_zip_bytes("P.zip", zip(&[("shaders/deferred_a.csh", csh)])).unwrap();
+        let c = translate_compute(&preprocess(&pack, "deferred_a.csh", &Macros::standard()))
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        let mut swaps = Vec::new();
+        let m = &c.module;
+        let functions = m.functions.iter().map(|(_, f)| f);
+        for f in functions.chain([&m.entry_points[0].function]) {
+            for (statement, _) in f.body.span_iter() {
+                if let naga::Statement::SubgroupGather {
+                    mode: naga::GatherMode::QuadSwap(direction),
+                    ..
+                } = statement
+                {
+                    swaps.push(*direction);
+                }
+            }
+        }
+        assert_eq!(
+            swaps,
+            [
+                naga::Direction::X,
+                naga::Direction::Y,
+                naga::Direction::Diagonal
+            ]
+        );
+    }
+
+    #[test]
     fn a_work_group_size_may_be_a_constant_expression() {
         let csh = "#version 460\nlayout(local_size_x = min(gl_MaxComputeWorkGroupSize.x, 256), \
                    local_size_y = 1, local_size_z = 1) in;\n\
@@ -3681,6 +3773,19 @@ in VertexData {{ {member} }} vIn;
             .unwrap_or_else(|e| panic!("{e:?}"));
         let entry = &c.module.entry_points[0];
         assert_eq!(entry.workgroup_size, [256, 1, 1]);
+    }
+
+    #[test]
+    fn subgroup_ids_in_a_two_dimensional_work_group() {
+        let csh = "#version 460\n#extension GL_KHR_shader_subgroup_basic : enable\n\
+                   layout(local_size_x = 32, local_size_y = 16) in;\n\
+                   layout(r32ui) uniform uimage2D colorimg4;\n\
+                   void main() { imageStore(colorimg4, ivec2(gl_GlobalInvocationID.xy), \
+                   uvec4(gl_SubgroupID, gl_SubgroupInvocationID, 0u, 1u)); }\n";
+        let pack = Pack::from_zip_bytes("P.zip", zip(&[("shaders/deferred_a.csh", csh)])).unwrap();
+        let c = translate_compute(&preprocess(&pack, "deferred_a.csh", &Macros::standard()))
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(c.module.entry_points[0].workgroup_size, [32, 16, 1]);
     }
 
     #[test]

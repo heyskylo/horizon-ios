@@ -5,6 +5,9 @@ use super::{
     Renderer, check_layers, cull, describe_adapter, is_software, oit, startup_step, surface_format,
     timing,
 };
+// Ray tracing on request, which the device needs from its creation (gfx.rs may not grow).
+#[path = "ray_query.rs"]
+pub(super) mod ray_query;
 use std::sync::Arc;
 use winit::window::Window;
 
@@ -134,6 +137,7 @@ pub(super) async fn open_adapter(
     let features = timing::GpuTimer::features(adapter)
         | cull::Cull::features(adapter)
         | oit::features(adapter)
+        | ray_query::features(adapter)
         | (adapter.features()
             & (wgpu::Features::INDIRECT_FIRST_INSTANCE
                 | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT
@@ -166,6 +170,7 @@ pub(super) async fn open_adapter(
         // with the larger blocks a few small buffers kept whole blocks the arena's pages had
         // left, and over half the video memory reserved was unused (1,344 MiB for 500).
         memory_hints: wgpu::MemoryHints::MemoryUsage,
+        experimental_features: ray_query::experimental(features),
         ..Default::default()
     };
     #[cfg(not(target_os = "macos"))]
@@ -215,6 +220,18 @@ pub(super) async fn open_adapter(
         device_lost,
         configured,
     })
+}
+/// Logs a sprite split below the CPU's (the GPU's limit), and warns when Metal's arrays grew
+/// past 512 layers (#12155), so a big pack's texture-corruption report ties to it (#8471).
+pub(super) fn log_sprite_split(info: &wgpu::AdapterInfo, split: u32, layers: u32) {
+    if info.backend == wgpu::Backend::Metal && split > 512 {
+        log::warn!(
+            "Horizon: {split}-layer Metal sprite arrays for {layers} on {}",
+            info.name
+        );
+    } else if split < super::sprite_split() {
+        log::info!("Horizon: {split} block textures per array (the GPU's limit)");
+    }
 }
 #[cfg(test)]
 mod tests {

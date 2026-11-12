@@ -14,6 +14,7 @@ use super::{Dim, Game, Mob, boats, lan::LanHost, minecarts};
 use horizon_client::{lan::hub::TickCtx, world_spawn::PlayerSpawnFinder};
 use horizon_core::{geometry::Vec3, position::BlockPos};
 use horizon_protocol::packets::play::{self, Clientbound as C};
+use horizon_world::dimension_type::DimensionFacts;
 
 /// A trip under way: the player is in the destination's level, whose
 /// chunks are loading around `target`.
@@ -555,13 +556,11 @@ impl Game<'_> {
         });
         let source = self.dim;
         let end = plan.is_none();
-        // Coordinates scale by 8 between the Overworld and the Nether; an
-        // End portal has fixed destinations.
-        let scale = match (source, target) {
-            (Dim::Overworld, Dim::Nether) | (Dim::End, Dim::Nether) => 1.0 / 8.0,
-            (Dim::Nether, Dim::Overworld) => 8.0,
-            _ => 1.0,
-        };
+        // Nether to End would scale by 8 here; an End portal always takes end_destination.
+        let scale = DimensionFacts::teleportation_scale(
+            self.dimension_type_of(source),
+            self.dimension_type_of(target),
+        );
         self.end_portal_travel = end;
         // Leaving the End: the player's own respawn point.
         let own = if end {
@@ -644,11 +643,14 @@ impl Game<'_> {
     /// in the level in place: where it stands up, facing the anchor (with
     /// the deplete sound) or the bed; else the point is forgotten, and the
     /// caller tells the player (`Hub::missing_respawn_block`).
-    pub(super) fn resolve_server_respawn(&mut self, config: RespawnConfig) -> Option<(Vec3, f32)> {
+    pub(super) fn resolve_server_respawn(
+        &mut self,
+        config: RespawnConfig,
+    ) -> Option<(Vec3, f32, f32)> {
         let [x, y, z] = config.pos;
         let anchor = self.is_anchor(self.world.block(x, y, z));
         match self.find_respawn_and_use(config, true) {
-            Ok(Some((at, yaw))) => {
+            Ok(Some((at, yaw, pitch))) => {
                 if !config.forced && anchor {
                     let [x, y, z] = config.pos.map(f64::from);
                     self.audio.play(
@@ -658,7 +660,7 @@ impl Game<'_> {
                         1.0,
                     );
                 }
-                Some((at, yaw))
+                Some((at, yaw, pitch))
             }
             Ok(None) | Err(_) => {
                 let mut cancel = false;
@@ -796,7 +798,10 @@ impl Game<'_> {
             let yaw = host.hub.guests[i].yaw;
             let (position, yaw) = if let Some(config) = trip.respawn {
                 match self.as_guest(host, trip.conn, |g| g.resolve_server_respawn(config)) {
-                    Some(Some(found)) => found,
+                    Some(Some((at, yaw, pitch))) => {
+                        host.hub.guests[i].pitch = pitch;
+                        (at, yaw)
+                    }
                     _ => {
                         host.hub.missing_respawn_block(trip.conn);
                         self.respawn_at_world_spawn(host, trip.conn);

@@ -50,7 +50,6 @@ pub mod setup_args;
 pub mod shop;
 pub mod shortcut;
 pub mod signed;
-pub mod skins;
 pub mod sources;
 pub mod tailscale;
 pub mod telemetry;

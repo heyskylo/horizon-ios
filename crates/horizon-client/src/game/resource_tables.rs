@@ -26,6 +26,14 @@ impl Resources {
     pub(super) fn environment(&self) -> &Environment {
         &self.core.environment
     }
+    /// The environment of a dimension type id; a type with no table of its own gets the overworld's.
+    pub(super) fn environment_of(&self, dimension_type: &str) -> &Environment {
+        match dimension_type {
+            "minecraft:the_nether" => self.nether_environment(),
+            "minecraft:the_end" => self.end_environment(),
+            _ => self.environment(),
+        }
+    }
     pub(super) fn mob_types(&self) -> &HashMap<String, Arc<MobType>> {
         &self.rest().mob_types
     }
@@ -292,10 +300,8 @@ fn pack_particles(
 }
 
 /// The packs' custom colours; their dye and sheep colours go to the draw paths' table.
-fn read_colors(root: &std::path::Path) -> horizon_client::polytone_colors::PackColors {
-    let colors = horizon_client::polytone_colors::PackColors::read(root);
-    horizon_client::pack_palette::set(&colors);
-    horizon_client::pack_palette::set_item_bars(root);
-    horizon_client::brewing::set_pack_colors(colors.effects());
+fn read_colors(root: &std::path::Path) -> horizon_client::pack_palette::PackColors {
+    let colors = horizon_client::pack_palette::read(root);
+    horizon_client::brewing::set_pack_colors(colors.effects.clone());
     colors
 }

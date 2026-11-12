@@ -571,7 +571,7 @@ impl Game<'_> {
             return;
         };
         // Combat feel Legacy draws a hit as 1.8.9 did: no sweep, no damage hearts.
-        if self.settings.extras.pvp.combat.hides_particle(options.ty) {
+        if self.pvp_hides_particle(options.ty) {
             return;
         }
         let (d, s) = (p.dist.map(f64::from), p.max_speed.map(f64::from));
