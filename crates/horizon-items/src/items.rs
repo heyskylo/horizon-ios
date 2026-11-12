@@ -2449,7 +2449,9 @@ impl LootContext<'_> {
                     let level = self.enchantment_level(f["enchantment"].as_str().unwrap_or(""));
                     if level > 0 && self.killed_by_player && self.block.is_empty() {
                         let add = level as f32 * Self::number(&f["count"], random);
-                        let total = (stack.count as i32).saturating_add(add.round() as i32).max(0);
+                        let total = (stack.count as i32)
+                            .saturating_add(add.round() as i32)
+                            .max(0);
                         stack.count = total as u32;
                         if let Some(limit) = f["limit"].as_i64().filter(|l| *l > 0) {
                             stack.count = stack.count.min(limit as u32);
