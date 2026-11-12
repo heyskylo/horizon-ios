@@ -766,12 +766,25 @@ const SMALLEST_0_2: &str = "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\
 
 #[test]
 fn both_lines_are_read() {
-    use horizon_shader_api::{Api, Blend};
+    use horizon_shader_api::{Api, Blend, Primaries};
     let m = Manifest::parse(SMALLEST_0_2).unwrap();
     assert_eq!(
         (m.api, m.blend, m.tonemap.is_none()),
         (Api::V0_2, Blend::Gamma, true)
     );
+    assert_eq!(m.primaries, Primaries::Bt709);
+    let named = format!("{SMALLEST_0_2}[frame]\nprimaries = \"bt709\"\n");
+    assert_eq!(Manifest::parse(&named).unwrap(), m);
+    let wide = format!("{SMALLEST_0_2}[frame]\nblend = \"linear\"\nprimaries = \"bt2020\"\n");
+    let wide = Manifest::parse(&wide).unwrap();
+    assert_eq!(
+        (wide.blend, wide.primaries),
+        (Blend::Linear, Primaries::Bt2020)
+    );
+    // Each space's weights give white a luminance of 1.
+    for p in [Primaries::Bt709, Primaries::Bt2020] {
+        assert!((p.luminance().iter().sum::<f32>() - 1.0).abs() < 1e-6);
+    }
     assert_eq!(Manifest::parse(&sample_text()).unwrap().api, Api::V0_1);
     let tonemap = format!("{SMALLEST_0_2}[tonemap]\nfile = \"t.wgsl\"\nname = \"Curve\"\n");
     let m = Manifest::parse(&tonemap).unwrap();
@@ -801,6 +814,22 @@ fn the_0_2_keys_are_refused_under_0_1_and_checked_under_0_2() {
         (
             format!("{SMALLEST_0_2}[frame]\nblend = \"srgb\"\n"),
             "frame.blend \"srgb\": gamma or linear",
+        ),
+        (
+            format!("{SMALLEST_0_2}[frame]\nblend = \"linear\"\nprimaries = \"p3\"\n"),
+            "frame.primaries \"p3\": bt709 or bt2020",
+        ),
+        (
+            format!("{SMALLEST_0_2}[frame]\nprimaries = \"bt2020\"\n"),
+            "needs blend = \"linear\": a change of primaries is only right in linear light",
+        ),
+        (
+            format!("{SMALLEST_0_2}[frame]\nblend = \"gamma\"\nprimaries = \"bt2020\"\n"),
+            "frame.primaries \"bt2020\" needs blend = \"linear\"",
+        ),
+        (
+            format!("{smallest_0_1}[frame]\nprimaries = \"bt709\"\n"),
+            "[frame] is shader API 0.2",
         ),
         (
             format!("{SMALLEST_0_2}[frame]\nwhite = 1\n"),

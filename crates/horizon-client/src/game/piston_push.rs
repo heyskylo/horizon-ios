@@ -79,6 +79,7 @@ impl Game<'_> {
     /// TNT duper's TNT stops at the block that has not moved yet (#11399).
     pub(super) fn push_piston_entities(&mut self, pushes: Vec<Push>) {
         let mut accumulators = std::collections::HashMap::new();
+        let mut pricked = Vec::new();
         // Where each moving piston first sits in both lists, so a clock of a
         // thousand pistons doesn't scan them a thousand times a tick.
         let mut index = PistonIndex::default();
@@ -92,8 +93,57 @@ impl Game<'_> {
         let targets = self.piston_push_targets(&pushes, &steps);
         for push in pushes {
             let pos = push.0;
-            self.push_for_piston(push, &targets, &steps, &mut accumulators);
+            self.push_for_piston(push, &targets, &steps, &mut accumulators, &mut pricked);
             self.advance_piston_collision(pos, &index);
+        }
+        self.hurt_cactus_pricked_vehicles(pricked);
+    }
+
+    /// `moveEntityByPiston`'s `applyEffectsFromBlocks` for a boat or a
+    /// minecart: every cactus its box touches on the way from `start` to
+    /// `end` pricks it (`CactusBlock.entityInside`, `Entity.checkInsideBlocks`
+    /// over the box less 1e-5), even when the push moved it nowhere. The hurt
+    /// waits for the end of the tick's pushes, whose targets are found first.
+    fn piston_cactus_contact(
+        &self,
+        target: Target,
+        start: Aabb,
+        end: Aabb,
+        pricked: &mut Vec<u32>,
+    ) {
+        let id = match target {
+            Target::Entity(EntityHandle::Boat(i)) => self.boats[i].id,
+            Target::Entity(EntityHandle::Cart(i)) => self.carts[i].id,
+            _ => return,
+        };
+        let eps = f64::from(1.0e-5_f32);
+        let (a, b) = (start.min_position(), end.min_position());
+        let lo = Vec3::new(a.x.min(b.x), a.y.min(b.y), a.z.min(b.z));
+        let (a, b) = (start.max_position(), end.max_position());
+        let hi = Vec3::new(a.x.max(b.x), a.y.max(b.y), a.z.max(b.z));
+        let facts = self.res.facts();
+        for x in (lo.x + eps).floor() as i32..=(hi.x - eps).floor() as i32 {
+            for y in (lo.y + eps).floor() as i32..=(hi.y - eps).floor() as i32 {
+                for z in (lo.z + eps).floor() as i32..=(hi.z - eps).floor() as i32 {
+                    if &*facts.get(self.world.block(x, y, z)).name == "minecraft:cactus" {
+                        pricked.push(id);
+                    }
+                }
+            }
+        }
+    }
+
+    /// `Entity.hurt(cactus, 1)` for the vehicles `piston_cactus_contact`
+    /// found, in the order of their pushes (`VehicleEntity.hurtServer`: one
+    /// more point of damage; a vehicle a piston pushes in a chunk that does
+    /// not tick entities never wears it off, so the fifth breaks it).
+    fn hurt_cactus_pricked_vehicles(&mut self, pricked: Vec<u32>) {
+        for id in pricked {
+            if let Some(i) = self.boats.iter().position(|b| b.id == id) {
+                self.hurt_boat(i, 1.0, false);
+            } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
+                self.hurt_cart(i, 1.0, false, false);
+            }
         }
     }
 
@@ -164,9 +214,15 @@ impl Game<'_> {
             self.creatures.projectiles[i].stuck_speed = stuck;
         }
         // The bubble columns it went through push it too
-        // (`Projectile.onInsideBubbleColumn` / `onAboveBubbleColumn`), the
-        // projectiles whose own tick applies them.
-        if self.creatures.projectiles[i].applies_block_effects() {
+        // (`Projectile.onInsideBubbleColumn` / `onAboveBubbleColumn`): every
+        // projectile, arrows and llama spit included, whatever its own tick
+        // applies. A stuck arrow isn't pushed (`AbstractArrow`'s overrides
+        // return when `isInGround`), as in its own tick.
+        let stuck_arrow = self.creatures.projectiles[i]
+            .arrow
+            .as_ref()
+            .is_some_and(|a| a.in_ground);
+        if !stuck_arrow {
             let (world, registry, facts, collision) = (
                 &self.world,
                 self.pack.assets.registry,
@@ -186,8 +242,12 @@ impl Game<'_> {
                 .map(|c| (c.drag, c.surface))
             });
             let tops = std::mem::take(&mut p.bubble_surfaces);
-            for [x, y, z] in tops {
-                self.bubble_column_particles(BlockPos::new(x, y, z));
+            // `sendBubbleColumnParticles` is the server's: a server's client,
+            // which pushes too, leaves them to the packets.
+            if self.remote.is_none() {
+                for [x, y, z] in tops {
+                    self.bubble_column_particles(BlockPos::new(x, y, z));
+                }
             }
         }
     }
@@ -373,6 +433,7 @@ impl Game<'_> {
         targets: &[Target],
         steps: &StepHeights,
         accumulators: &mut std::collections::HashMap<Target, PistonMovement>,
+        pricked: &mut Vec<u32>,
     ) {
         let delta_progress = f64::from(new_progress - piston.progress);
         if delta_progress <= 0.0 {
@@ -459,6 +520,7 @@ impl Game<'_> {
                     step.scale(amount),
                     movement,
                     accumulators,
+                    pricked,
                 );
                 // `fixEntityWithinPistonBase`: a retracting source piston drags
                 // an entity that is still inside its own block.
@@ -482,6 +544,7 @@ impl Game<'_> {
                         back.scale(fix),
                         movement,
                         accumulators,
+                        pricked,
                     );
                 }
             }
@@ -510,6 +573,7 @@ impl Game<'_> {
                         piston_push::step_vector(movement).scale(delta_progress),
                         movement,
                         accumulators,
+                        pricked,
                     );
                 }
             }
@@ -669,6 +733,7 @@ impl Game<'_> {
         movement: Vec3,
         piston_direction: Direction,
         accumulators: &mut std::collections::HashMap<Target, PistonMovement>,
+        pricked: &mut Vec<u32>,
     ) {
         let Some(limited) = self.limit_piston(target, movement, accumulators) else {
             return;
@@ -686,6 +751,7 @@ impl Game<'_> {
                 self.projectile_piston_block_effects(i, at);
             }
             self.piston_block_triggers(before, before);
+            self.piston_cactus_contact(target, before, before, pricked);
             self.release_after_block_move(target);
             return;
         }
@@ -787,6 +853,9 @@ impl Game<'_> {
         if let Some((i, from, ..)) = tnt {
             self.finish_tnt_piston_move(i, from, resolved);
         }
+        if let Target::Entity(EntityHandle::Falling(i)) = target {
+            self.finish_falling_piston_move(i, resolved);
+        }
         if let Some((i, from)) = projectile_from {
             self.projectile_piston_block_effects(i, from);
         }
@@ -796,6 +865,7 @@ impl Game<'_> {
             before
         };
         self.piston_block_triggers(before, after);
+        self.piston_cactus_contact(target, before, after, pricked);
     }
 
     /// `Entity.restituteMovementAfterCollisions` after a block's push, for a
@@ -1361,7 +1431,7 @@ mod h255_mob_piston_ground_tests {
     use super::*;
     use crate::game::{Audio, Options, Progress, Settings, load_resources};
     use horizon_client::{chunk::Chunk, motion::PlayerMotion};
-    use horizon_core::{geometry::Vec3, position::ChunkPos, random::LegacyRandom};
+    use horizon_core::{geometry::Vec3, position::ChunkPos, random::RandomSource};
     use std::sync::Arc;
     fn with_game(test: impl FnOnce(&mut Game<'_>)) {
         with_role_game(
@@ -1431,7 +1501,7 @@ mod h255_mob_piston_ground_tests {
         game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
         game.creative = true;
         assert!(game.run_command("fill 0 199 0 31 199 31 stone"));
-        game.world.random = LegacyRandom::new(255);
+        game.world.random.set_seed(255);
         game.update_chunk_tickets();
         assert!(crate::game::ticking_chunk(&game.world, 0, 0));
         assert!(game.tickets.levels().block_ticking(0, 0));
@@ -1571,6 +1641,7 @@ mod h255_mob_piston_ground_tests {
             movement,
             Direction::East,
             &mut std::collections::HashMap::new(),
+            &mut Vec::new(),
         );
     }
     /// `AbstractArrow.move` after a push the collisions cut to nothing: a stuck
@@ -1606,6 +1677,7 @@ mod h255_mob_piston_ground_tests {
                 Vec3::new(0.3, 0.0, 0.0),
                 Direction::East,
                 &mut std::collections::HashMap::new(),
+                &mut Vec::new(),
             );
             let p = &game.creatures.projectiles[i];
             assert_eq!(p.position, before, "the stone stops the push");
@@ -1643,6 +1715,7 @@ mod h255_mob_piston_ground_tests {
                         movement,
                         Direction::Down,
                         budget,
+                        &mut Vec::new(),
                     );
                 };
                 push(game, &mut budget, Vec3::ZERO);

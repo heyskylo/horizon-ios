@@ -98,6 +98,11 @@ pub struct Rates {
     /// unknown short codes spend it; a wrong secret for a code that exists is the host's limit.
     pub nameplate_unknown_per_min: f64,
     pub nameplate_unknown_burst: f64,
+    /// Registrations a minute (and the burst) from one site, an IPv4 /24 or an IPv6 /48: one /48
+    /// holds 65 536 /64s, each with its own `register_per_min`, and every finished host keeps its
+    /// nameplate taken for `ended_kept`.
+    pub site_register_per_min: f64,
+    pub site_register_burst: f64,
 }
 impl Default for Rates {
     fn default() -> Self {
@@ -115,6 +120,8 @@ impl Default for Rates {
             site_unknown_burst: 6.0,
             nameplate_unknown_per_min: 5.0,
             nameplate_unknown_burst: 10.0,
+            site_register_per_min: 30.0,
+            site_register_burst: 10.0,
         }
     }
 }
@@ -179,6 +186,8 @@ pub struct Limiter {
     sites: HashMap<IpAddr, Site>,
     /// Unknown-code budgets by nameplate, swept with the sites.
     nameplates: HashMap<String, Site>,
+    /// Registration budgets by [`site_key`] (in `Site::unknown`), swept with the sites.
+    site_registers: HashMap<IpAddr, Site>,
 }
 impl Limiter {
     pub fn new(rates: Rates, enabled: bool) -> Self {
@@ -191,6 +200,7 @@ impl Limiter {
             open: HashMap::new(),
             sites: HashMap::new(),
             nameplates: HashMap::new(),
+            site_registers: HashMap::new(),
         }
     }
     /// Count one more connection open from `ip`, unless its address (or IPv6 site) holds as many
@@ -330,6 +340,8 @@ impl Limiter {
                 .retain(|_, s| now.saturating_duration_since(s.seen) < keep);
             self.nameplates
                 .retain(|_, s| now.saturating_duration_since(s.seen) < keep);
+            self.site_registers
+                .retain(|_, s| now.saturating_duration_since(s.seen) < keep);
         }
         let r = &self.rates;
         let a = self
@@ -346,7 +358,19 @@ impl Limiter {
         a
     }
     pub fn allow_register(&mut self, ip: IpAddr, now: Instant) -> bool {
-        !self.enabled || self.entry(ip, now).register.try_take(now)
+        if !self.enabled || !self.entry(ip, now).register.has(now) {
+            return !self.enabled;
+        }
+        let r = &self.rates;
+        let site = self
+            .site_registers
+            .entry(site_key(ip))
+            .or_insert_with(|| Site {
+                unknown: Bucket::new(r.site_register_per_min / 60.0, r.site_register_burst, now),
+                seen: now,
+            });
+        site.seen = now;
+        site.unknown.try_take(now) && self.entry(ip, now).register.try_take(now)
     }
     pub fn allow_join(&mut self, ip: IpAddr, now: Instant) -> bool {
         if !self.enabled {
@@ -622,5 +646,28 @@ mod tests {
         let mut off = Limiter::new(Rates::default(), false);
         assert!((0..100).all(|_| off.allow_join(ip, t)));
         assert_eq!(off.tracked(), 0);
+    }
+
+    #[test]
+    fn one_site_registers_only_so_often_across_its_addresses() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        let mut l = Limiter::new(Rates::default(), true);
+        let t = Instant::now();
+        let burst = Rates::default().site_register_burst as usize;
+        // Every /64 of one /48 has its own budget, but the /48 shares one.
+        let registered = (0..100)
+            .filter(|home| l.allow_register(ip(&format!("2001:db8:7:{home:x}::1")), t))
+            .count();
+        assert_eq!(registered, burst);
+        assert!(l.allow_register(ip("2001:db8:8::1"), t), "another site");
+        // An address refused by its own budget spends nothing of its site's.
+        let mut l = Limiter::new(Rates::default(), true);
+        let home = ip("198.51.100.1");
+        let own = Rates::default().register_burst as usize;
+        assert_eq!((0..10).filter(|_| l.allow_register(home, t)).count(), own);
+        let neighbours = (2..100)
+            .filter(|n| l.allow_register(ip(&format!("198.51.100.{n}")), t))
+            .count();
+        assert_eq!(neighbours, burst - own);
     }
 }

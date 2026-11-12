@@ -83,6 +83,14 @@ impl SignText {
     pub fn is_empty(&self) -> bool {
         self.lines.iter().all(String::is_empty)
     }
+    /// `SignText.hasEditableText`: every line's contents is plain text, so the
+    /// editor can rewrite it without losing anything. A style does not count
+    /// (a red literal is still plain), a `translatable`, `score` or other
+    /// contents does. (Horizon keeps no filtered text, so
+    /// `Player.isTextFilteringEnabled` never selects that copy.)
+    pub fn has_editable_text(&self) -> bool {
+        (0..self.lines.len()).all(|i| plain_contents(&self.message(i)))
+    }
     /// `DyeColor.getTextColor` of this side.
     pub fn text_color(&self) -> u32 {
         crate::pack_palette::text(usize::from(self.color.min(15)))
@@ -242,6 +250,17 @@ fn is_styled(tag: &Tag) -> bool {
     match tag {
         Tag::List(_) => true,
         Tag::Compound(c) => !(c.len() == 1 && matches!(tag.get("text"), Some(Tag::String(_)))),
+        _ => false,
+    }
+}
+/// Whether a message's contents is `PlainTextContents` (`Component.getContents`):
+/// a string, a `{text: ...}` object, or a list of them (`createFromList` keeps
+/// the first element's contents and appends the rest as siblings).
+fn plain_contents(tag: &Tag) -> bool {
+    match tag {
+        Tag::String(_) => true,
+        Tag::List(list) => list.first().is_some_and(plain_contents),
+        Tag::Compound(_) => tag.get("text").is_some(),
         _ => false,
     }
 }
