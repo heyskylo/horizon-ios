@@ -112,7 +112,8 @@ def main(rust_filter="portal_blast_sulfur_cube_", rust_tests=1):
                            cwd=scratch, env=child_env(scratch, resources),
                            check=True, stdout=log, stderr=subprocess.STDOUT)
     result = (build / "rust.log").read_text(encoding="utf-8")
-    if f"running {rust_tests} tests" not in result or f"{rust_tests} passed; 0 failed" not in result:
+    banner = f"running {rust_tests} test" + ("" if rust_tests == 1 else "s")
+    if banner not in result or f"{rust_tests} passed; 0 failed" not in result:
         raise AssertionError(f"Expected all {rust_tests} portal-blast regressions to execute")
     if binary_hash != lab.digest(binary, "sha256"):
         raise RuntimeError("Test executable changed during validation")
