@@ -2150,8 +2150,8 @@ struct Choice<'v> {
     entry: &'v Value,
     item: Option<String>,
 }
-/// `SetEnchantmentsFunction.run`: replace the stack's levels with `map`'s
-/// (a book transmutes to an enchanted book first).
+/// `SetEnchantmentsFunction.run`: set each enchantment in `map` to its level
+/// and keep the others (a book transmutes to an enchanted book first).
 fn set_enchantments(
     stack: &mut LootStack,
     map: &serde_json::Map<String, serde_json::Value>,
@@ -2160,9 +2160,8 @@ fn set_enchantments(
     if stack.item == "minecraft:book" {
         stack.item = "minecraft:enchanted_book".into();
     }
-    stack.enchantments.clear();
     for (name, value) in map {
-        stack.enchantments.push((name.clone(), level(value).max(0)));
+        enchant(stack, name, level(value).max(0));
     }
 }
 
@@ -2181,6 +2180,7 @@ mod namespace_tests {
     fn set_enchantments_replaces_the_levels() {
         let mut stack = LootStack::new("minecraft:book");
         stack.enchantments.push(("minecraft:sharpness".into(), 1));
+        stack.enchantments.push(("minecraft:mending".into(), 1));
         let map = serde_json::json!({"minecraft:sharpness": 2, "minecraft:unbreaking": 3});
         set_enchantments(&mut stack, map.as_object().unwrap(), |value| {
             value.as_i64().unwrap_or(0) as i32
@@ -2190,6 +2190,7 @@ mod namespace_tests {
             stack.enchantments,
             [
                 ("minecraft:sharpness".to_owned(), 2),
+                ("minecraft:mending".to_owned(), 1),
                 ("minecraft:unbreaking".to_owned(), 3),
             ]
         );
