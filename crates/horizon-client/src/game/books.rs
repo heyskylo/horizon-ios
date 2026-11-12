@@ -916,12 +916,28 @@ impl Game<'_> {
     }
     /// `LecternBlock.getStateForPlacement`: a lectern placed from an item
     /// whose `block_entity_data` holds a `Book`, by a placer who may use
-    /// game-master blocks, has `has_book` on. The block entity already took
-    /// the book from the stack (`BlockItem.updateCustomBlockEntityTag`), so
-    /// the model draws it and the comparator reads it.
-    pub(super) fn lectern_placed(&mut self, pos: [i32; 3], stack: &ItemStack, game_master: bool) {
-        if game_master && block_entity_item::carries_book(stack) {
-            self.set_lectern_property((pos[0], pos[1], pos[2]), "has_book", true);
+    /// game-master blocks, starts with `has_book` on. It runs before the
+    /// item's `block_state` component, which vanilla applies afterwards and
+    /// which may set `has_book` back. Returns the state to go on with.
+    pub(super) fn lectern_placed(
+        &mut self,
+        pos: [i32; 3],
+        state: BlockStateId,
+        stack: &ItemStack,
+        game_master: bool,
+    ) -> horizon_client::Result<BlockStateId> {
+        if !game_master
+            || !block_entity_item::carries_book(stack)
+            || &*self.res.facts().get(state).name != "minecraft:lectern"
+        {
+            return Ok(state);
+        }
+        match self.with_props(state, &[("has_book", "true")]) {
+            Some(new) if new != state => {
+                self.level_set(pos, new)?;
+                Ok(new)
+            }
+            _ => Ok(state),
         }
     }
     /// `LecternBlock.useItemOn`: a book goes onto an empty lectern.
