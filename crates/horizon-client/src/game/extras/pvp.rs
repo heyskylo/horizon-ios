@@ -756,7 +756,9 @@ impl Game<'_> {
             .filter_map(|(i, s)| Some((i, s?)))
             .filter(|(_, s)| counts(s));
         let (first, stack) = found.next()?;
-        let total = found.map(|(_, s)| s.count).fold(stack.count, u32::saturating_add);
+        let total = found
+            .map(|(_, s)| s.count)
+            .fold(stack.count, u32::saturating_add);
         (ranged || total > 1).then(|| (first, stack.item.clone(), total))
     }
     /// One widget's box in `corner`: icons in a column, texts beside them.
