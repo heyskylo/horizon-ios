@@ -59,11 +59,16 @@ done < obsolete-assets.txt
 # An older run retried after a newer release must not take over Latest.
 latest=true
 if latest_tag=$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name 2>/dev/null); then
-  latest=$(python3 - "$latest_tag" "$BUILD" <<'PYLATEST'
+  latest=$(python3 - "$latest_tag" "$BUILD" "$VERSION" <<'PYLATEST'
 import re, sys
 match = re.fullmatch(r"ios-build-([0-9]+)\.([0-9]+)", sys.argv[1])
 current = tuple(map(int, sys.argv[2].split(".")))
-print(str(not match or current >= tuple(map(int, match.groups()))).lower())
+local_version = re.fullmatch(r"v?([0-9]+)\.([0-9]+)\.([0-9]+)", sys.argv[1])
+if local_version:
+    newer = tuple(map(int, sys.argv[3].split("."))) > tuple(map(int, local_version.groups()))
+else:
+    newer = not match or current >= tuple(map(int, match.groups()))
+print(str(newer).lower())
 PYLATEST
   )
 fi

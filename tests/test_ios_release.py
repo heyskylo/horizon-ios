@@ -166,7 +166,7 @@ scenario=os.environ["SCENARIO"]
 if args[0]=="api":
     if "matching-refs" in args[1]:
         if scenario=="wrong-tag": print("refs/tags/ios-build-42.2")
-    elif args[1].endswith("/releases/latest"): print("ios-build-99.1" if scenario=="older" else "ios-build-41.1")
+    elif args[1].endswith("/releases/latest"): print({"older":"ios-build-99.1", "local-newer":"v0.1.62", "local-older":"v0.0.1", "local-equal":"v0.1.0"}.get(scenario,"ios-build-41.1"))
     else: print(os.environ["TAG_SHA"])
 elif args[:2]==["release","view"]:
     if scenario in ["new", "upload-failed", "wrong-tag"]: sys.exit(1)
@@ -231,6 +231,13 @@ elif args[:2]==["release","upload"] and scenario=="upload-failed": sys.exit(1)
         self.assertEqual(result.returncode, 0, result.stderr)
         edit = next(c for c in calls if c[:2] == ["release", "edit"])
         self.assertIn("--latest=false", edit)
+
+    def test_local_versioned_release_is_not_replaced_by_an_older_ci_build(self):
+        for scenario, latest in [("local-newer", "false"), ("local-older", "true"), ("local-equal", "false")]:
+            result, calls = self.run_flow(scenario)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            edit = next(c for c in calls if c[:2] == ["release", "edit"])
+            self.assertIn("--latest=" + latest, edit)
 
 
 if __name__ == "__main__":
