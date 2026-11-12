@@ -7206,8 +7206,7 @@ impl Game<'_> {
         if particle_mode == horizon_client::graphics::ParticleCullingMode::Off {
             self.particles.render(
                 camera,
-                self.yaw,
-                self.pitch,
+                self.particle_rotation(),
                 alpha as f32,
                 &|b| world.light(b[0], b[1], b[2]),
                 &mut out,
@@ -7226,8 +7225,7 @@ impl Game<'_> {
                 let mut particle_culling = self.particle_occlusion_context(camera);
                 self.particles.render_culled(
                     camera,
-                    self.yaw,
-                    self.pitch,
+                    self.particle_rotation(),
                     alpha as f32,
                     pixel_focal_length,
                     true,
