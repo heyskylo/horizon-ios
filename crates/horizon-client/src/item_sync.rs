@@ -143,6 +143,147 @@ pub fn patched_use(stack: &ItemStack) -> (Option<i32>, bool) {
     out
 }
 
+/// `FoodProperties.canAlwaysEat` from the stack's `food` component.
+pub fn can_always_eat(stack: &ItemStack, default: bool) -> bool {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:food").is_some()) {
+        return false;
+    }
+    if let Some(food) = data.and_then(|d| d.other("minecraft:food")) {
+        return horizon_world::datafix::dynamic::as_bool(food.get("can_always_eat"), false);
+    }
+    default
+}
+/// `Consumable.consumeSeconds` from the stack's `consumable` component.
+pub fn consumable_seconds(stack: &ItemStack) -> Option<f32> {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:consumable").is_some()) {
+        return None;
+    }
+    data.and_then(|d| d.other("minecraft:consumable"))
+        .map(|consumable| {
+            horizon_world::datafix::dynamic::as_float(consumable.get("consume_seconds"), 1.6)
+        })
+}
+/// `UseRemainder` from the stack's `use_remainder` component.
+pub fn use_remainder(stack: &ItemStack, default: Option<String>) -> Option<String> {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:use_remainder").is_some()) {
+        return None;
+    }
+    if let Some(remainder) = data.and_then(|d| d.other("minecraft:use_remainder")) {
+        return match remainder.get("id") {
+            Some(Tag::String(id)) => Some(id.to_string_lossy()),
+            _ => None,
+        };
+    }
+    default
+}
+/// `Equippable.dispensable` from the stack's `equippable` component.
+pub fn dispensable(stack: &ItemStack, default: bool) -> bool {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:equippable").is_some()) {
+        return false;
+    }
+    if let Some(equippable) = data.and_then(|d| d.other("minecraft:equippable")) {
+        return horizon_world::datafix::dynamic::as_bool(equippable.get("dispensable"), true);
+    }
+    default
+}
+/// `FoodProperties.nutrition` and `saturation` from the stack's `food`
+/// component, else the item's.
+pub fn food(stack: &ItemStack, default: Option<(u32, f32)>) -> Option<(u32, f32)> {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:food").is_some()) {
+        return None;
+    }
+    if let Some(food) = data.and_then(|d| d.other("minecraft:food")) {
+        return Some((
+            horizon_world::datafix::dynamic::as_int(food.get("nutrition"), 0).max(0) as u32,
+            horizon_world::datafix::dynamic::as_float(food.get("saturation"), 0.0),
+        ));
+    }
+    default
+}
+/// `Consumable.animation` from the stack's `consumable` component.
+pub fn consumable_animation(stack: &ItemStack) -> Option<horizon_world::consumable::UseAnimation> {
+    use horizon_world::consumable::UseAnimation;
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:consumable").is_some()) {
+        return None;
+    }
+    let Some(Tag::String(animation)) = data
+        .and_then(|d| d.other("minecraft:consumable"))
+        .and_then(|c| c.get("animation"))
+    else {
+        return None;
+    };
+    // ItemUseAnimation.CODEC's names.
+    Some(match &*animation.to_string_lossy() {
+        "none" => UseAnimation::None,
+        "drink" => UseAnimation::Drink,
+        "block" => UseAnimation::Block,
+        "bow" => UseAnimation::Bow,
+        "trident" => UseAnimation::Trident,
+        "crossbow" => UseAnimation::Crossbow,
+        "spyglass" => UseAnimation::Spyglass,
+        "toot_horn" => UseAnimation::TootHorn,
+        "brush" => UseAnimation::Brush,
+        "bundle" => UseAnimation::Bundle,
+        "spear" => UseAnimation::Spear,
+        _ => UseAnimation::Eat,
+    })
+}
+/// `Consumable.sound` from the stack's `consumable` component.
+pub fn consumable_sound(stack: &ItemStack) -> Option<String> {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:consumable").is_some()) {
+        return None;
+    }
+    let sound = data
+        .and_then(|d| d.other("minecraft:consumable"))
+        .and_then(|c| c.get("sound"))?;
+    match sound {
+        Tag::String(id) => Some(id.to_string_lossy()),
+        // SoundEvent.DIRECT_CODEC: `{sound_id, range}`.
+        Tag::Compound(_) => match sound.get("sound_id") {
+            Some(Tag::String(id)) => Some(id.to_string_lossy()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+/// `Consumable.hasConsumeParticles` from the stack's `consumable` component.
+pub fn consumable_particles(stack: &ItemStack) -> Option<bool> {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:consumable").is_some()) {
+        return None;
+    }
+    data.and_then(|d| d.other("minecraft:consumable"))
+        .map(|c| horizon_world::datafix::dynamic::as_bool(c.get("has_consume_particles"), true))
+}
+/// The `consumable` component a use reads: the stack's own when it has one
+/// (its time, animation, sound and particles, with `Consumable.CODEC`'s
+/// defaults for what it leaves out), else the item's. The item's effects stay:
+/// a stack's `on_consume_effects` are not read.
+pub fn stack_consumable<'a, E: Clone>(
+    stack: &ItemStack,
+    item: &'a horizon_world::consumable::Consumable<String, E>,
+) -> std::borrow::Cow<'a, horizon_world::consumable::Consumable<String, E>> {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:consumable").is_some())
+        || !data.is_some_and(|d| d.other("minecraft:consumable").is_some())
+    {
+        return std::borrow::Cow::Borrowed(item);
+    }
+    let mut c = item.clone();
+    c.seconds = consumable_seconds(stack).unwrap_or(1.6);
+    c.animation =
+        consumable_animation(stack).unwrap_or(horizon_world::consumable::UseAnimation::Eat);
+    c.sound = consumable_sound(stack).unwrap_or_else(|| "minecraft:entity.generic.eat".into());
+    c.particles = consumable_particles(stack).unwrap_or(true);
+    std::borrow::Cow::Owned(c)
+}
 /// The parts of a stack's `equippable` component (`Equippable`) the client
 /// draws with.
 #[derive(Clone, Debug, PartialEq)]
@@ -1425,6 +1566,188 @@ mod tests {
         assert_eq!(net_c.animation, UseAnimation::Drink);
         assert_eq!(net_c.sound, "minecraft:entity.generic.drink");
         assert_eq!(net_c.effects, effects);
+    }
+
+    #[test]
+    fn food_can_always_eat_comes_from_the_stack() {
+        let mut stack = ItemStack::new("minecraft:apple", 1);
+        stack.data_mut().set_other(
+            "minecraft:food",
+            Some(Tag::compound([("can_always_eat", Tag::Byte(1))])),
+        );
+        assert!(can_always_eat(&stack, false));
+        assert!(!can_always_eat(
+            &ItemStack::new("minecraft:apple", 1),
+            false
+        ));
+        stack.data_mut().set_other(
+            "!minecraft:food",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert!(!can_always_eat(&stack, true));
+    }
+
+    #[test]
+    fn consumable_seconds_come_from_the_stack() {
+        let mut stack = ItemStack::new("minecraft:apple", 1);
+        stack.data_mut().set_other(
+            "minecraft:consumable",
+            Some(Tag::compound([(
+                "consume_seconds",
+                Tag::Float(0.5f32.to_bits()),
+            )])),
+        );
+        assert_eq!(consumable_seconds(&stack), Some(0.5));
+        stack.data_mut().set_other(
+            "!minecraft:consumable",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(consumable_seconds(&stack), None);
+    }
+
+    #[test]
+    fn use_remainder_comes_from_the_stack() {
+        let mut stack = ItemStack::new("minecraft:mushroom_stew", 1);
+        stack.data_mut().set_other(
+            "minecraft:use_remainder",
+            Some(Tag::compound([(
+                "id",
+                Tag::String("minecraft:bowl".into()),
+            )])),
+        );
+        assert_eq!(
+            use_remainder(&stack, None).as_deref(),
+            Some("minecraft:bowl")
+        );
+        stack.data_mut().set_other(
+            "!minecraft:use_remainder",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(
+            use_remainder(&stack, Some("minecraft:glass_bottle".into())),
+            None
+        );
+    }
+
+    #[test]
+    fn dispensable_comes_from_the_stack() {
+        let mut stack = ItemStack::new("minecraft:golden_helmet", 1);
+        stack.data_mut().set_other(
+            "minecraft:equippable",
+            Some(Tag::compound([
+                ("slot", Tag::String("head".into())),
+                ("dispensable", Tag::Byte(0)),
+            ])),
+        );
+        assert!(!dispensable(&stack, true));
+        stack.data_mut().set_other(
+            "!minecraft:equippable",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert!(!dispensable(&stack, true));
+    }
+
+    #[test]
+    fn food_nutrition_comes_from_the_stack() {
+        let mut stack = ItemStack::new("minecraft:apple", 1);
+        stack.data_mut().set_other(
+            "minecraft:food",
+            Some(Tag::compound([
+                ("nutrition", Tag::Int(9)),
+                ("saturation", Tag::Float(4.5f32.to_bits())),
+            ])),
+        );
+        assert_eq!(food(&stack, Some((4, 2.4))), Some((9, 4.5)));
+        stack.data_mut().set_other(
+            "!minecraft:food",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(food(&stack, Some((4, 2.4))), None);
+    }
+
+    #[test]
+    fn consumable_animation_comes_from_the_stack() {
+        let mut stack = ItemStack::new("minecraft:apple", 1);
+        stack.data_mut().set_other(
+            "minecraft:consumable",
+            Some(Tag::compound([("animation", Tag::String("drink".into()))])),
+        );
+        assert_eq!(
+            consumable_animation(&stack),
+            Some(horizon_world::consumable::UseAnimation::Drink)
+        );
+        stack.data_mut().set_other(
+            "!minecraft:consumable",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(consumable_animation(&stack), None);
+    }
+
+    #[test]
+    fn consumable_sound_comes_from_the_stack() {
+        let mut stack = ItemStack::new("minecraft:apple", 1);
+        stack.data_mut().set_other(
+            "minecraft:consumable",
+            Some(Tag::compound([(
+                "sound",
+                Tag::String("minecraft:entity.generic.drink".into()),
+            )])),
+        );
+        assert_eq!(
+            consumable_sound(&stack).as_deref(),
+            Some("minecraft:entity.generic.drink")
+        );
+        stack.data_mut().set_other(
+            "!minecraft:consumable",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(consumable_sound(&stack), None);
+    }
+
+    #[test]
+    fn consumable_particles_come_from_the_stack() {
+        let mut stack = ItemStack::new("minecraft:apple", 1);
+        stack.data_mut().set_other(
+            "minecraft:consumable",
+            Some(Tag::compound([("has_consume_particles", Tag::Byte(0))])),
+        );
+        assert_eq!(consumable_particles(&stack), Some(false));
+        stack.data_mut().set_other(
+            "!minecraft:consumable",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(consumable_particles(&stack), None);
+    }
+
+    /// A stack's own `consumable` replaces the item's: what it leaves out
+    /// takes the codec's defaults, not the item's values.
+    #[test]
+    fn a_stacks_consumable_takes_the_codecs_defaults() {
+        use horizon_world::consumable::{Consumable, UseAnimation};
+        let honey: Consumable<String> = Consumable {
+            seconds: 2.0,
+            animation: UseAnimation::Drink,
+            sound: "minecraft:item.honey_bottle.drink".into(),
+            particles: false,
+            effects: vec![],
+        };
+        let mut stack = ItemStack::new("minecraft:honey_bottle", 1);
+        assert_eq!(*stack_consumable(&stack, &honey), honey);
+        stack.data_mut().set_other(
+            "minecraft:consumable",
+            Some(Tag::compound([(
+                "sound",
+                Tag::compound([(
+                    "sound_id",
+                    Tag::String("minecraft:entity.generic.drink".into()),
+                )]),
+            )])),
+        );
+        let c = stack_consumable(&stack, &honey);
+        assert_eq!(c.seconds, 1.6);
+        assert_eq!(c.animation, UseAnimation::Eat);
+        assert_eq!(c.sound, "minecraft:entity.generic.drink");
+        assert!(c.particles);
     }
 
     #[test]

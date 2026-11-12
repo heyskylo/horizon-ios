@@ -909,7 +909,7 @@ impl Game<'_> {
         };
         let (Some(slot), true) = (
             info.equip_slot.as_deref().and_then(Slot::from_name),
-            info.equip_dispensable,
+            horizon_client::item_sync::dispensable(stack, info.equip_dispensable),
         ) else {
             return false;
         };
