@@ -1,7 +1,7 @@
 OptionInstance.SliderableEnum.toSliderValue	port	crates/horizon-client-render/src/options_ui.rs::Opt::kind	slider position of the graphics preset (index / 3)
 OptionInstance.SliderableEnum.next	inline	crates/horizon-client-render/src/options_ui.rs::Opt::set_slider	Opt::Preset is a 0..3 slider (unit/step at options_ui.rs:335, 417, 844), so stepping happens through the slider rather than a cycle arm
 OptionInstance.SliderableEnum.previous	inline	crates/horizon-client-render/src/options_ui.rs::Opt::set_slider	same slider
-OptionInstance.SliderableEnum.fromSliderValue	port	crates/horizon-client-render/src/options_ui.rs::Opt::set_slider	gap: minor: rounds v*3 where vanilla floors v*4
+OptionInstance.SliderableEnum.fromSliderValue	port	crates/horizon-client-render/src/options_ui.rs::preset_from_slider	floor(v * values.size()) with 1.0 just below and the last value clamped; the graphics preset slider's four stops
 OptionInstance.SliderableEnum.validateValue	port	crates/horizon-client-render/src/options_file.rs::Spec::validate	named spec accepts the four preset indexes
 OptionInstance.SliderableOrCyclableValueSet.createButton	port	crates/horizon-client-render/src/options_ui.rs::option_widget	cycle or slider button by option kind
 OptionInstance.SliderableValueSet.createButton	port	crates/horizon-client-render/src/options_ui.rs::option_widget	slider button
@@ -9,6 +9,7 @@ OptionInstance.UnitDouble.validateValue	port	crates/horizon-client-render/src/op
 OptionInstance.UnitDouble.codec	port	crates/horizon-client-render/src/options_file.rs::codec_double	
 Options.updateResourcePacks	port	crates/horizon-client/src/game/options.rs::Game::handle_option_events	gap: minor: saves and reloads on every packs event; vanilla only when the list changed
 Options.maxAnisotropyValue	port	crates/horizon-client-render/src/gfx.rs::sampler_anisotropy	the options.txt maxAnisotropyBit (and textureFiltering) reach the sampler
+Options.mouseWheelSensitivity	port	crates/horizon-client-render/src/options_ui_wheel.rs::kind	IntRange(-200, 100) through logMouse/unlogMouse: the slider runs over 10^(i/100), 0.01 to 10.0
 Options.createSoundSliderOptionInstance	port	crates/horizon-client-render/src/audio.rs::Audio::sync_volumes	gap: player: no now-playing toast when master or music changes
 Options.setGraphicsPresetToCustom	inline	crates/horizon-client-render/src/options_ui.rs::Opt::set_slider	gap: minor: cycle buttons set custom in Opt::cycle as well
 Options.processOptions	inline	crates/horizon-client-render/src/options_file.rs::OptionsFile::parse	gap: minor: the save direction is OptionsFile::serialize
@@ -16,6 +17,7 @@ Options.dataFix	port	crates/horizon-client-render/src/options_fixes.rs::update
 Options.getFullscreenVideoModeString	inline	crates/horizon-client-input/src/window.rs::VideoMode::write	options.txt keeps fullscreenResolution as `VideoMode::write`'s mode JSON, not as a separate 'WxH@Hz' string; `Settings.video_mode_index` reads it back to place the Video screen's mode slider
 Options.buildPlayerInformation	port	crates/horizon-client/src/net.rs::run	gap: player: only view distance and chat visibility are sent; language, skin parts, main hand, particles and text filtering stay at defaults
 Options.setModelPart	port	crates/horizon-client-render/src/options_file.rs::OptionsFile::model_customisation	the seven modelPart_* options are read back and sent as the PlayerModelPart set
+Options.chatDelay	port	crates/horizon-client-render/src/options_ui_values.rs::chat_delay_label	options.chat.delay_none at zero, options.chat.delay with the delay to one decimal otherwise; the IntRange(0, 60) slider's tenths are in the same module
 Options.loadSelectedResourcePacks	port	crates/horizon-client-render/src/packs.rs::enabled	gap: minor: dropped packs are not written back to resourcePacks
 Options.readListOfStrings	port	crates/horizon-client-render/src/options_file.rs::read_list	
 Options.dumpOptionsForReport	skip:debug		options dump for the debug report

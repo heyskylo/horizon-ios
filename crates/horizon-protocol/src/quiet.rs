@@ -75,13 +75,24 @@ pub fn decode(data: &[u8]) -> Result<Batch> {
         return Err(Error::new("quiet commands: payload too big"));
     }
     let mut r = Reader::new(data);
-    let mod_id = r.string(MAX_MOD_ID)?;
+    // As StringUtil.isAllowedChatCharacter, which a chat command must pass: no control characters
+    // (a newline in the mod id would make whole lines of the server's log), DEL or section sign.
+    let checked = |s: String| -> Result<String> {
+        if s.chars()
+            .all(|c| c >= ' ' && c != '\u{7f}' && c != '\u{a7}')
+        {
+            Ok(s)
+        } else {
+            Err(Error::new("quiet commands: illegal characters"))
+        }
+    };
+    let mod_id = checked(r.string(MAX_MOD_ID)?)?;
     let count = r.varint()?;
     if !(0..=MAX_LINES as i32).contains(&count) {
         return Err(Error::new(format!("quiet commands: {count} lines")));
     }
     let lines = (0..count)
-        .map(|_| r.string(MAX_LINE))
+        .map(|_| r.string(MAX_LINE).and_then(checked))
         .collect::<Result<Vec<_>>>()?;
     if r.remaining() > 0 {
         return Err(Error::new("quiet commands: trailing bytes"));
@@ -92,6 +103,22 @@ pub fn decode(data: &[u8]) -> Result<Batch> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_characters_are_refused_in_the_mod_id_and_lines() {
+        let forged = "x\n[12:00:00] [Server thread/INFO]: Stopping server";
+        for (id, line) in [
+            (forged, "say hi"),
+            ("orbital", "say hi\nop Kim"),
+            ("orbital", "say \u{a7}cred"),
+            ("orb\u{7f}", "say hi"),
+        ] {
+            let payload = &encode(id, &[line.to_owned()])[0];
+            assert!(decode(payload).is_err(), "{id:?} {line:?}");
+        }
+        let fine = &encode("orbital", &["say hé".to_owned()])[0];
+        assert_eq!(decode(fine).unwrap().mod_id, "orbital");
+    }
 
     #[test]
     fn a_batch_round_trips() {
