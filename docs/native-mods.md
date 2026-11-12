@@ -3553,7 +3553,7 @@ while no mod asks for it.
   server tick (paused ones too) while its spans are recorded, the hook gets the pass's wall time, the server thread's
   CPU time in it (None where the system doesn't tell) and its spans (`TickSpan`: name, wall and CPU milliseconds,
   depth; summed by name in the order first seen, `tick_mobs` inside `tick`). A dedicated server records them anyway
-  (its slow-tick log), so there the hook fires every tick; elsewhere it fires while `native_spans(true)`,
+  (its slow ring), so there the hook fires every tick; elsewhere it fires while `native_spans(true)`,
   `HORIZON_SPIKES` or a performance report wants them: one switch shared by all, on while anyone wants it, which costs
   two clock reads a step on every thread. `native_mob_cost_sampling(true)` times every mob's own tick (riders inside)
   by level and type until it is turned off, apart from `horizon-report`'s sampling, so both can run;

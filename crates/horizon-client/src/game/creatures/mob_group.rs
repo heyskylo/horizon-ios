@@ -333,9 +333,7 @@ impl<M: MobSlot> Group<M> {
         };
         w.controlling_player_movement = controlling_player_movement;
         self.ticked.insert(self.mobs[i].mob().id);
-        // `horizon-report`'s cost by mob type (tick_profile.rs).
-        let sampled =
-            super::super::tick_profile::start().map(|t| (t, self.mobs[i].mob().kind.clone()));
+        let sampled = super::super::tick_profile::start_mob(&self.mobs[i].mob().kind);
         let kept = horizon_client::mobs::riders::tick(
             &mut self.mobs,
             i,
@@ -343,9 +341,7 @@ impl<M: MobSlot> Group<M> {
             &mut self.random,
             &mut self.events,
         );
-        if let Some((started, kind)) = sampled {
-            super::super::tick_profile::add(shared.level_id, &kind, started);
-        }
+        super::super::tick_profile::end_mob(shared.level_id, sampled);
         let m = self.mobs[i].mob_mut();
         if seen_guest.is_none() {
             self.player = w.player;

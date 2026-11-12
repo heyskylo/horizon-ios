@@ -446,6 +446,17 @@ impl PlayerSender {
             }
         }
     }
+    /// Packets queued for the network thread or held by the tick, and their bytes.
+    pub fn queued(&self) -> (usize, usize) {
+        let waiting = match &self.to {
+            To::Pool(outbox, _) => outbox.queued(),
+            To::Channel(_) => 0,
+        };
+        (
+            waiting + self.held().len(),
+            self.pending.load(Ordering::Relaxed),
+        )
+    }
     /// Marks this sender as a fake player's or not.
     pub fn set_fake(&self, fake: bool) {
         self.fake.store(fake, Ordering::Relaxed);
@@ -1973,6 +1984,11 @@ impl SharedFrames {
     fn cache(&self) -> std::sync::MutexGuard<'_, FrameCache> {
         self.frames.lock().unwrap_or_else(PoisonError::into_inner)
     }
+    /// The frames kept and the bytes of their contents.
+    fn census(&self) -> (usize, usize) {
+        let cache = self.cache();
+        (cache.frames.len(), cache.bytes)
+    }
     /// `frame::contents(body, Some(threshold))`, compressed only when no
     /// connection has sent the same body lately or compresses it now.
     fn contents(&self, body: &[u8], threshold: usize) -> horizon_protocol::Result<Arc<[u8]>> {
@@ -2019,6 +2035,11 @@ impl SharedFrames {
         }
         Ok(contents)
     }
+}
+
+/// The compressed frames shared by every connection: how many and their bytes.
+pub fn shared_frame_census() -> (usize, usize) {
+    SharedFrames::get().census()
 }
 
 /// Frame one packet body into `out`: a large one compressed through

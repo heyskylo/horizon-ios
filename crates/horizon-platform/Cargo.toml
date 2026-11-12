@@ -20,6 +20,8 @@ server-files = ["dep:horizon-server-files"]
 [dependencies]
 horizon-core = { path = "../horizon-core" }
 horizon-system = { path = "../horizon-system" }
+horizon-bench = { path = "../horizon-bench" }
+horizon-perf-format = { path = "../horizon-perf-format" }
 horizon-world = { path = "../horizon-world", optional = true }
 horizon-protocol = { path = "../horizon-protocol", optional = true }
 horizon-prepare = { path = "../horizon-prepare", optional = true }

@@ -133,6 +133,7 @@ impl Game<'_> {
 
     /// `EvokerFangs.tick`.
     pub(super) fn tick_fangs(&mut self) {
+        horizon_threads::work::clear_work();
         let mut list = std::mem::take(&mut self.fangs.list);
         list.retain_mut(|f| {
             f.warmup = f.warmup.wrapping_sub(1);

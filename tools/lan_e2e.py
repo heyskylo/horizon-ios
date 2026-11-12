@@ -38,6 +38,9 @@ address. The script then checks, from both sides, what a guest's game used to ge
 - arrows:    the guest and the host shoot each other with a bow; with the pvp game rule off, nothing (#484);
 - flame-arrows: an arrow the host or the guest shoots from a Flame bow burns in flight on both sides
              (Entity.DATA_SHARED_FLAGS_ID's fire flag), one from a plain bow doesn't (#7356);
+- server-profile: a guest at operator level 4 starts and stops a capture of the host's server over horizon:perf and
+             the host's reports/ gets the file; at level 3 it is refused and no file is written; the host's log names
+             the guest at the start and the end.
 - looks:     mobs look on both sides as the server has them (their synched data): a calf is a
              baby, a red sheep is sheared, a size 4 slime, a tamed wolf sits with its blue collar, a
              cow on fire burns and goes out; then the wither's health drops when it is hurt, the
@@ -394,7 +397,7 @@ CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'placement', 'chest', 'm
           'worn', 'blast', 'blast-projectiles', 'barter', 'piglin_offspring', 'deflect', 'fireball', 'light', 'time', 'swings', 'cracks', 'plates', 'plate-projectiles', 'effects',
           'portals', 'distance', 'growth', 'doors', 'flight', 'ladder', 'boats', 'boat_ice_reboard', 'boat_shoved', 'minecarts', 'frames', 'hands',
           'lightning', 'riding', 'occupied_horse', 'mounts', 'worldspawn', 'beds', 'shield', 'deathmining', 'contacts', 'absorption',
-          'breath', 'lava', 'levels', 'drops', 'underwater', 'fireworks', 'rocket-walls', 'rocket-ceilings', 'tag-query']
+          'breath', 'lava', 'levels', 'drops', 'underwater', 'fireworks', 'rocket-walls', 'rocket-ceilings', 'tag-query', 'server-profile']
 
 
 class Game:
@@ -7112,6 +7115,77 @@ def check_worn(host, guest, out):
     return taken
 
 
+def refused_host_start(host):
+    try:
+        host.raw('profile', 'server', 'start')
+    except Failed as e:
+        return str(e)
+    raise AssertionError('the host started a second server capture')
+
+
+def check_server_profile(host, guest, out):
+    """A guest asks the host's server for a capture over horizon:perf: at operator level 4 it gets one in the host's
+    reports/, at level 3 it is refused and no file is written, a second request while one runs is refused, and the
+    host's log names the guest at the start and at the end."""
+    import gzip
+    reports = host.work / 'home' / 'reports'
+    log = host.socket.with_suffix('.log')
+
+    def files():
+        return sorted(p.name for p in reports.glob('profile-*.hzperf')) if reports.exists() else []
+
+    def log_text():
+        return log.read_text(errors='replace') if log.exists() else ''
+
+    def refused(*words):
+        try:
+            guest.raw(*words)
+        except Failed as e:
+            return str(e)
+        raise AssertionError(f'{words} was not refused')
+
+    def idle():
+        return guest.until(lambda: guest.raw('profile', 'status'), lambda s: not s['capturing'], ticks=400)
+
+    before = files()
+    host.raw('lan', 'op', GUEST_NAME, 3)
+    why = refused('profile', 'server', 'start', '--seconds', 30)
+    assert 'operator level 4' in why, why
+    assert files() == before, f'a level 3 guest left {sorted(set(files()) - set(before))}'
+    assert f'{GUEST_NAME} asked for a server profile and was refused' in log_text(), 'the host log does not name the refused guest'
+    assert guest.raw('profile', 'status')['capturing'] is False
+
+    host.raw('lan', 'op', GUEST_NAME, 4)
+    started = guest.raw('profile', 'server', 'start', '--seconds', 30, '--no-samples')
+    assert started['sides'] == ['server'] and started['path'].startswith('reports/profile-'), started
+    running = guest.raw('profile', 'status')
+    assert running['capturing'] is True and running['sides'] == ['server'] and running['path'] == started['path'], running
+    assert 'already' in refused('profile', 'server', 'start'), 'a second request while one runs is accepted'
+    assert 'already' in refused_host_start(host), "the host started a capture over the guest's"
+    stopped = guest.raw('profile', 'server', 'stop')
+    assert stopped['sides'] == ['server'] and stopped['path'].startswith('reports/profile-'), (started, stopped)
+    made = sorted(set(files()) - set(before))
+    assert made == [Path(started['path']).name], (made, started)
+    data = gzip.decompress((reports / made[0]).read_bytes())
+    assert data, "the host's copy is empty"
+    received = guest.work / 'home' / stopped['path']
+    assert received.is_file(), f"the guest has no copy at {received}"
+    assert (reports / made[0]).read_bytes() == received.read_bytes(), "the guest's copy is not the host's file as it is"
+    assert idle()['sides'] == []
+    text = log_text()
+    assert f'{GUEST_NAME} started a server profile (30 s, samples off)' in text, 'the host log does not name the guest at the start'
+    assert f"{GUEST_NAME}'s server profile saved to {started['path']}" in text, 'the host log does not name the guest at the end'
+
+    again = guest.raw('profile', 'server', 'start', '--seconds', 2)
+    assert again['seconds'] == 2, again
+    idle()
+    assert len(files()) == len(before) + 2, files()
+    assert f"{GUEST_NAME}'s server profile saved to {again['path']}" in log_text(), 'a window that ended the capture is not logged'
+
+    host.raw('lan', 'op', GUEST_NAME, 2)
+    return {'files': sorted(set(files()) - set(before)), 'inflated_bytes': len(data)}
+
+
 CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour,
              'nametags': check_nametags, 'chest': check_chest, 'menu-transfer': check_menu_transfer, 'crafting': check_crafting,
              'spawned': check_spawned,
@@ -7158,7 +7232,7 @@ CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour,
              'particles': check_particles, 'fireworks': check_fireworks,
              'rocket-walls': check_rocket_walls, 'rocket-ceilings': check_rocket_ceilings,
              'piston-slide': check_piston_slide,
-             'tag-query': check_tag_query}
+             'tag-query': check_tag_query, 'server-profile': check_server_profile}
 
 
 

@@ -1,0 +1,803 @@
+// The .hzperf capture contract: docs/perf-platform.md §3; never reuse a number, reserve removed ones.
+syntax = "proto3";
+package horizon.perf.v1;
+
+// One gzip stream of this message; writers append whole top-level fields, each followed by a sync flush.
+message Capture {
+  // start: 1; the only singular field.
+  uint32 format = 1;
+  // start: one per side, the side's first field.
+  repeated Start start = 2;
+  // live: interned strings, appended on first use.
+  repeated StringEntry strings = 3;
+  // start: the in-memory health tiers from before the capture.
+  repeated HealthWindow history = 4;
+  // start: the slow ring from before the capture.
+  repeated SlowEvent slow_history = 5;
+  // start and end: label "start" / "stop".
+  repeated WorldSnapshot world = 6;
+
+  // live: typed by the person profiling.
+  repeated Mark marks = 7;
+  // live
+  repeated Warning warnings = 8;
+  // live: one per second per side.
+  repeated HealthSample health = 9;
+  // live: appended when a counter first reports.
+  repeated CounterDef counter_defs = 10;
+  // live: one per second per side.
+  repeated CounterSample counters = 11;
+  // live: ticks or frames over the slow threshold.
+  repeated SlowEvent slow = 12;
+  // live: one per block per thread.
+  repeated SpanBlock span_blocks = 13;
+  // live: start, every 10 s, stop.
+  repeated MemorySnapshot memory = 14;
+  // live: one per second per thread while the timeline is on.
+  repeated TimelineChunk timeline = 15;
+  // end
+  repeated SpanSummary spans = 16;
+  // end
+  repeated Workers workers = 17;
+  // end: the call-tree aggregate of the sampler.
+  repeated SampleProfile samples = 18;
+  // end: clients only, one per timer.
+  repeated GpuPasses gpu = 19;
+  // end: servers, and a client's own bytes.
+  repeated NetTraffic net = 20;
+  // end: benchmark reports embedded verbatim.
+  repeated BenchResult bench = 21;
+  // end: capture-wide, added by drivers through horizon-perf attach, so it carries no side.
+  repeated Attachment attachments = 22;
+
+  // end: the side's last field.
+  repeated Stop stop = 23;
+  // live: clients only, the GPU timers' timed frames, a block about every second.
+  repeated GpuFrames gpu_frames = 24;
+}
+
+enum Side {
+  SIDE_UNSPECIFIED = 0;
+  SIDE_CLIENT = 1;
+  SIDE_SERVER = 2;
+}
+
+enum Unit {
+  UNIT_UNSPECIFIED = 0;
+  UNIT_TICK = 1;
+  UNIT_FRAME = 2;
+}
+
+// A string that other messages of the same side refer to by id.
+message StringEntry {
+  Side side = 1;
+  uint32 id = 2;
+  string text = 3;
+}
+
+enum Kind {
+  KIND_UNSPECIFIED = 0;
+  KIND_DEDICATED = 1;
+  // The single-player server thread.
+  KIND_INTEGRATED = 2;
+  KIND_CLIENT = 3;
+}
+
+enum Trigger {
+  TRIGGER_UNSPECIFIED = 0;
+  TRIGGER_CONSOLE = 1;
+  TRIGGER_CTL = 2;
+  // F3+O, in captures from before /profiler.
+  TRIGGER_KEY = 3;
+  TRIGGER_ENV = 4;
+  TRIGGER_BENCHMARK = 5;
+  // Requested by a client over horizon:perf.
+  TRIGGER_REMOTE = 6;
+  // /profiler in chat.
+  TRIGGER_COMMAND = 7;
+}
+
+message Start {
+  Side side = 1;
+  Kind kind = 2;
+  Trigger trigger = 3;
+  int64 started_unix_ms = 4;
+  // Process uptime when the capture started.
+  double uptime_s = 5;
+  Build build = 6;
+  Machine machine = 7;
+  Options options = 8;
+  Settings settings = 9;
+  GameRules game_rules = 10;
+  HorizonOptions horizon_options = 11;
+  repeated Mod mods = 12;
+  // The integrated server shares the client's OS process.
+  bool same_process = 13;
+  uint32 players = 14;
+  uint64 world_fs_used_mb = 15;
+  uint64 world_fs_total_mb = 16;
+}
+
+enum Symbols {
+  SYMBOLS_UNSPECIFIED = 0;
+  SYMBOLS_DWARF = 1;
+  SYMBOLS_SYMTAB = 2;
+  // Names are crate+0xOFF.
+  SYMBOLS_NONE = 3;
+}
+
+message Build {
+  // Horizon's release version.
+  string version = 1;
+  string commit = 2;
+  // The Cargo profile, for example release or fast.
+  string profile = 3;
+  // The target triple.
+  string target = 4;
+  repeated string features = 5;
+  Symbols symbols = 6;
+}
+
+message Machine {
+  string os = 1;
+  string os_version = 2;
+  string arch = 3;
+  // The CPU model name.
+  string cpu = 4;
+  uint32 cpu_threads = 5;
+  uint32 cpu_cores = 6;
+  uint64 ram_mb = 7;
+  // Set when a cgroup limits the process.
+  optional float cgroup_cpu_cores = 8;
+  optional uint64 cgroup_memory_mb = 9;
+  // The adapter name; clients only.
+  string gpu = 10;
+}
+
+enum ThreadSelection {
+  THREAD_SELECTION_UNSPECIFIED = 0;
+  THREAD_SELECTION_MAIN = 1;
+  THREAD_SELECTION_ALL = 2;
+}
+
+enum GpuMode {
+  GPU_MODE_UNSPECIFIED = 0;
+  GPU_MODE_OFF = 1;
+  GPU_MODE_PASSES = 2;
+  GPU_MODE_DETAIL = 3;
+}
+
+// The capture's own switches (§4.1).
+message Options {
+  // Sampling rate.
+  uint32 hz = 1;
+  ThreadSelection threads = 2;
+  // --over: only ticks or frames slower than this are sampled.
+  optional float ticks_over_ms = 3;
+  bool wall = 4;
+  bool timeline = 5;
+  GpuMode gpu = 6;
+  bool samples = 7;
+  // --seconds; unset when the capture runs until stopped.
+  optional double window_s = 8;
+}
+
+// Typed allowlist of server settings; never a dump of server.properties.
+message Settings {
+  optional uint32 view_distance = 1;
+  optional uint32 simulation_distance = 2;
+  optional uint32 max_players = 3;
+  optional int32 network_compression_threshold = 4;
+}
+
+// Typed allowlist of the game rules that change what a tick costs; never the world's whole rule set.
+message GameRules {
+  optional int32 random_tick_speed = 1;
+  optional int32 max_entity_cramming = 2;
+  // -1 spreads fire everywhere.
+  optional int32 fire_spread_radius_around_player = 3;
+  optional bool advance_time = 4;
+  optional bool mob_griefing = 5;
+  optional bool spawn_mobs = 6;
+  optional bool spawn_monsters = 7;
+  optional bool spawner_blocks_work = 8;
+}
+
+// Typed allowlist of the Horizon switches that change what a tick costs, boolean or numeric.
+message HorizonOptions {
+  // The far ring's distance in chunks; 0 when off.
+  optional uint32 max_view_distance = 1;
+  // How far the server serves LOD tiles, in chunks; 0 when off.
+  optional uint32 lod_distance = 2;
+  optional bool anticheat = 3;
+}
+
+enum ModKind {
+  MOD_KIND_UNSPECIFIED = 0;
+  // A .hmod content mod.
+  MOD_KIND_CONTENT = 1;
+  // A native code mod.
+  MOD_KIND_NATIVE = 2;
+}
+
+message Mod {
+  string id = 1;
+  string version = 2;
+  ModKind kind = 3;
+  // The native mod's crate name.
+  string crate_name = 4;
+}
+
+message HealthSample {
+  Side side = 1;
+  double t = 2;
+  // Servers fill tps and mspt_*.
+  optional float tps = 3;
+  optional float mspt_avg = 4;
+  optional float mspt_p50 = 5;
+  optional float mspt_p95 = 6;
+  optional float mspt_max = 7;
+  // Clients fill fps and frame_*.
+  optional float fps = 8;
+  optional float frame_ms_p50 = 9;
+  optional float frame_ms_p95 = 10;
+  optional float frame_ms_p99 = 11;
+  optional float frame_ms_max = 12;
+  optional float frame_cpu_ms_p50 = 13;
+  optional float frame_gpu_ms_p50 = 14;
+  // In cores, not percent.
+  float cpu_process_cores = 15;
+  float cpu_system_cores = 16;
+  float rss_mb = 17;
+  float physical_used_mb = 18;
+  float swap_used_mb = 19;
+  optional float allocator_commit_mb = 20;
+  // alloc-count builds only.
+  optional float allocs_per_s = 21;
+  optional float alloc_mib_per_s = 22;
+  uint32 players = 23;
+  uint32 chunks = 24;
+  uint32 entities = 25;
+}
+
+// One in-memory tier: samples step_s apart, the first at t0.
+message HealthWindow {
+  Side side = 1;
+  float step_s = 2;
+  double t0 = 3;
+  repeated HealthSample samples = 4;
+}
+
+enum CounterKind {
+  COUNTER_KIND_UNSPECIFIED = 0;
+  // Grows through add; samples hold the running total.
+  COUNTER_KIND_SUM = 1;
+  // Replaced through set; samples hold the last value.
+  COUNTER_KIND_GAUGE = 2;
+}
+
+message CounterDef {
+  Side side = 1;
+  uint32 id = 2;
+  // String id of the dotted name.
+  uint32 name = 3;
+  repeated Label labels = 4;
+  // String id of the unit, for example bytes; 0 when unitless.
+  uint32 unit = 5;
+  CounterKind kind = 6;
+}
+
+// Both are string ids.
+message Label {
+  uint32 key = 1;
+  uint32 value = 2;
+}
+
+// ids[i] (a CounterDef.id) has values[i] at t.
+message CounterSample {
+  Side side = 1;
+  double t = 2;
+  repeated uint32 ids = 3;
+  repeated double values = 4;
+}
+
+// A tick or frame over the slow threshold.
+message SlowEvent {
+  Side side = 1;
+  double t = 2;
+  Unit unit = 3;
+  // The tick or frame counter.
+  uint64 counter = 4;
+  float wall_ms = 5;
+  float cpu_ms = 6;
+  // The 8 largest spans.
+  repeated SpanCost top = 7;
+}
+
+message SpanCost {
+  // String id of the span name.
+  uint32 name = 1;
+  float wall_ms = 2;
+  float cpu_ms = 3;
+  uint32 depth = 4;
+}
+
+// The only free text in a capture: profile mark NAME.
+message Mark {
+  Side side = 1;
+  double t = 2;
+  string name = 3;
+}
+
+enum WarningCode {
+  WARNING_CODE_UNSPECIFIED = 0;
+  // The connected server does not run Horizon, so only the client side was captured.
+  WARNING_CODE_SERVER_NOT_HORIZON = 1;
+  // The server refused the request: operator level 4 is required.
+  WARNING_CODE_SERVER_DENIED = 2;
+  // The server already runs a capture.
+  WARNING_CODE_SERVER_ALREADY_RUNNING = 3;
+  // The client disconnected while the server's side was being sent.
+  WARNING_CODE_SERVER_PART_INCOMPLETE = 4;
+  // The timeline hit its cap; args: [seconds recorded, bytes written].
+  WARNING_CODE_TIMELINE_CAPPED = 5;
+  // GPU timing was asked for but the device or the run gave no pass times.
+  WARNING_CODE_GPU_UNAVAILABLE = 6;
+}
+
+message Warning {
+  Side side = 1;
+  double t = 2;
+  WarningCode code = 3;
+  repeated double args = 4;
+}
+
+enum StopReason {
+  STOP_REASON_UNSPECIFIED = 0;
+  STOP_REASON_NORMAL = 1;
+  STOP_REASON_WINDOW_CAP = 2;
+  STOP_REASON_DISCONNECTED = 3;
+  STOP_REASON_SHUTDOWN = 4;
+}
+
+message Stop {
+  Side side = 1;
+  double t = 2;
+  StopReason reason = 3;
+  Overhead overhead = 4;
+}
+
+// What the capture cost, measured by each producer.
+message Overhead {
+  float spans_ms_per_tick = 1;
+  // Share of the tick or frame thread.
+  float spans_share = 2;
+  float sampler_share_of_thread = 3;
+  float writer_core_share = 4;
+  uint64 dropped_samples = 5;
+  // Messages dropped because the writer's channel was full; the writer adds them.
+  uint64 dropped_messages = 6;
+  // Set when the timeline stopped early.
+  optional double timeline_stopped_t = 7;
+  // Timing the mobs' ticks (one tick in four), priced on this machine at the end.
+  float mob_timing_ms_per_tick = 8;
+  // Share of the tick thread.
+  float mob_timing_share = 9;
+  // Allocations the heap sampler recorded, process-wide.
+  uint64 heap_samples = 10;
+  // Time the allocating threads spent recording them.
+  uint64 heap_sample_ns = 11;
+}
+
+// Per thread, per block of block_s (default 5 s); span[i] ran under parent[i] (string ids, 0 for a root).
+message SpanBlock {
+  Side side = 1;
+  // String id of the thread name.
+  uint32 thread = 2;
+  uint32 block = 3;
+  double t0 = 4;
+  float block_s = 5;
+  // Ticks or frames in the block.
+  uint32 units = 6;
+  repeated uint32 span = 7;
+  repeated uint32 parent = 8;
+  // Sums over the block's units.
+  repeated float wall_ms = 9;
+  repeated float cpu_ms = 10;
+  // Units of the block in which the span ran.
+  repeated uint32 seen = 11;
+}
+
+// Columnar spans of one thread over about one second, in start order; the arrays are parallel.
+message TimelineChunk {
+  Side side = 1;
+  // String id of the thread name.
+  uint32 thread = 2;
+  // String ids of the span names.
+  repeated uint32 name = 3;
+  // Microseconds since the side's capture began.
+  repeated uint64 start_us = 4;
+  repeated uint32 dur_us = 5;
+  // Spans this one ran inside on its thread; 0 for an outermost span.
+  repeated uint32 depth = 6;
+}
+
+// A span's totals over the whole capture; ms per unit is wall_ms / SpanSummary.count.
+message SpanTotal {
+  // String id of the span name.
+  uint32 name = 1;
+  // String id of the enclosing span; 0 for a root.
+  uint32 parent = 2;
+  uint32 depth = 3;
+  double wall_ms = 4;
+  double cpu_ms = 5;
+  // Units in which the span ran.
+  uint64 seen = 6;
+}
+
+// counts[i] holds the units with a wall time in [edges_ms[i-1], edges_ms[i]), the first from 0; the last bucket is open.
+message Histogram {
+  repeated float edges_ms = 1;
+  repeated uint64 counts = 2;
+}
+
+// A tick or frame kept with its whole span tree, parents before children.
+message WorstUnit {
+  double t = 1;
+  uint64 counter = 2;
+  float wall_ms = 3;
+  float cpu_ms = 4;
+  repeated SpanCost spans = 5;
+}
+
+message TimingSummary {
+  uint64 count = 1;
+  double slowest_1pct_ms = 2;
+  double slowest_01pct_ms = 3;
+}
+
+message SpanSummary {
+  Side side = 1;
+  // String id of the thread name.
+  uint32 thread = 2;
+  Unit unit = 3;
+  // Ticks or frames recorded.
+  uint64 count = 4;
+  repeated SpanTotal spans = 5;
+  Histogram histogram = 6;
+  // The 16 worst units, worst first.
+  repeated WorstUnit worst = 7;
+  // The units' own wall and cpu time, summed.
+  double wall_ms_total = 8;
+  double cpu_ms_total = 9;
+  TimingSummary timing = 10;
+}
+
+// Chunk-worker CPU by job kind.
+message WorkerKind {
+  // String id of the job kind, for example generate.
+  uint32 kind = 1;
+  uint64 jobs = 2;
+  float cpu_cores = 3;
+  float ms_per_job = 4;
+}
+
+message Workers {
+  Side side = 1;
+  repeated WorkerKind kinds = 2;
+}
+
+// path[i] has value_mb[i].
+message MemorySnapshot {
+  Side side = 1;
+  double t = 2;
+  // String id of the snapshot's name: start, a seconds mark, or stop.
+  uint32 label = 3;
+  // String ids of the flattened paths of horizon-ctl memory's reply.
+  repeated uint32 path = 4;
+  // Megabytes when the path's last key ends in _mb, otherwise a count.
+  repeated double value_mb = 5;
+}
+
+message TypeCount {
+  // String id of a registry id.
+  uint32 type = 1;
+  uint32 count = 2;
+}
+
+message DimensionCounts {
+  // String id of the dimension's registry id, for example minecraft:overworld.
+  uint32 dimension = 1;
+  uint32 chunks = 2;
+  repeated TypeCount entities = 3;
+  repeated TypeCount block_entities = 4;
+}
+
+// Sampled tick cost of one entity type in one dimension.
+message EntityCost {
+  uint32 dimension = 1;
+  uint32 entity = 2;
+  float ms_per_tick = 3;
+  float mobs_ticked_per_tick = 4;
+  float us_per_mob = 5;
+}
+
+message WorldSnapshot {
+  Side side = 1;
+  double t = 2;
+  // String id of the snapshot's name: start or stop.
+  uint32 label = 3;
+  repeated DimensionCounts dims = 4;
+  repeated EntityCost entity_costs = 5;
+}
+
+// Bytes and packets per block from the capture's start; blocks before a player joined are 0.
+message PlayerTraffic {
+  // Join order, from 1.
+  uint32 index = 1;
+  double joined_t = 2;
+  optional double left_t = 3;
+  repeated uint64 bytes_in = 4;
+  repeated uint64 bytes_out = 5;
+  // Empty on a side that does not count packets.
+  repeated uint32 packets_in = 6;
+  repeated uint32 packets_out = 7;
+  // The player's name; empty on a client's own connection and in older captures.
+  string name = 8;
+  // The client's minecraft:brand (vanilla, fabric, horizon...); empty until it sent one.
+  string brand = 9;
+  // The chunk radius the server sends this client, as last read.
+  uint32 view_distance = 10;
+}
+
+message NetTraffic {
+  Side side = 1;
+  float block_s = 2;
+  repeated PlayerTraffic players = 3;
+}
+
+// A horizon-benchmark-report v1 (or a scene_replay result) as written, so the share and upload format stays one.
+message BenchResult {
+  Side side = 1;
+  // The report's own format name, for example horizon-benchmark-report.
+  string format = 2;
+  string report_json = 3;
+  // The corpus a scene_replay result ran on; empty for a game benchmark.
+  string corpus_id = 4;
+}
+
+// A named document a driver adds to a finished capture, for example a load test's run record.
+message Attachment {
+  string name = 1;
+  string media_type = 2;
+  string body = 3;
+}
+
+enum SampleSource {
+  SAMPLE_SOURCE_UNSPECIFIED = 0;
+  SAMPLE_SOURCE_CPU = 1;
+  SAMPLE_SOURCE_WALL = 2;
+  SAMPLE_SOURCE_ALLOC = 3;
+  // Sampled heap bytes still allocated when the capture stopped, at their allocation's time block.
+  SAMPLE_SOURCE_LIVE = 4;
+}
+
+enum SampleUnit {
+  SAMPLE_UNIT_UNSPECIFIED = 0;
+  SAMPLE_UNIT_MS = 1;
+  SAMPLE_UNIT_BYTES = 2;
+}
+
+// What one counted sample weighs: count * period in unit.
+message SampleKind {
+  SampleSource source = 1;
+  SampleUnit unit = 2;
+  double period = 3;
+}
+
+message SampledThread {
+  // String id of the thread name.
+  uint32 name = 1;
+  // Ticks or frames the thread ran during the capture.
+  uint64 units = 2;
+  // Units at or over SampleProfile.slow_over_ms.
+  uint64 slow_units = 3;
+  Unit unit = 4;
+}
+
+// units[b] is the ticks or frames of threads[thread] that ended in time block b.
+message BlockUnits {
+  // Index into SampleProfile.threads.
+  uint32 thread = 1;
+  repeated uint32 units = 2;
+}
+
+// Columnar and deduplicated: one row per function, however many addresses of it were sampled.
+message Functions {
+  // String ids.
+  repeated uint32 name = 1;
+  repeated uint32 file = 2;
+  repeated uint32 line = 3;
+  repeated uint32 crate = 4;
+  // Module-relative address of the first sampled instruction, for symbolizing offline.
+  repeated uint64 addr = 5;
+}
+
+// Columnar call tree; parents come before their children.
+message Nodes {
+  // Index into this table; unused for a root.
+  repeated uint32 parent = 1;
+  // Index into Functions.
+  repeated uint32 function = 2;
+  // 0 for an inner node; for a root, 1 + the index into SampleProfile.threads of the thread whose stacks start here.
+  repeated uint32 thread_root = 3;
+}
+
+// Columnar, one row per distinct context; string id 0 means none.
+message Contexts {
+  repeated uint32 span = 1;
+  repeated uint32 entity = 2;
+  repeated uint32 block = 3;
+  repeated uint32 dim = 4;
+  repeated sint32 chunk_x = 5;
+  repeated sint32 chunk_z = 6;
+}
+
+// Columnar; row i counts count[i] samples that ended at node[i], one row per distinct combination.
+message Weights {
+  repeated uint32 node = 1;
+  // Index into SampleProfile.threads.
+  repeated uint32 thread = 2;
+  // Index into SampleProfile.kinds.
+  repeated uint32 kind = 3;
+  // 0 for a CPU sample, 1 for a wall sample of a running thread, 2 for a wall sample of a waiting one.
+  repeated uint32 state = 4;
+  // The sample belongs to a tick or frame at or over slow_over_ms.
+  repeated bool slow = 5;
+  // Index into Contexts.
+  repeated uint32 context = 6;
+  // Time block, from 0.
+  repeated uint32 block = 7;
+  repeated uint64 count = 8;
+}
+
+message SampleProfile {
+  Side side = 1;
+  repeated SampleKind kinds = 2;
+  repeated SampledThread threads = 3;
+  // Seconds per time block; the last block takes whatever follows it.
+  float block_s = 4;
+  repeated BlockUnits block_units = 5;
+  Functions functions = 6;
+  Nodes nodes = 7;
+  Contexts contexts = 8;
+  Weights weights = 9;
+  // The duration from which a tick or frame counts as slow.
+  float slow_over_ms = 10;
+}
+
+enum GpuBackend {
+  GPU_BACKEND_UNSPECIFIED = 0;
+  GPU_BACKEND_VULKAN = 1;
+  GPU_BACKEND_METAL = 2;
+  GPU_BACKEND_DX12 = 3;
+  GPU_BACKEND_GL = 4;
+  GPU_BACKEND_OTHER = 5;
+}
+
+// How a pass's parts are timed on the device.
+enum GpuPartsMode {
+  GPU_PARTS_MODE_UNSPECIFIED = 0;
+  // One compute pass with a timestamp pair around each part.
+  GPU_PARTS_MODE_INSIDE_PASSES = 1;
+  // A compute pass per part, with pass-boundary stamps.
+  GPU_PARTS_MODE_SEPARATE_PASSES = 2;
+}
+
+// What the fragment counter counts on the device; unspecified when it could not be told.
+enum GpuFragmentUnit {
+  GPU_FRAGMENT_UNIT_UNSPECIFIED = 0;
+  GPU_FRAGMENT_UNIT_PIXEL = 1;
+  // Shaded 2x2 quads: four pixels each.
+  GPU_FRAGMENT_UNIT_QUAD = 2;
+}
+
+// Which timer's passes a GpuPasses holds.
+enum GpuSource {
+  GPU_SOURCE_UNSPECIFIED = 0;
+  // Horizon's own render passes.
+  GPU_SOURCE_HORIZON = 1;
+  // The passes of the running shader pack.
+  GPU_SOURCE_SHADER_PACK = 2;
+}
+
+message GpuDevice {
+  // The adapter name, as Machine.gpu.
+  string adapter = 1;
+  GpuBackend backend = 2;
+  // The driver's name and version text.
+  string driver = 3;
+  GpuPartsMode parts_mode = 4;
+  // Whether pipeline statistics queries exist.
+  bool counters = 5;
+  GpuFragmentUnit fragment_unit = 6;
+  GpuPassSplit pass_split = 7;
+}
+
+// How far inside a render pass the timer sees.
+enum GpuPassSplit {
+  // Captures written before the field existed.
+  GPU_PASS_SPLIT_UNSPECIFIED = 0;
+  // Timestamps inside render passes split them into their draw groups, in every timed frame.
+  GPU_PASS_SPLIT_DRAW_GROUPS = 1;
+  // Only pass boundaries are timed: the device has no timestamps inside passes (Metal).
+  GPU_PASS_SPLIT_PASSES_ONLY = 2;
+}
+
+// A part of a pass, for example one dispatch: median ms per frame.
+message GpuPart {
+  // String id of the part's name.
+  uint32 name = 1;
+  float ms = 2;
+}
+
+message GpuPass {
+  // String id of the pass's name.
+  uint32 name = 1;
+  // Median ms per frame over the capture's timed frames (the last 15 before gpu_frames existed); unset for a pass seen only through its parts.
+  optional float ms = 2;
+  repeated GpuPart parts = 3;
+}
+
+// What a pass or a part of it shaded and sent through the pipeline in one frame.
+message GpuCounts {
+  uint64 vertex_shader_invocations = 1;
+  uint64 clipper_invocations = 2;
+  uint64 clipper_primitives_out = 3;
+  // Pixels or quads, per GpuDevice.fragment_unit.
+  uint64 fragment_shader_invocations = 4;
+}
+
+message GpuPartCounts {
+  // String id of the part's name.
+  uint32 name = 1;
+  GpuCounts counts = 2;
+}
+
+// Medians over the last counted frames of one pass.
+message GpuCounter {
+  // String id of the pass's name.
+  uint32 pass = 1;
+  GpuCounts total = 2;
+  // Pixels of the pass's depth attachment.
+  uint64 pixels = 3;
+  // Present when the pass has two or more segments.
+  repeated GpuPartCounts parts = 4;
+}
+
+// The GPU pass timings of one timer at the end of a capture.
+message GpuPasses {
+  Side side = 1;
+  GpuDevice device = 2;
+  repeated GpuPass passes = 3;
+  repeated GpuCounter counters = 4;
+  GpuSource source = 5;
+}
+
+// One frame a GPU timer timed: its passes' and parts' ms, a name's occurrences in the frame summed.
+message GpuFrame {
+  GpuSource source = 1;
+  // When the frame's commands began recording, on the capture clock.
+  double t = 2;
+  // From the frame's first timestamp to its last; unset when it had no whole pair.
+  optional float total_ms = 3;
+  repeated GpuPass passes = 4;
+}
+
+// The timed frames of one side since its previous block.
+message GpuFrames {
+  Side side = 1;
+  repeated GpuFrame frames = 2;
+  // The CPU's own ms of every frame the window drew since the previous block, timed or not.
+  repeated float cpu_frame_ms = 3;
+}

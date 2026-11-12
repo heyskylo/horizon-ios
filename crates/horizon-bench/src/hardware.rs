@@ -2,7 +2,7 @@
 //! come from the program that rendered (the game knows its adapter, the launcher its window).
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-use horizon_telemetry::system::command_output as output;
+use horizon_system::command_output as output;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -62,6 +62,7 @@ pub struct Display {
     pub refresh_hz: Option<u32>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Hardware {
     pub fn detect() -> Hardware {
         let probes = probes();
@@ -69,12 +70,12 @@ impl Hardware {
             os: std::env::consts::OS.to_owned(),
             os_version: os_version(),
             arch: std::env::consts::ARCH.to_owned(),
-            cpu: horizon_telemetry::system::cpu(),
+            cpu: horizon_system::cpu(),
             cpu_threads: std::thread::available_parallelism().ok().map(|n| n.get()),
             cpu_cores: probes.cores,
             cpu_base_mhz: probes.base,
             cpu_boost_mhz: probes.boost,
-            ram_mb: horizon_telemetry::system::ram_bytes().map(|b| b >> 20),
+            ram_mb: horizon_system::ram_bytes().map(|b| b >> 20),
             storage: None,
             form: probes.form,
             gpu: None,
@@ -85,13 +86,14 @@ impl Hardware {
     /// [`Hardware::detect`] with the kind of drive `game_dir` is on.
     pub fn detect_in(game_dir: &std::path::Path) -> Hardware {
         Hardware {
-            storage: horizon_telemetry::system::storage(game_dir).map(str::to_owned),
+            storage: horizon_system::storage(game_dir).map(str::to_owned),
             ..Hardware::detect()
         }
     }
 }
 
-/// What the telemetry probes read (`horizon_telemetry::system`).
+#[cfg(not(target_arch = "wasm32"))]
+/// What `horizon_system::Machine` reads.
 struct Probes {
     cores: Option<u16>,
     base: Option<u32>,
@@ -99,27 +101,31 @@ struct Probes {
     form: Option<String>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn probes() -> Probes {
-    let s = horizon_telemetry::payload::System::detect();
+    let s = horizon_system::Machine::detect();
     let some = |n: u32| (n > 0).then_some(n);
     Probes {
         cores: (s.cores > 0).then_some(s.cores),
         base: some(s.cpu_base_mhz),
         boost: some(s.cpu_boost_mhz),
-        form: (!s.form.is_empty()).then_some(s.form),
+        form: (!s.form.is_empty()).then(|| s.form.to_owned()),
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// `ac` or `battery`; `None` where it can't be read (and on machines without a battery on Linux).
 pub fn power_source() -> Option<&'static str> {
-    horizon_telemetry::system::power()
+    horizon_system::power()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(target_os = "macos")]
 fn os_version() -> Option<String> {
     output("sw_vers", &["-productVersion"])
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(target_os = "linux")]
 fn os_version() -> Option<String> {
     let release = std::fs::read_to_string("/etc/os-release").ok()?;
@@ -132,6 +138,7 @@ fn os_version() -> Option<String> {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(target_os = "linux")]
 fn key_value<'a>(text: &'a str, key: &str, sep: char) -> Option<&'a str> {
     text.lines().find_map(|line| {
@@ -140,17 +147,19 @@ fn key_value<'a>(text: &'a str, key: &str, sep: char) -> Option<&'a str> {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(target_os = "windows")]
 fn os_version() -> Option<String> {
-    horizon_telemetry::system::windows_version()
+    horizon_system::windows_version()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn os_version() -> Option<String> {
     None
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 

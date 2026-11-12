@@ -40,7 +40,8 @@ pub fn attempt_counters(publish: bool) {
     }
     let counts = ATTEMPT_COUNTS.with(|c| c.replace([0; 2]));
     if publish {
-        crate::spans::counters(&[("sa_attempts", counts[0]), ("sa_spawns", counts[1])]);
+        horizon_perf_format::counter("natural_spawning.attempts", &[]).add(counts[0]);
+        horizon_perf_format::counter("natural_spawning.spawns", &[]).add(counts[1]);
     }
 }
 fn attempt_count(index: usize) {
@@ -1553,6 +1554,26 @@ fn top_non_colliding<L: NaturalLevel>(l: &L, entity: &str, x: i32, z: i32) -> [i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Attempts and spawns counted while spans are on reach the perf counters once published, and a reset publishes nothing.
+    #[test]
+    fn attempt_counters_publish_what_the_tick_counted() {
+        let attempts = horizon_perf_format::counter("natural_spawning.attempts", &[]);
+        let spawns = horizon_perf_format::counter("natural_spawning.spawns", &[]);
+        let before = (attempts.get(), spawns.get());
+        crate::spans::enable(true);
+        attempt_counters(false);
+        for _ in 0..7 {
+            attempt_count(0);
+        }
+        for _ in 0..3 {
+            attempt_count(1);
+        }
+        attempt_counters(true);
+        attempt_counters(true);
+        crate::spans::enable(false);
+        assert_eq!((attempts.get() - before.0, spawns.get() - before.1), (7, 3));
+    }
 
     /// The grid finds the players whose chunk is within 8 of a chunk on both
     /// axes, in their order, as a look at every player does.

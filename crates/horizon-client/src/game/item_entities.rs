@@ -26,6 +26,7 @@ impl Game<'_> {
             }
         }
         self.tick_dropped_items(&mut round);
+        horizon_threads::work::clear_work();
         self.native_tick_post_batch(round);
     }
     /// An item that joined during this tick's entity pass: it first ticks on
@@ -57,7 +58,9 @@ impl Game<'_> {
         // `ItemUtils.onContainerDestroyed`: what a destroyed item held, and
         // where it lay, for adding to the level once its own tick is done.
         let mut destroyed: Vec<(ItemStack, Vec3)> = Vec::new();
+        let item_type = horizon_threads::work::entity_id("minecraft:item");
         for i in 0..items.len() {
+            horizon_threads::work::set_entity(item_type);
             if removed[i] {
                 // Merged into an earlier item before its own tick: it never ticked.
                 round.not_ticked(items[i].id);

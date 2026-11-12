@@ -918,6 +918,7 @@ impl<'a> Game<'a> {
                         }
                         spawned
                     };
+                    horizon_threads::work::set_chunk(chunk.0, chunk.1);
                     spawn_selection::spawn_for_chunk(
                         &level,
                         &mut random,
@@ -931,6 +932,7 @@ impl<'a> Game<'a> {
             }
             scratch.spawn_players = state.into_players();
         }
+        horizon_threads::work::clear_work();
         spawn_selection::attempt_counters(true);
         laps.lap("sn_attempts");
         self.world.random = random;

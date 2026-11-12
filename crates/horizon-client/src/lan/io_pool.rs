@@ -162,6 +162,10 @@ impl Outbox {
     pub(super) fn take_packets(&self) -> [Vec<(i32, usize)>; 2] {
         std::mem::take(&mut *self.tally.lock().unwrap_or_else(PoisonError::into_inner))
     }
+    /// The packets queued and not taken by the thread yet.
+    pub(super) fn queued(&self) -> usize {
+        self.queue().bodies.len()
+    }
     fn queue(&self) -> MutexGuard<'_, Queue> {
         self.queue.lock().unwrap_or_else(PoisonError::into_inner)
     }

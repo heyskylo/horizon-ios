@@ -1,6 +1,7 @@
 //! Commands from the control socket (`horizon-ctl`), run on the game thread.
 use super::event_loop::EventLoopCtl;
 use super::{Game, Screen};
+use horizon_client::gfx::pack_timing;
 use horizon_client::held::Source;
 use horizon_client::{Result, items::ItemStack};
 use horizon_core::geometry::Vec3;
@@ -59,8 +60,9 @@ const HELP: &[&str] = &[
     "chat-log [N]                   the newest N chat messages (default 10)",
     "options [PAGE]                 open the options (video sound controls keybinds mouse chat accessibility language font packs mods graphics graphics-advanced graphics-hdr video-vanilla)",
     "stats [reset] [raw]            frame-time summary since the last reset (raw: every frame time too)",
+    "profile [client|server] start|stop|status|mark NAME  capture the performance of the window and, in single player, its server thread to reports/ (horizon-ctl profile --help)",
     "narration                      the narrator's status and the last messages it was asked to say",
-    "bench SECONDS                  reset stats, wait, then reply with the summary",
+    "bench SECONDS [raw]            reset stats, wait, then reply with the summary (raw: every frame time too)",
     "fly X1 Y1 Z1 X2 Y2 Z2 SECONDS [PITCH [raw]]  fly the camera along a line at constant speed, then reply with the frame summary (raw: every frame time too)",
     "open WORLD [SEED] [creative]   open or create a world from the title screen",
     "save                           save the world",
@@ -125,9 +127,7 @@ impl Game<'_> {
             summary["tick_ms"] = (flight.tick_ms.iter().sum::<f32>() / n).into();
             summary["tick_ms_max"] = flight.tick_ms.iter().copied().fold(0.0, f32::max).into();
             if flight.raw {
-                summary["frame_ms"] = self.frame_stats.frame_millis().into();
-                summary["cpu_ms"] = self.frame_stats.cpu_millis().into();
-                summary["gpu_ms"] = self.frame_stats.gpu_millis().into();
+                self.add_raw_series(&mut summary);
             }
             let _ = flight.reply.send(summary.to_string());
         }
@@ -167,6 +167,14 @@ impl Game<'_> {
                     .collect(),
             );
         }
+        if let Some(r) = self.renderer.as_ref().filter(|r| r.pass_detail())
+            && let Some(support) = r.pass_detail_support()
+            && let Value::Object(detail) =
+                pack_timing::detail_json(&r.own_pass_parts(), &r.own_pass_counters(), support)
+            && let Some(summary) = summary.as_object_mut()
+        {
+            summary.extend(detail);
+        }
         self.add_async_occlusion_stats(&mut summary);
         summary
     }
@@ -177,6 +185,23 @@ impl Game<'_> {
         }
     }
 
+    /// Adds the allocations since the last rendered frame to the frame stats; the first frame has no mark.
+    pub(super) fn record_frame_allocs(&mut self) {
+        use horizon_threads::alloc_count::{here, process};
+        let now = (here(), process());
+        if let Some((window, all)) = self.alloc_mark.replace(now) {
+            self.frame_stats
+                .record_allocs(now.0.since(window), now.1.since(all), Instant::now());
+        }
+    }
+    /// Every frame's times, and its allocations in builds that count (`raw`).
+    fn add_raw_series(&self, summary: &mut Value) {
+        self.frame_stats.add_series(summary);
+        if horizon_threads::alloc_count::ON {
+            summary["alloc_count"] = self.frame_stats.alloc_counts().into();
+            summary["alloc_bytes"] = self.frame_stats.alloc_bytes().into();
+        }
+    }
     fn reset_frame_stats(&mut self) {
         self.frame_stats.reset();
         if let Some(culler) = &self.async_occlusion_culler {
@@ -184,16 +209,21 @@ impl Game<'_> {
         }
     }
     pub(super) fn poll_control(&mut self, event_loop: &dyn EventLoopCtl) {
-        if let Some((deadline, reply)) = self.pending_bench.take() {
+        if let Some((deadline, reply, raw)) = self.pending_bench.take() {
             if Instant::now() >= deadline {
-                let _ = reply.send(self.summary_with_passes().to_string());
+                let mut summary = self.summary_with_passes();
+                if raw {
+                    self.add_raw_series(&mut summary);
+                }
+                let _ = reply.send(summary.to_string());
             } else {
-                self.pending_bench = Some((deadline, reply));
+                self.pending_bench = Some((deadline, reply, raw));
             }
         }
         horizon_client::widgets::end_frame(self.frames);
         self.narrate_screen();
         self.poll_repro(event_loop);
+        self.poll_profile();
         self.advance_agent();
         for request in self.ui_wait.ready() {
             self.answer(request, event_loop);
@@ -391,10 +421,19 @@ impl Game<'_> {
         if let Some(value) = self.repro_command(&words, line, reply)? {
             return Ok(value);
         }
+        if words[0] == "profile" {
+            return self.profile_command(&words[1..], reply);
+        }
+        if words[0] == "trace" {
+            return self.trace_command(&words[1..], reply);
+        }
         if let Some(value) = self.saves_control(&words, line, reply)? {
             return Ok(value);
         }
         if let Some(value) = self.options_control(&words, line)? {
+            return Ok(Some(value));
+        }
+        if let Some(value) = self.lan_op_control(&words)? {
             return Ok(Some(value));
         }
         if let Some(value) = self.lan_control(&words)? {
@@ -461,35 +500,17 @@ impl Game<'_> {
                 Ok(Some(json!({ "ok": true, "cull": r.section_cull() })))
             }
             "gpu-passes" => {
-                match words.get(1).copied() {
-                    None => {}
-                    Some("on") => self.gpu_passes = true,
-                    Some("off") => self.gpu_passes = false,
-                    Some(other) => return Err(format!("unknown gpu pass mode {other}").into()),
-                }
-                Ok(Some(json!({ "ok": true, "gpu_passes": self.gpu_passes })))
+                (self.gpu_passes, self.gpu_pass_detail) = gpu_pass_switches(
+                    words.get(1).copied(),
+                    (self.gpu_passes, self.gpu_pass_detail),
+                )?;
+                let support = self.renderer.as_ref().and_then(|r| r.pass_detail_support());
+                Ok(Some(gpu_passes_reply(
+                    self.gpu_passes,
+                    self.gpu_pass_detail,
+                    support,
+                )))
             }
-            // Every thread's spans as a timeline Perfetto opens (`spans::trace`).
-            "trace" => match words.get(1).copied() {
-                None => Ok(Some(
-                    json!({ "ok": true, "tracing": horizon_client::spans::trace::on() }),
-                )),
-                Some("stop") => Ok(Some(
-                    json!({ "ok": true, "events": horizon_client::spans::trace::stop() }),
-                )),
-                Some(file) => {
-                    let seconds = match words.get(2) {
-                        None => None,
-                        Some(s) => Some(
-                            s.parse::<u32>()
-                                .map_err(|_| "trace [FILE [SECONDS] | stop]")?,
-                        ),
-                    };
-                    horizon_client::spans::trace::start(std::path::Path::new(file), seconds)
-                        .map_err(|e| format!("trace {file}: {e}"))?;
-                    Ok(Some(json!({ "ok": true, "tracing": true, "file": file })))
-                }
-            },
             "render-capture" => match words.get(1).copied() {
                 None => {
                     let r = self.renderer.as_ref().ok_or("no renderer")?;
@@ -579,7 +600,7 @@ impl Game<'_> {
             "sculk" => Ok(Some(self.sculk_command(&words)?)),
             "hello" => Ok(Some(hello())),
             "status" => Ok(Some(self.control_status())),
-            "memory" => Ok(Some(self.memory_report())),
+            "memory" => Ok(Some(self.memory_value())),
             "stall" => {
                 let millis: u64 = arg(1)?.parse()?;
                 if millis > 5000 {
@@ -1188,9 +1209,7 @@ impl Game<'_> {
             "stats" => {
                 let mut summary = self.summary_with_passes();
                 if words[1..].contains(&"raw") {
-                    summary["frame_ms"] = self.frame_stats.frame_millis().into();
-                    summary["cpu_ms"] = self.frame_stats.cpu_millis().into();
-                    summary["gpu_ms"] = self.frame_stats.gpu_millis().into();
+                    self.add_raw_series(&mut summary);
                 }
                 if words[1..].contains(&"reset") {
                     self.reset_frame_stats();
@@ -1210,6 +1229,7 @@ impl Game<'_> {
                 self.pending_bench = Some((
                     Instant::now() + Duration::from_secs_f64(seconds),
                     reply.clone(),
+                    words[2..].contains(&"raw"),
                 ));
                 Ok(None)
             }
@@ -1773,6 +1793,35 @@ fn key_code(name: &str) -> Option<KeyCode> {
     })
 }
 
+/// The (times, detail) switches `gpu-passes [on|off|detail]` leaves, given the current ones.
+fn gpu_pass_switches(word: Option<&str>, now: (bool, bool)) -> Result<(bool, bool)> {
+    match word {
+        None => Ok(now),
+        Some("on") => Ok((true, false)),
+        Some("detail") => Ok((true, true)),
+        Some("off") => Ok((false, false)),
+        Some(other) => Err(format!("unknown gpu pass mode {other}").into()),
+    }
+}
+
+/// The `gpu-passes` reply: the switches and what detail can show on this device.
+fn gpu_passes_reply(
+    passes: bool,
+    detail: bool,
+    support: Option<pack_timing::DetailSupport>,
+) -> Value {
+    let shown = support.map(pack_timing::support_json);
+    let field = |key: &str, none: Value| shown.as_ref().map_or(none, |s| s[key].clone());
+    json!({
+        "ok": true,
+        "gpu_passes": passes,
+        "detail": detail,
+        "parts_mode": field("parts_mode", Value::Null),
+        "counters": field("counters", json!(false)),
+        "fragment_unit": field("fragment_unit", Value::Null),
+    })
+}
+
 /// The title's own screens (not one opened over it, as Options is) take the
 /// text: the world name, the seed, a server's address.
 pub(super) fn title_owns_text(screen: &Screen, title_up: bool) -> bool {
@@ -1811,6 +1860,39 @@ mod tests {
     }
 
     #[test]
+    fn gpu_passes_detail_replies_detail_and_on_turns_it_off_again() {
+        let support = pack_timing::DetailSupport {
+            parts: pack_timing::PartsMode::SeparatePasses,
+            encoder_stamps: false,
+            counters: true,
+            fragment_unit: Some(pack_timing::FragmentUnit::Quad),
+        };
+        let (passes, detail) = gpu_pass_switches(Some("detail"), (false, false)).unwrap();
+        let reply = gpu_passes_reply(passes, detail, Some(support));
+        assert_eq!(reply["detail"], true);
+        assert_eq!(reply["gpu_passes"], true);
+        assert_eq!(reply["parts_mode"], "separate_passes");
+        assert_eq!(reply["counters"], true);
+        assert_eq!(reply["fragment_unit"], "quad");
+        let (passes, detail) = gpu_pass_switches(Some("on"), (passes, detail)).unwrap();
+        let reply = gpu_passes_reply(passes, detail, None);
+        assert_eq!(
+            (reply["gpu_passes"].as_bool(), reply["detail"].as_bool()),
+            (Some(true), Some(false))
+        );
+        assert_eq!(
+            (reply["parts_mode"].is_null(), reply["counters"].as_bool()),
+            (true, Some(false))
+        );
+        assert_eq!(
+            gpu_pass_switches(Some("off"), (true, true)).unwrap(),
+            (false, false)
+        );
+        assert_eq!(gpu_pass_switches(None, (true, true)).unwrap(), (true, true));
+        assert!(gpu_pass_switches(Some("nope"), (false, false)).is_err());
+    }
+
+    #[test]
     fn taps_and_ups_always_release_their_key() {
         for line in ["key shift tap", "key shift up", "key  Shift  up"] {
             assert_eq!(released_modifier(line), Some(KeyCode::ShiftLeft), "{line}");
@@ -1823,6 +1905,52 @@ mod tests {
             "key nope up",
         ] {
             assert_eq!(released_modifier(line), None, "{line}");
+        }
+    }
+
+    #[test]
+    fn a_benchmark_profile_only_goes_with_a_benchmark() {
+        let parse = |args: &[&str]| {
+            super::super::Options::parse(args.iter().map(|a| a.to_string())).map(|o| o.unwrap())
+        };
+        assert!(
+            parse(&["--benchmark", "village", "--profile"])
+                .unwrap()
+                .benchmark_profile
+        );
+        assert!(
+            !parse(&["--benchmark", "village"])
+                .unwrap()
+                .benchmark_profile
+        );
+        assert!(parse(&["--profile"]).is_err());
+    }
+
+    #[test]
+    fn a_benchmark_set_only_goes_with_the_trip() {
+        let parse = |args: &[&str]| {
+            super::super::Options::parse(args.iter().map(|a| a.to_string())).map(|o| o.unwrap())
+        };
+        let set = parse(&["--benchmark", "travel", "--benchmark-set", "gpu-culling=on"]).unwrap();
+        assert_eq!(set.benchmark_set, Some(("gpu-culling".into(), "on".into())));
+        let before = parse(&["--benchmark-set", "gpu-culling=on", "--benchmark", "travel"]);
+        assert!(before.is_ok());
+        for args in [
+            &[
+                "--benchmark",
+                "standard",
+                "--benchmark-set",
+                "gpu-culling=on",
+            ][..],
+            &["--benchmark-set", "gpu-culling=on"],
+            &[
+                "--benchmark",
+                "travel",
+                "--benchmark-set",
+                "gpu-culling=auto",
+            ],
+        ] {
+            assert!(parse(args).is_err(), "{args:?}");
         }
     }
 }

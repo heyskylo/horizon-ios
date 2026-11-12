@@ -2,8 +2,8 @@
 //! an adapter that can't present to the window gives way to another of its backend
 //! (#13493).
 use super::{
-    Renderer, check_layers, cull, describe_adapter, is_software, oit, startup_step, surface_format,
-    timing,
+    Renderer, check_layers, cull, describe_adapter, is_software, oit, pack_timing, startup_step,
+    surface_format, timing,
 };
 // Ray tracing on request, which the device needs from its creation (gfx.rs may not grow).
 #[path = "ray_query.rs"]
@@ -135,6 +135,7 @@ pub(super) async fn open_adapter(
     // atomics on images: their buffers and images. Filtering 32-bit float textures: shader
     // packs' RGBA32F buffers, which GL filters and mipmaps. Count draws: GPU culling's (`gpu_culling`).
     let features = timing::GpuTimer::features(adapter)
+        | pack_timing::PassTiming::features(adapter)
         | cull::Cull::features(adapter)
         | oit::features(adapter)
         | ray_query::features(adapter)

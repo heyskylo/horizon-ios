@@ -154,6 +154,7 @@ passes on without checking it).
 | Waits and events | (all) | yes | yes | `wait`, `wait-for`, `events` |
 | Effects, experience, enchantments, potions, fill | (cheats) | yes | yes | `effect`, `effects`, `xp`, `enchant`, `potion`, `fill` |
 | Benchmarks and frame stats | (all) | yes | yes | `bench`, `stats`, `fly` |
+| Performance captures | `/profiler` | yes | yes | `profile [client\|server] start\|stop\|status\|mark`, `trace`; the file is read with `horizon-perf` or `horizon-perf mcp` ([perf-platform.md](perf-platform.md)), and its slow ring (the last 256 slow frames or ticks) rides in it; none of them is logged |
 
 ## No AI
 
@@ -371,6 +372,8 @@ A recording is one folder, a bundle is that folder plus the logs in one zip:
   stops it and writes the bundle (the chat shows the path); **F3+E** writes the bundle of the
   newest recording. The keys are off until **Recording shortcuts** is turned on (AI Agent page);
   the page also has the two buttons and a live recording/replay line.
+- `/profiler start` and `/profiler stop` in chat start and save a capture and print its file name; add `client` or `server` for one side. `/profiler status` shows whether one is running. In the official build the saved line has `[Open]` and `[Share]` (`/profiler open [id]`, `/profiler share [id]`): Open shows the capture in the viewer from your own computer, Share uploads it and prints the link, the only upload. The local `.hzperf` and private `.hzperf.share.json` owner receipt stay in reports/. Nothing uploads unless you share, and none of this depends on the telemetry switches.
+  See [graphics.md](graphics.md) for what the capture holds.
 - `record-replay NAME [--stop] [--in-place] [--keep-world] [--timeout S]` is the best effort
   replay: it copies the recording's world into `saves/`, opens it, restores the recorded player
   position, rotation and velocity, and feeds the recorded keys, mouse, wheel, look, pad events

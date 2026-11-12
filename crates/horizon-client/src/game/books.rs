@@ -202,7 +202,7 @@ impl Game<'_> {
             }
             // SuggestCommand's insertText does nothing on a book; a server's
             // text never opens a file.
-            ClickEvent::SuggestCommand(_) | ClickEvent::OpenFile(_) => {}
+            ClickEvent::SuggestCommand(_) | ClickEvent::OpenFile(_) | ClickEvent::Profiler(_) => {}
         }
     }
     /// `WritableBookItem.use` / `WrittenBookItem.use` (`Player.openItemGui`).

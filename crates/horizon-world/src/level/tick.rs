@@ -284,6 +284,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// `BlockState.randomTick` followed by the fluid's random tick.
     pub fn random_tick_at(&mut self, pos: BlockPos) {
         let state = self.state(pos);
+        horizon_threads::work::set_block(self.b.block(state).0);
         if self.b.is_randomly_ticking(state) {
             let (mut current, mut handled) = (state, false);
             self.level
@@ -1776,6 +1777,8 @@ impl Behaviours {
         while let Ok(Some(tick)) = ticks.blocks.next_tick() {
             let mut sim = self.sim(level, ticks);
             let state = sim.state(tick.pos);
+            horizon_threads::work::set_chunk(tick.pos.x >> 4, tick.pos.z >> 4);
+            horizon_threads::work::set_block(self.block(state).0);
             if u32::from(self.block(state).0) == tick.kind.0 {
                 sim.tick_due_block(state, tick.pos);
             }
@@ -1796,7 +1799,10 @@ impl Behaviours {
         }
         while let Ok(Some(tick)) = ticks.fluids.next_tick() {
             let mut sim = self.sim(level, ticks);
-            let fluid = self.fluid(sim.state(tick.pos)).kind();
+            let state = sim.state(tick.pos);
+            horizon_threads::work::set_chunk(tick.pos.x >> 4, tick.pos.z >> 4);
+            horizon_threads::work::set_block(self.block(state).0);
+            let fluid = self.fluid(state).kind();
             if TickTypeId(fluid.index() as u32) == tick.kind {
                 sim.fluid_tick(tick.pos);
             }
@@ -1845,7 +1851,10 @@ impl Behaviours {
                 return false;
             };
             let mut sim = self.sim(level, ticks);
-            let fluid = self.fluid(sim.state(tick.pos)).kind();
+            let state = sim.state(tick.pos);
+            horizon_threads::work::set_chunk(tick.pos.x >> 4, tick.pos.z >> 4);
+            horizon_threads::work::set_block(self.block(state).0);
+            let fluid = self.fluid(state).kind();
             if TickTypeId(fluid.index() as u32) == tick.kind {
                 sim.fluid_tick(tick.pos);
             }
@@ -1855,6 +1864,8 @@ impl Behaviours {
             };
             let mut sim = self.sim(level, ticks);
             let state = sim.state(tick.pos);
+            horizon_threads::work::set_chunk(tick.pos.x >> 4, tick.pos.z >> 4);
+            horizon_threads::work::set_block(self.block(state).0);
             if u32::from(self.block(state).0) == tick.kind.0 {
                 sim.tick_due_block(state, tick.pos);
             }
@@ -1905,6 +1916,7 @@ impl Behaviours {
             return;
         }
         let (min_x, min_z) = (chunk.x * 16, chunk.z * 16);
+        horizon_threads::work::set_chunk(chunk.x, chunk.z);
         for _ in 0..speed {
             if level.random().next_int_bound(48).unwrap_or(1) == 0 {
                 let pos = ticks.block_random_pos(min_x, 0, min_z, 15);

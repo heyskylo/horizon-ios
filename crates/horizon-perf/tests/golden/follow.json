@@ -1,0 +1,10 @@
+{"event":"start","kind":"dedicated","side":"server"}
+{"event":"start","kind":"client","side":"client"}
+{"event":"health","mspt_avg":41.29999923706055,"mspt_max":80.9000015258789,"mspt_p95":55.099998474121094,"players":3,"rss_mb":1024.4000244140625,"side":"server","t":1.0,"tps":19.700000762939453}
+{"event":"health","fps":144.3000030517578,"frame_ms_p95":9.100000381469727,"rss_mb":2048.699951171875,"side":"client","t":1.0}
+{"counter":48812,"event":"slow","side":"server","t":2.5,"top":[{"name":"tick_lan","wall_ms":180.1999969482422},{"name":"#9","wall_ms":61.099998474121094}],"unit":"tick","wall_ms":312.3999938964844}
+{"counter":7,"event":"slow","side":"client","t":2.6,"top":[],"unit":"frame","wall_ms":55.5}
+{"event":"mark","name":"after the fix","side":"server","t":2.75}
+{"args":[30.0,1048576.0],"code":"WARNING_CODE_TIMELINE_CAPPED","event":"warning","side":"server","t":2.8}
+{"event":"stop","reason":"normal","side":"server","t":3.0}
+{"event":"stop","reason":"window_cap","side":"client","t":3.0}

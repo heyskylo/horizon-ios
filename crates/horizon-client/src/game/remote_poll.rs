@@ -71,7 +71,7 @@ impl Game<'_> {
                 forgotten.insert((p.pos[0], p.pos[1]));
                 continue;
             }
-            self.forget_remote_columns(&mut forgotten);
+            horizon_client::spans::time("pr_forget", || self.forget_remote_columns(&mut forgotten));
             let chunk = matches!(item, Received::Chunk(_));
             if chunk && !overdue && chunks >= CHUNK_PACKETS_PER_FRAME {
                 events.push_front(item);
@@ -99,7 +99,9 @@ impl Game<'_> {
                     };
                     self.native_client_packet(&packet);
                     if let C::LevelChunkWithLight(p) = *packet {
-                        self.remote_chunk(&p, Some((&format, column)));
+                        horizon_client::spans::time("pr_chunk", || {
+                            self.remote_chunk(&p, Some((&format, column)))
+                        });
                     }
                     chunks += started.map_or(Duration::ZERO, |t| t.elapsed());
                     continue;
@@ -264,7 +266,13 @@ impl Game<'_> {
                     self.offer_reconnect(retry);
                     return Ok(());
                 }
-                Event::Packet(packet) => self.handle_packet(*packet)?,
+                Event::Packet(packet) => match *packet {
+                    // The server's answer to a `profile` request.
+                    C::CustomPayload(p) if p.channel == horizon_client::perf_net::CHANNEL => {
+                        self.remote_perf_reply(&p.data);
+                    }
+                    packet => self.handle_packet(packet)?,
+                },
             }
             chunks += started.map_or(Duration::ZERO, |t| t.elapsed());
             if self.remote.is_none() {
@@ -272,7 +280,7 @@ impl Game<'_> {
             }
         }
         if self.remote.is_some() {
-            self.forget_remote_columns(&mut forgotten);
+            horizon_client::spans::time("pr_forget", || self.forget_remote_columns(&mut forgotten));
         }
         if let Some(r) = self.remote.as_mut() {
             r.backlog_since = if events.is_empty() {

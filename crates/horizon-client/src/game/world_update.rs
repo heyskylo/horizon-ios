@@ -158,7 +158,7 @@ impl Game<'_> {
             self.clear_lod();
             self.all_sections_changed();
         }
-        self.prepare_lod();
+        horizon_client::spans::time("prepare_lod", || self.prepare_lod());
         // The columns the single-player server changed in bulk without sending them, which far terrain still drew
         // as this window last saw them: summarized again (taken every tick, far terrain on or off, so none waits).
         if self.remote.is_some() {
@@ -277,7 +277,8 @@ impl Game<'_> {
         if self.remote.is_none() {
             horizon_client::spans::time("sync_tick_chunks", || self.sync_tick_chunks());
         }
-        let (far_distance, far_reduced) = self.far_terrain_choice();
+        let (far_distance, far_reduced) =
+            horizon_client::spans::time("far_terrain_choice", || self.far_terrain_choice());
         // Terrain still on its way from the server (single player's integrated one
         // too): the view's outermost columns not all in, or its events not all handled.
         let radius = match &self.remote {
@@ -385,6 +386,7 @@ impl Game<'_> {
                     AUTO_UPLOAD_TIME
                 };
                 let started = Instant::now();
+                let upload_span = horizon_client::spans::guard("upload_queue");
                 while let Some((_, mesh)) = pending.last() {
                     if auto && count > 0 && started.elapsed() >= auto_time {
                         break;
@@ -403,6 +405,7 @@ impl Game<'_> {
                     count += 1;
                     bytes += size;
                 }
+                drop(upload_span);
                 self.streaming.free(spent);
             }
             renderer.remove_columns(unloaded.iter().map(|c| (c.x, c.z)));

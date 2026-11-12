@@ -8026,7 +8026,7 @@ impl Game<'_> {
         mod_api::dispatch_server_packets(self, mod_api::mods(), player, packets, outbound);
     }
     /// After each pass of the server tick (paused ones too) while its spans
-    /// are recorded: always on a dedicated server, whose slow-tick log keeps
+    /// are recorded: always on a dedicated server, whose slow ring keeps
     /// them on, elsewhere while `native_spans(true)`, `HORIZON_SPIKES` or a
     /// performance report asks for them. `wall_ms` is the pass's wall time,
     /// `cpu_ms` the server thread's CPU time in it (None where the system
