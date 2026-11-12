@@ -925,7 +925,7 @@ const ATTRIBUTES: &[(&str, &str)] = &[
 /// `BitStorageAlignFix.addPadding`: values stored without crossing longs.
 pub(super) fn add_padding(size: usize, bits: usize, data: &[i64]) -> Vec<i64> {
     let length = data.len();
-    if length == 0 {
+    if length == 0 || bits == 0 || bits >= 64 {
         return Vec::new();
     }
     let mask = (1i64 << bits) - 1;

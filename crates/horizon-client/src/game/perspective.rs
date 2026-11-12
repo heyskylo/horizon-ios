@@ -366,6 +366,17 @@ impl Game<'_> {
             view.x_rot,
         ))
     }
+    /// `Camera.rotation()` as the quads of particles take it: the frame's camera (a
+    /// bed's, a front view's, a mod's), not the player's own yaw and pitch.
+    pub(super) fn particle_rotation(&self) -> glam::Quat {
+        if self.studio.flying() {
+            return self.camera_orientation();
+        }
+        let (yaw, pitch) = self
+            .posed_rotation
+            .unwrap_or((self.view.y_rot, self.view.x_rot));
+        super::camera_rotation(CameraType::FirstPerson, yaw, pitch)
+    }
     /// The player as `Camera.alignWithEntity` sees it.
     fn player_camera_entity(&mut self) -> Option<CameraEntity> {
         let (scale, distance) = {

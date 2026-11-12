@@ -1,4 +1,22 @@
 override HDR_WRITE_LIGHT: bool = false;
+// The frame holds linear light: a shader API 0.2 pack's `[frame] blend = "linear"`.
+override FRAME_LINEAR: bool = false;
+
+// What the frame stores of `c`, a colour in vanilla's gamma: `c`, or its light (vanilla's 2.2
+// power) where the frame holds linear light, so what blends over it mixes as light does.
+fn frame_stored(c: vec4<f32>) -> vec4<f32> {
+    if FRAME_LINEAR {
+        return vec4(pow(max(c.rgb, vec3(0.0)), vec3(2.2)), c.a);
+    }
+    return c;
+}
+// `frame_stored` undone: the stored colour `c` in vanilla's gamma.
+fn frame_gamma(c: vec4<f32>) -> vec4<f32> {
+    if FRAME_LINEAR {
+        return vec4(pow(max(c.rgb, vec3(0.0)), vec3(1.0 / 2.2)), c.a);
+    }
+    return c;
+}
 
 // The light of colour `f` under the world's mark `a` (the alpha the world left, hdr_mark) where
 // the world `shows`, else the colour clipped at white; and whether a light source lifted it.

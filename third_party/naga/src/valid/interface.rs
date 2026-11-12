@@ -278,13 +278,10 @@ impl VaryingContext<'_> {
                     return Err(VaryingError::UnsupportedCapability(required));
                 }
 
-                if matches!(
-                    built_in,
-                    crate::BuiltIn::SubgroupId | crate::BuiltIn::SubgroupInvocationId
-                ) && ep.workgroup_size[1..].iter().any(|&s| s > 1)
-                {
-                    return Err(VaryingError::InvalidMultiDimensionalSubgroupBuiltIn);
-                }
+                // WGSL allows `subgroup_id` and `subgroup_invocation_id` only in one-dimensional
+                // workgroups. GLSL's `gl_SubgroupID` and `gl_SubgroupInvocationID` have no such
+                // limit, and shader packs read them in 2-D compute workgroups; the backends give them
+                // for any workgroup shape (HLSL from the flattened index), so the check is left out.
 
                 let (visible, type_good) = match built_in {
                     Bi::BaseInstance | Bi::BaseVertex | Bi::VertexIndex => (

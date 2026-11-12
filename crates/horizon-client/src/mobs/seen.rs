@@ -73,7 +73,7 @@ impl Mob {
                 m.extra.vector[0],
                 m.attrs.speed,
             ],
-            sitting: m.extra.sitting,
+            sitting: m.extra.sitting_pose,
             silent: m.silent,
             lying: m.species() == Species::Cat && (m.extra.flag || m.extra.relax_one),
             ridden: m.rider.is_some() || m.extra.rider.is_some() || m.extra.mount.is_some(),

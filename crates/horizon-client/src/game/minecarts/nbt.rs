@@ -32,6 +32,7 @@ impl Minecart {
             }
             map.remove(&JavaString::from("DisplayOffset"));
             map.remove(&JavaString::from("DisplayState"));
+            crate::game::boats::put_ticks_frozen(map, self.ticks_frozen);
             let mut put = |k: &str, v: Tag| {
                 map.insert(JavaString::from(k), v);
             };
@@ -139,6 +140,7 @@ impl Minecart {
         };
         // Entity.load: OnGround and fall_distance, as saved.
         (c.on_ground, c.fall_distance) = horizon_client::entity_nbt::ground_from_nbt(tag);
+        c.ticks_frozen = crate::game::boats::saved_ticks_frozen(tag);
         c.flipped = flag("FlippedRotation", false);
         c.first_tick = flag("HasTicked", false);
         if kind.slots() > 0 {
