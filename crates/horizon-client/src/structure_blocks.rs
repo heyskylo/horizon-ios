@@ -244,9 +244,10 @@ pub fn roll_container(
         ))
     });
     if let Some(loot) = loot {
-        // LootTable.fill spreads the items over the container's own size.
-        let rolled = loot.fill(&table, seed, slots.len(), Some(biome));
-        for (slot, stack) in slots.iter_mut().zip(rolled) {
+        // LootTable.fill shuffles only available slots and keeps occupied ones.
+        let empty = slots.iter().filter(|slot| slot.is_none()).count();
+        let rolled = loot.fill(&table, seed, empty, Some(biome));
+        for (slot, stack) in slots.iter_mut().filter(|slot| slot.is_none()).zip(rolled) {
             // With what the rolls put on them: enchantments
             // (enchant_with_levels in End city chests), potions and an
             // ominous bottle's level.

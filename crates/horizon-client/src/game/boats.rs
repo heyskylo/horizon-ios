@@ -1765,6 +1765,82 @@ impl Game<'_> {
     pub(super) fn hurt_boat(&mut self, i: usize, damage: f32, creative: bool) -> bool {
         self.hurt_boat_result(i, damage, creative).unwrap_or(false)
     }
+    /// Whether a spectator must be refused this boat's menu.
+    pub(super) fn boat_loot_pending(&self, id: u32) -> bool {
+        matches!(
+            self.persist.raw.get(&id),
+            Some(horizon_world::nbt::Tag::Compound(map)) if map.contains_key(&"LootTable".into())
+        )
+    }
+
+    /// `ContainerEntity.unpackChestVehicleLootTable`: slot access rolls once;
+    /// only a player opening the menu fires `CriteriaTriggers.GENERATE_LOOT`, before filling.
+    pub(super) fn unpack_boat_loot(&mut self, i: usize, player: bool) {
+        use horizon_world::nbt::Tag;
+        let id = self.boats[i].id;
+        let (table, seed) = {
+            let Some(Tag::Compound(map)) = self.persist.raw.get(&id) else {
+                return;
+            };
+            let Some(table) = crate::save::text(map.get(&"LootTable".into()))
+                .and_then(|id| horizon_client_core::identifier::normalize_id(&id))
+            else {
+                return;
+            };
+            let seed = match map.get(&"LootTableSeed".into()) {
+                Some(Tag::Long(seed)) => Some(*seed),
+                _ => None,
+            };
+            (table, seed)
+        };
+        if player {
+            self.trigger_loot_table(&table);
+        }
+        // Advancement rewards can remove the boat or shift its index.
+        let Some(i) = self.boats.iter().position(|b| b.id == id) else {
+            return;
+        };
+        if let Some(Tag::Compound(map)) = self.persist.raw.get_mut(&id) {
+            map.remove(&"LootTable".into());
+            map.remove(&"LootTableSeed".into());
+        }
+        let key = (i32::MAX - 15, super::minecarts::CART_KEY_Y, id as i32);
+        self.store_cart_items(key);
+        let loot = crate::structure_blocks::loot_data(&self.options.resources, &self.pack_files());
+        let b = &self.boats[i];
+        let at = Vec3::new(b.position.x, b.position.y, b.position.z);
+        let biome = self.biome_name_at(at).unwrap_or_default();
+        let pos = (
+            b.position.x.floor() as i32,
+            b.position.y.floor() as i32,
+            b.position.z.floor() as i32,
+        );
+        crate::structure_blocks::roll_container(
+            &mut self.boats[i].items,
+            loot.as_deref(),
+            table,
+            seed,
+            pos,
+            &biome,
+        );
+        if let Some(horizon_client::containers::BlockEntity::Chest(items)) =
+            self.world.block_entities.get_mut(&key)
+        {
+            items.clone_from(&self.boats[i].items);
+        }
+    }
+
+    /// `AbstractChestBoat.remove`: destroying removals spill the live inventory.
+    pub(super) fn kill_boat(&mut self, id: u32) {
+        if let Some(i) = self.boats.iter().position(|b| b.id == id) {
+            self.release_vehicle_container(id);
+            self.unpack_boat_loot(i, false);
+            let b = self.boats.remove(i);
+            self.drop_vehicle_contents(b.position.components(), &b.items);
+            self.boat_removed(&b);
+        }
+    }
+
     /// None means a canceled hit; Some records whether an accepted hit destroyed it.
     pub(super) fn hurt_boat_result(
         &mut self,
@@ -1788,6 +1864,7 @@ impl Game<'_> {
             self.eject_boat_mobs(i, true);
             let id = self.boats[i].id;
             self.release_vehicle_container(id);
+            self.unpack_boat_loot(i, false);
             let b = self.boats.remove(i);
             // `AbstractChestBoat.remove` spills the chest through
             // `Containers.dropContents` for every destroying removal reason

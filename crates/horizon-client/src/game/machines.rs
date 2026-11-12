@@ -1549,7 +1549,9 @@ impl Game<'_> {
         let mut items = if let Some(c) = self.carts.iter_mut().find(|c| c.id == id) {
             std::mem::take(&mut c.items)
         } else {
-            std::mem::take(&mut self.boats.iter_mut().find(|b| b.id == id)?.items)
+            let i = self.boats.iter().position(|b| b.id == id)?;
+            self.unpack_boat_loot(i, false);
+            std::mem::take(&mut self.boats[i].items)
         };
         let key = (i32::MAX - 15, super::minecarts::CART_KEY_Y, id as i32);
         let (view, open) = self.lend_items(key, &mut items);
@@ -2243,12 +2245,149 @@ mod mod_container_tests {
 #[cfg(test)]
 mod hopper_cart_transfer_tests {
     use super::super::{
+        boats::Boat,
         minecarts::{CartKind, Minecart},
         native_machines::tests::server_game,
     };
     use super::Game;
     use horizon_client::{containers::BlockEntity, items::ItemStack};
     use horizon_core::geometry::Vec3;
+    use horizon_world::nbt::Tag;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn chest_boat_automation_does_not_award_player_loot() {
+        use horizon_client::advancements::Tree;
+        use horizon_world::loot::PackOverlay;
+        use std::sync::Arc;
+
+        let mut game = server_game();
+        game.options.dedicated = None;
+        let files = vec![(
+            "advancement/parity:boat_loot".into(),
+            vec![br#"{"criteria":{"loot":{"trigger":"minecraft:player_generates_container_loot","conditions":{"loot_tables":"minecraft:chests/spawn_bonus_chest"}}}}"#.to_vec()],
+        )];
+        game.adv.tree = Arc::new(Tree::load_with(
+            &game.options.resources.join("data"),
+            &PackOverlay { files: &files },
+        ));
+        game.adv.loaded = true;
+        let ai = game.adv.tree.by_id["parity:boat_loot"];
+        for player in [false, true] {
+            game.next_entity += 1;
+            let id = game.next_entity;
+            game.boats
+                .push(Boat::new(id, "oak".into(), Vec3::new(8.5, 65.0, 8.5), 0.0).with_chest());
+            game.persist.raw.insert(
+                id,
+                Tag::compound([
+                    (
+                        "LootTable",
+                        Tag::String("minecraft:chests/spawn_bonus_chest".into()),
+                    ),
+                    ("LootTableSeed", Tag::Long(73)),
+                ]),
+            );
+            let i = game.boats.len() - 1;
+            game.unpack_boat_loot(i, player);
+            assert_eq!(game.adv.progress.done(&game.adv.tree.list[ai]), player);
+            // Opening a container automation already unpacked awards nothing.
+            game.unpack_boat_loot(i, true);
+            assert_eq!(game.adv.progress.done(&game.adv.tree.list[ai]), player);
+        }
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn chest_boat_slot_access_fills_only_empty_slots_once() {
+        let mut game = server_game();
+        let sentinel = Some(ItemStack::new("minecraft:diamond", 17));
+        for open in [false, true] {
+            for occupied in [1, 24, 27] {
+                game.next_entity += 1;
+                let id = game.next_entity;
+                let mut boat =
+                    Boat::new(id, "oak".into(), Vec3::new(8.5, 65.0, 8.5), 0.0).with_chest();
+                if occupied > 1 {
+                    boat.items.fill(sentinel.clone());
+                    if occupied == 24 {
+                        for slot in [0, 13, 26] {
+                            boat.items[slot] = None;
+                        }
+                    }
+                } else {
+                    boat.items[12] = sentinel.clone();
+                }
+                let key = (
+                    i32::MAX - 15,
+                    super::super::minecarts::CART_KEY_Y,
+                    id as i32,
+                );
+                if open {
+                    game.world
+                        .block_entities
+                        .insert(key, BlockEntity::Chest(boat.items.clone()));
+                    // The menu copy is authoritative, even if the entity is stale.
+                    boat.items.fill(None);
+                }
+                game.boats.push(boat);
+                game.persist.raw.insert(
+                    id,
+                    Tag::compound([
+                        (
+                            "LootTable",
+                            Tag::String("minecraft:chests/spawn_bonus_chest".into()),
+                        ),
+                        ("LootTableSeed", Tag::Long(73)),
+                    ]),
+                );
+                let items = game
+                    .with_entity_container(id, |g, _| {
+                        g.world.block_entities.get(&key).unwrap().slots().to_vec()
+                    })
+                    .unwrap();
+                assert_eq!(items[12], sentinel);
+                if occupied == 27 {
+                    assert!(items.iter().all(|item| item == &sentinel));
+                } else if occupied == 24 {
+                    // Pinned 26.3 LootTable.fill, seed 73, only these slots empty.
+                    for (slot, item, count) in
+                        [(0, "stick", 1), (13, "salmon", 1), (26, "acacia_log", 2)]
+                    {
+                        assert_eq!(
+                            items[slot],
+                            Some(ItemStack::new(&format!("minecraft:{item}"), count))
+                        );
+                    }
+                    assert_eq!(items.iter().filter(|item| *item == &sentinel).count(), 24);
+                } else {
+                    assert!(items.iter().flatten().count() > 1, "pending loot was lost");
+                }
+                assert!(game.persist.raw[&id].get("LootTable").is_none());
+                assert!(game.persist.raw[&id].get("LootTableSeed").is_none());
+                assert_eq!(game.boats.last().unwrap().items, items);
+                game.with_entity_container(id, |g, _| {
+                    if let Some(BlockEntity::Chest(items)) = g.world.block_entities.get_mut(&key) {
+                        items.fill(None);
+                    }
+                })
+                .unwrap();
+                game.with_entity_container(id, |g, _| {
+                    assert!(
+                        g.world
+                            .block_entities
+                            .get(&key)
+                            .unwrap()
+                            .slots()
+                            .iter()
+                            .all(Option::is_none)
+                    );
+                })
+                .unwrap();
+                game.release_vehicle_container(id);
+            }
+        }
+    }
 
     /// Issue #8668: a hopper minecart takes one item a tick from the container
     /// above. `MinecartHopper.tick` has no transfer cooldown in 26.3: it calls
