@@ -25,6 +25,9 @@ use std::{collections::HashMap, sync::Arc};
 use super::lan_actions::GuestPlay;
 
 #[cfg(test)]
+#[path = "fishing_air_tests.rs"]
+mod air_tests;
+#[cfg(test)]
 #[path = "fishing_block_hit_tests.rs"]
 mod block_hit_tests;
 #[cfg(test)]
@@ -321,7 +324,7 @@ impl Game<'_> {
             self.hook = Some(hook);
             let item_start = self.dropped.len();
             let orb_start = self.orbs.len();
-            self.world.random = LegacyRandom::new(seed);
+            self.world.random.set_seed(seed);
             self.use_fishing_rod(&rod);
             let items: Vec<_> = self
                 .dropped
@@ -714,8 +717,10 @@ impl Game<'_> {
     }
     /// getOpenWaterTypeForBlock: 0 above water, 1 inside water, 2 invalid.
     fn open_water_type(&self, x: i32, y: i32, z: i32) -> u8 {
-        let f = self.res.facts().get(self.world.block(x, y, z));
-        if self.world.is_air(self.world.block(x, y, z)) || &*f.name == "minecraft:lily_pad" {
+        let state = self.world.block(x, y, z);
+        let f = self.res.facts().get(state);
+        // `!state.isAir()`: cave_air and void_air are air too.
+        if self.res.facts().is_air(state) || &*f.name == "minecraft:lily_pad" {
             return 0;
         }
         if f.fluid == Fluid::Water

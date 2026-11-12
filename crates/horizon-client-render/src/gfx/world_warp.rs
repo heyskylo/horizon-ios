@@ -148,6 +148,8 @@ pub(super) struct Kit {
     pub entity: wgpu::BindGroupLayout,
     pub static_entity: wgpu::BindGroupLayout,
     pub format: wgpu::TextureFormat,
+    /// The frame holds linear light (`linear_blend`).
+    pub linear: bool,
     pub sprite_constants: [(&'static str, f64); 2],
     /// Whether the display offers HDR output: the solid terrain is built lit by it too.
     pub hdr_output: bool,
@@ -319,20 +321,19 @@ impl WorldWarps {
         let buffered = [Some(vertices), Some(instances.clone())];
         let pulled = [None, Some(instances)];
         // As gfx.rs's: a float frame takes light where others take marks.
-        let write_light = (
-            "HDR_WRITE_LIGHT",
-            f64::from(u8::from(kit.format == super::LINEAR_FRAME)),
-        );
+        let [write_light, linear] = super::linear_blend::frame_constants(kit.format, kit.linear);
         let lit = [
             kit.sprite_constants[0],
             kit.sprite_constants[1],
             write_light,
+            linear,
         ];
         let plain = [
             kit.sprite_constants[0],
             kit.sprite_constants[1],
             ("HDR_LIGHTING", 0.0),
             write_light,
+            linear,
         ];
         let depth = |write| wgpu::DepthStencilState {
             format: wgpu::TextureFormat::Depth32Float,
@@ -454,7 +455,7 @@ impl WorldWarps {
                     module: &entity,
                     entry_point: Some(look.fragment),
                     compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: &[write_light],
+                        constants: &[write_light, linear],
                         ..Default::default()
                     },
                     targets: &[Some(wgpu::ColorTargetState {

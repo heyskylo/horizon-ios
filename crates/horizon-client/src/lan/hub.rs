@@ -24,7 +24,7 @@ use horizon_core::{
 };
 use horizon_protocol::ids::play::clientbound as ids;
 use horizon_protocol::{
-    entity_data::{Particle, ParticleData, Value, serializer},
+    entity_data::{Value, serializer},
     packets::play::{self, Clientbound as C, Serverbound as S},
     text::{literal, translatable},
 };
@@ -38,10 +38,12 @@ use horizon_world::{
 };
 use std::sync::{Arc, Mutex, atomic::Ordering};
 
+mod accept_teleport;
 mod acknowledgements;
 /// GameEvent types (ClientboundGameEventPacket).
 pub mod chat;
 pub mod chat_filter;
+mod chunk_batch;
 mod spawn_info;
 
 pub mod game_event {
@@ -224,7 +226,7 @@ pub enum HostEvent {
         text: String,
         /// The hit's number in the filter's window.
         count: u32,
-        action: horizon_chat_filter::Action,
+        action: horizon_server_files::chat_guard::Action,
     },
     /// A server log warning (ServerGamePacketListenerImpl's LOGGER.warn).
     Warn(String),
@@ -349,7 +351,7 @@ pub struct Hub {
     /// The anticheat, when `server.toml` turns it on (dedicated servers).
     pub anticheat: Option<Box<super::anticheat::Anticheat>>,
     /// The chat filter, when `server.toml` turns it on (dedicated servers).
-    pub chat_filter: Option<Box<horizon_chat_filter::Guard>>,
+    pub chat_filter: Option<Box<dyn horizon_server_files::chat_guard::ChatGuard>>,
     /// The far ring, when `server.toml`'s `max_view_distance` turns it on (dedicated servers).
     pub far: Option<super::far::Far>,
     /// The `immediate_respawn` game rule, as the players were last told.
@@ -652,10 +654,10 @@ fn requeue_ring(
 }
 
 /// A player's next chunks (`Hub::next_batch`), with their places in its queues: the view's, then
-/// the far ring's (none: the save has none to send).
+/// the far ring's. Missing saved columns stay queued for a later retry.
 struct Batch<'w> {
     near: Vec<(usize, &'w Chunk)>,
-    far: Vec<(usize, Option<Column<'w>>)>,
+    far: Vec<(usize, Column<'w>)>,
 }
 
 /// A far chunk to send: the level's own while it holds it, else what the save's readers made.
@@ -2780,6 +2782,7 @@ impl Hub {
         // Each column once, however many players it goes to, with the
         // number of batches that take it.
         let mut columns = Columns::default();
+        let mut far_bodies = crate::fast_hash::FxHashMap::default();
         let batches: Vec<_> = batches
             .into_iter()
             .map(|(i, batch)| {
@@ -2790,12 +2793,17 @@ impl Hub {
                     .unzip();
                 let mut far = Vec::new();
                 for (idx, column) in batch.far {
-                    far.push((idx, column.is_some()));
-                    match column {
-                        Some(Column::Level(chunk)) => bodies.push(Body::Level(columns.add(chunk))),
-                        Some(Column::Saved(body)) => bodies.push(Body::Saved(body)),
-                        None => {}
-                    }
+                    far.push(idx);
+                    let body = match column {
+                        Column::Level(chunk) => far_bodies
+                            .entry((chunk.x, chunk.z))
+                            .or_insert_with(|| {
+                                Arc::<[u8]>::from(self.encoder.body_far(chunk, world))
+                            })
+                            .clone(),
+                        Column::Saved(body) => body,
+                    };
+                    bodies.push(Body::Saved(body));
                 }
                 (i, taken, far, bodies)
             })
@@ -2845,13 +2853,15 @@ impl Hub {
                     seen.iter().map(|&(x, z)| Holder::Chunk([x, z])),
                 );
             }
-            // A far chunk the save doesn't have leaves the queue unsent.
-            seen.extend(far.into_iter().rev().filter_map(|(idx, sent)| {
+            // Keep the scan's next position after removing sent entries. Missing columns
+            // remain queued: the far reader's negative cache paces their retries.
+            g.far_cursor -= far.iter().filter(|&&idx| idx < g.far_cursor).count();
+            seen.extend(far.into_iter().rev().map(|idx| {
                 let key = g.far_queue.remove(idx);
-                if sent && self.sync_attachments && g.brand == "horizon" {
+                if self.sync_attachments && g.brand == "horizon" {
                     g.far_sent_chunks.insert(key);
                 }
-                sent.then_some(key)
+                key
             }));
             g.sent_chunks.extend(seen);
         }
@@ -2897,92 +2907,13 @@ impl Hub {
                 true
             }
         });
+        g.far_cursor = 0;
         requeue(&mut g.chunk_queue, &g.sent_chunks, (cx, cz), r);
         if reach > r {
             requeue_ring(&mut g.far_queue, &g.sent_chunks, (cx, cz), r, reach);
         } else {
             g.far_queue.clear();
         }
-    }
-
-    /// PlayerChunkSender.sendNextChunks' choice: ready chunks, closest first,
-    /// as many as the batch quota the client's acknowledgements pace allows,
-    /// with their places in the queue. What the view leaves of the quota goes
-    /// to the far ring, as far as its brake lets it reach. A memory connection
-    /// that has not loaded yet sends every ready view column in that one
-    /// batch; the quota recorded for it covers them, so the tick after
-    /// `PlayerLoaded` is capped again.
-    fn next_batch<'w>(
-        &mut self,
-        i: usize,
-        world: &'w World,
-        streaming: Option<&crate::streaming::Streaming>,
-    ) -> Option<Batch<'w>> {
-        let g = &mut self.guests[i];
-        if self.ticks <= g.placed_at + 1 || g.unacknowledged >= g.max_unacknowledged {
-            return None;
-        }
-        g.batch_quota = (g.batch_quota + g.chunks_per_tick).min(g.chunks_per_tick.max(1.0));
-        if g.batch_quota < 1.0 || (g.chunk_queue.is_empty() && g.far_queue.is_empty()) {
-            return None;
-        }
-        let budget = g.batch_quota.floor() as usize;
-        // The integrated server's own player, still on the loading screen.
-        // LAN guests and a client that has loaded keep the quota above.
-        let burst = g.address == super::conn::MEMORY_ADDRESS && !g.loaded;
-        let near_take = if burst { g.chunk_queue.len() } else { budget };
-        // ChunkStatus.LIGHT needs its neighbours at INITIALIZE_LIGHT: a
-        // column whose light layers would leave one out waits for it.
-        let ready = |c: &Chunk| {
-            c.lit
-                && streaming.is_none_or(|streaming| {
-                    (-1..=1).all(|dz| {
-                        (-1..=1).all(|dx| {
-                            let (x, z) = (c.x + dx, c.z + dz);
-                            world.chunks.contains_key(&(x, z))
-                                || streaming.proto_sections(x, z).is_some()
-                        })
-                    })
-                })
-        };
-        let near: Vec<_> = g
-            .chunk_queue
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, key)| Some((idx, &**world.chunks.get(key)?)))
-            .filter(|(_, c)| ready(c))
-            .take(near_take)
-            .collect();
-        let mut far = Vec::new();
-        if let (Some(ring), Some((cx, cz))) = (self.far.as_mut(), g.center) {
-            // What the view left of the vanilla quota. A first-view burst can take more than that.
-            let mut left = budget.saturating_sub(near.len());
-            for (idx, &(x, z)) in g.far_queue.iter().enumerate().take(super::far::LOOKS) {
-                if left == 0 {
-                    break;
-                }
-                if !tracked(cx, cz, ring.limit(), x, z) {
-                    continue;
-                }
-                let column = match world.chunks.get(&(x, z)) {
-                    Some(c) if ready(c) => Some(Column::Level(c)),
-                    Some(_) => continue,
-                    None => match ring.saved(x, z) {
-                        super::far::Saved::Body(body) => Some(Column::Saved(body)),
-                        super::far::Saved::Missing => None,
-                        super::far::Saved::Waiting => continue,
-                    },
-                };
-                left -= usize::from(column.is_some());
-                far.push((idx, column));
-            }
-        }
-        // `update_chunks` subtracts the batch. Covering the near columns keeps that from going
-        // negative, so the next tick's `.min(chunks_per_tick)` cap holds again.
-        if burst {
-            g.batch_quota = g.batch_quota.max(near.len() as f32);
-        }
-        (!near.is_empty() || !far.is_empty()).then_some(Batch { near, far })
     }
 
     /// `ChunkMap.resendBiomesForChunks`: each player in the level is sent,
@@ -2998,14 +2929,11 @@ impl Hub {
             .iter()
             .filter_map(|key| Some((*key, self.encoder.biome_data(world.chunks.get(key)?))))
             .collect();
-        for g in self.guests.iter().filter(|g| self.watches(g)) {
-            let chunks: Vec<_> = data
-                .iter()
-                .filter(|(key, _)| g.sent_chunks.contains(key))
-                .map(|(_, d)| d.clone())
-                .collect();
-            if !chunks.is_empty() {
-                g.send(&C::ChunksBiomes(play::ChunksBiomes { chunks }));
+        let watching: Vec<_> = self.guests.iter().filter(|g| self.watches(g)).collect();
+        let bodies = super::biome_resend::bodies(watching.iter().map(|g| &g.sent_chunks), &data);
+        for (g, body) in watching.into_iter().zip(bodies) {
+            if let Some(body) = body {
+                g.send_chunks_biomes_body(body);
             }
         }
     }
@@ -3195,19 +3123,14 @@ impl Hub {
                 self.guests[i].sender.send(body.clone());
             }
             if recording {
+                let bounds = super::prediction::bounds(&positions);
                 for &i in &viewers {
-                    let g = &mut self.guests[i];
-                    let Some(record) = g.record.as_deref_mut() else {
-                        continue;
-                    };
-                    let slack = super::prediction::slack(std::array::from_fn(|i| {
-                        g.position[i] - g.previous_position[i]
-                    }));
-                    for &(x, y, z) in &positions {
-                        if super::prediction::near(g.position, [x, y, z], slack) {
-                            record.changed_near(self.ticks, [x, y, z]);
-                        }
-                    }
+                    super::prediction::note_changes(
+                        &mut self.guests[i],
+                        self.ticks,
+                        bounds,
+                        &positions,
+                    );
                 }
             }
             // Block entities with data the client shows.
@@ -3250,39 +3173,12 @@ impl Hub {
         &self,
         effects: impl IntoIterator<Item = (&'a str, bool)>,
     ) -> Vec<(u8, i32, Value)> {
-        let mut particles = Vec::new();
-        let mut all_ambient = true;
-        for (effect, ambient) in effects {
-            let effect = effect.trim_start_matches("minecraft:");
-            // MobEffect.particleFactory: the omens have their own particles,
-            // the others an entity effect in their colour (faint if ambient).
-            let (name, data) = match effect {
-                "trial_omen" | "raid_omen" => (effect, None),
-                _ => {
-                    let Some(def) = crate::brewing::effect(effect) else {
-                        continue;
-                    };
-                    let alpha = if ambient { 38 } else { 255 };
-                    let argb = (alpha << 24) | def.shown_color() as i32;
-                    ("entity_effect", Some(ParticleData::Color(argb)))
-                }
-            };
-            let Some(id) =
-                self.registry_id("minecraft:particle_type", &format!("minecraft:{name}"))
-            else {
-                continue;
-            };
-            particles.push(Particle { id, data });
-            all_ambient &= ambient;
-        }
-        if particles.is_empty() {
-            return Vec::new();
-        }
-        let mut meta = vec![(10, serializer::PARTICLES, Value::Particles(particles))];
-        if all_ambient {
-            meta.push((11, serializer::BOOLEAN, Value::Bool(true)));
-        }
-        meta
+        self.sync.effect_meta(effects)
+    }
+
+    /// The registries and tables the clients are synced with (read by helper threads).
+    pub fn sync_data(&self) -> &SyncData {
+        &self.sync
     }
 
     fn player_state(
@@ -4058,32 +3954,7 @@ impl Hub {
                 | S::PlayerCommand(_)
                     if !self.guests[i].client_loaded() => {}
                 // handleAcceptTeleportPacket.
-                S::AcceptTeleportation(p) => {
-                    let recording = self.recording();
-                    let g = &mut self.guests[i];
-                    if let Some((id, at)) = g.awaiting_teleport
-                        && id == p.id
-                    {
-                        if p.x.is_nan()
-                            || p.y.is_nan()
-                            || p.z.is_nan()
-                            || !p.yaw.is_finite()
-                            || !p.pitch.is_finite()
-                        {
-                            self.kick(conn, invalid_movement());
-                            continue;
-                        }
-                        g.position = at;
-                        g.awaiting_teleport = None;
-                        // The prediction's replay starts again where the client now is.
-                        if recording {
-                            let kept = g.awaiting_keeps_motion;
-                            g.record.get_or_insert_default().teleported(at, kept);
-                        }
-                        let rot = (p.yaw, p.pitch);
-                        self.position_change(i, [p.x, p.y, p.z], rot, 0, ctx, events);
-                    }
-                }
+                S::AcceptTeleportation(p) => self.accept_teleport(i, conn, &p, ctx, events),
                 // handlePlayerAbilities: the client flies only if it may.
                 S::PlayerAbilities(p) => {
                     let g = &mut self.guests[i];
@@ -4585,7 +4456,7 @@ impl Hub {
             at[1] + f64::from(d.height) + 0.0625,
             at[2] + half,
         ];
-        no_blocks_in(world, lo, hi)
+        no_blocks_in(world, lo, hi, &self.encoder)
     }
 
     /// `ServerGamePacketListenerImpl.forceSendPlayerSupportBlocks`: the blocks just under the
@@ -5189,6 +5060,9 @@ impl Hub {
             let g = &mut self.guests[i];
             g.landing = true;
             g.awaiting_teleport = None;
+            // The new level's first teleport takes the next id, so the old one's late accept
+            // is no longer the last id sent.
+            g.teleport_counter = (g.teleport_counter + 1) & 0x7FFF_FFFF;
         } else {
             self.resend_teleport(i, None);
         }
@@ -5273,14 +5147,14 @@ const PLAYER_GRAVITY: f64 = 0.08;
 
 /// `ServerGamePacketListenerImpl.getMaximumFlyingTicks`: 80 ticks, more where
 /// gravity is weaker, none at all (never kicked) without gravity.
-/// `ServerGamePacketListenerImpl.noBlocksAround` over a box: every block from `lo` to `hi` is air, in
-/// loaded chunks (a chunk not loaded yet is not known to be air: nothing floats there).
-pub fn no_blocks_in(world: &World, lo: [f64; 3], hi: [f64; 3]) -> bool {
+/// `ServerGamePacketListenerImpl.noBlocksAround` over a box: every block from `lo` to `hi` is
+/// `isAir()` (`air`'s state table), in loaded chunks (a chunk not loaded yet is not known to be air).
+pub fn no_blocks_in(world: &World, lo: [f64; 3], hi: [f64; 3], air: &ChunkEncoder) -> bool {
     let cell = |v: f64| v.floor() as i32;
     (cell(lo[0])..=cell(hi[0])).all(|x| {
         (cell(lo[2])..=cell(hi[2])).all(|z| {
             world.loaded(x, z)
-                && (cell(lo[1])..=cell(hi[1])).all(|y| world.is_air(world.block(x, y, z)))
+                && (cell(lo[1])..=cell(hi[1])).all(|y| air.is_air(world.block(x, y, z).0))
         })
     })
 }

@@ -23,10 +23,7 @@ use horizon_client::{
     projectiles::ProjectileKind,
     world::World,
 };
-use horizon_core::{
-    position::BlockPos,
-    random::{LegacyRandom, RandomSource},
-};
+use horizon_core::{position::BlockPos, random::RandomSource};
 use horizon_world::{level::Ticks, registry::BlockStateId};
 use serde_json::Value;
 use std::{cell::RefCell, collections::HashMap, fmt::Write as _, io::Write as _, sync::Arc};
@@ -304,7 +301,7 @@ impl Game<'_> {
             }
         }
         // Creating the targets must not move the stream the dispenser draws from.
-        self.world.random = LegacyRandom::new(seed);
+        self.world.random.set_seed(seed);
         self.world.block_log = Some(Vec::new());
         self.audio.capture = Some(Vec::new());
         LOG.with(|log| *log.borrow_mut() = Some(Vec::new()));
@@ -322,7 +319,11 @@ impl Game<'_> {
         );
         let state = self.world.block(origin.x, origin.y, origin.z);
         let mut used = Vec::new();
-        if let Some(op) = case.get("wind_burst") {
+        if let Some(op) = case.get("shield_hit") {
+            used = self.fixture_shield_hit(op)?;
+        } else if let Some(op) = case.get("special_attack") {
+            used = self.fixture_special_attack(op)?;
+        } else if let Some(op) = case.get("wind_burst") {
             let center = [
                 op["center"][0].as_f64().ok_or("wind center x")?,
                 op["center"][1].as_f64().ok_or("wind center y")?,
@@ -495,6 +496,68 @@ impl Game<'_> {
         }
         out.extend(used);
         out.push(format!("rng {}", self.world.random.next_long()));
+        Ok(out)
+    }
+
+    /// Actual player combat and blocking-item side effects, without a window or connection.
+    fn fixture_shield_hit(&mut self, op: &Value) -> Result<Vec<String>> {
+        let stack = parse_stack(op["item"].as_str().ok_or("shield_hit item")?)?
+            .ok_or("shield_hit requires an item")?;
+        let item = stack.item.clone();
+        self.creative = op["creative"].as_bool().unwrap_or(false);
+        self.mode = if self.creative {
+            GameMode::Creative
+        } else {
+            GameMode::Survival
+        };
+        self.player = Some(PlayerMotion::new(
+            self.motion,
+            horizon_core::geometry::Vec3::new(0.0, 0.0, 0.0),
+        )?);
+        self.yaw = 0.0;
+        self.armor = Default::default();
+        self.offhand = Some(stack);
+        self.using = Some((super::shield::OFFHAND_SLOT, 100));
+        self.combat = Default::default();
+        let before = self.stats.get("used", &item);
+        let from = horizon_core::geometry::Vec3::new(
+            0.0,
+            0.0,
+            if op["behind"].as_bool().unwrap_or(false) {
+                -1.0
+            } else {
+                1.0
+            },
+        );
+        let mut arrow = horizon_client::projectiles::Projectile::new(
+            ProjectileKind::Arrow {
+                base_damage: op["damage"].as_f64().unwrap_or(8.0),
+                critical: false,
+                effect: None,
+            },
+            from,
+            None,
+        );
+        arrow.velocity = horizon_core::geometry::Vec3::new(0.0, 0.0, 1.0);
+        arrow.arrow.as_mut().unwrap().pierce = u8::from(op["pierce"].as_bool().unwrap_or(false));
+        self.projectile_hit(
+            &arrow,
+            horizon_client::projectiles::Hit::Entity {
+                who: horizon_client::mobs::Who::Player,
+                at: horizon_core::geometry::Vec3::ZERO,
+            },
+        )?;
+        let out = vec![format!(
+            "shield health={} used={} stack={}",
+            num(f64::from(self.player.as_ref().unwrap().health.health())),
+            self.stats.get("used", &item) - before,
+            self.offhand
+                .as_ref()
+                .map_or_else(|| "-".to_owned(), |s| format!("{}:{}", s.count, s.damage))
+        )];
+        self.player = None;
+        self.offhand = None;
+        self.using = None;
         Ok(out)
     }
 

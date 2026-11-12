@@ -1,12 +1,13 @@
 //! The PvP & HUD page's options in the game (`horizon_client::pvp`, `docs/pvp.md`). Each
 //! does nothing while it is off.
-use super::{Dim, Game};
+use crate::game::{Dim, Game};
 use horizon_client::{
     extras::Corner,
     extras_hud::Corners,
     hud::{HudBatch, rgba},
     mesher::Vertex,
-    pvp::{Colour, CrosshairCache},
+    particles::ParticleType,
+    pvp::{ChatOptions, Colour, CrosshairCache, Frame},
     pvp_hud::{self, Combo, Durability, Icon, Key, Line, Widget},
     text::Text,
 };
@@ -14,7 +15,7 @@ use std::sync::Arc;
 use winit::event::MouseButton;
 
 #[derive(Default)]
-pub(super) struct PvpState {
+pub(in crate::game) struct PvpState {
     crosshair: CrosshairCache,
     /// Each armour slot's item, damage and maximum damage, and whether durability is in percent.
     armour: Widget<([Option<(Arc<str>, u32, u32)>; 4], bool)>,
@@ -41,13 +42,13 @@ pub(super) struct PvpState {
     speed: pvp_hud::Speed,
     speed_shown: Widget<u32>,
     /// Each widget drawn last frame and its box on screen, for the HUD editor.
-    pub(super) boxes: Vec<(pvp_hud::WidgetId, [f32; 4])>,
+    pub(in crate::game) boxes: Vec<(pvp_hud::WidgetId, [f32; 4])>,
     /// The HUD editor, while it is open.
-    pub(super) editor: Option<super::hud_editor::HudEditor>,
+    pub(in crate::game) editor: Option<crate::game::hud_editor::HudEditor>,
     /// The open chat's box holds a chat search's query (Ctrl+F).
-    pub(super) chat_search: bool,
+    pub(in crate::game) chat_search: bool,
     /// What the chat box held when the search borrowed it.
-    pub(super) chat_search_aside: String,
+    pub(in crate::game) chat_search_aside: String,
 }
 /// `GuiGraphicsExtractor`'s grey for a detail line (an effect's time left).
 const DETAIL: u32 = 0xFF7F_7F7F;
@@ -78,13 +79,13 @@ const ARROWS: [&str; 3] = [
 
 impl Game<'_> {
     /// Whether the custom crosshair replaces vanilla's sprite.
-    pub(super) fn custom_crosshair(&self) -> bool {
+    pub(in crate::game) fn custom_crosshair(&self) -> bool {
         self.settings.extras.pvp.crosshair.custom
     }
     /// The custom crosshair, centred where vanilla's 15x15 sprite is (`Hud.extractCrosshair`):
     /// its outline in black, then the shape, inverting what is under it when its colour is
     /// `Inverted`. The runs are cached, so a frame only adds their quads.
-    pub(super) fn draw_custom_crosshair(&mut self, batch: &mut HudBatch, w: i32, h: i32) {
+    pub(in crate::game) fn draw_custom_crosshair(&mut self, batch: &mut HudBatch, w: i32, h: i32) {
         let mut c = self.settings.extras.pvp.crosshair;
         if let Some(hover) = c.hover
             && self.crosshair_living() == Some(true)
@@ -114,7 +115,7 @@ impl Game<'_> {
     /// the outline's edges come from) as translucent faces drawn after translucent terrain,
     /// pushed out a little so they don't fight the block's own faces. Only while the outline
     /// shows (`outline` is its edges).
-    pub(super) fn outline_fill(
+    pub(in crate::game) fn outline_fill(
         &self,
         outline: &[[f64; 6]],
         camera: glam::DVec3,
@@ -177,7 +178,7 @@ impl Game<'_> {
         }
     }
     /// Once per frame: the options that live outside the game's state.
-    pub(super) fn pvp_frame(&mut self) {
+    pub(in crate::game) fn pvp_frame(&mut self) {
         let tweaks = self.settings.extras.pvp.tweaks;
         horizon_client::enchant::set_numeric_levels(tweaks.numeric_enchants);
     }
@@ -188,30 +189,88 @@ impl Game<'_> {
     }
     /// The day time the frame draws (sky, sun, moon, the sky's light): PvP & HUD's time of day,
     /// else the world's. The world's own `day_time` and everything that plays by it stay.
-    pub(super) fn view_day_time(&self) -> i64 {
+    pub(in crate::game) fn view_day_time(&self) -> i64 {
         let fixed = self.settings.extras.pvp.tweaks.time;
         horizon_client::pvp::view_day_time(self.world.day_time, fixed.filter(|_| self.own_view()))
     }
     /// The rain and thunder levels the frame draws (rain, the sky's colour and light, fog): PvP &
     /// HUD's weather, else the world's. Gameplay (riptide, mobs, crops) keeps the world's.
-    pub(super) fn view_weather(&self, partial: f32) -> (f32, f32) {
+    pub(in crate::game) fn view_weather(&self, partial: f32) -> (f32, f32) {
         match self.settings.extras.pvp.tweaks.weather {
             Some(w) if self.own_view() && self.can_have_weather() => w.levels(),
             _ => self.weather_levels(partial),
         }
     }
+    // What the engine reads from PvP & HUD. Every engine use goes through these, so each becomes
+    // one engine knob or hook (vanilla's value when nothing is registered) when PvP & HUD leaves
+    // the engine (docs/layers.md, plan M5). The HUD editor (`hud_editor.rs`) reads the widgets.
+
+    /// Combat feel Legacy's pictures: 1.8.9's sword block, flat item pose and hand swing.
+    pub(in crate::game) fn pvp_legacy_look(&self) -> bool {
+        self.settings.extras.pvp.combat.legacy
+    }
+    /// Combat feel Legacy hides the attack indicator unless the player keeps it.
+    pub(in crate::game) fn pvp_hides_attack_indicator(&self) -> bool {
+        let combat = self.settings.extras.pvp.combat;
+        combat.legacy && !combat.indicator
+    }
+    /// Legacy rules: the hits a server resolves follow 1.8.9 (`legacy_rules.rs`).
+    pub(in crate::game) fn pvp_legacy_rules(&self) -> bool {
+        self.settings.extras.pvp.combat.rules
+    }
+    /// The server's legacy rules, from server.toml or the window's options.
+    pub(in crate::game) fn set_pvp_legacy_rules(&mut self, on: bool) {
+        self.settings.extras.pvp.combat.rules = on;
+    }
+    /// A sound Combat feel Legacy keeps quiet.
+    pub(in crate::game) fn pvp_mutes_sound(&self, name: &str) -> bool {
+        self.settings.extras.pvp.combat.mutes_sound(name)
+    }
+    /// A particle Combat feel Legacy doesn't draw (sweeps, damage hearts).
+    pub(in crate::game) fn pvp_hides_particle(&self, ty: ParticleType) -> bool {
+        self.settings.extras.pvp.combat.hides_particle(ty)
+    }
+    /// The block outline, hurt overlay and glint colours the renderer draws with.
+    pub(in crate::game) fn pvp_render_frame(&self) -> Frame {
+        self.settings.extras.pvp.frame()
+    }
+    /// The enchantment glint's colour texel, 0 for vanilla's.
+    pub(in crate::game) fn pvp_glint_texel(&self) -> u32 {
+        self.settings.extras.pvp.tweaks.glint_texel()
+    }
+    /// The held shield's size in percent (100 is vanilla's).
+    pub(in crate::game) fn pvp_shield_size(&self) -> u8 {
+        self.settings.extras.pvp.tweaks.shield_size
+    }
+    /// The totem animation's scale (1 is vanilla's).
+    pub(in crate::game) fn pvp_totem_scale(&self) -> f32 {
+        f32::from(self.settings.extras.pvp.tweaks.totem_size) / 100.0
+    }
+    /// How far the first-person fire overlay is lowered, as a fraction (0 is vanilla's).
+    pub(in crate::game) fn pvp_fire_lower(&self) -> f32 {
+        f32::from(self.settings.extras.pvp.tweaks.fire_lower) / 100.0
+    }
+    /// Lava's fog as with fire resistance, and water's as fully adapted.
+    pub(in crate::game) fn pvp_clear_fluids(&self) -> (bool, bool) {
+        let tweaks = self.settings.extras.pvp.tweaks;
+        (tweaks.clear_lava, tweaks.clear_water)
+    }
+    /// The chat's options: Ctrl+F search, copy on click, and the rest (`ChatOptions::qol`).
+    pub(in crate::game) fn pvp_chat(&self) -> ChatOptions {
+        self.settings.extras.pvp.chat
+    }
     /// This player attacked entity `id`, `distance` from the eyes to where the crosshair's
     /// ray met its box (the combo counter waits for the server's report; the reach widget
     /// shows the distance).
-    pub(super) fn pvp_attacked(&mut self, id: i32, distance: f64) {
+    pub(in crate::game) fn pvp_attacked(&mut self, id: i32, distance: f64) {
         let now = self.started.elapsed().as_secs_f64();
         self.pvp.combo.attacked(id, now);
         self.pvp.reach.hit(distance, now);
     }
     /// A mouse press, counted for clicks per second while playing with a widget that shows them.
-    pub(super) fn pvp_click(&mut self, button: MouseButton) {
+    pub(in crate::game) fn pvp_click(&mut self, button: MouseButton) {
         let hud = &self.settings.extras.pvp.hud;
-        if !(hud.cps || hud.keys) || self.screen != super::Screen::Playing {
+        if !(hud.cps || hud.keys) || self.screen != crate::game::Screen::Playing {
             return;
         }
         let i = match button {
@@ -232,7 +291,7 @@ impl Game<'_> {
     }
     /// The server reports entity `id` hurt; `own` when it is this player,
     /// `by_me` whether this player was the damage's direct entity (if named).
-    pub(super) fn pvp_hurt(&mut self, id: i32, own: bool, by_me: Option<bool>) {
+    pub(in crate::game) fn pvp_hurt(&mut self, id: i32, own: bool, by_me: Option<bool>) {
         if own {
             self.pvp.combo.broken();
         } else {
@@ -241,12 +300,12 @@ impl Game<'_> {
         }
     }
     /// Whether the effects widget replaces vanilla's effect icons (`Hud.extractEffects`).
-    pub(super) fn pvp_effects_shown(&self) -> bool {
+    pub(in crate::game) fn pvp_effects_shown(&self) -> bool {
         self.settings.extras.pvp.hud.effects
     }
     /// The HUD widgets that are on, after the minimap and before mods' boxes. Each rebuilds its
     /// lines only when what it shows changed.
-    pub(super) fn draw_pvp_hud(&mut self, batch: &mut HudBatch, corners: &mut Corners) {
+    pub(in crate::game) fn draw_pvp_hud(&mut self, batch: &mut HudBatch, corners: &mut Corners) {
         let hud = self.settings.extras.pvp.hud;
         if self.player.is_none() || !hud.any() {
             // The editor frames only what was drawn.
@@ -691,13 +750,15 @@ impl Game<'_> {
             false => s.item == held.item,
         };
         let slots = self.inventory.iter().map(Option::as_ref).enumerate();
-        let offhand = std::iter::once((super::shield::OFFHAND_SLOT, self.offhand.as_ref()));
+        let offhand = std::iter::once((crate::game::shield::OFFHAND_SLOT, self.offhand.as_ref()));
         let mut found = slots
             .chain(offhand)
             .filter_map(|(i, s)| Some((i, s?)))
             .filter(|(_, s)| counts(s));
         let (first, stack) = found.next()?;
-        let total = stack.count + found.map(|(_, s)| s.count).sum::<u32>();
+        let total = found
+            .map(|(_, s)| s.count)
+            .fold(stack.count, u32::saturating_add);
         (ranged || total > 1).then(|| (first, stack.item.clone(), total))
     }
     /// One widget's box in `corner`: icons in a column, texts beside them.
