@@ -105,7 +105,6 @@
     "horizon-client-lib -> horizon-shader-api",
     "horizon-client-lib -> horizon-shaders",
     "horizon-client-lib -> horizon-telemetry",
-    "horizon-client-render -> horizon-cosmetics",
     "horizon-client-render -> horizon-hdr",
     "horizon-client-render -> horizon-optifine",
     "horizon-client-render -> horizon-polytone",

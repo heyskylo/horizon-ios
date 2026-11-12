@@ -13,6 +13,9 @@ const HISTORY: usize = 160;
 pub struct FrameGraph {
     /// Frame, CPU and GPU milliseconds of recent frames, oldest first.
     frames: VecDeque<(f32, f32, f32)>,
+    /// The resolution scale Dynamic Resolution has the world at, in percent, while it is on:
+    /// the numbers above were measured at a resolution that moves.
+    pub dynamic_scale: Option<u32>,
 }
 impl FrameGraph {
     pub fn record(&mut self, frame_ms: f32, cpu_ms: f32, gpu_ms: Option<f32>) {
@@ -31,7 +34,10 @@ impl FrameGraph {
         let (frame, cpu, gpu) = (avg(|f| f.0), avg(|f| f.1), avg(|f| f.2));
         let worst = self.frames.iter().map(|f| f.0).fold(0.0f32, f32::max);
         let lines = [
-            format!("{:.0} fps", 1000.0 / frame.max(0.001)),
+            match self.dynamic_scale {
+                Some(scale) => format!("{:.0} fps  res {scale}%", 1000.0 / frame.max(0.001)),
+                None => format!("{:.0} fps", 1000.0 / frame.max(0.001)),
+            },
             format!("frame {frame:.1} ms  max {worst:.1}"),
             format!("cpu {cpu:.1}  gpu {gpu:.1} ms"),
         ];
