@@ -91,8 +91,14 @@ pub fn translate_core(
     Ok(CoreProgram { vertex, fragment })
 }
 
+/// A bound on a pack's includes, which are pasted every time.
+const MAX_PASTES: u32 = 1024;
+const MAX_EXPANDED: usize = 1 << 20;
+
 /// The file with its includes inlined (`#include <ns:path>`, `#include "relative"` and the same
-/// with `#moj_import`), each file once, `#version` and `#extension` lines dropped.
+/// with `#moj_import`), `#version` and `#extension` lines dropped. An `#include` is pasted every
+/// time, as vanilla's shaderc does (the files' `#ifndef` guards keep one copy); a `#moj_import`
+/// once.
 fn expand(
     text: &str,
     dir: &str,
@@ -103,6 +109,7 @@ fn expand(
         dir: &str,
         include: &dyn Fn(&str) -> Option<String>,
         seen: &mut HashSet<String>,
+        pastes: &mut u32,
         depth: u32,
         out: &mut String,
     ) -> Result<(), String> {
@@ -113,15 +120,19 @@ fn expand(
             let directive = line.trim_start().strip_prefix('#').map(str::trim_start);
             let target = directive.and_then(|d| {
                 d.strip_prefix("include")
-                    .or_else(|| d.strip_prefix("moj_import"))
-                    .map(str::trim)
+                    .map(|t| (t.trim(), false))
+                    .or_else(|| d.strip_prefix("moj_import").map(|t| (t.trim(), true)))
             });
-            if let Some(target) = target {
+            if let Some((target, once)) = target {
                 let id = include_id(target, dir).ok_or_else(|| format!("bad include {target}"))?;
-                if seen.insert(id.clone()) {
+                if seen.insert(id.clone()) || !once {
+                    *pastes += 1;
+                    if *pastes > MAX_PASTES {
+                        return Err(format!("includes paste more than {MAX_PASTES} files"));
+                    }
                     let file = include(&id).ok_or_else(|| format!("{id} not found"))?;
                     let parent = &id[..id.rfind('/').map_or(id.len(), |i| i + 1)];
-                    walk(&file, parent, include, seen, depth + 1, out)?;
+                    walk(&file, parent, include, seen, pastes, depth + 1, out)?;
                 }
                 out.push('\n');
             } else if directive
@@ -132,11 +143,16 @@ fn expand(
                 out.push_str(line);
                 out.push('\n');
             }
+            if out.len() > MAX_EXPANDED {
+                return Err(format!(
+                    "includes grow the shader past {MAX_EXPANDED} bytes"
+                ));
+            }
         }
         Ok(())
     }
     let mut out = String::new();
-    walk(text, dir, include, &mut HashSet::new(), 0, &mut out)?;
+    walk(text, dir, include, &mut HashSet::new(), &mut 0, 0, &mut out)?;
     Ok(out)
 }
 
@@ -296,11 +312,11 @@ fn block_name(line: &str) -> Option<&str> {
     (!name.is_empty() && matches!(tail.trim(), "" | "{")).then_some(name)
 }
 
-/// What the two stages share: the vertex stage's outputs in location order, and the names of
+/// What the two stages share: the vertex stage's outputs and their locations, and the names of
 /// the blocks and samplers of other pipelines in binding order.
 #[derive(Default)]
 struct Names {
-    varyings: Vec<String>,
+    varyings: Vec<(String, u32)>,
     other: Vec<String>,
 }
 
@@ -308,8 +324,8 @@ impl Names {
     fn location(&self, varying: &str) -> Option<u32> {
         self.varyings
             .iter()
-            .position(|v| v == varying)
-            .map(|i| i as u32)
+            .find(|(v, _)| v == varying)
+            .map(|(_, location)| *location)
     }
 
     /// A block or sampler of another pipeline: its binding (two for a sampler).
@@ -344,6 +360,16 @@ fn rewrite(
     // Where the pack's own code starts: the glue above it is left as it is.
     let pack_start = out.len();
     let mut outputs: Vec<&str> = Vec::new();
+    let explicit: Vec<u32> = if vertex {
+        text.lines()
+            .flat_map(declaration_lines)
+            .filter_map(declaration)
+            .filter(|d| d.storage == "out")
+            .filter_map(|d| d.location)
+            .collect()
+    } else {
+        Vec::new()
+    };
     for source_line in text.lines() {
         for line in declaration_lines(source_line) {
             if let Some(name) = block_name(line) {
@@ -423,10 +449,21 @@ fn rewrite(
                 }
                 "out" if vertex => {
                     // One location each: naga takes scalars and vectors only.
-                    let location = names.location(decl.name).unwrap_or_else(|| {
-                        names.varyings.push(decl.name.to_owned());
-                        names.varyings.len() as u32 - 1
-                    });
+                    let location = decl
+                        .location
+                        .or_else(|| names.location(decl.name))
+                        .unwrap_or_else(|| {
+                            (0..)
+                                .find(|l| {
+                                    !explicit.contains(l)
+                                        && names.varyings.iter().all(|(_, v)| v != l)
+                                })
+                                .unwrap_or_default()
+                        });
+                    let varying = (decl.name.to_owned(), location);
+                    if !names.varyings.contains(&varying) {
+                        names.varyings.push(varying);
+                    }
                     writeln!(
                         out,
                         "layout(location = {location}) {qualifiers} out {} {};",
@@ -435,9 +472,12 @@ fn rewrite(
                     .unwrap();
                 }
                 "in" => {
-                    let location = names.location(decl.name).ok_or_else(|| {
-                        format!("input {} isn't written by the vertex shader", decl.name)
-                    })?;
+                    let location = decl
+                        .location
+                        .or_else(|| names.location(decl.name))
+                        .ok_or_else(|| {
+                            format!("input {} isn't written by the vertex shader", decl.name)
+                        })?;
                     writeln!(
                         out,
                         "layout(location = {location}) {qualifiers} in {} {};",
@@ -514,7 +554,8 @@ fn rename_main(text: &str) -> String {
 fn compile(stage: ShaderStage, code: &str, defines: &[&str]) -> Result<naga::Module, String> {
     let mut options = Options::from(stage);
     for define in defines {
-        options.defines.insert((*define).to_owned(), String::new());
+        let (name, value) = define.split_once(' ').unwrap_or((define, ""));
+        options.defines.insert(name.to_owned(), value.to_owned());
     }
     let module = Frontend::default().parse(&options, code).map_err(|e| {
         e.errors
@@ -652,7 +693,8 @@ mod tests {
     #[test]
     fn a_packs_gl_vertex_index_reads_the_glues_vertex_number() {
         let vsh = "#version 330\n#include <minecraft:dynamictransforms.glsl>\n#include <minecraft:projection.glsl>\n\
-            in vec3 Position;\nin vec4 Color;\nin vec2 UV0;\nout vec4 vertexColor;\nout vec2 texCoord0;\n\
+            layout(location = 0) in vec3 Position;\nlayout(location = 1) in vec4 Color;\nlayout(location = 2) in vec2 UV0;\n\
+            layout(location = 2) out vec4 vertexColor;\nlayout(location = 3) out vec2 texCoord0;\n\
             void main() {\n    int corner = gl_VertexIndex % 4;\n\
                 gl_Position = ProjMat * ModelViewMat * vec4(Position + vec3(float(corner), 0.0, 0.0), 1.0);\n\
                 vertexColor = Color;\n    texCoord0 = UV0;\n}\n";
@@ -714,6 +756,96 @@ mod tests {
         let mut read = locations(&program.fragment, true);
         read.sort_unstable();
         assert_eq!(read, [0, 2]);
+    }
+
+    #[test]
+    fn explicit_varying_locations_are_kept() {
+        let vsh = "#version 330\nin vec3 Position;\n\
+            #ifdef IS_GUI\nlayout(location = 4) out float gui;\n#else\nlayout(location = 4) out float world;\n#endif\n\
+            layout(location = 13) out vec4 a;\nout float b;\n\
+            void main() { gl_Position = vec4(Position, 1.0); a = vec4(1.0); b = 1.0;\n\
+            #ifdef IS_GUI\ngui = 1.0;\n#else\nworld = 1.0;\n#endif\n}\n";
+        let fsh = "#version 330\n#ifdef IS_GUI\nlayout(location = 4) in float gui;\n#endif\n\
+            layout(location = 13) in vec4 a;\nin float b;\nout vec4 fragColor;\n\
+            void main() { fragColor = a * b;\n#ifdef IS_GUI\nfragColor *= gui;\n#endif\n}\n";
+        let program = translate_core(vsh, fsh, &["IS_GUI"], &include, &GLUE).unwrap();
+        let mut read = locations(&program.fragment, true);
+        read.sort_unstable();
+        assert_eq!(read, [0, 4, 13]);
+    }
+
+    #[test]
+    fn an_include_is_pasted_every_time_and_a_moj_import_once() {
+        let file = |id: &str| {
+            (id == "minecraft:shaders/include/g.glsl")
+                .then(|| "#ifndef G\n#define G\nconst float g = 1.0;\n#endif\n".to_owned())
+        };
+        let twice =
+            "#ifdef A\n#include <minecraft:g.glsl>\n#else\n#include <minecraft:g.glsl>\n#endif\n";
+        let expanded = expand(twice, "minecraft:shaders/core/", &file).unwrap();
+        assert_eq!(expanded.matches("const float g").count(), 2);
+        let imported = expand(
+            &twice.replace("#include", "#moj_import"),
+            "minecraft:shaders/core/",
+            &file,
+        )
+        .unwrap();
+        assert_eq!(imported.matches("const float g").count(), 1);
+    }
+
+    #[test]
+    fn a_location_another_branch_gave_the_same_name_isnt_reused() {
+        let vsh = "#version 330\nin vec3 Position;\n\
+            #ifdef IS_GUI\nlayout(location = 0) out vec4 vertexColor;\n\
+            #else\nlayout(location = 1) out vec4 vertexColor;\nlayout(location = 0) out vec4 worldOther;\n#endif\n\
+            void main() { gl_Position = vec4(Position, 1.0); vertexColor = vec4(1.0);\n\
+            #ifndef IS_GUI\nworldOther = vec4(0.5);\n#endif\n}\n";
+        let fsh = "#version 330\n\
+            #ifdef IS_GUI\nlayout(location = 0) in vec4 vertexColor;\n\
+            #else\nlayout(location = 1) in vec4 vertexColor;\nlayout(location = 0) in vec4 worldOther;\n#endif\n\
+            out vec4 fragColor;\nvoid main() { fragColor = vertexColor;\n\
+            #ifndef IS_GUI\nfragColor *= worldOther;\n#endif\n}\n";
+        let world = translate_core(vsh, fsh, &[], &include, &GLUE).unwrap();
+        let mut written = locations(&world.vertex, false);
+        written.sort_unstable();
+        assert_eq!(written, [0, 1]);
+        let mut read = locations(&world.fragment, true);
+        read.sort_unstable();
+        assert_eq!(read, [0, 1]);
+        let gui = translate_core(vsh, fsh, &["IS_GUI"], &include, &GLUE).unwrap();
+        assert_eq!(locations(&gui.vertex, false), [0]);
+    }
+
+    #[test]
+    fn includes_that_multiply_are_refused_once_over_budget() {
+        let file = |id: &str| {
+            let level: u32 = id
+                .strip_prefix("minecraft:shaders/include/l")?
+                .strip_suffix(".glsl")?
+                .parse()
+                .ok()?;
+            let next = format!("#include <minecraft:l{}.glsl>\n", level + 1).repeat(4);
+            Some(format!(
+                "#ifndef L{level}\n#define L{level}\n{}#endif\n",
+                if level < 15 { next.as_str() } else { "" }
+            ))
+        };
+        let error = expand(
+            "#include <minecraft:l0.glsl>\n",
+            "minecraft:shaders/core/",
+            &file,
+        )
+        .unwrap_err();
+        assert!(error.contains("paste more than"), "{error}");
+    }
+
+    #[test]
+    fn a_define_with_a_value_is_defined_to_it() {
+        let vsh = "#version 330\nin vec3 Position;\n\
+            void main() { gl_Position = vec4(Position, float(COUNT)); }\n";
+        let fsh =
+            "#version 330\nout vec4 fragColor;\nvoid main() { fragColor = vec4(COUNT / 4); }\n";
+        assert!(translate_core(vsh, fsh, &["COUNT 8"], &include, &GLUE).is_ok());
     }
 
     #[test]
