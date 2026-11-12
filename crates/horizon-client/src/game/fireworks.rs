@@ -201,6 +201,15 @@ impl Rocket {
         }
         self.life += 1;
     }
+    /// The end of `Projectile.shoot`: yaw and pitch are set straight from the
+    /// shot's motion (the old rotation follows, as `rotation` is the old one
+    /// on the next tick).
+    fn turn_to_shot(&mut self) {
+        let v = self.velocity;
+        let horizontal = (v.x * v.x + v.z * v.z).sqrt();
+        let atan2 = horizon_core::geometry::trig::atan2_degrees;
+        self.rotation = [atan2(v.x, v.z), atan2(v.y, horizontal)];
+    }
     /// `Projectile.updateRotation`: a fifth of the way from `old` (yaw,
     /// pitch) toward its motion's direction, the short way round.
     fn update_rotation(&mut self, old: [f32; 2]) {
@@ -485,6 +494,7 @@ impl Game<'_> {
         let mut own = random_source::entity();
         let mut rocket = self.new_rocket(at, stack, false, &mut own);
         rocket.velocity = shoot(&mut own);
+        rocket.turn_to_shot();
         rocket.angled = true;
         rocket.owner = owner;
         rocket.guest = self.lan_acting.filter(|_| owner == Some(Who::Player));
@@ -1045,6 +1055,20 @@ mod events_tests;
 
 #[cfg(test)]
 mod tests {
+
+    /// `Projectile.shoot` turns a shot rocket to its motion at once.
+    #[test]
+    fn a_shot_rocket_starts_turned_to_its_motion() {
+        use horizon_core::geometry::Vec3;
+        let mut rocket = super::Rocket::remote(1, Vec3::ZERO, Vec3::new(0.0, 0.5, 0.0));
+        rocket.turn_to_shot();
+        assert!((rocket.rotation[1] - 90.0).abs() < 1e-3);
+        let mut rocket = super::Rocket::remote(1, Vec3::ZERO, Vec3::new(1.0, 0.0, 1.0));
+        rocket.turn_to_shot();
+        assert!((rocket.rotation[0] - 45.0).abs() < 1e-4);
+        assert!(rocket.rotation[1].abs() < 1e-4);
+    }
+
     /// A rocket draws its UUID's two longs first, then the motion's two triangles
     /// (four doubles), then `nextInt(6)` and `nextInt(7)` for the lifetime, all from
     /// the one random. The expected values come from `java.util.Random` replayed

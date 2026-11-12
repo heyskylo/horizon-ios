@@ -4693,20 +4693,19 @@ impl ParticleEngine {
             .collect()
     }
 
-    /// Camera-facing quads (`QuadParticleRenderState.renderRotatedQuad`).
+    /// Camera-facing quads (`QuadParticleRenderState.renderRotatedQuad`), turned by
+    /// `Camera.rotation()`: `rotationYXZ(PI - yRot, -xRot, 0)`.
     pub fn render(
         &self,
         camera: DVec3,
-        yaw: f32,
-        pitch: f32,
+        base: Quat,
         partial: f32,
         light_at: &dyn Fn([i32; 3]) -> u8,
         out: &mut Vec<Vertex>,
     ) {
         self.render_inner::<false>(
             camera,
-            yaw,
-            pitch,
+            base,
             partial,
             0.0,
             None,
@@ -4721,8 +4720,7 @@ impl ParticleEngine {
     pub fn render_culled(
         &self,
         camera: DVec3,
-        yaw: f32,
-        pitch: f32,
+        base: Quat,
         partial: f32,
         pixel_focal_length: f32,
         culling_enabled: bool,
@@ -4732,13 +4730,12 @@ impl ParticleEngine {
         out: &mut Vec<Vertex>,
     ) {
         if !culling_enabled {
-            self.render(camera, yaw, pitch, partial, light_at, out);
+            self.render(camera, base, partial, light_at, out);
             return;
         }
         self.render_inner::<true>(
             camera,
-            yaw,
-            pitch,
+            base,
             partial,
             pixel_focal_length,
             frustum,
@@ -4751,8 +4748,7 @@ impl ParticleEngine {
     fn render_inner<const CULL: bool>(
         &self,
         camera: DVec3,
-        yaw: f32,
-        pitch: f32,
+        base: Quat,
         partial: f32,
         pixel_focal_length: f32,
         frustum: Option<&crate::gfx::Frustum>,
@@ -4760,9 +4756,6 @@ impl ParticleEngine {
         light_at: &dyn Fn([i32; 3]) -> u8,
         out: &mut Vec<Vertex>,
     ) {
-        // Camera.setRotation: rotationYXZ(PI - yRot, -xRot, 0).
-        let base = Quat::from_rotation_y(std::f32::consts::PI - yaw.to_radians())
-            * Quat::from_rotation_x(-pitch.to_radians());
         let mut light_cache = ParticleLightCache::default();
         let mut additive = self.additive.lock().unwrap_or_else(|e| e.into_inner());
         additive.clear();
@@ -5173,12 +5166,11 @@ mod tests {
 
         let light_at = |_: [i32; 3]| 0xf0;
         let mut regular = Vec::new();
-        engine.render(DVec3::ZERO, 0.0, 0.0, 0.5, &light_at, &mut regular);
+        engine.render(DVec3::ZERO, Quat::IDENTITY, 0.5, &light_at, &mut regular);
         let mut disabled = Vec::new();
         engine.render_culled(
             DVec3::ZERO,
-            0.0,
-            0.0,
+            Quat::IDENTITY,
             0.5,
             900.0,
             false,
@@ -5205,6 +5197,36 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(attributes(&disabled), attributes(&regular));
+    }
+
+    #[test]
+    fn quads_face_the_rotation_they_are_given() {
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        let sprite = "test:smoke".to_owned();
+        let rect = Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 16,
+            h: 16,
+        };
+        engine.atlas.insert(sprite.clone(), (rect, false));
+        let mut random = LegacyRandom::new(7);
+        let mut particle =
+            Particle::moving(&mut random, ParticleType::Smoke, [0.0, 0.0, -3.0], [0.0; 3]);
+        particle.sprite = Sprite::Named(sprite);
+        engine.particles.push(particle);
+        let draw = |rotation: Quat| {
+            let mut out = Vec::new();
+            engine.render(DVec3::ZERO, rotation, 0.5, &|_| 0xf0, &mut out);
+            out.iter().map(|v| v.pos).collect::<Vec<_>>()
+        };
+        // A bed's view turns the quads as the player's own yaw would not.
+        let ahead = draw(Quat::IDENTITY);
+        let turned = draw(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
+        assert_eq!(ahead.len(), 4);
+        assert_ne!(ahead, turned);
     }
 
     #[test]
@@ -5600,7 +5622,7 @@ mod tests {
         particle.sprite = Sprite::Index(0);
         engine.particles.push(particle);
         let mut vertices = Vec::new();
-        engine.render(DVec3::ZERO, 0.0, 0.0, 0.0, &|_| 0, &mut vertices);
+        engine.render(DVec3::ZERO, Quat::IDENTITY, 0.0, &|_| 0, &mut vertices);
         assert_eq!(vertices.len(), 4);
         assert!(vertices.iter().all(
             |v| v.color >> 24 == 127 && v.layer & crate::gfx::TRANSLUCENT_PARTICLE_OVERLAY != 0

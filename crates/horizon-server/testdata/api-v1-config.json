@@ -14,6 +14,7 @@
         },
         "engine": {
           "low_memory": false,
+          "parallel_tick": false,
           "path": "",
           "resources": "",
           "restart_on_crash": true
