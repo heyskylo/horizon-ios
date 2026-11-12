@@ -55,8 +55,10 @@ jobs:
           persist-credentials: false
           # Keeps .local/ (parity state, probe builds, the previous audit) and target/.
           clean: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 2026-11
         if: steps.when.outputs.run == 'true'
+        with:
+          toolchain: stable
       - name: Tools from the runner
         if: steps.when.outputs.run == 'true'
         run: bash tools/ci/runner-env.sh

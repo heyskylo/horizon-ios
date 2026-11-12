@@ -431,6 +431,7 @@ impl Game<'_> {
         }
         for e in events {
             match e {
+                merchant::Event::OffersRefreshed => {}
                 merchant::Event::Orb(v) => {
                     self.add_orb([origin[0], origin[1] + 0.5, origin[2]], v as u32)
                 }
