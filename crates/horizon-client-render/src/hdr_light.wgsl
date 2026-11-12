@@ -27,7 +27,8 @@ struct Lit {
     lifted: bool,
 };
 
-fn hdr_mark_light(f: vec3<f32>, a: f32, shows: bool, eased: bool, settings: vec4<f32>, shares: vec4<f32>) -> Lit {
+// `lifts`, per tier: how much its fully lifted pixels gain over their own light (their gain - 1).
+fn hdr_mark_light(f: vec3<f32>, a: f32, shows: bool, eased: bool, settings: vec4<f32>, lifts: vec4<f32>) -> Lit {
     var lifted = false;
     // Light over 1 (a float frame's) shows only where the world does and carries
     // no mark (alpha 1), up to the peak: light written as light. Marked pixels clip
@@ -60,7 +61,7 @@ fn hdr_mark_light(f: vec3<f32>, a: f32, shows: bool, eased: bool, settings: vec4
         let lift = 1.0 - clamp((a - 0.175 * f32(band)) / 0.165, 0.0, 1.0);
         if lift > 0.0 {
             let top = max(light.r, max(light.g, light.b));
-            var gain = 1.0 + (settings.x - 1.0) * shares[tier] * lift;
+            var gain = 1.0 + lifts[tier] * lift;
             if eased {
                 gain = min(gain, settings.x / max(top, 1e-4));
             }
@@ -88,7 +89,8 @@ fn hdr_quantized_mark(mark: f32) -> f32 {
     return round(saturate(mark) * 255.0) / 255.0;
 }
 
-fn hdr_written(color: vec3<f32>, mark: f32, settings: vec4<f32>, shares: vec4<f32>) -> vec3<f32> {
-    let shows = settings.z > 0.5 && settings.x > 1.0;
-    return pow(hdr_mark_light(max(color, vec3(0.0)), hdr_quantized_mark(mark), shows, false, settings, shares).light, vec3(1.0 / 2.2));
+// The world's writers' light, from the tiers' `gains` (Hdr::draw_params): the same on every
+// display; the tone curve fits it to the display afterwards (fs_tonemap).
+fn hdr_written(color: vec3<f32>, mark: f32, settings: vec4<f32>, gains: vec4<f32>) -> vec3<f32> {
+    return pow(hdr_mark_light(max(color, vec3(0.0)), hdr_quantized_mark(mark), settings.z > 0.5, false, settings, gains - vec4(1.0)).light, vec3(1.0 / 2.2));
 }

@@ -2360,8 +2360,8 @@ pub fn mob_from_nbt_with_random(
         m.extra.owner = crate::save::uuid_from_tag(tag.get("Owner"));
         m.extra.tame = m.extra.owner.is_some();
         crate::mobs::tame::restore_sitting(&mut m, flag(tag, "Sitting"));
-        m.extra.color =
-            number(tag.get("CollarColor")).map_or(crate::mobs::tame::RED, |c| (c as u8) & 15);
+        let legacy = |c: i64| u8::try_from(c as i8).ok().filter(|c| *c < 16).unwrap_or(0);
+        m.extra.color = number(tag.get("CollarColor")).map_or(crate::mobs::tame::RED, legacy);
     }
     if m.species() == crate::mobs::Species::Panda {
         let gene = |key| text(tag.get(key)).map_or(0, |n| crate::mobs::panda::gene_from_name(&n));
@@ -2386,8 +2386,8 @@ pub fn mob_from_nbt_with_random(
             .and_then(crate::save::item_from_nbt);
         m.extra.body_damage = armor.as_ref().map_or(0, |s| s.damage as i32);
         m.extra.body_extra = armor.and_then(|s| s.extra);
-        m.extra.color =
-            number(tag.get("CollarColor")).map_or(crate::mobs::tame::RED, |c| (c as u8) & 15);
+        let legacy = |c: i64| u8::try_from(c as i8).ok().filter(|c| *c < 16).unwrap_or(0);
+        m.extra.color = number(tag.get("CollarColor")).map_or(crate::mobs::tame::RED, legacy);
     }
     if matches!(
         m.species(),
@@ -2901,7 +2901,7 @@ pub fn entity_base_tag(
         motion,
         rotation,
         on_ground: raw.is_some_and(|t| flag(t, "OnGround")),
-        fall_distance: 0.0,
+        fall_distance: raw.map_or(0.0, |t| ground_from_nbt(t).1),
     }
     .tag(raw)
 }
@@ -3037,6 +3037,7 @@ pub fn arrow_to_nbt(
     }
     for (key, value) in [
         ("Fire", Tag::Short(a.fire_ticks as i16)),
+        ("Air", Tag::Short(p.air_supply as i16)),
         ("life", Tag::Short(a.life as i16)),
         ("shake", Tag::Byte(a.shake as i8)),
         ("inGround", Tag::Byte(i8::from(a.in_ground))),
@@ -3115,6 +3116,7 @@ pub fn arrow_from_nbt(
     p.owner_uuid = owner;
     p.no_gravity = flag(tag, "NoGravity");
     p.on_ground = flag(tag, "OnGround");
+    projectile_fields::load_arrow_entity_fields(&mut p, tag);
     let a = p.arrow.as_mut()?;
     a.life = number(tag.get("life")).unwrap_or(0) as i16 as i32;
     a.shake = (number(tag.get("shake")).unwrap_or(0) as i8 as u8).into();
@@ -3134,8 +3136,6 @@ pub fn arrow_from_nbt(
             _ => false,
         })
         .cloned();
-    a.fire_ticks = number(tag.get("Fire")).unwrap_or(0) as i16 as i32;
-    a.fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
     a.spectral = spectral;
     // `SpectralArrow.readAdditionalSaveData`: absent Duration defaults to 200.
     if spectral {
@@ -4233,6 +4233,33 @@ mod tests {
         assert_eq!(tag.get("UUID"), Some(&Tag::IntArray(vec![9, 9, 9, 9])));
     }
 
+    /// An entity that never moves (an `AreaEffectCloud`) saves the
+    /// `fall_distance` `Entity.load` read, and 0 when it was made in play.
+    #[test]
+    fn a_base_tag_keeps_the_loaded_fall_distance() {
+        let raw = horizon_world::nbt::parse_snbt(
+            "{id:\"minecraft:area_effect_cloud\",Pos:[1d,200d,1d],fall_distance:5.0d}",
+        )
+        .unwrap()
+        .0;
+        let fall = |raw: Option<&super::Tag>| {
+            let tag = super::entity_base_tag(
+                "minecraft:area_effect_cloud",
+                super::Vec3::new(1.0, 200.0, 1.0),
+                super::Vec3::ZERO,
+                [0.0, 0.0],
+                [1; 4],
+                raw,
+            );
+            match tag.get("fall_distance") {
+                Some(super::Tag::Double(bits)) => f64::from_bits(*bits),
+                other => panic!("no fall_distance: {other:?}"),
+            }
+        };
+        assert_eq!(fall(Some(&raw)), 5.0);
+        assert_eq!(fall(None), 0.0);
+    }
+
     #[test]
     fn empty_saved_tags_are_omitted_without_changing_raw_or_nonempty_tags() {
         let base = Base {
@@ -4563,6 +4590,35 @@ mod tests {
         assert_eq!(m.extra.head.as_deref(), Some("minecraft:iron_helmet"));
     }
 
+    /// `Wolf` and `Cat` read `CollarColor` with `DyeColor.LEGACY_ID_CODEC`: a
+    /// byte through `DyeColor.byId`, whose out-of-range answer is the first
+    /// colour, white (`OutOfBoundsStrategy.ZERO`). Nothing wraps.
+    #[test]
+    fn a_collar_colour_outside_the_sixteen_reads_white() {
+        for (species, id) in [
+            (crate::mobs::Species::Wolf, "minecraft:wolf"),
+            (crate::mobs::Species::Cat, "minecraft:cat"),
+        ] {
+            let mut kind = crate::mobs::sensor_scan_tests::kind();
+            let ty = Arc::make_mut(&mut kind);
+            ty.id = id.into();
+            ty.species = species;
+            let types = [(id.into(), kind)].into();
+            let colour = |saved: Option<Tag>| {
+                let mut fields = vec![("id", string(id)), ("Pos", doubles(&[4.5, 220.0, 4.5]))];
+                fields.extend(saved.map(|c| ("CollarColor", c)));
+                let m = mob_from_nbt(&Tag::compound(fields), &types, 1, None).unwrap();
+                m.extra.color
+            };
+            assert_eq!(colour(Some(Tag::Byte(11))), 11, "{id}");
+            assert_eq!(colour(Some(Tag::Byte(17))), 0, "{id}: not 17 & 15");
+            assert_eq!(colour(Some(Tag::Byte(-1))), 0, "{id}: not 15");
+            // Codec.BYTE narrows an int first: 259 is byte 3.
+            assert_eq!(colour(Some(Tag::Int(259))), 3, "{id}");
+            assert_eq!(colour(None), crate::mobs::tame::RED, "{id}");
+        }
+    }
+
     fn fused_creeper(fuse: Option<i16>) -> (Mob, Tag) {
         let mut kind = crate::mobs::sensor_scan_tests::kind();
         let ty = Arc::make_mut(&mut kind);
@@ -4806,6 +4862,7 @@ mod tests {
                 no_gravity: true,
                 on_ground: true,
                 fire_ticks: 0,
+                fall_distance: 0.0,
                 sound_event: TRIDENT_HIT_GROUND,
                 item: &trident,
             },
@@ -5811,6 +5868,7 @@ mod tests {
                 no_gravity: false,
                 on_ground: false,
                 fire_ticks: 0,
+                fall_distance: 0.0,
                 sound_event: TRIDENT_HIT_GROUND,
                 item: &trident,
             },

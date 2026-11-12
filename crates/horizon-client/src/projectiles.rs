@@ -246,6 +246,10 @@ pub struct Projectile {
     /// `Entity.needsSync`: a server tells its clients about the change this
     /// tick instead of at the next update interval.
     pub needs_sync: bool,
+    /// `WindCharge.noDeflectTicks`: a player's wind charge turns for nothing
+    /// (`deflect` refuses) until it has ticked 5 times. Not saved, so a
+    /// loaded one starts again at 5.
+    pub no_deflect_ticks: u8,
     /// The bubble column tops this tick's `onAboveBubbleColumn` pushes came
     /// from, for their particles (`sendBubbleColumnParticles`); the caller
     /// drains them.
@@ -498,6 +502,11 @@ impl Projectile {
         )
     }
     pub fn new(kind: ProjectileKind, position: Vec3, owner: Option<Who>) -> Self {
+        let no_deflect_ticks = if kind == ProjectileKind::WindCharge {
+            5
+        } else {
+            0
+        };
         let kind_is_arrow = matches!(kind, ProjectileKind::Arrow { .. } | ProjectileKind::Trident);
         // `Fireball.defineSynchedData`: DATA_ITEM_STACK starts as a fire charge.
         let item = kind
@@ -539,6 +548,7 @@ impl Projectile {
             bonus: Default::default(),
             acceleration,
             needs_sync: false,
+            no_deflect_ticks,
             bubble_surfaces: Vec::new(),
             touching_water: false,
             no_gravity: false,
@@ -1469,7 +1479,14 @@ impl Projectile {
         if !base_first {
             self.tick_shoot_event();
         }
+        // WindCharge.tick: after AbstractHurtingProjectile.tick.
+        self.no_deflect_ticks = self.no_deflect_ticks.saturating_sub(1);
         result
+    }
+    /// `Projectile.deflect`, which `WindCharge` refuses while its
+    /// `noDeflectTicks` last.
+    pub fn deflectable(&self) -> bool {
+        self.no_deflect_ticks == 0
     }
     /// `applyEffectsFromBlocks` after the tick's move, for its cobwebs and
     /// powder snow (`makeStuckInBlock`): the last such block its box (deflated

@@ -428,10 +428,10 @@ struct Globals {
     /// full (`hdr::Hdr::windows`); zero without HDR.
     hdr_windows: [[f32; 4]; 2],
     hdr_light: [f32; 4],
-    /// Headroom, effective scene gain, world/look and debug, as HDR output's pass has them
+    /// The scene's peak, HDR lighting's gain, world/look and debug; then the tiers' gains
     /// (`Hdr::draw_params`).
     hdr_settings: [f32; 4],
-    hdr_shares: [f32; 4],
+    hdr_gains: [f32; 4],
 }
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -8138,14 +8138,14 @@ impl Renderer {
             self.shader_pack_kind().is_some(),
             !frame.title,
         );
-        let (hdr_settings, hdr_shares) = self
+        let (hdr_settings, hdr_gains) = self
             .hdr
             .as_ref()
             .map_or(([0.0; 4], [0.0; 4]), |h| h.draw_params(!frame.title));
         self.world_post.baked_light(
             hdr_gain,
             hdr_settings,
-            hdr_shares,
+            hdr_gains,
             self.hdr.as_ref().map_or([[0.0; 4]; 2], hdr::Hdr::windows),
         );
         let jitter = self.world_post.jitter(
@@ -8305,7 +8305,7 @@ impl Renderer {
                 f32::from(u8::from(hdr_gain)),
             ],
             hdr_settings,
-            hdr_shares,
+            hdr_gains,
         };
         self.uploads
             .buffer(&mut encoder, &self.globals, 0, bytemuck::bytes_of(&globals));

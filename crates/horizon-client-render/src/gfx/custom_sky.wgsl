@@ -10,7 +10,7 @@ struct Layer {
     mode: u32,
     pad: vec2<u32>,
     hdr_settings: vec4<f32>,
-    hdr_shares: vec4<f32>,
+    hdr_gains: vec4<f32>,
     hdr_light: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> layer: Layer;
@@ -54,7 +54,7 @@ fn custom_sky_color(in: Out) -> vec4<f32> {
     var color = t.rgb;
     if HDR_WRITE_LIGHT && layer.hdr_light.w != 0.0 &&
         (layer.mode == ADD || layer.mode == SUBTRACT || layer.mode == REPLACE || layer.mode == ALPHA) {
-        color = hdr_written(color, 1.0 - 0.24 * layer.hdr_light.y, layer.hdr_settings, layer.hdr_shares);
+        color = hdr_written(color, 1.0 - 0.24 * layer.hdr_light.y, layer.hdr_settings, layer.hdr_gains);
     }
     // On a frame of linear light (`FRAME_LINEAR`) the layer's colour is decoded as it is stored.
     switch layer.mode {
@@ -84,5 +84,5 @@ fn custom_sky_color(in: Out) -> vec4<f32> {
 
 @fragment fn fs_custom_sky_screen_light(in: Out) -> @location(0) vec4<f32> {
     let color = custom_sky_color(in);
-    return vec4(hdr_written(color.rgb, 1.0 - 0.24 * layer.hdr_light.y, layer.hdr_settings, layer.hdr_shares), color.a);
+    return vec4(hdr_written(color.rgb, 1.0 - 0.24 * layer.hdr_light.y, layer.hdr_settings, layer.hdr_gains), color.a);
 }

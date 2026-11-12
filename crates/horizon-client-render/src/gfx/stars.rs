@@ -47,7 +47,7 @@ struct Uniform {
     clip_from_sky: [[f32; 4]; 4],
     color: [f32; 4],
     hdr_settings: [f32; 4],
-    hdr_shares: [f32; 4],
+    hdr_gains: [f32; 4],
     hdr_light: [f32; 4],
 }
 
@@ -184,7 +184,7 @@ impl Stars {
             clip_from_sky: clip_from_sky.to_cols_array_2d(),
             color: [b; 4],
             hdr_settings: globals.hdr_settings,
-            hdr_shares: globals.hdr_shares,
+            hdr_gains: globals.hdr_gains,
             hdr_light: globals.hdr_light,
         };
         uploads.buffer(encoder, &self.uniform, 0, bytemuck::bytes_of(&uniform));

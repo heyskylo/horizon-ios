@@ -3,17 +3,18 @@
 //! faceplanted), stalking and pouncing, napping in the shade by day, seeking
 //! shelter, perching, eating berries and the food held in the mouth: its whole
 //! `Consumable.onConsume` (the item's effects, its sounds and the eat game
-//! event), so a chorus fruit teleports it and a golden apple feeds it.
-//! Defending trusted players is not ported yet.
+//! event), so a chorus fruit teleports it and a golden apple feeds it, and
+//! defending trusted entities from whoever hurt them.
 //! The goal that walks to a dropped item is here; the game side takes the
 //! items (`Fox.pickUpItem`, `game/foxes.rs`). A totem in the mouth is a
 //! `death_protection` item like any other held one (`Mob::damage`).
 use super::{
-    Mob, MobEvent, MobWorld, Seen, Species,
+    Mob, MobEvent, MobWorld, Seen, Species, Who,
     goals::{
         Avoid, AvoidEntity, Breed, ClimbOnTopOfPowderSnow, Cx, Float, FollowParent, Goal, JUMP,
         LOOK, LeapAtTarget, LookAtPlayer, MOVE, MeleeAttack, MoveToBlock, NearestTarget, Panic,
-        Prey, Stroll, goal_clone, hide_pos, reduced,
+        Prey, Stroll, TARGET, TargetState, goal_clone, hide_pos, reduced, target_continue,
+        within_home,
     },
     living::wrap,
     raider::heightmap_pos,
@@ -122,6 +123,122 @@ pub fn trust_breeders(
 pub fn can_move(m: &Mob) -> bool {
     !flag(m, SLEEPING | SITTING | FACEPLANTED)
 }
+/// `Fox.setTarget`: dropping the target ends the defence.
+fn set_target(m: &mut Mob, target: Option<Who>) {
+    if target.is_none() && flag(m, DEFENDING) {
+        set_flag(m, DEFENDING, false);
+    }
+    m.ai.target = target;
+}
+/// `EntityReference.getEntity`: the entity a trusted UUID names, in the level.
+fn trusted_who(w: &MobWorld, uuid: [i32; 4]) -> Option<Who> {
+    if w.player.as_ref().is_some_and(|p| p.uuid == uuid) {
+        Some(Who::Player)
+    } else {
+        w.who_by_uuid(uuid)
+    }
+}
+/// `LivingEntity.getLastHurtByMob` of a trusted entity and its timestamp (0
+/// when nothing hurt it).
+fn hurt_by(w: &MobWorld, who: Who) -> (Option<Who>, i64) {
+    match who {
+        // `PlayerView.hurt_by` keeps the 100 ticks `LivingEntity.tick` keeps it.
+        Who::Player => w
+            .player
+            .as_ref()
+            .and_then(|p| p.hurt_by)
+            .map_or((None, 0), |(by, at)| (Some(by), at)),
+        Who::Mob(id) => w
+            .seen(id)
+            .and_then(|s| s.hurt_by)
+            .map_or((None, 0), |(by, at)| (Some(by), i64::from(at))),
+    }
+}
+/// `TargetGoal.canAttack` for the entity that hurt a trusted one:
+/// `TargetingConditions.forCombat().range(followRange)` with the goal's
+/// selector (`TRUSTED_TARGET_SELECTOR`, and not a trusted entity itself).
+fn can_defend(m: &mut Mob, w: &MobWorld, who: Who) -> bool {
+    let Some(t) = w.target_info(who) else {
+        return false;
+    };
+    let range = m.attrs.follow_range;
+    let trusted = who == Who::Player && w.player.as_ref().is_some_and(|p| trusts(m, p.uuid));
+    t.alive
+        && t.can_be_seen_as_enemy
+        && !(t.is_player && t.creative)
+        && !trusted
+        && !m.spares_target(w, who)
+        && m.ai
+            .home
+            .is_none_or(|(c, r)| within_home(c, r, block_pos(t.position)))
+        && m.distance_sqr(t.position) <= range * range
+        && m.sees(w, who)
+}
+
+/// `Fox.DefendTrustedTargetGoal`: take as target whoever last hurt a trusted
+/// entity, growling and raising `DEFENDING` while the goal runs.
+#[derive(Clone, Debug, Default)]
+struct DefendTrusted {
+    /// `trustedLastHurtBy`: the attacker `start` targets.
+    attacker: Option<Who>,
+    /// `timestamp`: the trusted entity's hurt timestamp last defended.
+    timestamp: i64,
+    /// The timestamp `canUse` read, which `start` stores in the same tick.
+    hurt_at: i64,
+    /// `TargetGoal`'s caches; the goal never needs sight (`mustSee` false).
+    st: TargetState,
+}
+impl Goal for DefendTrusted {
+    goal_clone!();
+    fn name(&self) -> &'static str {
+        "DefendTrustedTargetGoal"
+    }
+    fn flags(&self) -> u8 {
+        TARGET
+    }
+    /// `DefendTrustedTargetGoal.canUse`: the first trusted entity the level
+    /// still knows decides, as vanilla returns from inside its loop, and only
+    /// a new hurt of it starts the goal.
+    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        // `NearestAttackableTargetGoal`'s random interval.
+        if m.random.next_int_bound(reduced(10)).unwrap_or(1) != 0 {
+            return false;
+        }
+        // `getTrustedEntities`: `DATA_TRUSTED_ID_0` first, then the second.
+        for uuid in m.extra.trusted.into_iter().flatten() {
+            let Some(trusted) = trusted_who(cx.w, uuid) else {
+                continue;
+            };
+            let (by, at) = hurt_by(cx.w, trusted);
+            self.attacker = by;
+            self.hurt_at = at;
+            return at != self.timestamp && by.is_some_and(|b| can_defend(m, cx.w, b));
+        }
+        false
+    }
+    fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        // `TargetGoal.canContinueToUse`.
+        target_continue(&mut self.st, false, m, cx)
+    }
+    fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
+        set_target(m, self.attacker);
+        self.timestamp = self.hurt_at;
+        // `Entity.playSound(FOX_AGGRO, 1.0, 1.0)`: at its feet, unless silent.
+        if !m.silent {
+            let at = [m.position.x, m.position.y, m.position.z];
+            cx.events
+                .push(MobEvent::Sound("entity.fox.aggro", at, 1.0, 1.0));
+        }
+        set_flag(m, DEFENDING, true);
+        set_flag(m, SLEEPING, false); // wakeUp
+        // `TargetGoal.start`: the unseen and reach caches start over.
+        self.st = TargetState::default();
+    }
+    fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
+        set_target(m, None);
+        self.attacker = None;
+    }
+}
 /// `FoxLookControl.resetXRotOnTick`: stalking and pouncing keep their pitch.
 pub fn resets_x_rot(m: &Mob) -> bool {
     !flag(m, POUNCING | CROUCHING | INTERESTED | FACEPLANTED)
@@ -170,11 +287,14 @@ pub fn register(m: &mut Mob) {
     );
     g.add(
         4,
-        AvoidEntity::new(Avoid::Species(vec![Species::Wolf]), 8.0, 1.6, 1.4).seen_when(|s| !s.tame),
+        AvoidEntity::new(Avoid::Species(vec![Species::Wolf]), 8.0, 1.6, 1.4)
+            .seen_when(|s| !s.tame)
+            .when(|m| !flag(m, DEFENDING)),
     );
     g.add(
         4,
-        AvoidEntity::new(Avoid::Species(vec![Species::PolarBear]), 8.0, 1.6, 1.4),
+        AvoidEntity::new(Avoid::Species(vec![Species::PolarBear]), 8.0, 1.6, 1.4)
+            .when(|m| !flag(m, DEFENDING)),
     );
     g.add(5, StalkPrey);
     g.add(6, Pounce);
@@ -207,6 +327,8 @@ pub fn register(m: &mut Mob) {
     let turtle = || NearestTarget::new(Prey::Filter(baby_turtle_on_land), false).interval(10);
     let fish = || NearestTarget::new(Prey::Filter(schooling_fish), false).interval(20);
     let t = &mut m.ai.targets;
+    // `setTargetGoals`: what last hurt a trusted entity, before the prey.
+    t.add(3, DefendTrusted::default());
     t.add(4, land().gate(red));
     t.add(4, turtle().gate(red));
     t.add(6, fish().gate(red));
@@ -1001,15 +1123,14 @@ impl Goal for Pounce {
             ) == "minecraft:snow"
         {
             m.head_pitch = 60.0;
-            m.ai.target = None;
+            set_target(m, None);
             set_flag(m, FACEPLANTED, true);
         }
     }
 }
 
 /// `Fox.SeekShelterGoal`: by day, or in a thunderstorm, leave open sky for
-/// somewhere the sky does not see. Villages are not told apart yet (vanilla
-/// stays put in one).
+/// somewhere the sky does not see; a fox standing in a village stays put.
 #[derive(Clone, Debug)]
 struct SeekShelter {
     speed: f64,
@@ -1053,7 +1174,12 @@ impl Goal for SeekShelter {
             false
         } else {
             self.interval = 100;
-            cx.w.daylight && sees_sky && self.set_wanted_pos(m, cx.w)
+            // `ServerLevel.isVillage(pos)`: a section of a village POI or its
+            // neighbour's, where the fox keeps strolling in the sun.
+            cx.w.daylight
+                && sees_sky
+                && sections_to_village(&village_sections(m, cx.w), section_of(at)) > 1
+                && self.set_wanted_pos(m, cx.w)
         }
     }
     fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
@@ -1707,5 +1833,169 @@ mod consume_tests {
                 "a still fox stays asleep; a moving one does not"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod seek_shelter_tests {
+    use super::*;
+    use crate::mobs::sensor_scan_tests::kind;
+    use crate::mobs::world::with_built_test_world;
+    use horizon_core::random::LegacyRandom;
+    use std::sync::Arc;
+
+    /// A village bell at (5, 1, 5), and the section the fox stands in lit as
+    /// shade everywhere but its own block: sky above the fox, a roof beside it.
+    fn village_with_shade(
+        world: &mut crate::world::World,
+        registry: &horizon_world::registry::BlockRegistry,
+    ) {
+        for cx in -1..=1 {
+            for cz in -1..=1 {
+                world
+                    .chunks
+                    .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
+            }
+        }
+        let bell = registry.default_state("minecraft:bell").unwrap();
+        world.set(5, 1, 5, bell).unwrap();
+        let chunk = Arc::make_mut(world.chunks.get_mut(&(0, 0)).unwrap());
+        // Section 4 is y 0..16: the one the fox stands in.
+        let section = Arc::make_mut(&mut chunk.sections[4]);
+        let lit = crate::chunk::index(0, 1, 0);
+        section.light = crate::chunk::Light::Full(Box::new(std::array::from_fn(|i| {
+            if i == lit { 0xF0 } else { 0 }
+        })));
+    }
+
+    /// A villager of a village whose bell is at (5, 1, 5): the fox's section.
+    fn villager_of_the_bell() -> Seen {
+        let mut kind = (*kind()).clone();
+        kind.species = Species::Villager;
+        let mut seen = Mob::new(2, Arc::new(kind), Vec3::new(5.5, 1.0, 5.5), 0.0).seen(None);
+        seen.meeting = Some([5, 1, 5]);
+        seen
+    }
+
+    /// `SeekShelterGoal.canUse` for a fox under open sky, its 100-tick wait
+    /// over, `others` being the only villagers there are.
+    fn seeks_shelter(others: &[Seen]) -> Option<bool> {
+        let mut out = None;
+        let ran = with_built_test_world(others, village_with_shade, |w, types| {
+            let kind = Arc::new(types.types["minecraft:fox"].clone());
+            let mut fox = Mob::new(1, kind, Vec3::new(0.5, 1.0, 0.5), 0.0);
+            let mut goal = SeekShelter::new(1.25);
+            goal.interval = 0;
+            let mut lr = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w,
+                lr: &mut lr,
+                events: &mut events,
+            };
+            out = Some(goal.can_use(&mut fox, &mut cx));
+        });
+        let _ = ran;
+        out
+    }
+
+    /// `Fox.SeekShelterGoal.canUse`: under open sky by day a fox looks for
+    /// shade, but not while it stands in a village (`ServerLevel.isVillage`):
+    /// there it stays out in the sun.
+    #[test]
+    fn a_village_fox_does_not_look_for_shade() {
+        let (Some(open), Some(village)) =
+            (seeks_shelter(&[]), seeks_shelter(&[villager_of_the_bell()]))
+        else {
+            // No prepared resources under .local/horizon-client (CI).
+            return;
+        };
+        assert!(open, "outside a village the fox looks for shade");
+        assert!(!village, "inside a village it stays in the open");
+    }
+}
+
+#[cfg(test)]
+mod defend_tests {
+    use super::*;
+    use crate::mobs::sensor_scan_tests::kind;
+    use crate::mobs::world::{test_player, with_built_test_world};
+    use horizon_core::random::LegacyRandom;
+    use std::sync::Arc;
+
+    /// The player the fox trusts, and the zombie that just hit it.
+    const TRUSTED: [i32; 4] = [3, 1, 4, 1];
+    const ZOMBIE: u32 = 9;
+
+    fn zombie() -> Seen {
+        let mut kind = (*kind()).clone();
+        kind.species = Species::Zombie;
+        Mob::new(ZOMBIE, Arc::new(kind), Vec3::new(0.5, 64.0, 3.5), 0.0).seen(None)
+    }
+
+    /// `Fox.DefendTrustedTargetGoal`: a fox whose trusted player was hit takes
+    /// that attacker as its target, growls (`FOX_AGGRO`), sets `DEFENDING` and
+    /// drops the flag when the goal stops.
+    #[test]
+    fn a_fox_defends_the_player_it_trusts() {
+        let ran = with_built_test_world(
+            &[zombie()],
+            |_, _| {},
+            |w, types| {
+                let mut world = w.clone();
+                let mut player = test_player(Vec3::new(0.5, 64.0, 1.5));
+                player.uuid = TRUSTED;
+                // `getLastHurtByMob` of the trusted player, and when.
+                player.hurt_by = Some((Who::Mob(ZOMBIE), world.game_time));
+                world.player = Some(player);
+                let kind = Arc::new(types.types["minecraft:fox"].clone());
+                let mut fox = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+                add_trusted_entity(&mut fox, TRUSTED);
+                register(&mut fox);
+                let mut targets = std::mem::take(&mut fox.ai.targets);
+                let mut lr = LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &world,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                // `NearestAttackableTargetGoal`'s random interval: one try in five,
+                // so tick until the goal takes its turn.
+                let mut started = false;
+                for _ in 0..40 {
+                    cx.events.clear();
+                    targets.tick(&mut fox, &mut cx);
+                    if targets.is_running("DefendTrustedTargetGoal") {
+                        started = true;
+                        break;
+                    }
+                }
+                assert!(started, "the fox took the defend goal");
+                assert_eq!(
+                    fox.ai.target,
+                    Some(Who::Mob(ZOMBIE)),
+                    "it targets the attacker"
+                );
+                assert!(flag(&fox, DEFENDING), "and is defending");
+                assert!(
+                    cx.events.iter().any(|e| matches!(
+                        e,
+                        MobEvent::Sound("entity.fox.aggro", at, 1.0, 1.0)
+                            if *at == [0.5, 64.0, 0.5]
+                    )),
+                    "with a growl at its feet: {:?}",
+                    cx.events
+                );
+                // Out of the follow range the goal stops (`TargetGoal.stop`), and
+                // `Fox.setTarget(null)` ends the defence.
+                fox.position = Vec3::new(0.5, 64.0, 400.0);
+                targets.tick(&mut fox, &mut cx);
+                fox.ai.targets = targets;
+                assert!(!flag(&fox, DEFENDING), "the stopped goal ends the defence");
+                assert_eq!(fox.ai.target, None, "and drops the target");
+            },
+        );
+        let _ = ran;
     }
 }

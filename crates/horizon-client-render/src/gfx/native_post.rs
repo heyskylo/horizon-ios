@@ -2770,6 +2770,8 @@ file = \"b.wgsl\"
                 true,
             );
             (display.paper_white, display.peak) = (paper, peak);
+            // As the renderer has it under a pack that draws: Horizon lights none of it.
+            display.lighting = false;
             if switched {
                 use super::super::hdr::Output::{Pq, ScRgb};
                 display = display.retargeted(&device, &queue, ScRgb);

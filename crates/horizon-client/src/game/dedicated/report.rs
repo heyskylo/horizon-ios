@@ -58,7 +58,7 @@ impl Recording {
         Self {
             seconds,
             started: Instant::now(),
-            cpu_s: horizon_bench::cpu_seconds(std::process::id()),
+            cpu_s: horizon_system::cpu_seconds(std::process::id()),
             spans_were_on,
             ticks: Vec::with_capacity(seconds as usize * 20),
             sampled_ticks: 0,
@@ -363,7 +363,7 @@ impl Game<'_> {
         let costs = tick_profile::take();
         let mob_samples = costs.iter().map(|c| c.mob_ticks).sum();
         let jobs = job_stats::take();
-        let cpu = horizon_bench::cpu_seconds(std::process::id())
+        let cpu = horizon_system::cpu_seconds(std::process::id())
             .zip(r.cpu_s)
             .map(|(end, start)| round((end - start) / window_s.max(1e-9)));
         let players = self.lan.as_ref().map_or(0, |h| h.hub.guests.len());
@@ -382,7 +382,7 @@ impl Game<'_> {
             "overhead": overhead(&r, mob_samples, span_ns, mob_ns),
             "players": players,
             "levels": self.report_levels(),
-            "memory": { "rss_mb": horizon_bench::rss_bytes(std::process::id()).map(|b| b >> 20) },
+            "memory": { "rss_mb": horizon_system::rss_bytes(std::process::id()).map(|b| b >> 20) },
             "process": process_limits(),
             "cpu_cores_used": cpu,
             "config": {
@@ -395,9 +395,12 @@ impl Game<'_> {
         // The machine's description runs commands: off the tick.
         std::thread::spawn(move || {
             let mut report = report;
-            let hw = horizon_bench::Hardware::detect();
             report["machine"] = json!({
-                "os": hw.os, "arch": hw.arch, "cpu": hw.cpu, "cpu_threads": hw.cpu_threads, "ram_mb": hw.ram_mb,
+                "os": std::env::consts::OS,
+                "arch": std::env::consts::ARCH,
+                "cpu": horizon_system::cpu(),
+                "cpu_threads": std::thread::available_parallelism().ok().map(|n| n.get()),
+                "ram_mb": horizon_system::ram_bytes().map(|b| b >> 20),
             });
             match write_report(Path::new("reports"), &report, &text) {
                 Ok(path) => log::info!(
