@@ -54,6 +54,8 @@ pub(super) struct ThrownTrident {
     pub(super) on_ground: bool,
     /// `Entity.remainingFireTicks`; on clients, the synchronized on-fire flag.
     pub(super) fire_ticks: i32,
+    /// `Entity.fallDistance`: kept as loaded; water resets it.
+    fall_distance: f64,
     /// `AbstractArrow.soundEvent`: the trident's own until it first hits a block.
     sound_event: String,
     /// Water membership from the preceding `baseTick` (not updated while stuck).
@@ -129,6 +131,7 @@ impl ThrownTrident {
         self.no_gravity = n.no_gravity;
         self.on_ground = n.on_ground;
         self.fire_ticks = n.fire_ticks;
+        self.fall_distance = n.fall_distance;
         self.sound_event = n.sound_event;
     }
     /// `AbstractArrow.addAdditionalSaveData` + `DealtDamage`.
@@ -155,6 +158,7 @@ impl ThrownTrident {
                 no_gravity: self.no_gravity,
                 on_ground: self.on_ground,
                 fire_ticks: self.fire_ticks,
+                fall_distance: self.fall_distance,
                 sound_event: &self.sound_event,
                 item: &self.stack,
             },
@@ -201,6 +205,7 @@ impl ThrownTrident {
             no_gravity: false,
             on_ground: false,
             fire_ticks: 0,
+            fall_distance: 0.0,
             sound_event: horizon_client::entity_nbt::TRIDENT_HIT_GROUND.to_owned(),
             was_touching_water: false,
             random: horizon_core::random::LegacyRandom::new(i64::from(id)),
@@ -620,6 +625,7 @@ impl Game<'_> {
             no_gravity: false,
             on_ground: false,
             fire_ticks: 0,
+            fall_distance: 0.0,
             sound_event: horizon_client::entity_nbt::TRIDENT_HIT_GROUND.to_owned(),
             was_touching_water: false,
             random: horizon_core::random::LegacyRandom::new(i64::from(id)),
@@ -1223,6 +1229,10 @@ impl Game<'_> {
                 t.has_been_shot = true;
                 let rain = self.arrow_rain();
                 t.was_touching_water = self.arrow_scene(&rain).in_water(t.position);
+                // Entity.updateInWaterStateAndDoFluidPushing: resetFallDistance in water.
+                if t.was_touching_water {
+                    t.fall_distance = 0.0;
+                }
                 if t.fire_ticks > 0 {
                     t.fire_ticks -= 1;
                 }
@@ -1512,6 +1522,27 @@ mod tests {
         let loaded = horizon_client::entity_nbt::trident_from_nbt(&tag).unwrap();
         let back = ThrownTrident::from_nbt(loaded, &tag, &registry);
         assert_eq!(back.last_state, t.last_state);
+    }
+
+    /// `Entity.saveWithoutId` writes the `fall_distance` `Entity.load` read:
+    /// a trident keeps the one it was loaded with.
+    #[test]
+    fn a_trident_keeps_its_fall_distance_across_a_reload() {
+        use horizon_world::nbt::Tag;
+        let registry = stone_registry();
+        let fall = |tag: &Tag| match tag.get("fall_distance") {
+            Some(Tag::Double(bits)) => Some(f64::from_bits(*bits)),
+            _ => None,
+        };
+        let fresh = ThrownTrident::remote(1, Vec3::ZERO, 0.0, 0.0);
+        assert_eq!(fall(&fresh.to_nbt([1; 4], &registry, None)), Some(0.0));
+        let tag = Tag::compound([
+            ("Pos", Tag::List(vec![Tag::Double(0); 3])),
+            ("fall_distance", Tag::Double(5.0_f64.to_bits())),
+        ]);
+        let loaded = horizon_client::entity_nbt::trident_from_nbt(&tag).unwrap();
+        let back = ThrownTrident::from_nbt(loaded, &tag, &registry);
+        assert_eq!(fall(&back.to_nbt([1; 4], &registry, None)), Some(5.0));
     }
 
     /// `AbstractArrow.startFalling` on `new Random(42)`: its first three
