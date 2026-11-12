@@ -284,11 +284,14 @@ pub fn register(m: &mut Mob) {
     );
     g.add(
         4,
-        AvoidEntity::new(Avoid::Species(vec![Species::Wolf]), 8.0, 1.6, 1.4).seen_when(|s| !s.tame),
+        AvoidEntity::new(Avoid::Species(vec![Species::Wolf]), 8.0, 1.6, 1.4)
+            .seen_when(|s| !s.tame)
+            .when(|m| !flag(m, DEFENDING)),
     );
     g.add(
         4,
-        AvoidEntity::new(Avoid::Species(vec![Species::PolarBear]), 8.0, 1.6, 1.4),
+        AvoidEntity::new(Avoid::Species(vec![Species::PolarBear]), 8.0, 1.6, 1.4)
+            .when(|m| !flag(m, DEFENDING)),
     );
     g.add(5, StalkPrey);
     g.add(6, Pounce);
