@@ -614,24 +614,9 @@ impl Game<'_> {
         splash: &mut impl FnMut(horizon_client::entities::ItemSplash),
     ) -> (bool, bool) {
         let no_physics = escape_speed.is_some();
-        let heights = item.push_by_fluid(&self.world, &self.res.motion().fluids);
-        // Entity.baseTick splashes before moving, except on the first tick.
-        item.water_entry(heights.0 > 0.0, item.ticks == 0, splash);
-        item.lava_fall(heights.1 > 0.0);
-        let step = item.tick_move_before_block_effects(
-            &self.world,
-            self.res.facts(),
-            self.collision,
-            no_physics,
-            escape_speed,
-            heights,
-            entity_boxes,
-            Some(self.border.geometry()),
-            Some(&self.res.motion().blocks),
-        );
-        item.check_fall(&step, |fall, from, moved| {
-            self.vehicle_fall_reset(fall, from, moved)
-        });
+        let step = self
+            .item_tables()
+            .move_item(item, escape_speed, entity_boxes, splash);
         if let Some(pos) = step.vertical_contact {
             let state = self.world.block(pos.x, pos.y, pos.z);
             let position = item.position;
@@ -650,23 +635,9 @@ impl Game<'_> {
                 return (false, true);
             }
         }
-        item.finish_move_block_effects(
-            &self.world,
-            self.res.facts(),
-            no_physics,
-            Some(&self.res.motion().blocks),
-            step,
-        );
-        item.push_by_bubble_column(
-            &self.world,
-            self.pack.assets.registry,
-            self.res.facts(),
-            self.collision,
-        );
-        let alive = item.tick_settle(&self.world, self.res.facts(), no_physics, step);
-        // ItemEntity.tick refreshes immersion and splashes on water entry.
-        let (water, _) = item.push_by_fluid(&self.world, &self.res.motion().fluids);
-        item.water_entry(water > 0.0, false, splash);
+        let alive = self
+            .item_tables()
+            .settle_item(item, no_physics, step, splash);
         (alive, false)
     }
 
@@ -2315,6 +2286,7 @@ mod set_rotation_tests {
             count: 1,
             ticks: 0,
             health: 5,
+            air: 300,
             rotation: [0.0, 0.0],
             following: None,
         };

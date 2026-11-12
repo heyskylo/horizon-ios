@@ -30,6 +30,7 @@ LinearInterpolationHandler.create	inline	crates/horizon-client/src/game/remote.r
 LinearInterpolationHandler.startInterpolating	inline	crates/horizon-client/src/game/remote.rs::Game::move_entity	target kept as Lerp with steps 3
 LinearInterpolationHandler.doInterpolate	inline	crates/horizon-client/src/game/remote.rs::Game::tick_remote_entities	gap: minor: position eased by 1/steps; a boat's or minecart's yaw is set at once, not eased
 LivingEntity.<init>	port	crates/horizon-client/src/mobs.rs::Mob::new	box, health, random yaw
+LivingEntity.canBreatheUnderwater	port	crates/horizon-client/src/mobs/ai/air.rs::can_breathe_under_water	the can_breathe_under_water tag, then the baby happy ghast and the sulfur cube with a block in its body
 LivingEntity.canBeAffected	port	crates/horizon-client/src/mobs.rs::Mob::can_be_affected	the three tags (immune_to_infested, immune_to_oozing, ignores_poison_and_regen which is #minecraft:undead) then the class overrides below; asked by addEffect before anything is stored
 LivingEntity.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	gap: player: arrow count (12) and stinger count (13) are never kept or sent, so arrows and bee stingers do not stay stuck in a body
 LivingEntity.hasLandedInLiquid	port	crates/horizon-world/src/living_fall.rs::ImpulseContext::landed_in_liquid	water or lava with getDeltaMovement().y below 9.9999997E-6, from the guest move loop; the grace time still defers it
