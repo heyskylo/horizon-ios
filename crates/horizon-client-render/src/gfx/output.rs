@@ -77,6 +77,9 @@ impl DisplayReading {
 pub struct FrameRequest {
     /// A shader API 0.2 pack is picked under `HORIZON_HDR_FRAME=float`: its frame is float.
     pub linear_pack: bool,
+    /// That pack's `[frame] blend` is `"linear"`: its frame holds linear light where it is
+    /// float (`linear_blend`).
+    pub linear_blend: bool,
     /// Under `HORIZON_HDR_FRAME=float`, with no pack available or a 0.2 one: the frame is
     /// the layered float one wherever HDR output goes.
     pub hdr_float: bool,
@@ -89,6 +92,8 @@ pub struct FrameConfiguration {
     pub(crate) overlay_format: wgpu::TextureFormat,
     /// The layered float HDR frame: an 8-bit HUD target and an R8 coverage target beside it.
     pub(crate) hud_layer: bool,
+    /// The frame holds linear light, not vanilla's gamma (`linear_blend::stores_linear`).
+    pub(crate) linear_light: bool,
 }
 
 /// The display a 0.2 pack's `Frame` describes (docs/api/shaders-reference-0.2.md).
@@ -166,6 +171,7 @@ impl EffectiveOutput {
             format: wgpu::TextureFormat::Bgra8Unorm,
             overlay_format: wgpu::TextureFormat::Bgra8Unorm,
             hud_layer: false,
+            linear_light: false,
         },
         nits: [203.0, 1000.0, 0.0],
         ui_brightness: 1.0,
@@ -259,6 +265,7 @@ pub(crate) fn resolve_frame(
         format,
         overlay_format: super::overlay_format(format, hud_layer, swapchain),
         hud_layer,
+        linear_light: super::linear_blend::stores_linear(request.linear_blend, format),
     }
 }
 
@@ -293,6 +300,22 @@ pub(crate) fn resolve_output(
             / settings.paper_white_nits(reading.luminance) as f32,
         pack_lights: false,
     }
+}
+
+/// Whether HDR output lifts the world's light-source marks above paper white. Not on the title
+/// screen or the float frame, and not under a pack that lights its world itself: a 0.2 pack is
+/// shown at paper white, and a `shaders/` pack's `final` pass leaves its own alpha in the
+/// frame, which isn't marks (HDR lighting is off under it too).
+pub(crate) fn lifts_world(
+    title: bool,
+    float_frame: bool,
+    shaders_pack: bool,
+    native_api: Option<horizon_shader_api::Api>,
+) -> bool {
+    !title
+        && !float_frame
+        && !shaders_pack
+        && native_api.is_none_or(|api| api == horizon_shader_api::Api::V0_1)
 }
 
 #[cfg(test)]
@@ -337,6 +360,29 @@ pub(crate) mod tests {
         resolve_output(settings, caps, reading, frame, true)
     }
 
+    /// HDR output lifts light-source marks only on the 8/16-bit frame's world with no pack or
+    /// a 0.1 pack: a `shaders/` pack's alpha isn't marks, and a 0.2 pack is shown at paper white.
+    #[test]
+    fn only_horizons_own_gamma_world_is_lifted() {
+        use horizon_shader_api::Api::{V0_1, V0_2};
+        // (title, float frame, `shaders/` pack, Horizon pack) -> lifts
+        let cases = [
+            ((false, false, false, None), true),
+            ((false, false, false, Some(V0_1)), true),
+            ((false, false, true, None), false),
+            ((false, false, false, Some(V0_2)), false),
+            ((false, true, false, None), false),
+            ((true, false, false, None), false),
+        ];
+        for ((title, float, shaders, api), lifts) in cases {
+            assert_eq!(
+                lifts_world(title, float, shaders, api),
+                lifts,
+                "title {title}, float {float}, shaders/ pack {shaders}, pack {api:?}"
+            );
+        }
+    }
+
     /// Every mode against every offer, system report, pack and device: HDR output only where
     /// the mode asks for it and the destination offers it, and the frame each combination
     /// draws in, as `Renderer::new` picked it before the snapshot.
@@ -344,10 +390,12 @@ pub(crate) mod tests {
     fn the_resolver_picks_one_output_and_frame_for_each_combination() {
         let no_pack = FrameRequest {
             linear_pack: false,
+            linear_blend: false,
             hdr_float: true,
         };
         let pack_0_2 = FrameRequest {
             linear_pack: true,
+            linear_blend: false,
             hdr_float: true,
         };
         // A 0.1 pack, or none without the float switch; a refused, missing or disabled
@@ -460,6 +508,7 @@ pub(crate) mod tests {
             };
             let request = FrameRequest {
                 linear_pack: false,
+                linear_blend: false,
                 hdr_float: true,
             };
             let on = |driver: Option<&str>| {
@@ -702,6 +751,7 @@ pub(crate) mod tests {
         };
         let no_pack = FrameRequest {
             linear_pack: false,
+            linear_blend: false,
             hdr_float: true,
         };
         let (caps, reading) = window(Some(Output::Pq), Some(true));

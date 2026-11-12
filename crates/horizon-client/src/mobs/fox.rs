@@ -463,7 +463,16 @@ fn alertable(m: &Mob, w: &MobWorld) -> bool {
         .nearby(from, 12.0, |s: &Seen| {
             s.id != id
                 && (s.position.y - y).abs() <= 6.0
-                && m.distance_sqr(s.position) <= 144.0
+                && {
+                    // `TargetingConditions.testInvisible`: the range shrinks
+                    // with visibility, floor 2.
+                    let range = if s.has_effect("invisibility") {
+                        2.0
+                    } else {
+                        12.0
+                    };
+                    m.distance_sqr(s.position) <= range * range
+                }
                 && match s.species {
                     Species::Fox => false,
                     Species::Chicken | Species::Rabbit => true,
@@ -479,7 +488,11 @@ fn alertable(m: &Mob, w: &MobWorld) -> bool {
             && !p.spectator
             && !p.sneaking
             && (p.position.y - y).abs() <= 6.0
-            && m.distance_sqr(p.position) <= 144.0
+            && {
+                let range =
+                    (12.0 * p.visibility_percent(Some(m.kind.id.as_str()), w.items)).max(2.0);
+                m.distance_sqr(p.position) <= range * range
+            }
     })
 }
 
@@ -511,7 +524,10 @@ impl Goal for Sleep {
         MOVE | LOOK | JUMP
     }
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        m.ai.nav.is_done() && (self.can_sleep(m, cx.w) || flag(m, SLEEPING))
+        m.ai.xxa == 0.0
+            && m.ai.yya == 0.0
+            && m.ai.zza == 0.0
+            && (self.can_sleep(m, cx.w) || flag(m, SLEEPING))
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.can_sleep(m, cx.w)
@@ -1418,5 +1434,110 @@ mod consume_tests {
         // Without the vanilla data under .local/horizon-client (CI's unit
         // tests) there is no fox to feed: the test has nothing to check.
         let _ = ran;
+    }
+    #[cfg(test)]
+    mod alertable_tests {
+        use super::*;
+        use crate::mobs::sensor_scan_tests::kind;
+        use crate::mobs::world::{test_player, with_test_world};
+        use horizon_core::random::LegacyRandom;
+        use std::sync::Arc;
+
+        /// `Fox.FoxBehaviorGoal.alertable` uses
+        /// `TargetingConditions.forCombat().range(12)`, so an invisible player at
+        /// eleven blocks does not keep the fox alert, while a visible one does.
+        #[test]
+        fn an_invisible_player_far_away_is_not_alerting() {
+            let mut outcomes = Vec::new();
+            if !with_test_world(&[], |w, _| {
+                for invisible in [false, true] {
+                    let mut world = w.clone();
+                    let mut p = test_player(Vec3::new(11.5, 64.0, 0.5));
+                    p.invisible = invisible;
+                    world.player = Some(p);
+                    let mut fox_kind = (*kind()).clone();
+                    fox_kind.species = Species::Fox;
+                    let mut fox = Mob::new(1, Arc::new(fox_kind), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                    fox.ai.goals.add(
+                        1,
+                        Perch {
+                            rel: [1.0, 0.0],
+                            look_time: 0,
+                            looks_remaining: 0,
+                        },
+                    );
+                    let mut lr = LegacyRandom::new(0);
+                    let mut events = Vec::new();
+                    let mut cx = Cx {
+                        w: &world,
+                        lr: &mut lr,
+                        events: &mut events,
+                    };
+                    let mut goals = std::mem::take(&mut fox.ai.goals);
+                    let mut ran = false;
+                    for _ in 0..5000 {
+                        goals.tick(&mut fox, &mut cx);
+                        if goals.is_running("Perch") {
+                            ran = true;
+                            break;
+                        }
+                    }
+                    outcomes.push(ran);
+                    fox.ai.goals = goals;
+                }
+            }) {
+                return;
+            }
+            assert_eq!(
+                outcomes,
+                vec![false, true],
+                "a visible player at eleven keeps it alert; an invisible one does not"
+            );
+        }
+    }
+
+    mod sleep_tests {
+        use super::*;
+        use crate::mobs::sensor_scan_tests::kind;
+        use crate::mobs::world::with_test_world;
+        use horizon_core::random::LegacyRandom;
+        use std::sync::Arc;
+
+        /// `Fox.FoxSleepGoal.canUse` refuses to sleep while `xxa`, `yya` or
+        /// `zza` is nonzero, even when already asleep.
+        #[test]
+        fn a_fox_with_movement_input_does_not_sleep() {
+            let mut outcomes = Vec::new();
+            if !with_test_world(&[], |w, _| {
+                for moving in [false, true] {
+                    let mut kind = (*kind()).clone();
+                    kind.species = Species::Fox;
+                    let mut fox = Mob::new(1, Arc::new(kind), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                    set_flag(&mut fox, SLEEPING, true);
+                    if moving {
+                        fox.ai.xxa = 1.0;
+                    }
+                    fox.ai.goals.add(1, Sleep { countdown: 0 });
+                    let mut lr = LegacyRandom::new(0);
+                    let mut events = Vec::new();
+                    let mut cx = Cx {
+                        w,
+                        lr: &mut lr,
+                        events: &mut events,
+                    };
+                    let mut goals = std::mem::take(&mut fox.ai.goals);
+                    goals.tick(&mut fox, &mut cx);
+                    outcomes.push(goals.is_running("Sleep"));
+                    fox.ai.goals = goals;
+                }
+            }) {
+                return;
+            }
+            assert_eq!(
+                outcomes,
+                vec![true, false],
+                "a still fox stays asleep; a moving one does not"
+            );
+        }
     }
 }

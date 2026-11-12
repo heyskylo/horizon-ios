@@ -380,11 +380,7 @@ impl Game<'_> {
 
     /// The environment attributes of the current dimension.
     pub(super) fn dim_environment(&self) -> &Environment {
-        match self.dim {
-            Dim::Overworld => self.res.environment(),
-            Dim::Nether => self.res.nether_environment(),
-            Dim::End => self.res.end_environment(),
-        }
+        self.res.environment_of(&self.dimension_type().id)
     }
 
     /// SkyRenderer.renderEndFlash, drawn after the renderer's resident sky mesh.
@@ -630,6 +626,7 @@ impl Game<'_> {
         // a mod that cancels one keeps its fire out too.
         self.native_joins_flush(false, 0);
         self.tick_crystals();
+        self.clear_crystal_fire();
         self.tick_eyes();
         if self.dimension_type().has_ender_dragon_fight {
             self.ensure_exit_portal()?;

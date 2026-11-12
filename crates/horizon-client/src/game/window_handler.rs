@@ -111,6 +111,18 @@ impl Game<'_> {
         {
             self.input_keyboard_used();
         }
+        // A key or a mouse button pressed while the pad holds the radial menu open closes it,
+        // and goes on to do what it does. Moving the mouse does neither (`device_event`).
+        let pressed = match &event {
+            WindowEvent::KeyboardInput { event, .. } => {
+                event.state == ElementState::Pressed && !event.repeat
+            }
+            WindowEvent::MouseInput { state, .. } => *state == ElementState::Pressed,
+            _ => false,
+        };
+        if pressed && !self.pad.menu.synthetic {
+            self.pad_radial_cancel();
+        }
         if let WindowEvent::MouseInput { state, button, .. } = &event {
             if *state == ElementState::Pressed {
                 self.physical_buttons.insert(*button);
@@ -351,6 +363,13 @@ impl ApplicationHandler for Game<'_> {
             && self.screen == Screen::Playing
             && let DeviceEvent::MouseMotion { delta: (x, y) } = event
         {
+            // While the pad holds the radial menu open the mouse does nothing, as the right stick
+            // doesn't turn the view: it neither cancels the menu nor takes control back, nor
+            // turns the view. A thumb is on the opener, so the motion is a bumped desk.
+            if self.pad_radial_captures() {
+                return;
+            }
+            // Moving the mouse hands control back from the pad.
             if x != 0.0 || y != 0.0 {
                 self.pad_yield_input(event_loop);
             }

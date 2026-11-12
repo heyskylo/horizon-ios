@@ -38,7 +38,9 @@ there is no fast-math, and overflow checks stay as in release. Probes built in
 the dev profile are optimised too, keeping their overflow checks. The probes the
 selected harnesses built last time are built before they start, so parallel
 harnesses don't queue on Cargo's lock, with each harness's own package and
-feature flags so that its Cargo run then finds them fresh.
+feature flags so that its Cargo run then finds them fresh. On Windows, two
+harnesses that build one program with different flags don't run at once:
+the second build would replace the program the first is running.
 """
 
 import argparse
@@ -57,9 +59,11 @@ import time
 try:
     from . import parity_reach
     from . import file_lock
+    from . import process_tree
 except ImportError:
     import parity_reach
     import file_lock
+    import process_tree
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCAL = ROOT / ".local"
@@ -213,7 +217,7 @@ def inside(path, root):
 
 def dep_info(binary):
     """Source files Cargo recorded for a built binary (its .d file, spaces escaped as "\\ ")."""
-    info = Path(str(binary) + ".d")
+    info = Path(str(binary).removesuffix(".exe") + ".d")  # client_probe.exe's is client_probe.d
     if not info.exists():
         return []
     sources = []
@@ -631,13 +635,37 @@ def target_packages():
 
 def prebuild_commands(artifacts, packages=None):
     """The Cargo runs that build the recorded probes exactly as their harnesses do: one per profile, package and
-    feature selection, and whether examples are among the command's targets (see artifacts_of).
+    feature selection, and whether examples are among the command's targets (see artifacts_of)."""
+    groups = {}
+    for kind, name, profile, selection, examples in selected_builds(artifacts, packages):
+        targets = groups.setdefault((profile, tuple(selection), examples), [])
+        target = [f"--{kind}", name] if name else [f"--{kind}"]
+        if target not in targets:
+            targets.append(target)
+    return [["cargo", "build", "--locked", "--profile", profile, *selection, *(part for target in targets for part in target)]
+            for (profile, selection, _), targets in sorted(groups.items())]
+
+
+def executables(artifacts, packages):
+    """{(kind, name, profile): (selection, examples)}: the programs recorded Cargo runs build, and how (see
+    LocalExecutor.clashes). A run naming every bin or example (--bins) builds those of the packages it selects."""
+    built = {}
+    for kind, name, profile, selection, examples in selected_builds(artifacts, packages):
+        kind = kind.removesuffix("s")
+        selected = {value for flag, value in zip(selection, selection[1:]) if flag == "-p"}
+        for target in [name] if name else [target for (other, target), package in (packages or {}).items()
+                                           if other == kind and (package in selected or "--workspace" in selection)]:
+            built[(kind, target, profile)] = (tuple(selection), examples)
+    return built
+
+
+def selected_builds(artifacts, packages=None):
+    """Recorded artifacts as [kind, name, profile, selection, examples], each with the selection that builds it now.
 
     packages: target_packages(). Records of targets that no longer exist (a probe renamed or deleted since a harness
     ran it) are left out, since one unknown target fails its whole Cargo run. A [kind, name, profile] record from
     before selections were kept is taken as built with `-p` and its own crate, as nearly every harness does; the
     harness's next run records the real one."""
-    groups = {}
     for artifact in artifacts:
         if packages and artifact[1] and tuple(artifact[:2]) not in packages:
             continue
@@ -656,12 +684,7 @@ def prebuild_commands(artifacts, packages=None):
         if owner and selected and owner not in selected:
             # A recorded target may have moved packages; retain its feature flags and old selections.
             selection = [*selection, "-p", owner]
-        targets = groups.setdefault((profile, tuple(selection), examples), [])
-        target = [f"--{kind}", name] if name else [f"--{kind}"]
-        if target not in targets:
-            targets.append(target)
-    return [["cargo", "build", "--locked", "--profile", profile, *selection, *(part for target in targets for part in target)]
-            for (profile, selection, _), targets in sorted(groups.items())]
+        yield kind, name, profile, selection, examples
 
 
 def prebuild(artifacts, jobs):
@@ -811,6 +834,7 @@ class LocalExecutor:
         self.max_peak = max_peak  # set while other machines can take heavier harnesses
         self.running = {}
         self.solo = set()  # harnesses that run alone here (solo_harnesses)
+        self.builds = {}  # Windows: {harness: executables(...)}, see clashes
         self.dead = False  # this machine never drops out, unlike a remote host
         self.available, self.measured = 0, 0.0
         (STATE_DIR / "logs").mkdir(parents=True, exist_ok=True)
@@ -824,7 +848,16 @@ class LocalExecutor:
     def accepts(self, name):
         # A solo harness waits until nothing else runs here; the others fill the slots meanwhile, so solo ones
         # run last, alone.
-        return name not in self.solo or not self.running
+        return (name not in self.solo or not self.running) and not self.clashes(name)
+
+    def clashes(self, name):
+        """Whether the harness builds a program a running harness built too, with another package or feature
+        selection. Cargo on Windows names a program in deps/ without the hash that keeps such builds apart elsewhere,
+        so the second build relinks the very file the first harness runs, and Windows refuses ("Access is denied").
+        Builds with the same selection find it fresh and leave it alone."""
+        mine = self.builds.get(name, {})
+        return any(mine.get(program, how) != how for label in self.running
+                   for program, how in self.builds.get(harness_of(label), {}).items())
 
     def fits(self, expected, only_here=True):
         """Admission by recorded peak, within the budget and leaving MEMORY_RESERVE of what is free now.
@@ -858,10 +891,11 @@ class LocalExecutor:
         if shard:
             environment["PARITY_SHARD"] = shard
         # stdin from /dev/null: tools/parity_shim.py never reuses an oracle run that reads a pipe, and CI runners
-        # (and --worker's ssh) give the runner one, which kept oracle reuse off on CI.
-        process = subprocess.Popen([sys.executable, str(Path(__file__)), "--trace", str(trace), str(script)],
-                                   cwd=ROOT, env=environment, stdin=subprocess.DEVNULL, stdout=log,
-                                   stderr=subprocess.STDOUT, start_new_session=True)
+        # (and --worker's ssh) give the runner one, which kept oracle reuse off on CI. Whatever the harness starts
+        # ends with it (tools/process_tree.py).
+        process = process_tree.popen([sys.executable, str(Path(__file__)), "--trace", str(trace), str(script)],
+                                     cwd=ROOT, env=environment, stdin=subprocess.DEVNULL, stdout=log,
+                                     stderr=subprocess.STDOUT)
         self.running[name] = {"process": process, "started": time.monotonic(), "log": log, "expected": expected,
                               "slot": slot, "script": script}
         return True
@@ -871,11 +905,12 @@ class LocalExecutor:
         finished = []
         for name, item in list(self.running.items()):
             process, elapsed = item["process"], time.monotonic() - item["started"]
-            if process.poll() is None and elapsed < self.timeout:
+            if not process_tree.ended(process) and elapsed < self.timeout:
                 continue
-            if process.poll() is None:
-                kill_tree(process)
+            if process.returncode is None:
+                process_tree.kill(process)
                 process.wait()
+                process_tree.ended(process)
                 print(f"--- {name}: timed out after {self.timeout}s", file=item["log"])
             item["log"].close()
             item["slot"].close()
@@ -885,18 +920,7 @@ class LocalExecutor:
 
     def stop(self):
         for item in self.running.values():
-            kill_tree(item["process"])
-
-
-def kill_tree(process):
-    """Kill a harness and what it started: its process group (start_new_session), or its tree on Windows."""
-    if os.name == "nt":
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)], capture_output=True)
-        return
-    try:
-        os.killpg(process.pid, 9)
-    except ProcessLookupError:
-        pass
+            process_tree.kill(item["process"])
 
 
 def host_config():
@@ -1176,7 +1200,8 @@ def run(selected, state, hasher, environment_digest, executors, reuse_oracles, r
 def exit_on_termination():
     """SIGTERM and SIGHUP (a cancelled CI job, a dropped ssh) end this process through its finally blocks, which stop
     the running harnesses. Each runs in its own session, so without that they, and the vanilla servers they started,
-    outlive it (orphans of days were found on the Mac mini's runners, 2026-10-26). Windows has no SIGHUP."""
+    outlive it (orphans of days were found on the Mac mini's runners, 2026-10-26). Windows has no SIGHUP; there each
+    harness's job ends with this process however it ends (tools/process_tree.py)."""
     for name in ("SIGTERM", "SIGHUP"):
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), lambda received, _frame: sys.exit(128 + received))
@@ -1214,6 +1239,7 @@ def worker_main(shared_local):
         return 0
     state = load_state()
     hasher = Hasher(state["hashes"])
+    process_tree.start_build_server()  # before any build here: the probe build's would start it otherwise
     built, errors = prebuild(first["prebuild"], default_build_jobs()) if first["prebuild"] else (True, "")
     executor = LocalExecutor(MACHINE_JOBS, int(memory_available() * 0.75), first["timeout"])
     send({"hello": {"jobs": MACHINE_JOBS, "memory": executor.memory_budget, "built": built, "errors": errors[-4000:]}})
@@ -1264,6 +1290,23 @@ def stale(name, state, hasher, environment):
     return True
 
 
+def command_line_arguments(line):
+    """A Windows command line split as programs split it (CommandLineToArgvW): list2cmdline's inverse."""
+    import ctypes
+    from ctypes import wintypes
+    shell32 = ctypes.WinDLL("shell32")
+    shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
+    shell32.CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+    count = ctypes.c_int()
+    argv = shell32.CommandLineToArgvW(line, ctypes.byref(count))
+    if not argv:
+        return [line]
+    try:
+        return [argv[index] for index in range(count.value)]
+    finally:
+        ctypes.windll.kernel32.LocalFree(argv)
+
+
 def trace_main(output, script, arguments):
     """Run one harness and record what it read and executed."""
     import atexit
@@ -1281,6 +1324,9 @@ def trace_main(output, script, arguments):
                 read.add(os.fsdecode(path))
         elif event == "subprocess.Popen":
             arguments_ = details[1]
+            if os.name == "nt" and isinstance(arguments_, str):
+                # Windows audits the command line Popen built from the list (list2cmdline), not the list.
+                arguments_ = command_line_arguments(arguments_)
             arguments_ = [arguments_] if isinstance(arguments_, (str, bytes, os.PathLike)) else list(arguments_ or [])
             commands.append([os.fsdecode(a) if isinstance(a, (bytes, os.PathLike)) else str(a) for a in arguments_])
 
@@ -1675,13 +1721,14 @@ def main():
 
     # The probes the selected harnesses built last time, here or (for those that never ran here) in another
     # worktree. A harness with no record builds its own: building every probe for it would be ~275 binaries.
-    artifacts = []
+    artifacts, built_by = [], {}
     for name in selected:
         record = records.get(name)
         if not record or "artifacts" not in record:
             template = SHARED / "dependencies" / f"{name}.json"
             record = json.loads(template.read_text(encoding="utf-8")) if template.exists() else {}
-        for artifact in recorded_artifacts(record):
+        built_by[name] = recorded_artifacts(record)
+        for artifact in built_by[name]:
             if artifact not in artifacts:
                 artifacts.append(artifact)
     config = host_config()
@@ -1701,6 +1748,7 @@ def main():
     local = None
     try:
         if jobs:
+            process_tree.start_build_server()  # before any build here: the probe build's would start it otherwise
             print("Building probes...", flush=True)
             started = time.monotonic()
             built, errors = prebuild(artifacts, default_build_jobs())
@@ -1714,6 +1762,9 @@ def main():
         local = LocalExecutor(jobs, int(memory_available() * 0.75), args.timeout,
                               REMOTE_LOCAL_PEAK if remotes and args.jobs is None else None)
         local.solo = solo_harnesses(config)
+        if os.name == "nt":
+            packages = target_packages()
+            local.builds = {name: executables(built, packages) for name, built in built_by.items()}
         if local.solo & {harness_of(name) for name in selected}:
             print(f"Alone on this machine ({SOLO_CPUS} CPUs or fewer), after the others: "
                   f"{', '.join(sorted(local.solo & {harness_of(name) for name in selected}))}", flush=True)

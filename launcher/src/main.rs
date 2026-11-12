@@ -292,7 +292,7 @@ struct Launcher {
     confirm_remove: Option<String>,
     /// The releases whose patch notes the Versions page shows open.
     notes_open: std::collections::HashSet<String>,
-    picker_open: bool,
+    picker: glass_home::PickerState,
     /// Settings' any-colour swatch shows the hue strip (the glass look).
     accent_strip: bool,
     /// Settings' Glass and Blur sliders (the glass look).
@@ -626,7 +626,7 @@ impl Launcher {
             native_log: Default::default(),
             confirm_remove: None,
             notes_open: Default::default(),
-            picker_open: false,
+            picker: glass_home::PickerState::default(),
             accent_strip: false,
             look_sliders: Default::default(),
             hue_area: std::rc::Rc::new(std::cell::Cell::new(None)),
@@ -890,7 +890,7 @@ impl Launcher {
                 self.mods.reset_lists();
             }
         }
-        self.picker_open = false;
+        self.picker.open = false;
         self.language_menu = false;
         self.mods.browse.sort_menu = false;
         self.account_menu = false;
@@ -3254,12 +3254,12 @@ impl Launcher {
                 .child(blocks::icon("chevron-down", 20., t.muted))
                 .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
                     if !this.closed_by_this_press(event) {
-                        this.picker_open = !this.picker_open;
+                        this.picker.open = !this.picker.open;
                     }
                     cx.notify();
                 })),
         );
-        if self.picker_open {
+        if self.picker.open {
             let mut menu = div()
                 .absolute()
                 .top(px(theme::night::PLAY + 6.))
@@ -3273,7 +3273,7 @@ impl Launcher {
                 .flex()
                 .flex_col()
                 .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                    this.picker_open = false;
+                    this.picker.open = false;
                     this.menu_closed_at = Some(event.position);
                     cx.notify();
                 }));
@@ -3313,7 +3313,7 @@ impl Launcher {
                         )
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.pin_version((!latest).then(|| tag.clone()));
-                            this.picker_open = false;
+                            this.picker.open = false;
                             cx.notify();
                         })),
                 );
@@ -3333,7 +3333,7 @@ impl Launcher {
                     .child(tr("Manage versions"))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.go(Page::Versions);
-                        this.picker_open = false;
+                        this.picker.open = false;
                         cx.notify();
                     })),
             );
