@@ -810,7 +810,7 @@ mod tests {
         let mut expected_horse_rng = LegacyRandom::new(777);
         if let Some(horse) = game.mobs.iter_mut().find(|m| m.id == trap_id) {
             horse.extra.trap = true;
-            horse.random = expected_horse_rng.clone();
+            horse.random = horizon_core::random::EntityRandom::own(expected_horse_rng.clone());
         }
         game.spring_skeleton_trap(trap_id);
 
