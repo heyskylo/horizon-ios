@@ -5,7 +5,7 @@ use horizon_core::geometry::Vec3;
 /// Pushes waiting for their mob's tick, in push order. A list while short;
 /// past [`PendingPushes::LIST_MAX`] (a crowd pushing each other) one list
 /// per mob, as scanning the whole list for each mob grows with its square.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct PendingPushes {
     list: Vec<(u32, Vec3)>,
     by_mob: crate::fast_hash::FxHashMap<u32, Vec<Vec3>>,

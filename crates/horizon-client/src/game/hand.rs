@@ -11,6 +11,7 @@ use horizon_client::{
     items::ItemStack,
 };
 use horizon_core::geometry::{Aabb, Vec3};
+use horizon_items::mining::{self, DestroySpeedModifiers};
 
 /// The point a `ServerboundInteractPacket` carries: `EntityHitResult.getLocation()
 /// - entity.position()`, measured from the entity's feet, as
@@ -430,20 +431,29 @@ impl Game<'_> {
             return 0.0;
         }
         let held = self.held();
-        let mut speed = self.items().mining_speed(held, &facts.name);
+        let tool_speed = self.items().mining_speed(held, &facts.name);
         let hardness = facts.hardness;
-        let harvest = !facts.requires_tool || self.items().correct_for_drops(held, &facts.name);
-        speed = self.modify_destroy_speed(speed);
-        speed *= block_break_speed;
-        if self.mining_eyes_in_water() {
-            speed *= self.submerged_mining_speed();
-        }
-        if self.player.as_ref().is_some_and(|p| !p.ground.on_ground) {
-            speed /= 5.0;
-        }
+        let harvest =
+            self.items()
+                .has_correct_tool_for_drops(held, facts.requires_tool, &facts.name);
+        let player = DestroySpeedModifiers {
+            // Vanilla reads the attribute (recomputing a dirty one) only then.
+            mining_efficiency: if tool_speed > 1.0 {
+                self.mining_efficiency()
+            } else {
+                0.0
+            },
+            effects: self.potions.effects.mining_speed_factor(),
+            block_break_speed,
+            submerged_mining_speed: self
+                .mining_eyes_in_water()
+                .then(|| self.submerged_mining_speed()),
+            on_ground: self.player.as_ref().is_none_or(|p| p.ground.on_ground),
+        };
+        let mut speed = mining::destroy_speed(tool_speed, &player);
         // NeoForge's PlayerEvent.BreakSpeed, where Player.getDestroySpeed ends.
         self.native_break_speed(pos, state, speed, &mut speed);
-        speed / hardness / if harvest { 30.0 } else { 100.0 }
+        mining::destroy_progress(hardness, harvest, speed)
     }
     /// `EntityFluidInteraction`: compare the eyes with the camera fluid surface.
     fn mining_eyes_in_water(&self) -> bool {

@@ -121,6 +121,9 @@ pub(super) struct CombatTracker {
     /// The guest behind `blast_owner`, when that player is a LAN guest; the
     /// host's own blast leaves it None.
     pub(super) blast_guest: Option<u32>,
+    /// `blast_owner` is a player (`getIndirectSourceEntity() instanceof
+    /// Player`), not a mob whose UUID the TNT's `owner` names.
+    pub(super) blast_owner_player: bool,
     pub(super) projectile_attacker: Option<(u32, Text)>,
     /// The projectile hitting the player now is another player's that
     /// `ServerPlayer.canHarmPlayer` refuses (the `pvp` rule, an ally).
@@ -140,6 +143,9 @@ pub(super) struct CombatTracker {
     /// A firework rocket's burst is hurting the player now: the rocket is
     /// the direct entity (`rocket_hurt_player`).
     pub(super) rocket_hit: bool,
+    /// The arrow hurting the player now pierces (`AbstractArrow.getPierceLevel` above 0):
+    /// `LivingEntity.applyItemBlocking` lets it past a raised shield (`arrow_hits_player`).
+    pub(super) piercing_hit: bool,
     /// The player whose melee hit is landing on the player now: where they
     /// stand and the seconds their weapon disables a shield for
     /// (`getSecondsToDisableBlocking`).

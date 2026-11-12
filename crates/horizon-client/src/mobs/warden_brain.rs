@@ -591,13 +591,16 @@ fn same_path(a: Option<&Path>, b: Option<&Path>) -> bool {
         _ => false,
     }
 }
+/// `Entity.playSound`: nothing from a silent warden.
 fn sound(m: &Mob, name: &'static str, volume: f32, pitch: f32, events: &mut Vec<MobEvent>) {
-    events.push(MobEvent::Sound(
-        name,
-        [m.position.x, m.position.y, m.position.z],
-        volume,
-        pitch,
-    ));
+    if !m.silent {
+        events.push(MobEvent::Sound(
+            name,
+            [m.position.x, m.position.y, m.position.z],
+            volume,
+            pitch,
+        ));
+    }
 }
 
 // ---- Behaviours -----------------------------------------------------------
@@ -706,8 +709,25 @@ impl B {
                 sound(m, "entity.warden.emerge", 5.0, 1.0, cx.events);
                 true
             }
-            // ForceUnmount: a warden never rides (Warden.canRide).
-            B::ForceUnmount(_) => false,
+            // ForceUnmount: `Warden.canRide` is false, but `/ride` and a
+            // summon's `Passengers` force it aboard; `unRide` gets it off.
+            B::ForceUnmount(t) => {
+                if m.extra.mount.is_none() {
+                    return false;
+                }
+                t.begin(cx.lr, cx.now);
+                cx.events.push(MobEvent::EjectPassengers {
+                    mob: m.id,
+                    from: m.position,
+                });
+                let at = m
+                    .extra
+                    .mount
+                    .and_then(|v| cx.w.seen(v))
+                    .map(|v| super::riders::dismount_location(cx.w, v, m.width(), m.height()));
+                super::riders::stop_riding(m, at);
+                true
+            }
             B::Digging(t) => {
                 let mm = mem(m);
                 if mm.attack_target.present() || mm.walk_target.present() {
@@ -1036,11 +1056,8 @@ impl B {
                     self.do_stop(m, cx);
                 }
             }
-            B::ForceUnmount(t) => {
-                if now > t.end {
-                    self.do_stop(m, cx);
-                }
-            }
+            // canStillUse is false: it stops in the tick it starts.
+            B::ForceUnmount(_) => self.do_stop(m, cx),
             B::Digging(t) => {
                 if now > t.end || m.removed {
                     self.do_stop(m, cx);
@@ -1539,5 +1556,43 @@ mod warden_owned_memory_tests {
             }
         });
         assert!(ran, "prepared actual MobWorld prerequisite must run");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `ForceUnmount` in the dig activity: a warden forced aboard (`/ride`,
+    /// a summon's `Passengers`) gets off so that it can dig. It was stubbed
+    /// out, and such a warden stayed aboard for good (#8833).
+    #[test]
+    fn a_warden_forced_aboard_gets_off_to_dig() {
+        let ran = crate::mobs::world::with_test_world(&[], |w, _| {
+            let at = horizon_core::geometry::Vec3::new(0.5, 64.0, 0.5);
+            let mut m = Mob::new(1, crate::mobs::sensor_scan_tests::kind(), at, 0.0);
+            warden::register(&mut m);
+            let (mut lr, mut events) = (LegacyRandom::new(0), Vec::new());
+            let mut b = B::ForceUnmount(Timed::new(60, 60));
+            {
+                let mut cx = Bx {
+                    w,
+                    lr: &mut lr,
+                    events: &mut events,
+                    now: 100,
+                };
+                assert!(!b.try_start(&mut m, &mut cx), "nothing to get off");
+                m.extra.mount = Some(7);
+                m.extra.passenger = true;
+                assert!(b.try_start(&mut m, &mut cx));
+            }
+            assert_eq!(m.extra.mount, None);
+            assert!(!m.extra.passenger);
+            assert!(matches!(
+                events[..],
+                [MobEvent::EjectPassengers { mob: 1, .. }]
+            ));
+        });
+        let _ = ran;
     }
 }

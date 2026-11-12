@@ -22,6 +22,8 @@ use horizon_world::{
     registry::{BlockRegistry, BlockStateId},
 };
 use std::{collections::HashMap, sync::Arc};
+mod boat_load;
+pub use boat_load::boat_from_nbt;
 mod projectile_fields;
 use projectile_fields::{load_projectile_entity_fields, put_projectile_entity_fields};
 mod saved_attributes;
@@ -914,15 +916,7 @@ pub fn mob_to_nbt(
                 Tag::Int(m.extra.more_carrot_ticks),
             );
         }
-        "minecraft:goat" => {
-            map.insert(
-                "IsScreamingGoat".into(),
-                Tag::Byte(i8::from(m.extra.screaming)),
-            );
-            let [left, right] = m.extra.lost_horns;
-            map.insert("HasLeftHorn".into(), Tag::Byte(i8::from(!left)));
-            map.insert("HasRightHorn".into(), Tag::Byte(i8::from(!right)));
-        }
+        "minecraft:goat" => crate::mobs::goat::write_nbt(m, map),
         "minecraft:creeper" => {
             map.insert("Fuse".into(), Tag::Short(m.max_swell as i16));
             map.insert(
@@ -2351,11 +2345,7 @@ pub fn mob_from_nbt_with_random(
                 _ => 0,
             };
         }
-        crate::mobs::Species::Goat => {
-            m.extra.screaming = flag(tag, "IsScreamingGoat");
-            let horn = |key| number(tag.get(key)).is_some_and(|v| v == 0);
-            m.extra.lost_horns = [horn("HasLeftHorn"), horn("HasRightHorn")];
-        }
+        crate::mobs::Species::Goat => crate::mobs::goat::read_nbt(&mut m, tag),
         _ => {}
     }
     // `Rabbit.readAdditionalSaveData`.
@@ -2650,7 +2640,7 @@ pub fn mob_from_nbt_with_random(
         m.extra.counter = number(tag.get("still_timeout")).unwrap_or(0) as i32;
     }
     if m.species() == crate::mobs::Species::Shulker {
-        m.extra.variant3 = (number(tag.get("AttachFace")).unwrap_or(0) % 6).unsigned_abs() as u8;
+        m.extra.variant3 = (number(tag.get("AttachFace")).unwrap_or(0) as i8 % 6).unsigned_abs();
         m.extra.counter = number(tag.get("Peek")).map_or(0, |v| v as i8 as i32);
         m.extra.color = number(tag.get("Color")).map_or(16, |v| v as i8 as u8);
         m.anim.v[0] = m.extra.counter as f32 * 0.01;
@@ -3702,9 +3692,6 @@ pub fn vehicle_to_nbt(
     }
     .tag(raw)
 }
-pub fn boat_from_nbt(tag: &Tag) -> Option<(Vec3, Vec3, f32)> {
-    Some((position(tag)?, motion(tag), rotation(tag)[0]))
-}
 /// `Entity.load`'s `OnGround` (`getBooleanOr`: `byteValue() != 0`) and
 /// `fall_distance` (`getDoubleOr`: any number's `doubleValue`), defaulting to
 /// false and 0.
@@ -4175,6 +4162,30 @@ mod tests {
                 .is_none()
         );
     }
+
+    /// `Shulker` reads `AttachFace` as a byte before
+    /// `Direction.from3DDataValue` (`abs(data % 6)`): an int is narrowed
+    /// first, so 258 is byte 2, not 258 % 6 = 0, and 250 is byte -6, face 0.
+    #[test]
+    fn a_shulkers_attach_face_is_narrowed_to_a_byte_first() {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let ty = Arc::make_mut(&mut kind);
+        ty.id = "minecraft:shulker".into();
+        ty.species = crate::mobs::Species::Shulker;
+        let types = [("minecraft:shulker".into(), kind)].into();
+        let face = |saved: Tag| {
+            let raw = Tag::compound([
+                ("id", string("minecraft:shulker")),
+                ("Pos", doubles(&[4.5, 220.0, 4.5])),
+                ("AttachFace", saved),
+            ]);
+            mob_from_nbt(&raw, &types, 1, None).unwrap().extra.variant3
+        };
+        assert_eq!(face(Tag::Byte(3)), 3);
+        assert_eq!(face(Tag::Byte(-2)), 2);
+        assert_eq!(face(Tag::Int(258)), 2);
+        assert_eq!(face(Tag::Int(250)), 0);
+    }
     use super::*;
     use crate::items::ItemStack;
 
@@ -4433,6 +4444,30 @@ mod tests {
         };
         assert_eq!(load(Tag::Int(40000), Tag::Int(65546)), (-25536, 10));
         assert_eq!(load(Tag::Short(7), Tag::Short(19)), (7, 19));
+    }
+
+    /// `Axolotl.Variant.BY_ID` is `OutOfBoundsStrategy.ZERO`: an id outside
+    /// 0..=4 is lucy (0). `Parrot.Variant.BY_ID` is `CLAMP`: it is the nearest
+    /// end.
+    #[test]
+    fn an_unknown_axolotl_variant_is_lucy_and_a_parrots_is_clamped() {
+        let variant = |species, id: &str, saved: i32| {
+            let mut kind = crate::mobs::sensor_scan_tests::kind();
+            let ty = Arc::make_mut(&mut kind);
+            ty.id = id.into();
+            ty.species = species;
+            let types = [(id.into(), kind)].into();
+            let raw = Tag::compound([
+                ("id", string(id)),
+                ("Pos", doubles(&[4.5, 220.0, 4.5])),
+                ("Variant", Tag::Int(saved)),
+            ]);
+            mob_from_nbt(&raw, &types, 1, None).unwrap().extra.variant
+        };
+        let axolotl = |saved| variant(crate::mobs::Species::Axolotl, "minecraft:axolotl", saved);
+        let parrot = |saved| variant(crate::mobs::Species::Parrot, "minecraft:parrot", saved);
+        assert_eq!([0, 3, 4, 5, 7, -1].map(axolotl), [0, 3, 4, 0, 0, 0]);
+        assert_eq!([0, 3, 4, 5, 7, -1].map(parrot), [0, 3, 4, 4, 4, 0]);
     }
 
     /// A mount keeps its body armour and a helmet (say
@@ -5918,8 +5953,7 @@ fn write_axolotl_memories(m: &Mob, map: &mut Compound) {
 /// medium salmon or index 0; a missing bucket flag is false.
 fn read_variant(m: &mut Mob, tag: &Tag) {
     use crate::mobs::Species as S;
-    // AbstractFish/Axolotl.readAdditionalSaveData: false when absent.
-    // Tadpole.setFromBucket ignores the input.
+    // AbstractFish/Axolotl: false when absent. Tadpole.setFromBucket ignores the input.
     if matches!(
         m.species(),
         S::Cod | S::Salmon | S::Pufferfish | S::TropicalFish | S::Axolotl
@@ -5928,7 +5962,8 @@ fn read_variant(m: &mut Mob, tag: &Tag) {
     }
     let int = |key| number(tag.get(key)).unwrap_or(0) as i32;
     match m.species() {
-        S::Axolotl | S::Parrot => m.extra.variant = int("Variant").clamp(0, 4) as u8,
+        S::Parrot => m.extra.variant = int("Variant").clamp(0, 4) as u8, // CLAMP
+        S::Axolotl => m.extra.variant = ((int("Variant") as u32).min(5) % 5) as u8, // ZERO: lucy
         // Rabbit.Variant.LEGACY_CODEC: an unknown id is brown.
         S::Rabbit => {
             m.extra.variant = match int("RabbitType") {

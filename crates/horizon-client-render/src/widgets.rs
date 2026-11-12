@@ -13,6 +13,8 @@ pub enum Cursor {
     #[default]
     Arrow,
     PointingHand,
+    /// `CursorTypes.IBEAM`: over a text field that takes input.
+    Ibeam,
     NotAllowed,
     /// `CursorTypes.RESIZE_NS`: a scroller held vertically (`MerchantScreen`).
     ResizeNs,
@@ -51,6 +53,18 @@ pub fn slider_cursor(hovered: bool, active: bool, dragging: bool) {
             Cursor::ResizeEw
         } else {
             Cursor::PointingHand
+        });
+    }
+}
+
+/// `EditBox.handleCursor`: a hovered text field shows the I-beam, or the
+/// forbidden sign when it takes no input.
+pub fn text_cursor(hovered: bool, editable: bool) {
+    if hovered {
+        request_cursor(if editable {
+            Cursor::Ibeam
+        } else {
+            Cursor::NotAllowed
         });
     }
 }
@@ -429,6 +443,16 @@ pub fn record_as(label: &str, [x, y, w, h]: [f32; 4], enabled: bool, kind: Kind)
 mod cursor_tests {
     use super::*;
 
+    #[test]
+    fn a_hovered_text_field_asks_for_the_i_beam() {
+        let _ = take_cursor();
+        text_cursor(false, true);
+        assert_eq!(take_cursor(), Cursor::Arrow);
+        text_cursor(true, true);
+        assert_eq!(take_cursor(), Cursor::Ibeam);
+        text_cursor(true, false);
+        assert_eq!(take_cursor(), Cursor::NotAllowed);
+    }
     #[test]
     fn a_dragged_slider_asks_for_the_horizontal_resize_cursor() {
         let _ = take_cursor();

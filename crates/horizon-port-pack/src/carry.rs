@@ -1505,11 +1505,16 @@ pub fn carry(
         q(id),
         q(name),
         q(&info.version),
-        jar = jar.file_name().unwrap_or_default().to_string_lossy(),
+        // In a `#` comment: a line break from the jar would end it and write keys of its own.
+        jar = jar
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .replace(|c: char| c.is_control(), " "),
         license = if info.license.is_empty() {
-            "not stated"
+            "not stated".to_owned()
         } else {
-            &info.license
+            info.license.replace(|c: char| c.is_control(), " ")
         },
     );
     if !report.namespaces.is_empty() {

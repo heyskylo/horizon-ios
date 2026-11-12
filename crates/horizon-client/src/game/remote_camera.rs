@@ -7,6 +7,7 @@
 use super::Game;
 use horizon_client::{
     camera::{CameraEntity, LivingCamera},
+    entities::ArmorStand,
     mobs::Mob,
 };
 
@@ -53,6 +54,35 @@ pub(super) fn mob_camera_entity(m: &Mob) -> CameraEntity {
     }
 }
 
+/// `Camera.alignWithEntity`'s view of an armor stand, the usual camera of a
+/// server's cutscene or menu scene. `ArmorStand.setYHeadRot` keeps its head
+/// on `yRot`, so its view turns with its yaw; its eyes are its dimensions'
+/// (`getDimensionsMarker`): none for a marker, `BABY_DIMENSIONS`' 0.9875 for
+/// a small stand, the type's 1.7775 otherwise.
+pub(super) fn stand_camera_entity(a: &ArmorStand) -> CameraEntity {
+    let eye_height = if a.marker {
+        0.0
+    } else {
+        a.probe_dimensions().2 as f32
+    };
+    CameraEntity {
+        position: [a.position.x, a.position.y, a.position.z],
+        previous: [a.previous.x, a.previous.y, a.previous.z],
+        x_rot: a.pitch,
+        y_rot: a.yaw,
+        x_rot_o: a.pitch,
+        y_rot_o: a.previous_yaw,
+        eye_height,
+        living: Some(LivingCamera {
+            scale: 1.0,
+            camera_distance: 4.0,
+            sleeping: None,
+            dead: None,
+        }),
+        mount: None,
+    }
+}
+
 /// `GameRenderer.checkEntityPostEffect`: the chain a spectated creeper, spider
 /// or enderman puts on the screen.
 pub(super) fn entity_post_effect(kind: &str) -> Option<&'static str> {
@@ -68,7 +98,9 @@ pub(super) fn entity_post_effect(kind: &str) -> Option<&'static str> {
 impl Game<'_> {
     /// `ClientPacketListener.handleSetCamera`.
     pub(super) fn remote_set_camera(&mut self, camera_id: i32) {
-        let in_level = self.mobs.iter().any(|m| m.id == camera_id as u32);
+        let id = camera_id as u32;
+        let in_level =
+            self.mobs.iter().any(|m| m.id == id) || self.armor_stands.iter().any(|a| a.id == id);
         let player = self
             .remote
             .as_ref()
@@ -102,6 +134,18 @@ impl Game<'_> {
         let id = self.remote_camera_id()?;
         self.mobs.iter().find(|m| m.id == id)
     }
+    /// The view of the entity a server attached the camera to, while the
+    /// level still holds it: a mob or an armor stand.
+    pub(super) fn camera_entity(&self) -> Option<CameraEntity> {
+        if let Some(m) = self.camera_mob() {
+            return Some(mob_camera_entity(m));
+        }
+        let id = self.remote_camera_id()?;
+        self.armor_stands
+            .iter()
+            .find(|a| a.id == id)
+            .map(stand_camera_entity)
+    }
     /// The entity under a spectator's crosshair (`Minecraft.hitResult` as an
     /// `EntityHitResult`): the nearest mob or object before any block.
     pub(super) fn spectator_click_target(&self) -> Option<i32> {
@@ -122,7 +166,28 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{camera_after_packet, entity_post_effect};
+    use super::{camera_after_packet, entity_post_effect, stand_camera_entity};
+    use horizon_client::entities::ArmorStand;
+    use horizon_core::geometry::Vec3;
+
+    /// A server's camera on an armor stand looks out of the stand's eyes
+    /// (EntityType.ARMOR_STAND `eyeHeight(1.7775F)`, `BABY_DIMENSIONS`
+    /// 0.9875F for a small one, nothing for a marker), along its yaw.
+    #[test]
+    fn an_armor_stand_holds_the_camera_at_its_eyes() {
+        let mut stand = ArmorStand::new(7, Vec3::new(10.5, 64.0, -3.5), 90.0);
+        stand.yaw = 135.0;
+        stand.pitch = -20.0;
+        let view = stand_camera_entity(&stand);
+        assert_eq!(view.position, [10.5, 64.0, -3.5]);
+        assert_eq!(view.eye_height, 1.7775f32);
+        assert_eq!((view.y_rot_o, view.y_rot), (90.0, 135.0));
+        assert_eq!(view.x_rot, -20.0);
+        stand.small = true;
+        assert_eq!(stand_camera_entity(&stand).eye_height, 0.9875f32);
+        stand.marker = true;
+        assert_eq!(stand_camera_entity(&stand).eye_height, 0.0);
+    }
 
     /// Only a creeper, spider or enderman has a spectator chain.
     #[test]

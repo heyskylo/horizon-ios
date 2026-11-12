@@ -3,8 +3,11 @@
 //! breeding, conversions, drops), projectiles, player interactions
 //! (feeding, shearing, milking, spawn eggs, throwing) and rendering.
 mod bred_draws;
+mod effect_instance;
+use effect_instance::mob_effect_instance;
 mod mob_geometry;
 mod mob_group;
+mod mob_islands;
 mod prep;
 mod projectile_targets;
 mod projectile_world;
@@ -185,6 +188,33 @@ fn pickable_projectile_hitboxes_into(
             .filter(|(j, q)| *j != skip && alive[*j] && super::deflect::redirectable(q))
             .map(|(j, q)| (Who::Mob(PICKABLE_PROJECTILE_IDS + j as u32), q.aabb())),
     );
+}
+
+/// `ServerLevel.getCurrentDifficultyAt`, reading only the world: also on the mob tick's helper
+/// threads.
+fn difficulty_reader(
+    world: &horizon_client::world::World,
+) -> impl Fn([f64; 3]) -> spawning::LocalDifficulty + Sync + '_ {
+    move |at| {
+        use horizon_world::food::Difficulty;
+        let base = match world.health_rules.difficulty {
+            Difficulty::Peaceful => 0,
+            Difficulty::Easy => 1,
+            Difficulty::Normal => 2,
+            Difficulty::Hard => 3,
+        };
+        let key = ((at[0].floor() as i32) >> 4, (at[2].floor() as i32) >> 4);
+        let (inhabited, moon) = if world.chunks.contains_key(&key) {
+            let phase = world.day_time.div_euclid(24000).rem_euclid(8) as usize;
+            (
+                world.inhabited.get(&key).copied().unwrap_or(0),
+                spawning::MOON_BRIGHTNESS[phase],
+            )
+        } else {
+            (0, 0.0)
+        };
+        spawning::LocalDifficulty::new(base, world.day_time, inhabited, moon)
+    }
 }
 
 #[cfg(test)]
@@ -769,7 +799,7 @@ impl Game<'_> {
         fn wearable(me: &Game<'_>, stack: &ItemStack, fire: bool, name: &str) -> Option<u32> {
             let info = me.res.items().get(&stack.item)?;
             if info.equip_slot.is_none()
-                || !info.equip_damage_on_hurt
+                || !horizon_client::item_sync::damage_on_hurt(stack, info.equip_damage_on_hurt)
                 || info.max_damage == 0
                 || !horizon_client::stations::is_damageable(me.res.items(), stack)
                 || (fire && me.res.items().resists_fire(stack, name))
@@ -1076,24 +1106,7 @@ impl Game<'_> {
     }
     /// `ServerLevel.getCurrentDifficultyAt`.
     pub(super) fn local_difficulty(&self, at: [f64; 3]) -> spawning::LocalDifficulty {
-        use horizon_world::food::Difficulty;
-        let base = match self.world.health_rules.difficulty {
-            Difficulty::Peaceful => 0,
-            Difficulty::Easy => 1,
-            Difficulty::Normal => 2,
-            Difficulty::Hard => 3,
-        };
-        let key = ((at[0].floor() as i32) >> 4, (at[2].floor() as i32) >> 4);
-        let (inhabited, moon) = if self.world.chunks.contains_key(&key) {
-            let phase = self.world.day_time.div_euclid(24000).rem_euclid(8) as usize;
-            (
-                self.world.inhabited.get(&key).copied().unwrap_or(0),
-                spawning::MOON_BRIGHTNESS[phase],
-            )
-        } else {
-            (0, 0.0)
-        };
-        spawning::LocalDifficulty::new(base, self.world.day_time, inhabited, moon)
+        difficulty_reader(&self.world)(at)
     }
     /// Generation's animals for the chunks generated since, once lit: chunk
     /// generation places them whether the level ticks or not.
@@ -1231,8 +1244,6 @@ impl Game<'_> {
                 players.iter().map(|p| (p.position, p.spectator)),
             );
             let nearest = prep::MobsNearest::new(&nearest, &mobs, single_player.is_none());
-            let mut despawn_w = base.despawn_view();
-            let mut cached_difficulty: Option<((i32, i32), spawning::LocalDifficulty)> = None;
             let shared = mob_group::Shared {
                 uuid,
                 level_id,
@@ -1250,45 +1261,36 @@ impl Game<'_> {
                 ticked,
                 targets,
             };
-            let mut group = mob_group::Group::new(mobs.into(), snapshot, start);
-            for i in 0..group.mobs.len() {
-                let position = group.mobs[i].position;
-                let (bx, bz) = (position.x.floor() as i32, position.z.floor() as i32);
-                let seen_guest = group.bind_guest(i);
-                if !base.world.loaded(bx, bz) {
-                    group.unloaded(i);
-                    continue;
+            let difficulty = difficulty_reader(&self.world);
+            let mut turns = mob_group::Turns {
+                base: &base,
+                despawn: base.despawn_view(),
+                ticking: &ticking,
+                nearest: &nearest,
+                single_player,
+                canceled: &|id| round.canceled(id),
+                difficulty: &difficulty,
+                cached_difficulty: None,
+            };
+            // The mobs in islands on several threads (creatures/mob_islands.rs), or all of them
+            // in one group, in order, on this one.
+            let islands = mob_islands::Islands {
+                uuid: self
+                    .player
+                    .is_some()
+                    .then_some(self.level.player_uuid)
+                    .flatten(),
+                mods: round.listening() || !horizon_client::mod_api::mods().is_empty(),
+                ticking: &|| Box::new(self.entity_ticking_area()),
+            };
+            let mut group = match islands.plan(&mobs, &snapshot, &turns) {
+                Some(plan) => islands.run(plan, mobs.into(), snapshot, start, &mut turns, &shared),
+                None => {
+                    let mut group = mob_group::Group::new(mobs.into(), snapshot, start);
+                    group.run(&mut turns, &shared, None);
+                    group
                 }
-                let nearest_player = single_player.unwrap_or_else(|| nearest.at(i, position));
-                // ServerLevel.tick: every loaded entity checks despawning, but
-                // only those in entity-ticking chunks (within the simulation
-                // distance) tick.
-                if !ticking(bx, bz) {
-                    despawn_w.nearest_player = nearest_player;
-                    group.rest(i, &despawn_w);
-                    continue;
-                }
-                let controlling = group.controlling(i);
-                // A mod canceled its tick: it stays as it is.
-                if round.canceled(group.mobs[i].id) {
-                    group.keep.push(true);
-                    continue;
-                }
-                // getCurrentDifficultyAt(blockPosition()): the mob's own chunk,
-                // not the local player's (a server thread has no player).
-                let chunk_key = (bx >> 4, bz >> 4);
-                let difficulty = match cached_difficulty {
-                    Some((key, difficulty)) if key == chunk_key => difficulty,
-                    _ => {
-                        let difficulty =
-                            self.local_difficulty([position.x, position.y, position.z]);
-                        cached_difficulty = Some((chunk_key, difficulty));
-                        difficulty
-                    }
-                };
-                let player = (seen_guest, nearest_player, controlling);
-                group.tick(i, player, difficulty, &base, &shared);
-            }
+            };
             // Targets changed after the mob's own tick (another mob's alert):
             // heard now, and a cancel puts the old one back before its next tick.
             for (i, m) in group.mobs.iter_mut().enumerate() {
@@ -2310,10 +2312,9 @@ impl Game<'_> {
                     self.post_game_event(event, at, ctx);
                 }
                 // A mob's own `gameEvent(..)` calls: Armadillo.rollUp/rollOut's
-                // ENTITY_ACTION, Creeper.tick's PRIME_FUSE, Mob.ate's EAT, the
-                // shulker's lid (Shulker.setRawPeekAmount), an evoker's vexes
-                // (ENTITY_PLACE), Enderman.teleport's TELEPORT,
-                // LivingEntity.onEquipItem's EQUIP/UNEQUIP.
+                // ENTITY_ACTION, Creeper.tick's PRIME_FUSE, Mob.ate's EAT, a fox's
+                // DRINK, the shulker's lid, an evoker's vexes (ENTITY_PLACE),
+                // Enderman.teleport's TELEPORT, onEquipItem's EQUIP/UNEQUIP.
                 MobEvent::GameEvent {
                     event, at, source, ..
                 } if matches!(
@@ -2321,6 +2322,7 @@ impl Game<'_> {
                     "minecraft:entity_action"
                         | "minecraft:prime_fuse"
                         | "minecraft:eat"
+                        | "minecraft:drink"
                         | "minecraft:container_open"
                         | "minecraft:container_close"
                         | "minecraft:entity_place"
@@ -2532,6 +2534,13 @@ impl Game<'_> {
                     });
                     self.combat.explosion_source = source_mob;
                     self.combat.explosion_source_named = noted;
+                    let portal_proof = species == Species::SulfurCube
+                        && source_mob.is_some_and(|id| {
+                            self.portals
+                                .entities
+                                .get(&id)
+                                .is_some_and(|p| p.cooldown > 0)
+                        });
                     self.combat.explosion_cause = match species {
                         Species::Creeper => Some("minecraft:creeper"),
                         Species::Wither => Some("minecraft:wither"),
@@ -2561,7 +2570,11 @@ impl Game<'_> {
                         Species::Creeper | Species::Wither => {
                             self.with_hive_emptying_blast(|g| g.explode(at, radius, source))
                         }
-                        Species::SulfurCube => self.explode_sulfur_cube(at, radius, source),
+                        Species::SulfurCube => self.explode_sulfur_cube(
+                            at,
+                            radius,
+                            source.with_portal_proof(portal_proof),
+                        ),
                         _ => self.explode(at, radius, source),
                     };
                     self.combat.explosion_source = None;
@@ -3970,6 +3983,7 @@ impl Game<'_> {
     ) -> bool {
         let post_attack_if_alive = std::mem::take(&mut self.combat.post_attack_if_alive);
         let rocket = std::mem::take(&mut self.combat.rocket_hit);
+        let pierce = std::mem::take(&mut self.combat.piercing_hit);
         let melee = self.combat.melee_mob.take();
         // ServerPlayer.canHarmPlayer refused another player's projectile.
         if self.creative || self.combat.refuse_player_hit {
@@ -3984,7 +3998,7 @@ impl Game<'_> {
                 .damage_tags
                 .get("minecraft:is_projectile")
                 .is_some_and(|t| t.contains(damage_type));
-        let blocking = self.player_blocking(from, damage_type, false);
+        let blocking = self.player_blocking(from, damage_type, pierce);
         let raised = blocking.is_some();
         // Melee: the attacker stands at `from` (another player's hit has no mob behind it).
         let attacker = match known {
@@ -5307,11 +5321,7 @@ impl Game<'_> {
                 }
                 let hurt = match who {
                     Who::Player => {
-                        let hurt = self.mob_hits_player(
-                            amount,
-                            [p.previous.x, p.previous.y, p.previous.z],
-                            "minecraft:arrow",
-                        );
+                        let hurt = self.arrow_hits_player(amount, p);
                         // AbstractArrow.onHitEntity: a hit that hurt leaves a
                         // non-piercing arrow stuck in the body.
                         if hurt && p.arrow.as_ref().is_some_and(|a| a.pierce == 0) {
@@ -5575,7 +5585,7 @@ impl Game<'_> {
                         if let Some(id) = self.spawn_mob_raw("minecraft:chicken", atp, true)
                             && let Some(c) = self.mobs.iter_mut().find(|m| m.id == id)
                         {
-                            c.extra.age = -24000;
+                            (c.extra.age, c.extra.variant) = (-24000, p.egg_variant.unwrap_or(0));
                         }
                     }
                 }
@@ -7138,12 +7148,12 @@ impl Game<'_> {
         let Some(p) = self.player.as_ref() else {
             return Ok(false);
         };
-        // Projectile.shootFromRotation adds getKnownMovement: what the thrower
-        // last moved, not a velocity the server kept for a guest.
+        // Projectile.shootFromRotation adds getKnownMovement: what the thrower last moved.
         let on_ground = p.ground.on_ground;
         let velocity = self.known_player_movement();
         let start = Vec3::new(eye[0], eye[1] - 0.1, eye[2]);
         let mut proj = Projectile::new(kind.clone(), start, Some(Who::Player));
+        proj.set_egg_item(stack);
         proj.shoot_from_rotation(self.pitch, self.yaw, 0.0, 1.5, 1.0, velocity, on_ground);
         self.add_projectile(proj);
         // SnowballItem.use / EggItem.use / EnderpearlItem.use: awardStat(ITEM_USED).
@@ -7640,24 +7650,6 @@ fn knock_back(
         },
         v.z / 2.0 - zd / l * power,
     );
-}
-
-/// The instance a mob effect gives the player; `None` for a creative or
-/// spectator player (`immune`) unless it is ambient (the nautilus's Breath).
-fn mob_effect_instance(
-    effect: &'static str,
-    ticks: i32,
-    amplifier: i32,
-    ambient: bool,
-    immune: bool,
-) -> Option<horizon_client::effects::EffectInstance> {
-    if immune && !ambient {
-        return None;
-    }
-    let id = effect.strip_prefix("minecraft:").unwrap_or(effect);
-    let mut instance = horizon_client::effects::EffectInstance::new(id, ticks, amplifier);
-    instance.ambient = ambient;
-    Some(instance)
 }
 
 #[cfg(test)]
