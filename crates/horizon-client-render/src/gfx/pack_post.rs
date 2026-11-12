@@ -1201,31 +1201,7 @@ pub(super) type TerrainDraw<'a> = dyn FnMut(
         Option<(u32, &wgpu::BindGroupLayout)>,
     ) + 'a;
 
-/// What the shadow camera sees of the terrain, for the game's draw lists: its view and
-/// projection in wgpu's clip space, the direction toward the light, and how far from the camera
-/// terrain is drawn (`shadowDistanceRenderMul`).
-pub(super) struct ShadowView {
-    pub cull: glam::Mat4,
-    pub light: glam::Vec3,
-    pub distance: Option<f32>,
-    /// Draw everything, every face, within this many blocks (`shadow.culling=false|reversed`):
-    /// packs that voxelize the world in their shadow pass need all of it.
-    pub unculled: Option<f32>,
-    /// Every face of the drawn sections, not only those that can face the light. Iris 1.11.7's
-    /// shadow map holds the faces turned away from the light too (#9033): under a hill at low sun
-    /// a cave's ceiling, which faces away, is often all that shadows the cave.
-    pub every_face: bool,
-    /// Only the sections whose shadow can fall into the camera's view: those the camera's
-    /// frustum, stretched toward the light, takes in (`shadow_casters`). Our probes' Iris 1.11.7
-    /// maps fit keeping only those with `shadow.culling` unset (#8464): under a noon sun, only
-    /// the terrain above the ground the camera sees; with a low sun ahead, none behind the camera.
-    pub view_casters: bool,
-    /// Whether the projection's near and far planes in `cull` drop sections too. Our probes'
-    /// Iris 1.11.7 maps hold the terrain at every depth we put it along the light (from 535 blocks
-    /// beyond the shadow camera to about 120 before it), whatever `shadowNearPlane` and
-    /// `shadowFarPlane` the pack sets, or none (#10403): only its sides cull.
-    pub depth_planes: bool,
-}
+pub(super) use super::external::ShadowView;
 
 /// An arena page's key, native vertices and optional per-quad source records.
 pub(super) type TerrainPage = (u32, wgpu::Buffer, Option<wgpu::Buffer>);
@@ -2964,17 +2940,13 @@ impl PackPost {
                 p.name
             ));
         }
-        match (&terrain, &mut terrain_cutout) {
+        match (&terrain, &terrain_cutout) {
             (Some(t), None) => notes.push(format!("terrain draws with {}", t.name)),
             (t, Some(c)) => {
                 if let Some(t) = t {
                     notes.push(format!("solid terrain draws with {}", t.name));
                 }
                 notes.push(format!("cutout terrain draws with {}", c.name));
-                // Timed (and labelled) apart from the solid part when it runs the same program.
-                if t.as_ref().is_some_and(|t| t.name == c.name) {
-                    c.name.push_str(" (cutout)");
-                }
             }
             (None, None) => {}
         }
@@ -3835,7 +3807,7 @@ impl PackPost {
             timestamp_writes: self
                 .timing
                 .as_mut()
-                .and_then(|t| t.compute_writes(&pass.name)),
+                .and_then(|t| t.compute_writes(&format!("{} (compute)", pass.name))),
         });
         cp.set_pipeline(&pipeline);
         cp.set_bind_group(0, &group, &[]);
@@ -3911,8 +3883,8 @@ impl PackPost {
     }
 
     /// Terrain (or, `translucent`, translucent terrain) with the pack's program; `draw` issues
-    /// the game's draws. Solid terrain in two parts has its cutout part drawn second, from the
-    /// same draws.
+    /// the game's draws. Solid terrain in two parts (a pack's `gbuffers_terrain_solid` and
+    /// `_cutout`) has its cutout part drawn second, from the same draws.
     fn draw_terrain(
         &mut self,
         device: &wgpu::Device,

@@ -109,3 +109,46 @@ fn a_torch_that_stays_connects_the_wire_in_a_line_and_powers_it() {
         "minecraft:redstone_wire[east=side,north=none,power=15,south=none,west=side]"
     );
 }
+
+/// `handleSetCommandBlock` edits the block entity through
+/// `BaseCommandBlock.setCommand`/`onUpdated`: the command block is marked
+/// changed and its update tag reaches the clients. Horizon applied the edit
+/// without marking the chunk.
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn editing_a_command_block_marks_its_chunk() {
+    let mut game = game();
+    run(&mut game, &["setblock 5 100 2 command_block[facing=up]"]);
+    game.world.modified.clear();
+    if let Some(log) = game.world.block_log.as_mut() {
+        log.clear();
+    }
+    game.apply_command_block(&super::command_blocks::CommandBlockEdit {
+        pos: (5, 100, 2),
+        command: "say hi".into(),
+        track_output: false,
+        mode: horizon_client::command_block::Mode::Redstone,
+        conditional: false,
+        auto: false,
+    });
+    assert!(
+        game.world.modified.contains(&(0, 0)),
+        "the edited command block's chunk is dirty"
+    );
+}
+
+/// `TestBlock.ownSignal` reads the block state's `mode`, not the block
+/// entity's saved copy: a `start` state with a powered block entity answers
+/// 15 even when `/data merge` left a different mode in the entity.
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_test_block_reads_the_state_mode_for_its_own_signal() {
+    let mut game = game();
+    run(&mut game, &["setblock 5 100 2 test_block[mode=start]"]);
+    assert!(game.run_command("data merge block 5 100 2 {mode:\"fail\",powered:1b}"));
+    let pos = BlockPos::new(5, 100, 2);
+    let state = game.world.block(5, 100, 2);
+    let signal =
+        game.with_level(|_, level, _| level.block_entity_signal(pos, state, Direction::North));
+    assert_eq!(signal, 15, "the state says start and the entity is powered");
+}

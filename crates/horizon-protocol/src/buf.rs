@@ -432,6 +432,22 @@ impl Codec<Vec<u8>> for Rest {
         w.bytes(v)
     }
 }
+/// Everything left in the packet, at most N bytes: vanilla's unknown login query payloads
+/// (`readableBytes()` outside `0..=N` throws "Payload may not be larger than N bytes").
+pub struct RestN<const N: usize>;
+impl<const N: usize> Codec<Vec<u8>> for RestN<N> {
+    fn read(r: &mut Reader) -> Result<Vec<u8>> {
+        if r.remaining() > N {
+            return Err(Error::new(format!(
+                "Payload may not be larger than {N} bytes"
+            )));
+        }
+        Ok(r.rest().to_vec())
+    }
+    fn write(v: &Vec<u8>, w: &mut Writer) {
+        w.bytes(v)
+    }
+}
 /// Any network NBT tag (`Tag::End` when absent).
 pub struct Nbt;
 impl Codec<Tag> for Nbt {

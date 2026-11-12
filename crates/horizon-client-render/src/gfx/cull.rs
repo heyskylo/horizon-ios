@@ -37,7 +37,9 @@
 //! are drawn in a pass of their own between the phases, which reads phase
 //! 1's depth as a texture and makes the same comparison in the shader: the
 //! fragment's depth against the stored one, greater or equal passing. The
-//! same fragments pass, so the same sections are seen.
+//! same fragments pass, so the same sections are seen. Adreno's Vulkan driver
+//! takes that path too: with the early test it now and then leaves sections
+//! out for a frame.
 use std::num::NonZeroU64;
 use std::sync::{
     Arc,
@@ -220,17 +222,42 @@ const RESULTS_USAGE: wgpu::BufferUsages =
 const READBACK_USAGE: wgpu::BufferUsages =
     wgpu::BufferUsages::MAP_READ.union(wgpu::BufferUsages::COPY_DST);
 
+/// The first `n` values of a packed lookup in WGSL `source` (`fn name`, as cull.wgsl's
+/// `box_triangle_corner`): four bits each, eight a word, its words in the order of its cases.
+#[cfg(test)]
+pub(super) fn packed_lookup(source: &str, name: &str, n: usize) -> Vec<u32> {
+    let body = &source[source.find(&format!("fn {name}(")).expect("the lookup")..];
+    let body = &body[..body.find("return").expect("its return")];
+    let words: Vec<u32> = body
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter_map(|t| t.strip_prefix("0x")?.strip_suffix('u'))
+        .map(|hex| u32::from_str_radix(hex, 16).expect("a hex word"))
+        .collect();
+    (0..n)
+        .map(|v| (words[v / 8] >> (v % 8 * 4)) & 0xf)
+        .collect()
+}
+
+/// Qualcomm's PCI vendor id, which wgpu reports for Adreno GPUs.
+const ADRENO: u32 = 0x5143;
+
 impl Cull {
     /// The device feature culling needs, where the adapter has it.
     pub fn features(adapter: &wgpu::Adapter) -> wgpu::Features {
         adapter.features() & wgpu::Features::SHADER_EARLY_DEPTH_TEST
     }
     /// Where the device can run the test, if it can: Vulkan with early
-    /// depth tests, or Metal and DirectX 12 with the test in the shader, all
-    /// drawing an indirect multi-draw's entries with the instance counts the
-    /// GPU wrote, with fragment shaders that write storage.
+    /// depth tests (Adreno's in the shader), or Metal and DirectX 12 with the
+    /// test in the shader, all drawing an indirect multi-draw's entries with
+    /// the instance counts the GPU wrote, with fragment shaders that write
+    /// storage.
     pub fn supported(adapter: &wgpu::Adapter, device: &wgpu::Device) -> Option<DepthTest> {
-        let depth_test = match adapter.get_info().backend {
+        let info = adapter.get_info();
+        let depth_test = match info.backend {
+            // Adreno's Vulkan driver (the AYANEO Pocket DS's Adreno 740, build 0676.41) now and
+            // then leaves sections out with the early test, the world flashing black or
+            // see-through as a block breaks; the test in the shader, as on Metal, holds.
+            wgpu::Backend::Vulkan if info.vendor == ADRENO => DepthTest::InShader,
             wgpu::Backend::Vulkan | wgpu::Backend::Gl
                 if device
                     .features()
@@ -770,6 +797,22 @@ mod tests {
             naga::valid::Validator::new(naga::valid::ValidationFlags::all(), capabilities)
                 .validate(&module)
                 .unwrap_or_else(|e| panic!("{depth_test:?}: {e:?}"));
+        }
+    }
+
+    /// The box's 12 triangles, as cull.wgsl and gpu_occlusion.wgsl draw them: two per face,
+    /// counter-clockwise seen from outside, corners by bit (x 1, y 2, z 4).
+    #[test]
+    fn the_packed_box_corners_are_the_box_triangles() {
+        let triangles = [
+            0, 6, 2, 0, 4, 6, 1, 3, 7, 1, 7, 5, 0, 1, 5, 0, 5, 4, 2, 7, 3, 2, 6, 7, 0, 3, 1, 0, 2,
+            3, 4, 5, 7, 4, 7, 6,
+        ];
+        for source in [
+            include_str!("cull.wgsl"),
+            include_str!("gpu_occlusion.wgsl"),
+        ] {
+            assert_eq!(packed_lookup(source, "box_triangle_corner", 36), triangles);
         }
     }
 }

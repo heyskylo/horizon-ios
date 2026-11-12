@@ -428,8 +428,14 @@ fn operator(value: &Value) -> Result<Value, Failure> {
 fn component(message: &Value) -> Option<Value> {
     if let Some(key) = message["translatable"].as_str() {
         let mut c = json!({ "translate": key });
+        // Vanilla's Message takes its parameters as strings: plain text here too, never a
+        // selector, score or nbt component that tellraw would resolve with the console's rights.
         if let Some(with) = message["translatableParams"].as_array() {
-            c["with"] = Value::Array(with.clone());
+            c["with"] = Value::Array(
+                with.iter()
+                    .map(|p| json!({ "text": p.as_str().unwrap_or_default() }))
+                    .collect(),
+            );
         }
         return Some(c);
     }
@@ -1037,12 +1043,16 @@ impl Game<'_> {
             let Some(name) = self.find(&online, &kick["player"])? else {
                 continue;
             };
+            // The reason ends the control channel's line: a newline in it would be a request of
+            // its own (any console command), which the management protocol never offers.
             let reason = kick.get("message").and_then(component).map(|c| {
                 c["text"]
                     .as_str()
                     .or(c["translate"].as_str())
                     .unwrap_or_default()
-                    .to_owned()
+                    .chars()
+                    .filter(|ch| !ch.is_control())
+                    .collect::<String>()
             });
             let line = match reason {
                 Some(reason) if !reason.is_empty() => format!("kick {name} {reason}"),
@@ -1223,6 +1233,19 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn translatable_parameters_are_plain_text() {
+        let message = json!({
+            "translatable": "chat.type.announcement",
+            "translatableParams": ["Server", {"selector": "@e"}, 3],
+        });
+        assert_eq!(
+            component(&message).unwrap(),
+            json!({"translate": "chat.type.announcement",
+                "with": [{"text": "Server"}, {"text": ""}, {"text": ""}]})
+        );
+    }
 
     fn shared() -> std::sync::Arc<Shared> {
         let dir = std::env::temp_dir().join(format!(

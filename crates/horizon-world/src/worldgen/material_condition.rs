@@ -41,6 +41,17 @@ pub trait MaterialSurfaceQueries {
     ) -> Result<usize, DecodeError> {
         Err(DecodeError::Field("missing material density provider"))
     }
+    /// `bind_density` for a density that is read only at blocks whose y lies
+    /// in `rows` (an ore vein's `positive_y`): an eager binding may sample
+    /// those rows alone, and only once one of them is read.
+    fn bind_density_rows(
+        &mut self,
+        sampler: Arc<dyn horizon_core::density::DensitySampler>,
+        eager: bool,
+        _rows: [i32; 2],
+    ) -> Result<usize, DecodeError> {
+        self.bind_density(sampler, eager)
+    }
     fn density(&mut self, _index: usize, _position: BlockPos) -> Result<f32, MaterialRuleError> {
         Err(MaterialRuleError::MissingDensityProvider)
     }
@@ -95,6 +106,14 @@ impl<T: MaterialSurfaceQueries + ?Sized> MaterialSurfaceQueries for &mut T {
         eager: bool,
     ) -> Result<usize, DecodeError> {
         (**self).bind_density(sampler, eager)
+    }
+    fn bind_density_rows(
+        &mut self,
+        sampler: Arc<dyn horizon_core::density::DensitySampler>,
+        eager: bool,
+        rows: [i32; 2],
+    ) -> Result<usize, DecodeError> {
+        (**self).bind_density_rows(sampler, eager, rows)
     }
     fn density(&mut self, index: usize, position: BlockPos) -> Result<f32, MaterialRuleError> {
         (**self).density(index, position)

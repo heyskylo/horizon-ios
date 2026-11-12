@@ -91,6 +91,11 @@ pub fn max_scroll(h: f32, rows: usize) -> f32 {
     // `AbstractSelectionList.contentHeight`: the rows and 4px.
     (rows as f32 * ITEM_HEIGHT + 4.0 - (list_end(h) - LIST_START)).max(0.0)
 }
+/// `AbstractSelectionList.scrollBarX`: the scrollbar's column, six pixels
+/// right of the rows and two more (`getRowRight + scrollbarWidth + 2`).
+pub fn scrollbar_x(w: f32) -> f32 {
+    row_left(w) + ROW_WIDTH + 6.0 + 2.0
+}
 fn tabs(w: f32) -> [(f32, Page); 3] {
     let width = (ROW_WIDTH / 3.0).floor();
     let (left, right) = (row_left(w), row_left(w) + ROW_WIDTH);
@@ -150,6 +155,27 @@ fn visible(view: &SocialView, h: f32) -> impl Iterator<Item = (usize, f32)> + '_
 /// The search box's rectangle.
 pub fn search_box(w: f32) -> [f32; 4] {
     [margin_x(w) + 28.0, 74.0, 200.0, 15.0]
+}
+/// `ContainerEventHandler.mouseClicked`: the screen's children in order, which
+/// the social screen inherits without an override of its own. A click inside
+/// the search box is that `EditBox`'s own `onClick` (the caret goes under the
+/// pointer); the tabs, the rows' buttons and Done come after it.
+pub fn search_click_at(size: (f32, f32), cursor: (f32, f32)) -> bool {
+    let [x, y, w, h] = search_box(size.0);
+    ui::hovered(cursor, x, y, w, h)
+}
+/// What the click at `cursor` belongs to: the search box first (the screen's
+/// child order), then the list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Click {
+    Search,
+    Action(Action),
+}
+pub fn click_kind(size: (f32, f32), cursor: (f32, f32), view: &SocialView) -> Option<Click> {
+    if search_click_at(size, cursor) {
+        return Some(Click::Search);
+    }
+    click(size, cursor, view).map(Click::Action)
 }
 /// Done's rectangle (`HeaderAndFooterLayout`'s footer).
 fn done(w: f32, h: f32) -> [f32; 4] {
@@ -330,7 +356,7 @@ pub fn draw(
     search.text_color = WHITE;
     search.focused = true;
     search.draw(batch, atlas, None);
-    // The rows, clipped to the list. It draws no scrollbar, but a focus step still walks them.
+    // The rows, clipped to the list; a focus step still walks them.
     let max = max_scroll(h, view.entries.len());
     if max > 0.0 {
         crate::widgets::scroll_area(
@@ -429,6 +455,20 @@ pub fn draw(
     hud_layout::paint(batch, atlas, &faces);
     // `enableScissor`: from 4px below the list's top.
     batch.clip_since(start, 0.0, LIST_START + 4.0, w, list_end(h));
+    // `AbstractSelectionList.extractScrollbar`: the rows' scrollbar, right of
+    // them, when they overflow the list.
+    let content = view.entries.len() as f32 * ITEM_HEIGHT + 4.0;
+    if content > list_end(h) - LIST_START {
+        ui::scrollbar(
+            batch,
+            atlas,
+            scrollbar_x(w),
+            LIST_START,
+            list_end(h),
+            content,
+            view.scroll,
+        );
+    }
     // `Done`.
     let [dx, dy, dw, dh] = done(w, h);
     ui::action_button(
@@ -596,5 +636,43 @@ mod tests {
         assert_eq!(delay.shown(Some(tip), at(1005)), None);
         assert_eq!(delay.shown(Some(tip), at(1505)), None);
         assert_eq!(delay.shown(Some(tip), at(1506)), Some(tip));
+    }
+
+    /// `AbstractSelectionList.scrollBarX`: the bar's column is the rows' right
+    /// edge (220 wide, centred) plus `scrollbarWidth` (6) and 2. It shows only
+    /// when the content overflows the list's height.
+    #[test]
+    fn the_list_scrollbar_sits_right_of_the_rows() {
+        assert_eq!(scrollbar_x(427.0), 331.0);
+        assert_eq!(scrollbar_x(854.0), 545.0);
+        assert!(max_scroll(240.0, 10) > 0.0);
+        assert_eq!(max_scroll(1000.0, 2), 0.0);
+    }
+
+    /// `SocialInteractionsScreen.mouseClicked` gives the widgets the click
+    /// before the list: a click inside the search box is the box's own.
+    #[test]
+    fn a_click_in_the_search_box_is_the_boxes_own() {
+        let size = (427.0, 240.0);
+        let view = SocialView::default();
+        let [x, y, w, h] = search_box(size.0);
+        // Inside the box the click is the box's, at both corners.
+        assert_eq!(
+            click_kind(size, (x + 1.0, y + 1.0), &view),
+            Some(Click::Search)
+        );
+        assert_eq!(
+            click_kind(size, (x + w - 0.5, y + h - 0.5), &view),
+            Some(Click::Search)
+        );
+        // Left of it and just below it the box has no claim.
+        assert_eq!(click_kind(size, (x - 1.0, y + 1.0), &view), None);
+        assert_eq!(click_kind(size, (x + 1.0, y + h), &view), None);
+        // And the list keeps its own buttons: Done is not the box's click.
+        let [dx, dy, dw, dh] = done(size.0, size.1);
+        assert_eq!(
+            click_kind(size, (dx + dw / 2.0, dy + dh / 2.0), &view),
+            Some(Click::Action(Action::Done))
+        );
     }
 }
