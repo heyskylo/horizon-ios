@@ -333,6 +333,11 @@ pub trait ProjectileWorld {
         velocity
     }
     fn targets(&self) -> &[(Who, Aabb)];
+    /// `Level.getMinY() - 64` (`Entity.checkBelowWorld`); the Overworld's
+    /// unless the world says otherwise.
+    fn below_world_y(&self) -> f64 {
+        -128.0
+    }
     /// Server-only mod-block contacts along the completed movement.
     fn block_contacts(&self, _entity: i32, _kind: &str, _from: Vec3, _to: Vec3, _bounds: Aabb) {}
     /// `Level.isEmptyBlock`.
@@ -1223,7 +1228,7 @@ impl Projectile {
                 }
             }
         }
-        (self.position.y > -128.0, Hit::None)
+        (self.position.y >= w.below_world_y(), Hit::None)
     }
     /// AbstractHurtingProjectile.applyInertia, on both server and client.
     pub fn apply_hurting_inertia(&mut self, water: bool) {
@@ -1569,7 +1574,7 @@ impl Projectile {
         {
             self.position = at;
             self.touching_water = w.in_water(self.bounds());
-            let alive = self.position.y > -128.0 && self.age < 1200;
+            let alive = self.position.y >= w.below_world_y() && self.age < 1200;
             return (alive, Hit::None);
         }
         // LlamaSpit never discards on an entity: `onHitEntity` only hurts, so
@@ -1617,7 +1622,10 @@ impl Projectile {
                 self.velocity.y * drag - self.get_gravity(),
                 self.velocity.z * drag,
             );
-            return (self.position.y > -128.0 && self.age < 6000, spit_hit);
+            return (
+                self.position.y >= w.below_world_y() && self.age < 6000,
+                spit_hit,
+            );
         }
         self.position = to;
         // Fireballs ease towards the motion (`ProjectileUtil.rotateTowardsMovement`);
@@ -1632,8 +1640,8 @@ impl Projectile {
         // it touches now, and their currents push it.
         self.touching_water = w.in_water(self.bounds());
         self.velocity = w.pushed_by_currents(self.bounds(), self.velocity);
-        let alive =
-            self.position.y > -128.0 && self.age < if self.is_fireball() { 1200 } else { 6000 };
+        let alive = self.position.y >= w.below_world_y()
+            && self.age < if self.is_fireball() { 1200 } else { 6000 };
         (alive, Hit::None)
     }
     /// AbstractArrow.onHitEntity damage: ceil(speed * base) plus crit bonus.

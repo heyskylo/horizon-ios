@@ -2259,22 +2259,14 @@ impl Mesher<'_> {
             translucent: face.translucent,
             opaque: face.opaque,
         };
-        // A tile keeps the quad's forced translucency; `<skip>` and `<default>` are its own.
-        let tile = |t: TileLayer| match t {
-            TileLayer::Layer {
-                layer,
-                translucent,
-                opaque,
-            } => TileLayer::Layer {
-                layer,
-                translucent: translucent || q.render_type.is_none() && q.material.force_translucent,
-                opaque,
-            },
-            TileLayer::Skip | TileLayer::Default => own,
-        };
+        let own_translucent = self.translucent(own);
+        let tile = |t: TileLayer| in_face_pass(t, own, own_translucent);
         match pick {
             Pick::Keep => self.quad(out, force_solid, own, corners.map(|c| c.0), tint),
-            Pick::Tile(t) => self.quad(out, force_solid, tile(t), corners.map(|c| c.0), tint),
+            Pick::Tile(t) => {
+                let v = corners.map(|c| c.0);
+                self.quad_as(out, force_solid, tile(t), v, false, tint);
+            }
             Pick::Quarters(tiles) => {
                 let cuts = cuts(&corners);
                 for s in cuts.windows(2) {
@@ -2283,7 +2275,7 @@ impl Mesher<'_> {
                             .map(|(s, t)| bilinear(&corners, s, t));
                         let quarter = quarter_of(&piece);
                         let piece = piece.map(|c| c.0);
-                        self.quad(out, force_solid, tile(tiles[quarter]), piece, tint);
+                        self.quad_as(out, force_solid, tile(tiles[quarter]), piece, false, tint);
                     }
                 }
             }
@@ -2296,12 +2288,7 @@ impl Mesher<'_> {
         if count == 0 {
             return;
         }
-        let face_translucent = match pick {
-            Pick::Keep => self.translucent(own),
-            Pick::Tile(t) => self.translucent(tile(t)),
-            Pick::Quarters(tiles) => tiles.into_iter().any(|t| self.translucent(tile(t))),
-            Pick::Nothing => false,
-        };
+        let face_translucent = !matches!(pick, Pick::Nothing) && own_translucent;
         // Overlay tiles face the standard way too (Continuity: "overlay textures always have the
         // standard orientation"), whatever turns the model's own UVs (dirt's and sand's random
         // rotations).
@@ -2450,6 +2437,21 @@ fn cuts(c: &[(TerrainVertex, [f32; 2]); 4]) -> Cuts {
     }
     out
 }
+/// Tile `t` as drawn over a face whose own sprite is `own`, in the face's pass
+/// (`own_translucent`): CTM picks a texture, not a render layer (OptiFine draws a tile in the
+/// block's). The tile's texels only drop the alpha test when all are opaque. A Conquest grass
+/// blade tile with 7 partly clear texels of 1024 blended, and wrote the depth of its clear
+/// rectangle, which Bliss fogs. `<skip>` and `<default>` are the face's own sprite.
+fn in_face_pass(t: TileLayer, own: TileLayer, own_translucent: bool) -> TileLayer {
+    match t {
+        TileLayer::Layer { layer, opaque, .. } => TileLayer::Layer {
+            layer,
+            translucent: own_translucent,
+            opaque,
+        },
+        TileLayer::Skip | TileLayer::Default => own,
+    }
+}
 /// The UV a vanilla cube's face gives the block-local point `p` (`BlockElement`'s default UVs),
 /// in sprite units: up is north on the top face, south on the bottom one, and up on the sides.
 fn standard_uv(facing: horizon_assets::model::Direction, [x, y, z]: [f32; 3]) -> [f32; 2] {
@@ -2571,6 +2573,38 @@ mod quarter_tests {
             ]
             .map(|p| quarter_of(&p)),
             [0, 1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn a_tile_draws_in_its_faces_pass() {
+        // Conquest's grass blade tile: a few partly clear texels, over an opaque face.
+        let blade = TileLayer::Layer {
+            layer: 5,
+            translucent: true,
+            opaque: false,
+        };
+        let face = |translucent| TileLayer::Layer {
+            layer: 1,
+            translucent,
+            opaque: !translucent,
+        };
+        let cut = TileLayer::Layer {
+            layer: 5,
+            translucent: false,
+            opaque: false,
+        };
+        assert_eq!(in_face_pass(blade, face(false), false), cut);
+        // Over stained glass the tile blends, as the face does.
+        let blend = TileLayer::Layer {
+            layer: 5,
+            translucent: true,
+            opaque: false,
+        };
+        assert_eq!(in_face_pass(blade, face(true), true), blend);
+        assert_eq!(
+            in_face_pass(TileLayer::Default, face(false), false),
+            face(false)
         );
     }
 
