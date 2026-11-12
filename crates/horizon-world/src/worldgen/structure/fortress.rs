@@ -4,6 +4,7 @@ use super::{
     legacy::{LegacyPiece, PieceContext, PieceFrame, Result, make_bounding_box, random_horizontal},
     stronghold::orient_box,
 };
+use crate::nbt::Tag;
 use crate::registry::BlockStateId;
 use horizon_core::{
     geometry::Direction,
@@ -864,6 +865,107 @@ impl FortressPiece {
         self.bx(c, [2, 6, 0, 4, 8, 0], b)?;
         self.bx(c, [2, 5, 0, 4, 5, 0], p.we)?;
         self.columns(c, p, [0, 6], [0, 6])
+    }
+
+    /// `NetherFortressPieces.NetherBridgePiece(StructurePieceType, CompoundTag)`
+    /// and the subclasses' tag constructors. `nebcr` is what vanilla saves a
+    /// generated start as (its `StartPiece` is built through the
+    /// `BridgeCrossing` constructor) and the registry reads it back as a plain
+    /// `BridgeCrossing`; only the tag constructor writes `nestart`, which
+    /// Horizon's own writer never does, so a piece read from `nestart` saves
+    /// back as `nebcr`.
+    pub(crate) fn from_saved(id: &str, tag: &Tag, frame: PieceFrame, depth: i32) -> Option<Self> {
+        let kind = match id {
+            "nebcr" => Kind::BridgeCrossing,
+            "nebef" => Kind::BridgeEndFiller,
+            "nebs" => Kind::BridgeStraight,
+            "neccs" => Kind::CorridorStairs,
+            "nectb" => Kind::CorridorTBalcony,
+            "nece" => Kind::CastleEntrance,
+            "nescsc" => Kind::SmallCorridorCrossing,
+            "nesclt" => Kind::SmallCorridorLeftTurn,
+            "nesc" => Kind::SmallCorridor,
+            "nescrt" => Kind::SmallCorridorRightTurn,
+            "necsr" => Kind::StalkRoom,
+            "nemt" => Kind::MonsterThrone,
+            "nerc" => Kind::RoomCrossing,
+            "nesr" => Kind::StairsRoom,
+            "nestart" => Kind::Start,
+            _ => return None,
+        };
+        let int = |key| super::saved_legacy::int(tag, key);
+        let flag = |key| super::saved_legacy::flag(tag, key);
+        Some(FortressPiece {
+            kind,
+            frame,
+            depth,
+            seed: if kind == Kind::BridgeEndFiller {
+                int("Seed")
+            } else {
+                0
+            },
+            flag: Mutex::new(
+                (matches!(
+                    kind,
+                    Kind::SmallCorridorLeftTurn | Kind::SmallCorridorRightTurn
+                ) && flag("Chest"))
+                    || (kind == Kind::MonsterThrone && flag("Mob")),
+            ),
+        })
+    }
+
+    /// One piece of each kind, with distinct field values, for the saved-piece
+    /// round trip.
+    #[cfg(test)]
+    pub(crate) fn saved_test_pieces() -> Vec<Box<dyn LegacyPiece>> {
+        const KINDS: [Kind; 15] = [
+            Kind::BridgeStraight,
+            Kind::BridgeCrossing,
+            Kind::RoomCrossing,
+            Kind::StairsRoom,
+            Kind::MonsterThrone,
+            Kind::CastleEntrance,
+            Kind::SmallCorridor,
+            Kind::SmallCorridorCrossing,
+            Kind::SmallCorridorRightTurn,
+            Kind::SmallCorridorLeftTurn,
+            Kind::CorridorStairs,
+            Kind::CorridorTBalcony,
+            Kind::StalkRoom,
+            Kind::BridgeEndFiller,
+            Kind::Start,
+        ];
+        KINDS
+            .into_iter()
+            .enumerate()
+            .map(|(i, kind)| -> Box<dyn LegacyPiece> {
+                let i = i as i32;
+                let orientation =
+                    [Direction::North, Direction::South, Direction::West][i as usize % 3];
+                Box::new(FortressPiece {
+                    kind,
+                    frame: PieceFrame::new(
+                        BoundingBox::new([i * 7 - 40, 60 + i, -20], [i * 7 - 30, 70 + i, -5]),
+                        Some(orientation),
+                    ),
+                    depth: 8 - i,
+                    seed: if kind == Kind::BridgeEndFiller {
+                        -1234567
+                    } else {
+                        0
+                    },
+                    // Only the turns and the throne save their flag.
+                    flag: Mutex::new(
+                        matches!(
+                            kind,
+                            Kind::SmallCorridorLeftTurn
+                                | Kind::SmallCorridorRightTurn
+                                | Kind::MonsterThrone
+                        ) && i % 2 == 0,
+                    ),
+                })
+            })
+            .collect()
     }
 }
 

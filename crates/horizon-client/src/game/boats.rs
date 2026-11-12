@@ -1734,10 +1734,10 @@ impl Game<'_> {
         if chest && hurt == Some(true) && !self.creative && self.ui.rules.bool("entity_drops") {
             self.anger_piglins(true);
         }
-        self.vehicle_attack_sounds(area, magic.then_some(id));
         if damage > 0.0
             && let Some(destroyed) = hurt
         {
+            self.vehicle_attack_sounds(area, magic.then_some(id));
             let (knockback, _) = self.extra_knockback(&kind, scale);
             if knockback > 0.0 {
                 // Player.causeExtraKnockback uses Entity.push for a boat,
@@ -1748,12 +1748,9 @@ impl Game<'_> {
                     self.boats[i].velocity.y += 0.1;
                     self.boats[i].velocity.z += f64::from(-(z as f32) * knockback);
                 }
-                if let Some(player) = self.player.as_mut() {
-                    player.velocity.x *= horizon_client::attack_strength::ATTACKER_SLOWDOWN;
-                    player.velocity.z *= horizon_client::attack_strength::ATTACKER_SLOWDOWN;
-                }
-                self.stop_sprint_after_extra_knockback();
+                self.special_attack_slowdown(knockback);
             }
+            self.special_attack_exhaustion();
         }
         // Player.onAttack: the hit starts the attack strength again.
         self.attack_ticks = 0;

@@ -66,6 +66,25 @@ pub struct Rider {
     pub client: bool,
 }
 
+/// The coat and markings a horse's `Variant` int shows: `Horse.getVariant`
+/// is `Variant.byId(typeVariant & 255)` and `getMarkings`
+/// `Markings.byId((typeVariant & 0xFF00) >> 8)`, both
+/// `OutOfBoundsStrategy.WRAP` over 7 coats and 5 markings.
+pub fn horse_look(type_variant: i32) -> (u8, u8) {
+    (
+        ((type_variant & 0xFF) % 7) as u8,
+        (((type_variant >> 8) & 0xFF) % 5) as u8,
+    )
+}
+/// `Horse.addAdditionalSaveData` writes `typeVariant` as it is: the int the
+/// horse was loaded with while it still shows this coat and these markings
+/// (9 stays 9, not 2), otherwise the two ids packed.
+pub fn saved_variant(loaded: Option<i32>, coat: u8, markings: u8) -> i32 {
+    loaded
+        .filter(|v| horse_look(*v) == (coat, markings))
+        .unwrap_or(i32::from(coat) | i32::from(markings) << 8)
+}
+
 pub fn is_equine(s: Species) -> bool {
     matches!(
         s,
@@ -1198,7 +1217,7 @@ mod tests {
                     let seed = (0..10_000)
                         .find(|&seed| LegacyRandom::new(seed).next_int_bound(50).unwrap() == 0)
                         .unwrap();
-                    m.random = LegacyRandom::new(seed);
+                    m.random.set_seed(seed);
                     let mut expected = m.random.clone();
                     assert_eq!(expected.next_int_bound(50).unwrap(), 0);
                     expected.next_int_bound(max).unwrap();

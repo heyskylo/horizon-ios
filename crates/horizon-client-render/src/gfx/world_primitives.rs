@@ -7,6 +7,11 @@
 use super::Vertex;
 use glam::Mat4;
 
+/// world_primitives.wgsl after what it shares with the frame's other shaders (`frame_stored`).
+pub(super) fn shader() -> String {
+    include_str!("../hdr_light.wgsl").to_owned() + include_str!("world_primitives.wgsl")
+}
+
 /// A frame's primitives, camera-relative, as the game tessellated them: quads of 4 vertices
 /// from the shared atlas (plain colours on its white texel, text on its glyphs, beams on the
 /// beacon beam sprite) and lines as `gizmos::camera_relative` gives them. `*_through` ones are
@@ -57,11 +62,12 @@ pub struct WorldPrimitives {
 pub type Upload<'u> = &'u mut dyn FnMut(&wgpu::Buffer, &[u8]);
 
 impl WorldPrimitives {
-    /// Pipelines drawing into `color_format` over a reversed Depth32Float depth.
-    pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
+    /// Pipelines drawing into `color_format` over a reversed Depth32Float depth, decoding their
+    /// colours where the frame holds linear light (`linear`).
+    pub fn new(device: &wgpu::Device, (color_format, linear): (wgpu::TextureFormat, bool)) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("World primitives"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("world_primitives.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(shader().into()),
         });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("World primitives"),
@@ -150,7 +156,10 @@ impl WorldPrimitives {
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
                     entry_point: Some(entry[1]),
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &super::linear_blend::frame_constants(color_format, linear),
+                        ..Default::default()
+                    },
                     targets: &[Some(wgpu::ColorTargetState {
                         format: color_format,
                         blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -468,7 +477,7 @@ mod tests {
             lines_through: &lines_through,
         };
 
-        let mut primitives = WorldPrimitives::new(&device, format);
+        let mut primitives = WorldPrimitives::new(&device, (format, false));
         let atlas_view = atlas.create_view(&Default::default());
         assert!(primitives.prepare(
             &device,
