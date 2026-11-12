@@ -916,15 +916,7 @@ pub fn mob_to_nbt(
                 Tag::Int(m.extra.more_carrot_ticks),
             );
         }
-        "minecraft:goat" => {
-            map.insert(
-                "IsScreamingGoat".into(),
-                Tag::Byte(i8::from(m.extra.screaming)),
-            );
-            let [left, right] = m.extra.lost_horns;
-            map.insert("HasLeftHorn".into(), Tag::Byte(i8::from(!left)));
-            map.insert("HasRightHorn".into(), Tag::Byte(i8::from(!right)));
-        }
+        "minecraft:goat" => crate::mobs::goat::write_nbt(m, map),
         "minecraft:creeper" => {
             map.insert("Fuse".into(), Tag::Short(m.max_swell as i16));
             map.insert(
@@ -2353,11 +2345,7 @@ pub fn mob_from_nbt_with_random(
                 _ => 0,
             };
         }
-        crate::mobs::Species::Goat => {
-            m.extra.screaming = flag(tag, "IsScreamingGoat");
-            let horn = |key| number(tag.get(key)).is_some_and(|v| v == 0);
-            m.extra.lost_horns = [horn("HasLeftHorn"), horn("HasRightHorn")];
-        }
+        crate::mobs::Species::Goat => crate::mobs::goat::read_nbt(&mut m, tag),
         _ => {}
     }
     // `Rabbit.readAdditionalSaveData`.
