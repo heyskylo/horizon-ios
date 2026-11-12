@@ -9,6 +9,7 @@ use super::{
     chunks::ChunkEncoder,
     data::SyncData,
     entity::{Entities, EntityState, Viewer},
+    equipment_cache,
     guest::{Guest, SentEffect, stack_to_network},
 };
 use crate::{
@@ -38,6 +39,7 @@ use horizon_world::{
 };
 use std::sync::{Arc, Mutex, atomic::Ordering};
 
+mod accept_teleport;
 mod acknowledgements;
 /// GameEvent types (ClientboundGameEventPacket).
 pub mod chat;
@@ -3278,28 +3280,19 @@ impl Hub {
         }
     }
 
-    fn equipment_of(
-        &mut self,
-        main: &Option<ItemStack>,
-        off: &Option<ItemStack>,
-        armor: [&Option<ItemStack>; 4],
-    ) -> Vec<(u8, Option<horizon_protocol::item::Stack>)> {
-        // Armor is stored head..feet; the wire slots are feet(2) legs(3) chest(4) head(5).
-        let mut out = Vec::new();
-        let slots = [
-            (0u8, main),
-            (1, off),
-            (5, armor[0]),
-            (4, armor[1]),
-            (3, armor[2]),
-            (2, armor[3]),
-        ];
-        for (slot, item) in slots {
-            if item.is_some() {
-                out.push((slot, self.stack(item)));
+    /// The equipment of a placed guest; only the stacks that changed since the last call are converted.
+    fn guest_equipment(&mut self, i: usize) -> Vec<(u8, Option<horizon_protocol::item::Stack>)> {
+        for index in 0..equipment_cache::SLOTS {
+            let g = &self.guests[i];
+            let source = equipment_source(g, index);
+            if !g.equipment.is_stale(index, source) {
+                continue;
             }
+            let source = source.cloned();
+            let converted = self.stack(&source);
+            self.guests[i].equipment.store(index, source, converted);
         }
-        out
+        self.guests[i].equipment.equipment()
     }
 
     /// Whether an entity is tracked by the current dimension's level.
@@ -3378,16 +3371,7 @@ impl Hub {
         let guest_states: Vec<_> = placed
             .into_iter()
             .map(|i| {
-                let (main, off, armor) = {
-                    let g = &self.guests[i];
-                    (
-                        g.inventory.get(g.selected).cloned().flatten(),
-                        g.offhand.clone(),
-                        g.armor.clone(),
-                    )
-                };
-                let equipment =
-                    self.equipment_of(&main, &off, [&armor[0], &armor[1], &armor[2], &armor[3]]);
+                let equipment = self.guest_equipment(i);
                 let g = &self.guests[i];
                 let mut state = self.player_state(
                     g.entity_id,
@@ -3751,6 +3735,8 @@ impl Hub {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as i64);
         for g in &mut self.guests {
+            // Converted under the old registries: convert again under the new ones.
+            g.equipment = Default::default();
             let mut granted = Vec::new();
             // PlayerAdvancements.reload: isFirstPacket again, the progress
             // read against the new tree; a player whose advancements were
@@ -3953,32 +3939,7 @@ impl Hub {
                 | S::PlayerCommand(_)
                     if !self.guests[i].client_loaded() => {}
                 // handleAcceptTeleportPacket.
-                S::AcceptTeleportation(p) => {
-                    let recording = self.recording();
-                    let g = &mut self.guests[i];
-                    if let Some((id, at)) = g.awaiting_teleport
-                        && id == p.id
-                    {
-                        if p.x.is_nan()
-                            || p.y.is_nan()
-                            || p.z.is_nan()
-                            || !p.yaw.is_finite()
-                            || !p.pitch.is_finite()
-                        {
-                            self.kick(conn, invalid_movement());
-                            continue;
-                        }
-                        g.position = at;
-                        g.awaiting_teleport = None;
-                        // The prediction's replay starts again where the client now is.
-                        if recording {
-                            let kept = g.awaiting_keeps_motion;
-                            g.record.get_or_insert_default().teleported(at, kept);
-                        }
-                        let rot = (p.yaw, p.pitch);
-                        self.position_change(i, [p.x, p.y, p.z], rot, 0, ctx, events);
-                    }
-                }
+                S::AcceptTeleportation(p) => self.accept_teleport(i, conn, &p, ctx, events),
                 // handlePlayerAbilities: the client flies only if it may.
                 S::PlayerAbilities(p) => {
                     let g = &mut self.guests[i];
@@ -4480,7 +4441,7 @@ impl Hub {
             at[1] + f64::from(d.height) + 0.0625,
             at[2] + half,
         ];
-        no_blocks_in(world, lo, hi)
+        no_blocks_in(world, lo, hi, &self.encoder)
     }
 
     /// `ServerGamePacketListenerImpl.forceSendPlayerSupportBlocks`: the blocks just under the
@@ -5084,6 +5045,9 @@ impl Hub {
             let g = &mut self.guests[i];
             g.landing = true;
             g.awaiting_teleport = None;
+            // The new level's first teleport takes the next id, so the old one's late accept
+            // is no longer the last id sent.
+            g.teleport_counter = (g.teleport_counter + 1) & 0x7FFF_FFFF;
         } else {
             self.resend_teleport(i, None);
         }
@@ -5168,14 +5132,14 @@ const PLAYER_GRAVITY: f64 = 0.08;
 
 /// `ServerGamePacketListenerImpl.getMaximumFlyingTicks`: 80 ticks, more where
 /// gravity is weaker, none at all (never kicked) without gravity.
-/// `ServerGamePacketListenerImpl.noBlocksAround` over a box: every block from `lo` to `hi` is air, in
-/// loaded chunks (a chunk not loaded yet is not known to be air: nothing floats there).
-pub fn no_blocks_in(world: &World, lo: [f64; 3], hi: [f64; 3]) -> bool {
+/// `ServerGamePacketListenerImpl.noBlocksAround` over a box: every block from `lo` to `hi` is
+/// `isAir()` (`air`'s state table), in loaded chunks (a chunk not loaded yet is not known to be air).
+pub fn no_blocks_in(world: &World, lo: [f64; 3], hi: [f64; 3], air: &ChunkEncoder) -> bool {
     let cell = |v: f64| v.floor() as i32;
     (cell(lo[0])..=cell(hi[0])).all(|x| {
         (cell(lo[2])..=cell(hi[2])).all(|z| {
             world.loaded(x, z)
-                && (cell(lo[1])..=cell(hi[1])).all(|y| world.is_air(world.block(x, y, z)))
+                && (cell(lo[1])..=cell(hi[1])).all(|y| air.is_air(world.block(x, y, z).0))
         })
     })
 }
@@ -5284,6 +5248,15 @@ fn listed_properties(
     match profile {
         Some(profile) if owner && logged_in.is_empty() => profile.properties().to_vec(),
         _ => logged_in.to_vec(),
+    }
+}
+
+/// The stack in equipment slot `index` (`equipment_cache::SLOTS`): held, offhand, armor head..feet.
+fn equipment_source(g: &Guest, index: usize) -> Option<&ItemStack> {
+    match index {
+        0 => g.inventory.get(g.selected)?.as_ref(),
+        1 => g.offhand.as_ref(),
+        _ => g.armor.get(index - 2)?.as_ref(),
     }
 }
 

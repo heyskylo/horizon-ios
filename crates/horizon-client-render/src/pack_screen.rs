@@ -1100,6 +1100,9 @@ impl PackScreen {
             0,
         );
         self.search.draw(&mut out, m, blink_ms, None);
+        if self.browser.is_none() && self.search.contains(f64::from(mouse.0), f64::from(mouse.1)) {
+            crate::widgets::text_cursor(true, true);
+        }
         for side in 0..2 {
             self.draw_list(&mut out, m, side, mouse);
         }
@@ -1302,6 +1305,9 @@ impl PackScreen {
         field.x = qx;
         field.y = qy;
         field.draw(out, m, 0, None);
+        if field.contains(f64::from(mouse.0), f64::from(mouse.1)) {
+            crate::widgets::text_cursor(true, true);
+        }
         let (sbx, sby) = self.browser_search_button();
         d::button(
             out,
