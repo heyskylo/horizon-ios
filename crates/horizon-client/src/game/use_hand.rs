@@ -127,6 +127,10 @@ impl Game<'_> {
                     self.with_level(|b, _, _| b.cake_candle_state(cake, item.as_deref()).is_some());
                 let pots_flower = self
                     .with_level(|b, _, _| b.potted_flower_state(cake, item.as_deref()).is_some());
+                // Read before the use runs: a sign's click commands execute in
+                // `process_level_events` and may change or remove the sign, but
+                // vanilla keeps the click consumed (`executedClickCommand`).
+                let sign_consumes = self.sign_consumes_click(hit.pos);
                 let (result, branch) = self.with_level(|b, level, ticks| {
                     b.use_item_on_branch(
                         level,
@@ -185,7 +189,7 @@ impl Game<'_> {
                 // still places against the sign.
                 let sign_passes = branch == horizon_world::level::UseBranch::WithoutItem
                     && self.res.facts().get(cake).sign_form().is_some()
-                    && !self.sign_consumes_click(hit.pos);
+                    && !sign_consumes;
                 if result.consumes_action() && !sign_passes {
                     // ServerPlayerGameMode.useItemOn: ITEM_USED_ON_BLOCK with
                     // the stack before the use, or DEFAULT_BLOCK_USE.
