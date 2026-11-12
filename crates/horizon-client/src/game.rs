@@ -158,6 +158,7 @@ mod first_tick_registration_tests;
 mod fishing;
 mod fov;
 mod foxes;
+mod frame_autotune;
 mod frame_geometry;
 mod frames;
 #[cfg(feature = "friends")]
@@ -384,7 +385,6 @@ mod potions;
 mod powder_snow;
 mod prediction;
 mod pumpkin;
-mod pvp;
 mod quick_actions;
 mod raids;
 mod random_textures;
@@ -2818,8 +2818,8 @@ struct Game<'a> {
     frame_graph: horizon_client::perf_overlay::FrameGraph,
     /// Horizon's extras (minimap, auto-reconnect; mods' counters): `game/extras.rs`.
     extras: extras::ExtrasState,
-    /// The PvP & HUD options' state (`game/pvp.rs`).
-    pvp: pvp::PvpState,
+    /// The PvP & HUD options' state (`game/extras/pvp.rs`).
+    pvp: extras::pvp::PvpState,
     /// Horizon mods (`game/mods.rs`), none running unless turned on.
     mods: mods::ModsState,
     /// Every item and recipe, for mods (`game/native_recipes.rs`), made once.
@@ -2941,6 +2941,8 @@ struct Game<'a> {
     gpu_utilization: f64,
     /// GPU Culling's Auto mode: what it has decided from the frames' CPU and GPU times.
     gpu_culling_auto: horizon_client::autotune::GpuCullingAuto,
+    /// Dynamic Resolution: the scale it has the world at (`frame_autotune`).
+    dynamic_resolution: horizon_client::dynamic_resolution::DynamicResolution,
     /// The mobs `mob_geometry` drew last frame (`lastEntityRenderStateCount`).
     rendered_mobs: std::cell::Cell<usize>,
     /// Whether a native mod requested background blur for this frame (`apply_screen_blur`).
@@ -5839,7 +5841,7 @@ impl Game<'_> {
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
         self.input_hud_begin();
         let mut batch = HudBatch::new(size);
-        batch.glint_colour = self.settings.extras.pvp.tweaks.glint_texel();
+        batch.glint_colour = self.pvp_glint_texel();
         // GlobalSettingsUniform's GameTime, for a resource pack's text shader.
         batch.game_time = ((self.world.game_time.rem_euclid(24000)) as f32
             + self.clock.fraction() as f32)
@@ -5951,8 +5953,7 @@ impl Game<'_> {
             // Hud.extractCrosshair / extractItemHotbar / extractPlayerHealth /
             // extractVehicleHealth and the experience bar, laid out by hud_layout.
             // Combat feel Legacy hides the attack indicator unless the player keeps it.
-            let combat = self.settings.extras.pvp.combat;
-            let indicator = if combat.legacy && !combat.indicator {
+            let indicator = if self.pvp_hides_attack_indicator() {
                 0
             } else {
                 self.settings.attack_indicator
@@ -9704,7 +9705,7 @@ impl Game<'_> {
             outline,
             outline_after_terrain,
             outline_high_contrast: self.settings.file.bool("highContrastBlockOutline"),
-            pvp: self.settings.extras.pvp.frame(),
+            pvp: self.pvp_render_frame(),
             debug_lines: &debug_lines,
             debug_lines_on_top: &debug_lines_on_top,
             debug_crosshair: &debug_crosshair,
@@ -11235,30 +11236,16 @@ impl Game<'_> {
                                 self.gpu_utilization =
                                     f64::from(gpu) * 100.0 / f64::from(ms(cpu).max(0.001));
                             }
-                            // GPU Culling's Auto: only frames of a world that has settled
-                            // count, and only where it can be switched.
-                            if self.settings.horizon.gpu_culling
-                                == horizon_client::graphics::GpuCullingMode::Auto
-                                && self.screen == Screen::Playing
-                                && !self.streaming.terrain_loading()
-                                && horizon_client::graphics::gpu_culling_offer()
-                                    .reason()
-                                    .is_none()
-                                && let Some(on) = self.gpu_culling_auto.observe(
-                                    ms(cpu),
-                                    r.gpu_times.last().copied(),
-                                    ms(elapsed),
-                                )
-                            {
-                                log::info!(
-                                    "Horizon: GPU Culling Auto turns it {} ({})",
-                                    if on { "on" } else { "off" },
-                                    self.gpu_culling_auto.state()
-                                );
-                                if r.set_gpu_culling(on).is_err() {
-                                    self.gpu_culling_auto.reset();
-                                }
-                            }
+                            let settled =
+                                self.screen == Screen::Playing && !self.streaming.terrain_loading();
+                            frame_autotune::observe(
+                                &self.settings.horizon,
+                                settled,
+                                (&mut self.gpu_culling_auto, &mut self.dynamic_resolution),
+                                &mut self.frame_graph,
+                                r,
+                                (ms(cpu), ms(elapsed)),
+                            );
                             self.frame_stats.record_cpu(ms(cpu));
                             let render = r.last_encode;
                             self.frame_stats.record_phases([
@@ -11282,7 +11269,7 @@ impl Game<'_> {
                             self.settings.simulation_distance,
                             self.settings.entity_distance,
                         );
-                        server.set_legacy_rules(self.settings.extras.pvp.combat.rules);
+                        server.set_legacy_rules(self.pvp_legacy_rules());
                     }
                     self.clock.end_frame(self.pause);
                     let saved = self
@@ -11907,6 +11894,7 @@ impl<'a> Game<'a> {
             debug_refresh: Default::default(),
             gpu_utilization: 0.0,
             gpu_culling_auto: horizon_client::autotune::GpuCullingAuto::new(),
+            dynamic_resolution: Default::default(),
             rendered_mobs: Default::default(),
             screen_blur_requested: Default::default(),
             spawn_counts: HashMap::new(),
