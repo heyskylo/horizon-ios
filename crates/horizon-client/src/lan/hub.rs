@@ -38,6 +38,7 @@ use horizon_world::{
 };
 use std::sync::{Arc, Mutex, atomic::Ordering};
 
+mod accept_teleport;
 mod acknowledgements;
 /// GameEvent types (ClientboundGameEventPacket).
 pub mod chat;
@@ -3953,32 +3954,7 @@ impl Hub {
                 | S::PlayerCommand(_)
                     if !self.guests[i].client_loaded() => {}
                 // handleAcceptTeleportPacket.
-                S::AcceptTeleportation(p) => {
-                    let recording = self.recording();
-                    let g = &mut self.guests[i];
-                    if let Some((id, at)) = g.awaiting_teleport
-                        && id == p.id
-                    {
-                        if p.x.is_nan()
-                            || p.y.is_nan()
-                            || p.z.is_nan()
-                            || !p.yaw.is_finite()
-                            || !p.pitch.is_finite()
-                        {
-                            self.kick(conn, invalid_movement());
-                            continue;
-                        }
-                        g.position = at;
-                        g.awaiting_teleport = None;
-                        // The prediction's replay starts again where the client now is.
-                        if recording {
-                            let kept = g.awaiting_keeps_motion;
-                            g.record.get_or_insert_default().teleported(at, kept);
-                        }
-                        let rot = (p.yaw, p.pitch);
-                        self.position_change(i, [p.x, p.y, p.z], rot, 0, ctx, events);
-                    }
-                }
+                S::AcceptTeleportation(p) => self.accept_teleport(i, conn, &p, ctx, events),
                 // handlePlayerAbilities: the client flies only if it may.
                 S::PlayerAbilities(p) => {
                     let g = &mut self.guests[i];
@@ -5084,6 +5060,9 @@ impl Hub {
             let g = &mut self.guests[i];
             g.landing = true;
             g.awaiting_teleport = None;
+            // The new level's first teleport takes the next id, so the old one's late accept
+            // is no longer the last id sent.
+            g.teleport_counter = (g.teleport_counter + 1) & 0x7FFF_FFFF;
         } else {
             self.resend_teleport(i, None);
         }
