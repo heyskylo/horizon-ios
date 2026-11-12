@@ -533,7 +533,8 @@ impl Game<'_> {
         let reach: f64 = self.entity_reach;
         let mut best: Option<(usize, f64, [f64; 3])> = None;
         for (i, a) in self.armor_stands.iter().enumerate() {
-            if a.marker {
+            // Minecraft.pick never hits the camera entity it looks from.
+            if a.marker || self.remote_camera_id() == Some(a.id) {
                 continue;
             }
             let b = a.bounds();
@@ -1437,7 +1438,11 @@ impl Game<'_> {
     ) {
         // The stands' models posed on the GPU path (`mobs::skin`), when it runs this frame.
         let skinning = self.skinning();
-        for a in &self.armor_stands {
+        for a in self
+            .armor_stands
+            .iter()
+            .filter(|a| !self.hides_as_camera(a.id))
+        {
             // ArmorStand.shouldRenderAtSqrDistance: 256 times the box's mean
             // edge (4 for a marker's empty box), whatever the entity distance.
             // LivingEntityRenderer grows the culling box by 0.5 for a dragon head.
