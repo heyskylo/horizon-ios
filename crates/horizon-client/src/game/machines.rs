@@ -489,6 +489,29 @@ impl Containers<'_> {
         }
     }
     /// `canTakeItemThroughFace` (furnaces and brewing stands restrict it).
+    /// `Container.canTakeItem` for a hopper's slot of `source`: the vanilla
+    /// shelf rule needs to know where the item is going.
+    fn can_take_into(
+        &self,
+        view: &View,
+        slot: usize,
+        stack: &ItemStack,
+        face: Direction,
+        target: &View,
+    ) -> bool {
+        if view.kind == Kind::Bookshelf {
+            // `ChiseledBookShelfBlockEntity.canTakeItem`: the target must have
+            // a free slot or a matching stack with room (`hasAnyMatching`).
+            return (0..target.len()).any(|i| match self.get(target, i) {
+                None => true,
+                Some(other) => {
+                    other.same_item_same_components(stack)
+                        && other.count + stack.count <= self.max_stack(other)
+                }
+            });
+        }
+        self.can_take(view, slot, stack, face)
+    }
     fn can_take(&self, view: &View, slot: usize, stack: &ItemStack, face: Direction) -> bool {
         if let Kind::Composter(level) = view.kind {
             // OutputContainer.canTakeItemThroughFace.
@@ -1443,7 +1466,7 @@ impl Game<'_> {
                 let Some(stack) = c.insertion_item(source, slot).map(Cow::into_owned) else {
                     continue;
                 };
-                if !c.can_take(source, slot, &stack, Direction::Down) {
+                if !c.can_take_into(source, slot, &stack, Direction::Down, hopper) {
                     continue;
                 }
             }
@@ -2621,3 +2644,65 @@ mod tests {
 #[cfg(test)]
 #[path = "machines_chest_cat_tests.rs"]
 mod machines_chest_cat_tests;
+
+#[cfg(test)]
+mod can_take_tests {
+    use super::*;
+    use crate::game::native_machines::tests::server_game;
+    use horizon_client::containers::ChiseledBookshelf;
+
+    /// `ChiseledBookShelfBlockEntity.canTakeItem`: a hopper takes a book only
+    /// when it has a free slot or a matching stack with room.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_full_hopper_cannot_take_a_book_from_a_chiseled_shelf() {
+        let mut game = server_game();
+        let shelf_pos = (2, 4, 3);
+        let hopper_pos = (2, 5, 3);
+        let shelf_state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:chiseled_bookshelf")
+            .unwrap();
+        let hopper_state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:hopper")
+            .unwrap();
+        game.world
+            .set(shelf_pos.0, shelf_pos.1, shelf_pos.2, shelf_state)
+            .unwrap();
+        game.world
+            .set(hopper_pos.0, hopper_pos.1, hopper_pos.2, hopper_state)
+            .unwrap();
+        let book = ItemStack::new("minecraft:book", 1);
+        let mut shelf = ChiseledBookshelf::default();
+        shelf.items[0] = Some(book.clone());
+        game.world
+            .block_entities
+            .insert(shelf_pos, BlockEntity::ChiseledBookshelf(Box::new(shelf)));
+        let stone = ItemStack::new("minecraft:stone", 64);
+        game.world
+            .block_entities
+            .insert(hopper_pos, BlockEntity::Chest(vec![Some(stone.clone()); 5]));
+        let shelf_view = game.containers().view(shelf_pos, false).expect("shelf");
+        let full_hopper = game.containers().view(hopper_pos, false).expect("hopper");
+        assert!(
+            !game
+                .containers()
+                .can_take_into(&shelf_view, 0, &book, Direction::Down, &full_hopper),
+            "a full hopper takes no book"
+        );
+        game.world
+            .block_entities
+            .insert(hopper_pos, BlockEntity::Chest(vec![None; 5]));
+        let empty_hopper = game.containers().view(hopper_pos, false).expect("hopper");
+        assert!(
+            game.containers()
+                .can_take_into(&shelf_view, 0, &book, Direction::Down, &empty_hopper),
+            "an empty hopper takes the book"
+        );
+    }
+}

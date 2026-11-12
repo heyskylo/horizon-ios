@@ -21,6 +21,20 @@ mod ram_tests;
 pub(super) const OFFHAND_SLOT: usize = 40;
 
 impl Game<'_> {
+    /// `AbstractArrow.onHitEntity` on the player: a piercing arrow passes item blocking, whoever
+    /// shot it, because `applyItemBlocking` reads the direct entity's pierce level.
+    pub(super) fn arrow_hits_player(
+        &mut self,
+        amount: f32,
+        p: &horizon_client::projectiles::Projectile,
+    ) -> bool {
+        self.combat.piercing_hit = p.arrow.as_ref().is_some_and(|a| a.pierce > 0);
+        self.mob_hits_player(
+            amount,
+            [p.previous.x, p.previous.y, p.previous.z],
+            "minecraft:arrow",
+        )
+    }
     /// The stack in an inventory slot, the off hand at `OFFHAND_SLOT`.
     pub(super) fn stack_in(&self, slot: usize) -> Option<&ItemStack> {
         if slot == OFFHAND_SLOT {
@@ -144,6 +158,7 @@ impl Game<'_> {
             && blocked > 0.0
         {
             let outcome = BlockOutcome {
+                blocking_item_used: true,
                 blocked,
                 fully_blocked: blocked >= damage,
                 ..Default::default()
@@ -193,22 +208,23 @@ impl Game<'_> {
             let pitch = 0.8 + self.world.random.next_float() * 0.4;
             self.audio.play(sound, at, 1.0, pitch);
         }
+        if !outcome.blocking_item_used {
+            return;
+        }
         // BlocksAttacks.hurtBlockingItem: the hit counts the blocking item as
         // used, before the blocked-damage gate (vanilla awards it on the
         // server even when the item blocks none of the damage).
         if self.remote.is_none() {
             self.award_stat("used", &stack.item, 1);
         }
-        if outcome.blocked <= 0.0 {
-            return;
-        }
         // ItemDamageFunction.apply, then hurtAndBreak.
         let (threshold, base, factor) = component.item_damage;
-        let item_damage = if outcome.blocked < threshold {
-            0
-        } else {
-            (base + factor * outcome.blocked).floor() as i32
-        };
+        let item_damage = ItemDamageFunction {
+            threshold,
+            base,
+            factor,
+        }
+        .apply(outcome.blocked);
         if item_damage > 0
             && !self.creative
             && let Some(max) = blocking_item_max_damage(
@@ -242,7 +258,7 @@ impl Game<'_> {
                 }
             }
         }
-        if projectile {
+        if outcome.blocked <= 0.0 || projectile {
             return;
         }
         let Some(id) = attacker else {
@@ -409,6 +425,7 @@ mod tests {
             direct: 1,
         };
         let outcome = BlockOutcome {
+            blocking_item_used: true,
             hurt: true,
             blocked: 5.0,
             fully_blocked: true,

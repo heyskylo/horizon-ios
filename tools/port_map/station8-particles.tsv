@@ -1,0 +1,1 @@
+Consumable.hasConsumeParticles	port	crates/horizon-client/src/item_sync.rs::consumable_particles	has_consume_particles from the stack's consumable component

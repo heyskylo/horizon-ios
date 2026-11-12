@@ -268,7 +268,7 @@ impl Game<'_> {
         }
     }
     /// `Level.getMinY`: the current dimension type's minimum y.
-    fn level_min_y(&self) -> i32 {
+    pub(super) fn level_min_y(&self) -> i32 {
         match self.remote.as_ref() {
             Some(r) => r.dimension.min_y,
             None => self.world.shape.min_y,

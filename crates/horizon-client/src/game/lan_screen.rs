@@ -163,8 +163,13 @@ impl WorldOptions {
     /// the cursor is over it. The box is drawn even with LAN off, so the tooltip
     /// shows there too; a remote world has no such box.
     fn port_tooltip(port: &EditBox, cursor: (f32, f32), remote: bool) -> Option<Text> {
-        (!remote && ui::hovered(cursor, port.x, port.y, port.width, port.height))
-            .then(|| Text::translate("lanServer.port", &[]))
+        if remote || !ui::hovered(cursor, port.x, port.y, port.width, port.height) {
+            return None;
+        }
+        Some(match port_error(&port.value) {
+            Some(key) => Text::translate(key, &[Text::literal("1024"), Text::literal("65535")]),
+            None => Text::translate("lanServer.port", &[]),
+        })
     }
     fn snapshot(&self) -> Snapshot {
         Snapshot {
@@ -556,6 +561,18 @@ impl Restrictions {
     }
 }
 
+/// `WorldOptionsScreen.tryParsePort`'s invalid value: not a number in
+/// `PORT_LOWER_BOUND..=PORT_HIGHER_BOUND`. A number another process holds
+/// (`HttpUtil.isPortAvailable`) is not checked: the port map records that gap.
+fn port_error(value: &str) -> Option<&'static str> {
+    if value.is_empty() {
+        return None;
+    }
+    match value.parse::<u32>() {
+        Ok(port) if (1024..=65535).contains(&port) => None,
+        _ => Some("lanServer.port.invalid"),
+    }
+}
 impl Game<'_> {
     pub(super) fn remote_world_options_permission(&mut self, permission: bool) {
         if let Some(o) = self.world_options.as_mut() {
@@ -1019,7 +1036,8 @@ impl Game<'_> {
         }
         // The widgets are drawn; the port box's tooltip goes over them.
         if let Some(tip) = WorldOptions::port_tooltip(&o.port, cursor, o.remote) {
-            ui::tooltip(batch, atlas, &[tip], cursor);
+            // Tooltip.splitTooltip: font.split(message, 170).
+            ui::tooltip(batch, atlas, &atlas.font.split(&tip, 170.0), cursor);
         }
     }
 
@@ -1918,11 +1936,29 @@ mod tests {
     }
 
     /// `portEdit.setTooltip(PORT_INFO_TEXT)`: hovering the port box shows its
-    /// label; a remote world (`o.remote`) has no port box to hover.
+    /// label; `setPortError` turns that into the reason a number is rejected.
+    /// A remote world (`o.remote`) has no port box to hover.
     #[test]
     fn the_port_box_explains_itself_on_hover() {
-        let port = EditBox::new(158.0, 100.0, 40.0, 20.0);
-        assert!(WorldOptions::port_tooltip(&port, (159.0, 101.0), false).is_some());
+        let mut port = EditBox::new(158.0, 100.0, 40.0, 20.0);
+        let tip = |port: &EditBox| {
+            WorldOptions::port_tooltip(port, (159.0, 101.0), false).map(|t| t.plain())
+        };
+        assert_eq!(tip(&port).as_deref(), Some("lanServer.port"));
+        // Empty takes the suggestion, a number in range is fine.
+        assert_eq!(tip(&port).as_deref(), Some("lanServer.port"));
+        for bad in ["0", "80", "70000", "abc", "-1"] {
+            port.set_value(bad);
+            assert_eq!(
+                tip(&port).as_deref(),
+                Some("lanServer.port.invalid"),
+                "{bad}"
+            );
+        }
+        for good in ["1024", "25565", "65535"] {
+            port.set_value(good);
+            assert_eq!(tip(&port).as_deref(), Some("lanServer.port"), "{good}");
+        }
         assert!(WorldOptions::port_tooltip(&port, (157.0, 101.0), false).is_none());
         assert!(WorldOptions::port_tooltip(&port, (159.0, 121.0), false).is_none());
         assert!(WorldOptions::port_tooltip(&port, (159.0, 101.0), true).is_none());
