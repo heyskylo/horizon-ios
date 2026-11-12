@@ -43,6 +43,7 @@ impl Game<'_> {
         if let (Some(area), Hurt::Landed { .. }) = (area, hurt) {
             let (knockback, _) = self.extra_knockback("minecraft:ender_dragon", scale);
             self.attack_effects(area, None, false, super::mace::Spared::Nothing, None);
+            self.post_attack_dragon_burst();
             self.special_attack_slowdown(knockback);
             self.special_attack_exhaustion();
         }
