@@ -143,6 +143,10 @@ GLYPHS = {
     'psx_options': (D22, 32, options_icon(), ICON),
 }
 
+if __name__ == '__main__' and any(argument.startswith('-') for argument in sys.argv[1:]):
+    # A flag is not an output directory: it used to create ./--help and fill it with glyphs.
+    sys.exit(__doc__.strip() + '\nUsage: python3 tools/pad_glyphs/gen.py [outdir] [name ...]')
+
 if __name__ == '__main__':
     os.makedirs(OUT, exist_ok=True)
     only = sys.argv[2:]

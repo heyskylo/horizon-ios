@@ -54,6 +54,33 @@ impl Game<'_> {
             .finish_equipment_hurt(&self.health_resources, hit)?;
         Ok((outcome, actual))
     }
+    /// `push_seen_with_hurt` for the host: the push is kept only when the hurt
+    /// marks the velocity as seen, and the hurt goes through
+    /// `hurt_player_equipment` so the worn armor loses durability. Answers
+    /// whether a native hook canceled the hurt.
+    pub(super) fn push_seen_with_equipment_hurt(
+        &mut self,
+        push: Vec3,
+        source: Option<horizon_world::damage_source::DamageTypeId>,
+        amount: f32,
+    ) -> bool {
+        let Some(p) = self.player.as_mut() else {
+            return false;
+        };
+        let before = p.velocity;
+        let marked_before = std::mem::take(&mut p.health.sync_velocity);
+        p.velocity = before.add_vector(push);
+        let canceled = source
+            .and_then(|id| self.hurt_player_equipment(id, amount, None, false, 0).ok())
+            .is_some_and(|(o, _)| o.canceled);
+        if let Some(p) = self.player.as_mut() {
+            if !p.health.sync_velocity {
+                p.velocity = before;
+            }
+            p.health.sync_velocity |= marked_before;
+        }
+        canceled
+    }
     /// The armor hits among a tick's motion events (`Player.hurtArmor` from
     /// `getDamageAfterArmorAbsorb`), whatever the damage: a mob, an explosion,
     /// a cactus, lava, a campfire.
@@ -120,7 +147,7 @@ impl Game<'_> {
             // ItemStack.isDamageableItem: component removal and
             // unbreakable are checked before enchantment RNG or hooks.
             if stack.count == 0
-                || !info.equip_damage_on_hurt
+                || !horizon_client::item_sync::damage_on_hurt(&stack, info.equip_damage_on_hurt)
                 || component("minecraft:unbreakable").is_some()
                 || component("!minecraft:max_damage").is_some()
                 || component("!minecraft:damage").is_some()
@@ -178,7 +205,7 @@ impl Game<'_> {
             if &*s.item == "minecraft:trident" {
                 self.trident_max_damage(s)
             } else {
-                self.items().get(&s.item).map_or(0, |i| i.max_damage)
+                self.items().stack_max_damage(s)
             }
         });
         self.apply_held_damage(amount, max, break_slot);
@@ -197,22 +224,26 @@ impl Game<'_> {
             horizon_world::player_inventory::EquipmentSlot::MainHand,
         );
     }
+    /// `ItemStack.hurtAndBreak`: apply nonzero processed wear to the acting hand.
     pub(super) fn apply_held_damage(
         &mut self,
         amount: u32,
         max: u32,
         break_slot: horizon_world::player_inventory::EquipmentSlot,
     ) {
+        // ItemStack.hurtAndBreak does not apply damage or break a stack when
+        // processDurabilityChange leaves no wear (including Unbreaking).
+        if amount == 0 {
+            return;
+        }
         let cell = self.held_mut();
         if let Some(stack) = cell.as_mut()
             && max > 0
         {
             stack.damage += amount;
             if stack.damage >= max {
-                let broken = stack.item.clone();
                 let gone = stack.clone();
                 *cell = None;
-                self.award_stat("broken", &broken, 1);
                 // LivingEntity.onEquippedItemBroken: the sound and the crumbs.
                 self.player_equipment_broke(break_slot, &gone);
             }

@@ -12,6 +12,21 @@ impl RangeChoiceSampler {
     fn contains(&self, value: f32) -> bool {
         value >= self.min_inclusive && value < self.max_exclusive
     }
+
+    /// Keeps `in_range`'s value where `input` is in range and takes `outside`'s elsewhere:
+    /// vanilla's conditional store, as a select on the values' bits.
+    ///
+    /// Its own function over three plain slices on purpose. Written inside `sample_volume` as
+    /// `if self.contains(input) { *value } else { outside }`, the loop compiles to one branch
+    /// per value, mispredicted wherever the choice changes; this form is vectorized.
+    #[inline(never)]
+    fn choose(&self, in_range: &mut [f32], input: &[f32], outside: &[f32]) {
+        let (min, max) = (self.min_inclusive, self.max_exclusive);
+        for ((value, &input), &outside) in in_range.iter_mut().zip(input).zip(outside) {
+            let keep = u32::from(input >= min && input < max).wrapping_neg();
+            *value = f32::from_bits((value.to_bits() & keep) | (outside.to_bits() & !keep));
+        }
+    }
 }
 impl DensitySampler for RangeChoiceSampler {
     fn sample_value(
@@ -39,14 +54,7 @@ impl DensitySampler for RangeChoiceSampler {
             context.with_buffer(volume.size(), |context, outside| {
                 self.when_out_of_range
                     .sample_volume(context, outside, volume)?;
-                // A select rather than a conditional store, so the loop vectorizes.
-                for ((value, &input), &outside) in buffer.iter_mut().zip(&*input).zip(&*outside) {
-                    *value = if self.contains(input) {
-                        *value
-                    } else {
-                        outside
-                    };
-                }
+                self.choose(buffer, input, outside);
                 Ok(())
             })
         })

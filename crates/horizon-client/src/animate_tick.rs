@@ -612,6 +612,7 @@ fn do_animate_tick(
         facts: ctx.facts,
         collision: ctx.collision,
         player: None,
+        cached_chunk: std::cell::Cell::new(None),
     };
     engine.polytone_animate(&level, pos);
     let facts = ctx.facts.get(state);
@@ -630,7 +631,10 @@ fn do_animate_tick(
             } else {
                 T::DrippingLava
             };
-            let top_solid = ctx.sturdy(pos);
+            // `trySpawnDripParticles(.., state.isFaceSturdy(this, pos, DOWN))`:
+            // the fluid block's own down face, not whether it is a full cube (a
+            // waterlogged bottom slab's face is sturdy and has no fluid below).
+            let top_solid = facts.sturdy_full & 1 != 0;
             try_spawn_drip(tables, engine, ctx, [x, y - 1, z], drip, top_solid);
         }
     }
@@ -1839,13 +1843,15 @@ fn dripstone_drip(
     };
     let above = ctx.facts.get(ctx.state([root[0], root[1] + 1, root[2]]));
     // Mud above the root counts as a water source unless water evaporates here.
-    let (fluid, source) = if &*above.name == "minecraft:mud" && !ctx.ultrawarm {
-        (Fluid::Water, true)
+    let fluid = if &*above.name == "minecraft:mud" && !ctx.ultrawarm {
+        Fluid::Water
     } else {
-        (above.fluid, above.fluid_level >= 8 && !above.fluid_falling)
+        above.fluid
     };
-    // canFillCauldron: only a water or lava source passes below a 2% roll.
-    if roll >= 0.02 && !(fluid != Fluid::None && source) {
+    // canFillCauldron is `fluid == Fluids.LAVA || fluid == Fluids.WATER`: the
+    // fluid above the root by its type, not by whether it is still a source, so
+    // a flowing fluid drips under the same 2% roll a source does.
+    if roll >= 0.02 && fluid == Fluid::None {
         return;
     }
     // getDripParticle: no fluid drips what the dimension's default says.
@@ -1994,8 +2000,10 @@ pub fn campfire_particles<'a>(
         }
     }
 }
-/// `CampfireBlock.makeParticles` (always visible, overriding the limiter);
-/// `smoking` adds the plain smoke puff at the logs.
+/// `CampfireBlock.makeParticles`: the cosy or signal smoke through
+/// `addAlwaysVisibleParticle(.., true, ..)` (it overrides the limiter but still
+/// rolls the Particles option); `smoking` adds the plain smoke puff at the logs
+/// through `addParticle`, so the limiter can drop it.
 pub fn make_campfire_smoke(
     engine: &mut ParticleEngine,
     pos: [i32; 3],
@@ -2014,7 +2022,13 @@ pub fn make_campfire_smoke(
     } else {
         T::CampfireCosySmoke
     };
-    engine.create(&ParticleOptions::simple(ty), [x, y, z], [0.0, 0.07, 0.0]);
+    engine.add_with(
+        &ParticleOptions::simple(ty),
+        [x, y, z],
+        [0.0, 0.07, 0.0],
+        true,
+        true,
+    );
     if smoking {
         let r = engine.random();
         let dx = r.next_double() / 4.0 * sign(r);
@@ -2024,13 +2038,49 @@ pub fn make_campfire_smoke(
             f64::from(pos[1]) + 0.4,
             f64::from(pos[2]) + 0.5 + dz,
         ];
-        engine.create(&ParticleOptions::simple(T::Smoke), at, [0.0, 0.005, 0.0]);
+        add(engine, T::Smoke, at, [0.0, 0.005, 0.0]);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `CampfireBlock.makeParticles` through `ClientLevel.doAddParticle`: the
+    /// cosy smoke overrides the limiter, the plain smoke does not, so it is
+    /// dropped beyond 32 blocks and at Particles: Minimal, and at Decreased
+    /// each puff is dropped when `calculateParticleLevel`'s `nextInt(3)` is 0.
+    #[test]
+    fn doused_campfire_smoke_goes_through_the_particle_limiter() {
+        use horizon_core::random::RandomSource as _;
+        use std::collections::{HashMap, HashSet};
+        let run = |level: u8, camera: [f64; 3]| {
+            let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+            engine.seed_randoms(5, 9, 0);
+            engine.created_requests = Some(Vec::new());
+            engine.particle_level = level;
+            engine.camera = camera;
+            for _ in 0..20 {
+                make_campfire_smoke(&mut engine, [0, 64, 0], false, true);
+            }
+            let made = engine.created_requests.take().unwrap();
+            let count = |ty| made.iter().filter(|(o, ..)| o.ty == ty).count();
+            (count(T::CampfireCosySmoke), count(T::Smoke))
+        };
+        let near = [0.5, 65.0, 0.5];
+        assert_eq!(run(0, near), (20, 20), "All");
+        assert_eq!(run(2, near), (20, 0), "Minimal");
+        assert_eq!(run(0, [100.5, 65.0, 0.5]), (20, 0), "100 blocks away");
+        // Decreased: per puff the cosy smoke's roll, then the plain smoke's.
+        let mut level = LegacyRandom::new(9);
+        let kept = (0..20)
+            .filter(|_| {
+                level.next_int_bound(3).unwrap();
+                level.next_int_bound(3).unwrap() != 0
+            })
+            .count();
+        assert!(0 < kept && kept < 20);
+        assert_eq!(run(1, near), (20, kept), "Decreased");
+    }
     #[test]
     fn classifies_animated_blocks() {
         let none = |_: &str| None;

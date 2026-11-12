@@ -27,6 +27,7 @@ pub struct NativeClientHooks {
     pub ingredient: fn(&str, &Map<String, Value>, &mut Vec<String>),
     pub ingredient_test: fn(&str, &Map<String, Value>, &ItemStack, &mut bool),
     pub log_line: fn(&str, &str, &str, &str),
+    pub living_death_message: fn(u32, &str, &mut Option<horizon_client_core::text::Text>),
     pub handshake: fn(
         std::net::SocketAddr,
         &mut String,
@@ -98,6 +99,16 @@ pub(crate) fn chat_decorate(
 pub(crate) fn living_heal(entity: u32, amount: &mut f32, cancel: &mut bool) {
     if let Some(hooks) = HOOKS.get() {
         (hooks.living_heal)(entity, amount, cancel);
+    }
+}
+
+pub(crate) fn living_death_message(
+    entity: u32,
+    kind: &str,
+    message: &mut Option<horizon_client_core::text::Text>,
+) {
+    if let Some(hooks) = HOOKS.get() {
+        (hooks.living_death_message)(entity, kind, message);
     }
 }
 

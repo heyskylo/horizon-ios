@@ -111,7 +111,7 @@ AdvancementTree.tryInsert	inline	crates/horizon-client/src/advancements.rs::Tree
 AdvancementTree.get	port	crates/horizon-client/src/advancements.rs::Tree::get	lookup by id
 AdvancementType.createAnnouncement	inline	crates/horizon-client/src/game/advancements.rs::Game::award	the chat line is built in award from the frame's key
 DisplayInfo.serializeToNetwork	port	crates/horizon-client/src/lan/advancements.rs::ServerAdvancements::write_advancement	writes title, description, icon, frame, flags and background
-DisplayInfo.fromNetwork	port	crates/horizon-protocol/src/packets/play.rs::UpdateAdvancements::read	reads the display and its flags
+DisplayInfo.fromNetwork	port	crates/horizon-protocol/src/packets/play/advancements.rs::UpdateAdvancements::read	reads the display and its flags
 TreeNodePosition.addChild	port	crates/horizon-client/src/advancements.rs::Layout::add_child	adds visible children in order
 TreeNodePosition.firstWalk	port	crates/horizon-client/src/advancements.rs::Layout::first_walk	first pass of the tree layout
 TreeNodePosition.secondWalk	port	crates/horizon-client/src/advancements.rs::Layout::second_walk	second pass: absolute positions and minimum

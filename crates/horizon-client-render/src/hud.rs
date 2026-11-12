@@ -12,7 +12,11 @@ use std::{
 };
 use wgpu::util::DeviceExt;
 
+use model_reducing::reducible_model_sprites;
+
+mod animate;
 pub mod cit_glint;
+mod model_reducing;
 mod pack_text;
 pub mod pictures;
 pub(crate) mod sprite_modifiers;
@@ -51,7 +55,7 @@ pub struct TextureFlags {
 impl TextureFlags {
     /// The `texture` section of a `.png.mcmeta` file, if it sets either flag.
     pub fn from_mcmeta(json: &str) -> Option<Self> {
-        let meta: serde_json::Value = serde_json::from_str(json).ok()?;
+        let meta = crate::packs::first_json(json.as_bytes())?;
         let section = meta.get("texture")?;
         let flag = |key| section.get(key).and_then(serde_json::Value::as_bool) == Some(true);
         let flags = Self {
@@ -98,9 +102,7 @@ pub struct HudAtlas {
     pub glint: (Vec<u8>, u32, u32),
     /// `misc/enchanted_glint_armor`, the armour layers' `GlintSampler`.
     pub glint_armor: (Vec<u8>, u32, u32),
-    /// A resource pack's own `core/text` shader for the GUI's text, translated;
-    /// none draws the text natively.
-    pub text_shader: Option<std::sync::Arc<crate::core_shader::CoreProgram>>,
+    pub text_shaders: crate::gfx::core_text::TextShaders,
     /// A resource pack's own `core/rendertype_lines` shader for the block outline, translated;
     /// none draws the outline natively.
     pub lines_shader: Option<std::sync::Arc<crate::core_shader::CoreProgram>>,
@@ -386,7 +388,7 @@ fn strip_frame(pixels: &[u8], stride: u32, x: u32, y: u32, w: u32, h: u32) -> Ve
 }
 /// The `animation` section of a texture's `.mcmeta`.
 fn animation_of(mcmeta: Option<&str>) -> Option<AnimationMetadata> {
-    let meta: serde_json::Value = serde_json::from_str(mcmeta?).ok()?;
+    let meta = crate::packs::first_json(mcmeta?.as_bytes())?;
     AnimationMetadata::from_json(&meta.get("animation")?.to_string()).ok()
 }
 /// An animated strip's first frame: the region the mcmeta's frame size picks
@@ -977,7 +979,7 @@ impl HudAtlas {
             font: crate::font::Font::metrics(root),
             glint: (Vec::new(), 1, 1),
             glint_armor: (Vec::new(), 1, 1),
-            text_shader: None,
+            text_shaders: Default::default(),
             lines_shader: None,
             sky_shader: None,
             stars_shader: None,
@@ -1046,7 +1048,7 @@ impl HudAtlas {
             glint: (vec![0; 4], 1, 1),
             glint_armor: (vec![0; 4], 1, 1),
             white,
-            text_shader: None,
+            text_shaders: Default::default(),
             lines_shader: None,
             sky_shader: None,
             stars_shader: None,
@@ -1054,25 +1056,6 @@ impl HudAtlas {
             random_textures: Default::default(),
             emissive: Default::default(),
             blinks: Default::default(),
-        }
-    }
-    /// `layout`, but when `extras` (Custom Item Textures) make the images more than `max`
-    /// holds, without them: they are left out, not the packs.
-    fn layout_leaving_out(
-        images: &mut Vec<PackedImage>,
-        animated: &mut Vec<String>,
-        extras: &HashSet<String>,
-        max: u32,
-    ) -> Result<(u32, Vec<(u32, u32)>, u32)> {
-        match Self::layout(images, max) {
-            Err(e) if !extras.is_empty() => {
-                images.retain(|i| !extras.contains(&i.0));
-                animated.retain(|n| !extras.contains(n));
-                let layout = Self::layout(images, max)?;
-                log::warn!("left out the custom item textures: {e}");
-                Ok(layout)
-            }
-            layout => layout,
         }
     }
     /// Shelf placements of `images` (tallest first) in the narrowest atlas
@@ -1427,32 +1410,7 @@ impl HudAtlas {
         }
         if full {
             // Official Recipes artwork from Just Enough Items, under MIT.
-            for (name, png) in [
-                (
-                    "button_enabled_v2",
-                    include_bytes!("jei_recipes/button_enabled_v2.png").as_slice(),
-                ),
-                (
-                    "button_disabled_v2",
-                    include_bytes!("jei_recipes/button_disabled_v2.png").as_slice(),
-                ),
-                (
-                    "button_highlight_v2",
-                    include_bytes!("jei_recipes/button_highlight_v2.png").as_slice(),
-                ),
-                (
-                    "icons/arrow_previous_v2",
-                    include_bytes!("jei_recipes/icons/arrow_previous_v2.png").as_slice(),
-                ),
-                (
-                    "icons/arrow_next_v2",
-                    include_bytes!("jei_recipes/icons/arrow_next_v2.png").as_slice(),
-                ),
-                (
-                    "search_background_v2",
-                    include_bytes!("jei_recipes/search_background_v2.png").as_slice(),
-                ),
-            ] {
+            for (name, png) in crate::jei_sprites::SPRITES {
                 let (width, height, rgba) = decode_bytes(png)?;
                 images.push((format!("horizon/jei/{name}"), width, height, rgba));
             }
@@ -1484,7 +1442,20 @@ impl HudAtlas {
         }
         images.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
         let (width, placements, glyph_region) =
-            Self::layout_leaving_out(&mut images, &mut animated, &cit_names, MAX_ATLAS_SIZE)?;
+            Self::layout_leaving_out(&mut images, &mut animated, &cit_names, MAX_ATLAS_SIZE)
+                .or_else(|error| -> Result<_> {
+                    let models = reducible_model_sprites(root, &images, &bordered);
+                    let layout = Self::layout_reducing_models(
+                        &mut images,
+                        &mut gui_sizes,
+                        &models,
+                        MAX_ATLAS_SIZE,
+                    )?;
+                    log::warn!(
+                        "reduced HUD model texture resolution to keep the resource pack: {error}"
+                    );
+                    Ok(layout)
+                })?;
         // A multiple of 1024 rather than a power of two: the default resources
         // need 4096x5120 (8192 rows before), Faithful 32x 4096x12288 (16384).
         let height = (glyph_region + GLYPH_ROWS).next_multiple_of(1024);
@@ -1608,7 +1579,7 @@ impl HudAtlas {
             sprite_animations,
             glint,
             glint_armor,
-            text_shader: None,
+            text_shaders: Default::default(),
             lines_shader: None,
             sky_shader: None,
             stars_shader: None,
@@ -2901,59 +2872,6 @@ impl HudRenderer {
             pack_text::PackText::new(device, self.format, &self.atlas_view, shader, self.coverage)
         });
     }
-    pub fn animate_sprites(
-        &mut self,
-        uploads: &mut crate::gfx::upload::Uploads,
-        encoder: &mut wgpu::CommandEncoder,
-        tick: u64,
-    ) {
-        let Some(texture) = &self.atlas_texture else {
-            return;
-        };
-        for (rect, animation, previous) in &mut self.sprite_animations {
-            // `SpriteContents.AnimationState`: the frame from the mcmeta's
-            // list, blended into the next one by the sub-frame's thousandths
-            // when the sprite interpolates.
-            let blend = animation.blend(tick);
-            let state = (blend.frame, blend.next, blend.millis);
-            if state == *previous {
-                continue;
-            }
-            let (w, h) = rect.texels((texture.width(), texture.height()));
-            let pixels = if blend.millis == 0 {
-                animation.resized_pixels(blend.frame, w, h)
-            } else {
-                let current = animation.resized_pixels(blend.frame, w, h);
-                let next = animation.resized_pixels(blend.next, w, h);
-                let millis = blend.millis;
-                current
-                    .iter()
-                    .zip(next)
-                    .map(|(&a, b)| {
-                        ((u32::from(a) * (1000 - millis) + u32::from(b) * millis + 500) / 1000)
-                            as u8
-                    })
-                    .collect()
-            };
-            uploads.texture(
-                encoder,
-                wgpu::TexelCopyTextureInfo {
-                    texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d {
-                        x: (rect.u0 * texture.width() as f32).round() as u32,
-                        y: (rect.v0 * texture.height() as f32).round() as u32,
-                        z: 0,
-                    },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                w,
-                h,
-                &pixels,
-            );
-            *previous = state;
-        }
-    }
     /// Stage `patches` into the shared atlas texture.
     pub fn upload_patches(
         &self,
@@ -3186,6 +3104,18 @@ mod coverage_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn animated_texture_metadata_ignores_trailing_pack_signature() {
+        let meta = r#"{"animation":{"frametime":2,"width":2,"height":2}}
+// High Contrast pack signature"#;
+        let animation = animation_of(Some(meta)).expect("the first JSON value is metadata");
+        assert_eq!(animation.frame_size(8, 4), [2, 2]);
+        let pixels = (0..8 * 4).flat_map(|i| [i as u8, 0, 0, 255]).collect();
+        let (_, height, first) = first_frame((8, 4, pixels), Some(&animation));
+        assert_eq!(height, 2);
+        assert_eq!(first.len(), 2 * 2 * 4);
+    }
 
     #[test]
     fn object_skin_revision_tracks_changes_and_capacity_clear() {
@@ -3843,6 +3773,47 @@ mod tests {
         assert_eq!(banner.texels((atlas.width, atlas.height)), (16, 32));
     }
     #[test]
+    fn a_root_single_sprite_strip_taller_than_the_atlas_packs_one_frame() {
+        let root = animated_root();
+        let atlases = root.join("assets/minecraft/atlases");
+        fs::create_dir_all(&atlases).unwrap();
+        fs::write(
+            atlases.join("items.json"),
+            r#"{"sources":[{"type":"single","resource":"nexo:abc123"},
+                {"type":"single","resource":"nexo:still"}]}"#,
+        )
+        .unwrap();
+        // Plugin-generated names need no item/ prefix. Keep the production
+        // strip's height, but use narrow frames to keep this fixture cheap.
+        let textures = root.join("assets/nexo/textures");
+        fs::create_dir_all(&textures).unwrap();
+        write_strip(
+            &textures.join("abc123.png"),
+            16,
+            32768,
+            &[[255, 0, 0, 255], [0, 0, 255, 255]],
+            Some(r#"{"animation":{"frames":[1024,0],"frametime":3}}"#),
+        );
+        write_strip(&textures.join("still.png"), 16, 32, &[[7, 8, 9, 255]], None);
+        let atlas = HudAtlas::build(&root).unwrap();
+        let _ = fs::remove_dir_all(&root);
+        let rect = atlas.sprites["nexo:abc123"];
+        assert_eq!(rect.texels((atlas.width, atlas.height)), (16, 16));
+        assert_eq!(texel_at(&atlas, rect, 0, 15), [0, 0, 255, 255]);
+        let (_, animation) = atlas
+            .sprite_animations
+            .iter()
+            .find(|(r, _)| r.u0 == rect.u0 && r.v0 == rect.v0)
+            .expect("the root-level single sprite animates");
+        assert_eq!(animation.frame(0), 1024);
+        assert_eq!(animation.frame(3), 0);
+        assert_eq!(animation.frame_count(), 2048);
+        assert_eq!(
+            atlas.sprites["nexo:still"].texels((atlas.width, atlas.height)),
+            (16, 32)
+        );
+    }
+    #[test]
     fn an_animated_gui_sprite_packs_its_first_frame_and_animates() {
         let root =
             std::env::temp_dir().join(format!("horizon-atlas-gui-anim-{}", std::process::id()));
@@ -4247,6 +4218,93 @@ texture=wide",
         assert_eq!(width, 16384);
         assert!(free + GLYPH_ROWS <= 16384);
         assert_inside(&images, width, &placements, free);
+    }
+    #[test]
+    fn model_resolution_fallback_protects_font_sources_and_gui_aliases() {
+        let root = animated_root();
+        write_png(&root, "item/font_sheet", 32, 32);
+        write_png(&root, "gui/panel", 32, 32);
+        write_png(&root, "hash", 32, 32);
+        let font = root.join("assets/minecraft/font/default.json");
+        fs::create_dir_all(font.parent().unwrap()).unwrap();
+        fs::write(
+            font,
+            r#"{"providers":[{"type":"bitmap","file":"minecraft:item/font_sheet.png","ascent":7,"chars":["a"]}]}"#,
+        ).unwrap();
+        let atlases = root.join("assets/minecraft/atlases");
+        fs::create_dir_all(&atlases).unwrap();
+        fs::write(
+            atlases.join("items.json"),
+            r#"{"sources":[
+                {"type":"single","resource":"item/font_sheet","sprite":"font_alias"},
+                {"type":"single","resource":"gui/panel","sprite":"gui_alias"},
+                {"type":"single","resource":"hash"}
+            ]}"#,
+        )
+        .unwrap();
+        let images = vec![
+            ("item/font_sheet".to_owned(), 32, 32, Vec::new()),
+            ("item/blurred".to_owned(), 32, 32, Vec::new()),
+            ("block/stone".to_owned(), 32, 32, Vec::new()),
+        ];
+        let models =
+            reducible_model_sprites(&root, &images, &HashSet::from(["item/blurred".to_owned()]));
+        let _ = fs::remove_dir_all(root);
+        assert_eq!(
+            models,
+            HashSet::from(["hash".to_owned(), "block/stone".to_owned()])
+        );
+    }
+    #[test]
+    fn overflowing_model_textures_shrink_without_changing_gui_sizes_or_slots() {
+        let mut images = vec![
+            (
+                "nexo:hash".into(),
+                1024,
+                1024,
+                [10, 20, 30, 255].repeat(1024 * 1024),
+            ),
+            (
+                "gui/panel".into(),
+                32,
+                32,
+                [40, 50, 60, 255].repeat(32 * 32),
+            ),
+            ("horizon/map".into(), 128, 128, Vec::new()),
+        ];
+        let models = HashSet::from(["nexo:hash".to_owned(), "horizon/map".to_owned()]);
+        let mut sizes = HashMap::new();
+        assert!(HudAtlas::layout(&images, 1024).is_err());
+        let (width, placements, free) =
+            HudAtlas::layout_reducing_models(&mut images, &mut sizes, &models, 1024).unwrap();
+        assert_inside(&images, width, &placements, free);
+        assert!(free + GLYPH_ROWS <= 1024);
+        let model = images.iter().find(|i| i.0 == "nexo:hash").unwrap();
+        assert_eq!((model.1, model.2), (256, 256));
+        assert_eq!(model.3, [10, 20, 30, 255].repeat(256 * 256));
+        assert_eq!(sizes["nexo:hash"], (1024, 1024));
+        let gui = images.iter().find(|i| i.0 == "gui/panel").unwrap();
+        assert_eq!((gui.1, gui.2), (32, 32));
+        assert_eq!(gui.3, [40, 50, 60, 255].repeat(32 * 32));
+        let slot = images.iter().find(|i| i.0 == "horizon/map").unwrap();
+        assert_eq!((slot.1, slot.2), (128, 128));
+        assert!(slot.3.is_empty());
+    }
+    #[test]
+    fn fitting_models_keep_their_pixels_and_existing_logical_sizes() {
+        let mut images = vec![("item/gem".into(), 32, 32, [1, 2, 3, 255].repeat(32 * 32))];
+        let original = images.clone();
+        let mut sizes = HashMap::from([("item/gem".to_owned(), (16, 16))]);
+        let models = HashSet::from(["item/gem".to_owned()]);
+        HudAtlas::layout_reducing_models(&mut images, &mut sizes, &models, 1024).unwrap();
+        assert_eq!(images, original);
+        assert_eq!(sizes["item/gem"], (16, 16));
+        // Protected oversized images remain an error; no unbounded retry or
+        // silent removal of GUI/font resources when shrinking cannot help.
+        images.push(("font/sheet".into(), 1024, 1024, Vec::new()));
+        assert!(HudAtlas::layout_reducing_models(&mut images, &mut sizes, &models, 1024).is_err());
+        assert_eq!((images[0].1, images[0].2), (1024, 1024));
+        assert_eq!(sizes["item/gem"], (16, 16));
     }
     #[test]
     fn textures_that_cannot_fit_are_an_error_not_a_gpu_panic() {

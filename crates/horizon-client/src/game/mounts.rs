@@ -280,7 +280,6 @@ impl Game<'_> {
                     // `hurtAndConvertOnBreak`: the stick breaks (the broken
                     // statistic and `onEquippedItemBroken`), then what is
                     // left is the rod, not a fresh plain one.
-                    self.award_stat("broken", &stack.item, 1);
                     self.player_equipment_broke(
                         horizon_world::player_inventory::EquipmentSlot::MainHand,
                         &stack,
@@ -450,6 +449,24 @@ impl Game<'_> {
             used = true;
         }
         if m.is_baby() && age_up > 0 && !m.extra.age_locked {
+            // AbstractHorse.handleEating (Camel's too): the HAPPY_VILLAGER's
+            // `getRandomX(1.0)`, `getRandomY() + 0.5` and `getRandomZ(1.0)`
+            // each draw a double from the mount's own random before it ages
+            // up. A server's `Level.addParticle` shows nothing: the client
+            // draws its own sparkle (`remote_feed_particles`).
+            let (feet, width, height) = (
+                [m.position.x, m.position.y, m.position.z],
+                f64::from(m.width()),
+                f64::from(m.height()),
+            );
+            horizon_client::particles::around_self(
+                &mut m.random,
+                feet,
+                width,
+                height,
+                horizon_client::particles::Burst::HORSE_EATING,
+                |_, _| {},
+            );
             m.extra.age = (m.extra.age + age_up * 20).min(0);
             used = true;
         }
@@ -460,22 +477,29 @@ impl Game<'_> {
         if !used {
             return false;
         }
-        // eating(): the mouth opens and the horse eats.
+        // eating(): the mouth opens and, unless the mount is silent, it eats at
+        // its feet, its own random drawing `1.0F + (nextFloat() - nextFloat())
+        // * 0.2F` for the pitch.
         m.anim.v[2] = 1.0;
-        let at = m.center();
+        let at = [m.position.x, m.position.y, m.position.z];
         let id = m.id;
-        let sound = match m.species() {
-            Species::Camel => "minecraft:entity.camel.eat",
-            Species::CamelHusk => "minecraft:entity.camel_husk.eat",
-            Species::Donkey => "minecraft:entity.donkey.eat",
-            Species::Mule => "minecraft:entity.mule.eat",
-            Species::Horse if m.is_baby() => "minecraft:entity.baby_horse.eat",
-            // ZombieHorse.getEatingSound.
-            Species::ZombieHorse => "minecraft:entity.zombie_horse.eat",
-            _ => "minecraft:entity.horse.eat",
-        };
-        let pitch = (self.world.random.next_float() - self.world.random.next_float()) * 0.2 + 1.0;
-        self.audio.play(sound, Some(at), 1.0, pitch);
+        if !m.silent {
+            let sound = match m.species() {
+                Species::Camel => "minecraft:entity.camel.eat",
+                Species::CamelHusk => "minecraft:entity.camel_husk.eat",
+                Species::Donkey => "minecraft:entity.donkey.eat",
+                Species::Mule => "minecraft:entity.mule.eat",
+                Species::Horse if m.is_baby() => "minecraft:entity.baby_horse.eat",
+                // ZombieHorse.getEatingSound.
+                Species::ZombieHorse => "minecraft:entity.zombie_horse.eat",
+                _ => "minecraft:entity.horse.eat",
+            };
+            let pitch = (m.random.next_float() - m.random.next_float()) * 0.2 + 1.0;
+            self.audio.play(sound, Some(at), 1.0, pitch);
+        }
+        // gameEvent(GameEvent.EAT): at the mount, from the mount.
+        let ctx = self.who_context(Some(Who::Mob(id)), None);
+        self.post_game_event("minecraft:eat", at, ctx);
         // Animal.setInLove: entity event 18.
         if loved {
             self.love_cause.insert(id, self.lan_acting);
@@ -930,6 +954,7 @@ impl Game<'_> {
         let m = &self.mobs[i];
         let hearts = horizon_client::hud_layout::vehicle_max_hearts(m.attrs.max_health);
         let draws = horizon_client::hud_layout::vehicle_health(w, h, hearts, m.health);
+        self.keep_status_rows(&draws, w, h);
         self.gui_layer("minecraft:vehicle_health", batch, |g, batch| {
             horizon_client::hud_layout::paint(batch, &g.gui.atlas, &draws);
         });
@@ -1053,7 +1078,7 @@ fn dismount_location(
 }
 /// `Entity.getCollisionHorizontalEscapeVector`: out of the vehicle's box
 /// along `yaw`, to the edge of the square it spans.
-fn escape_vector(vehicle_width: f64, passenger_width: f64, yaw: f32) -> Vec3 {
+pub(super) fn escape_vector(vehicle_width: f64, passenger_width: f64, yaw: f32) -> Vec3 {
     // 1.0E-5F: a float literal widened to double.
     let distance = (vehicle_width + passenger_width + f64::from(1.0e-5_f32)) / 2.0;
     let radians = f64::from(yaw * 0.017_453_292);
@@ -1162,6 +1187,51 @@ pub(super) fn start_riding_jump(
         Some((equine::jump_sound(m), 0.4))
     } else {
         None
+    }
+}
+
+impl Game<'_> {
+    /// ServerGamePacketListenerImpl.handlePlayerCommand START_RIDING_JUMP: the
+    /// vehicle the guest rides takes its own `handleStartJump` — a horse rears
+    /// and slides on the rider's keys, a camel dashes — and the sound vanilla's
+    /// server plays is broadcast to the players near the mount, the rider
+    /// included (their own client plays none).
+    pub(super) fn lan_start_riding_jump(
+        &mut self,
+        host: &mut super::lan::LanHost,
+        conn: u32,
+        data: i32,
+    ) {
+        let Some(Some(index)) = self.as_guest(host, conn, |g| g.mount_index()) else {
+            return;
+        };
+        let m = &mut self.mobs[index];
+        let camel = crate::mobs::camel::is_camel(m.species()).then_some(m.id);
+        let Some((sound, volume)) = crate::game::mounts::start_riding_jump(m, data) else {
+            return;
+        };
+        let at = m.center();
+        // LivingEntity.getSoundSource: a mob's sounds are in the neutral source.
+        let neutral = horizon_client::settings::SOUND_SOURCES
+            .iter()
+            .position(|s| *s == "neutral")
+            .unwrap_or(0) as i32;
+        host.hub.sound(
+            &format!("minecraft:{sound}"),
+            at,
+            volume,
+            1.0,
+            neutral,
+            None,
+        );
+        // Camel.handleStartJump, which the helper accepted: after the dash
+        // sound, `gameEvent(GameEvent.ENTITY_ACTION)` from the camel.
+        if let Some(id) = camel {
+            self.post_entity_event(
+                "minecraft:entity_action",
+                horizon_client::mobs::Who::Mob(id),
+            );
+        }
     }
 }
 
@@ -1532,6 +1602,204 @@ mod tests {
         assert_eq!(pose, Some(Pose::Swimming));
     }
 
+    /// A server-side game with nothing in it but an empty chunk, or None when
+    /// the prepared resources are missing (CI has no vanilla data).
+    fn server_game() -> Option<Game<'static>> {
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+            });
+        if !root.join("movement-properties.nbt").exists() {
+            return None;
+        }
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .ok()?;
+        let mut options = Options::parse(std::iter::empty()).ok()??;
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let res: &'static _ = Box::leak(Box::new(loaded.resources));
+        let mut game = Game::new(
+            res,
+            loaded.pack,
+            loaded.gui?,
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .ok()?;
+        game.creative = false;
+        game.options.dedicated = Some(Vec::new());
+        game.world.chunks.insert(
+            (0, 0),
+            std::sync::Arc::new(horizon_client::chunk::Chunk::empty(0, 0)),
+        );
+        game.streaming.forced.insert((0, 0));
+        Some(game)
+    }
+
+    /// What one feeding made the level show.
+    #[derive(Debug)]
+    struct Shown {
+        sounds: Vec<(String, [f64; 3], f32, f32)>,
+        events: Vec<(&'static str, [f64; 3], Option<Who>)>,
+    }
+
+    /// Feeds `item` to mob 0 and collects the sounds and the `minecraft:eat`
+    /// game events it made.
+    fn feed(game: &mut Game<'_>, item: &str) -> (bool, Shown) {
+        game.inventory[game.selected] = Some(ItemStack::new(item, 2));
+        game.audio.capture = Some(Vec::new());
+        crate::game::sculk::TEST_POSTED_EVENTS
+            .with(|events| *events.borrow_mut() = Some(Vec::new()));
+        let used = game.interact_mount(0, item);
+        let sounds = game
+            .audio
+            .capture
+            .take()
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.event, s.position, s.volume, s.pitch))
+            .collect();
+        let events = crate::game::sculk::TEST_POSTED_EVENTS.with(|events| {
+            events
+                .borrow_mut()
+                .take()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(event, _, _)| *event == "minecraft:eat")
+                .collect()
+        });
+        (used, Shown { sounds, events })
+    }
+
+    /// A whole, tamed mount of `kind` standing at `at` with `seed` for its own
+    /// random, alone in `game`.
+    fn mount(game: &mut Game<'_>, kind: &str, id: u32, at: [f64; 3], seed: i64) {
+        let kind = game.res.mob_types().get(kind).unwrap().clone();
+        let mut m = horizon_client::mobs::Mob::new(id, kind, Vec3::new(at[0], at[1], at[2]), 0.0);
+        m.extra.tame = true;
+        m.health = m.attrs.max_health;
+        m.random =
+            horizon_core::random::EntityRandom::own(horizon_core::random::LegacyRandom::new(seed));
+        game.mobs.clear();
+        game.mobs.push(m);
+    }
+
+    /// `AbstractHorse.handleEating`'s growth particle position draws:
+    /// `getRandomX(1.0)`, `getRandomY()` and `getRandomZ(1.0)` take a double each.
+    fn sparkle_draws(r: &mut horizon_core::random::LegacyRandom) {
+        for _ in 0..3 {
+            r.next_double();
+        }
+    }
+
+    /// `AbstractHorse.handleEating`: a mouthful that ages a baby up draws the
+    /// happy villager's position from the mount's own random (`getRandomX`,
+    /// `getRandomY` and `getRandomZ` take a double each) before it grows; a
+    /// mount that is not silent then eats with `1.0F + (nextFloat() -
+    /// nextFloat()) * 0.2F` of its own random at its feet, and every used
+    /// mouthful is a `minecraft:eat` game event. A silent mount eats
+    /// noiselessly, drawing no pitch, and a locked baby grows not at all.
+    #[test]
+    fn feeding_a_mount_draws_from_its_own_random_and_posts_eat() {
+        let Some(mut game) = server_game() else {
+            return;
+        };
+        // A silent baby horse fed wheat: the particle's draws, the growth, the
+        // event, and no eating sound (so no pitch draws).
+        mount(&mut game, "minecraft:horse", 1, [1.5, 64.0, -2.5], 7);
+        game.mobs[0].extra.age = -24000;
+        game.mobs[0].silent = true;
+        let level_random = game.world.random.clone().next_long();
+        let (used, shown) = feed(&mut game, "minecraft:wheat");
+        assert!(used, "wheat is horse food");
+        let mut r = horizon_core::random::LegacyRandom::new(7);
+        sparkle_draws(&mut r);
+        let at = [1.5, 64.0, -2.5];
+        assert!(shown.sounds.is_empty(), "Silent: {shown:?}");
+        assert_eq!(shown.events, vec![("minecraft:eat", at, Some(Who::Mob(1)))]);
+        assert_eq!(game.mobs[0].extra.age, -23600, "wheat ages a horse by 20 s");
+        assert_eq!(
+            game.mobs[0].random.clone().next_double(),
+            r.next_double(),
+            "three doubles for the particle, none for a silent pitch"
+        );
+        assert_eq!(
+            game.world.random.clone().next_long(),
+            level_random,
+            "the level's own random drew nothing"
+        );
+
+        // A hurt adult draws no particle and eats at its feet, its pitch from
+        // its own random, after healing.
+        mount(&mut game, "minecraft:horse", 2, [0.5, 64.0, 0.5], 11);
+        game.mobs[0].health = game.mobs[0].attrs.max_health - 5.0;
+        let max = game.mobs[0].attrs.max_health;
+        let (used, shown) = feed(&mut game, "minecraft:wheat");
+        assert!(used);
+        let mut r = horizon_core::random::LegacyRandom::new(11);
+        let pitch = (r.next_float() - r.next_float()) * 0.2 + 1.0;
+        let at = [0.5, 64.0, 0.5];
+        assert_eq!(
+            shown.sounds,
+            vec![("minecraft:entity.horse.eat".to_string(), at, 1.0, pitch)],
+            "{shown:?}"
+        );
+        assert_eq!(game.mobs[0].health, max - 3.0, "wheat heals 2");
+        assert_eq!(shown.events, vec![("minecraft:eat", at, Some(Who::Mob(2)))]);
+
+        // An age-locked baby that is tamed and whole eats nothing at all.
+        mount(&mut game, "minecraft:horse", 3, [0.5, 64.0, 2.5], 13);
+        game.mobs[0].extra.age = -24000;
+        game.mobs[0].extra.age_locked = true;
+        let (used, shown) = feed(&mut game, "minecraft:wheat");
+        assert!(!used, "a locked baby leaves the wheat alone: {shown:?}");
+        assert!(
+            shown.sounds.is_empty() && shown.events.is_empty(),
+            "{shown:?}"
+        );
+        assert_eq!(game.mobs[0].extra.age, -24000);
+        assert_eq!(
+            game.mobs[0].random.clone().next_double(),
+            horizon_core::random::LegacyRandom::new(13).next_double(),
+            "nothing drawn"
+        );
+
+        // A baby camel fed cactus: `Camel.handleEating` draws the same particle,
+        // then eats and posts EAT, the three doubles before the two floats.
+        mount(&mut game, "minecraft:camel", 4, [0.5, 64.0, 4.5], 21);
+        game.mobs[0].extra.age = -24000;
+        let (used, shown) = feed(&mut game, "minecraft:cactus");
+        assert!(used, "cactus is camel food");
+        let mut r = horizon_core::random::LegacyRandom::new(21);
+        sparkle_draws(&mut r);
+        let pitch = (r.next_float() - r.next_float()) * 0.2 + 1.0;
+        let at = [0.5, 64.0, 4.5];
+        assert_eq!(
+            shown.sounds,
+            vec![("minecraft:entity.camel.eat".to_string(), at, 1.0, pitch)],
+            "{shown:?}"
+        );
+        assert_eq!(shown.events, vec![("minecraft:eat", at, Some(Who::Mob(4)))]);
+        assert_eq!(game.mobs[0].extra.age, -23800, "camel cactus ages 10 s");
+    }
+
     #[test]
     fn the_escape_vector_reaches_the_edge_of_the_square() {
         let edge = (0.9 + 0.6 + f64::from(1.0e-5_f32)) / 2.0;
@@ -1542,3 +1810,7 @@ mod tests {
         assert!((v.x + edge).abs() < 1.0e-3 && (v.z - edge).abs() < 1.0e-3);
     }
 }
+
+#[cfg(test)]
+#[path = "camel_jump_tests.rs"]
+mod camel_jump_tests;

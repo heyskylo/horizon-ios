@@ -281,10 +281,7 @@ impl Game<'_> {
             Some(format!("minecraft:{}", nautilus::saddle_sound(m)))
         } else {
             put_on.map(|s| {
-                self.res
-                    .items()
-                    .get(&s.item)
-                    .and_then(|i| i.equip_sound.clone())
+                horizon_client::item_sync::equip_sound(s, self.res.items())
                     .unwrap_or_else(|| "minecraft:item.armor.equip_generic".into())
             })
         };

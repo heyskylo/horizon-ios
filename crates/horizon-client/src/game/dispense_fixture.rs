@@ -23,10 +23,7 @@ use horizon_client::{
     projectiles::ProjectileKind,
     world::World,
 };
-use horizon_core::{
-    position::BlockPos,
-    random::{LegacyRandom, RandomSource},
-};
+use horizon_core::{position::BlockPos, random::RandomSource};
 use horizon_world::{level::Ticks, registry::BlockStateId};
 use serde_json::Value;
 use std::{cell::RefCell, collections::HashMap, fmt::Write as _, io::Write as _, sync::Arc};
@@ -190,6 +187,9 @@ impl Game<'_> {
     fn dispense_case(&mut self, case: &Value) -> Result<Vec<String>> {
         let seed = case["seed"].as_i64().unwrap_or(0);
         self.fixture_reset(seed);
+        if let Some(op) = case.get("blocking_wear") {
+            return self.fixture_blocking_wear(op);
+        }
         // The oracle level answers one sky and one block light everywhere.
         let light = case["light"].as_array();
         let level = |i: usize, default: i64| {
@@ -301,7 +301,7 @@ impl Game<'_> {
             }
         }
         // Creating the targets must not move the stream the dispenser draws from.
-        self.world.random = LegacyRandom::new(seed);
+        self.world.random.set_seed(seed);
         self.world.block_log = Some(Vec::new());
         self.audio.capture = Some(Vec::new());
         LOG.with(|log| *log.borrow_mut() = Some(Vec::new()));
@@ -319,7 +319,11 @@ impl Game<'_> {
         );
         let state = self.world.block(origin.x, origin.y, origin.z);
         let mut used = Vec::new();
-        if let Some(op) = case.get("wind_burst") {
+        if let Some(op) = case.get("shield_hit") {
+            used = self.fixture_shield_hit(op)?;
+        } else if let Some(op) = case.get("special_attack") {
+            used = self.fixture_special_attack(op)?;
+        } else if let Some(op) = case.get("wind_burst") {
             let center = [
                 op["center"][0].as_f64().ok_or("wind center x")?,
                 op["center"][1].as_f64().ok_or("wind center y")?,
@@ -350,7 +354,7 @@ impl Game<'_> {
             let found =
                 self.find_respawn_and_use(config, op["consume"].as_bool().unwrap_or(true))?;
             used.push(match found {
-                Some((p, yaw)) => format!(
+                Some((p, yaw, _pitch)) => format!(
                     "respawn {} {} {} {}",
                     num(p.x),
                     num(p.y),
@@ -495,6 +499,68 @@ impl Game<'_> {
         Ok(out)
     }
 
+    /// Actual player combat and blocking-item side effects, without a window or connection.
+    fn fixture_shield_hit(&mut self, op: &Value) -> Result<Vec<String>> {
+        let stack = parse_stack(op["item"].as_str().ok_or("shield_hit item")?)?
+            .ok_or("shield_hit requires an item")?;
+        let item = stack.item.clone();
+        self.creative = op["creative"].as_bool().unwrap_or(false);
+        self.mode = if self.creative {
+            GameMode::Creative
+        } else {
+            GameMode::Survival
+        };
+        self.player = Some(PlayerMotion::new(
+            self.motion,
+            horizon_core::geometry::Vec3::new(0.0, 0.0, 0.0),
+        )?);
+        self.yaw = 0.0;
+        self.armor = Default::default();
+        self.offhand = Some(stack);
+        self.using = Some((super::shield::OFFHAND_SLOT, 100));
+        self.combat = Default::default();
+        let before = self.stats.get("used", &item);
+        let from = horizon_core::geometry::Vec3::new(
+            0.0,
+            0.0,
+            if op["behind"].as_bool().unwrap_or(false) {
+                -1.0
+            } else {
+                1.0
+            },
+        );
+        let mut arrow = horizon_client::projectiles::Projectile::new(
+            ProjectileKind::Arrow {
+                base_damage: op["damage"].as_f64().unwrap_or(8.0),
+                critical: false,
+                effect: None,
+            },
+            from,
+            None,
+        );
+        arrow.velocity = horizon_core::geometry::Vec3::new(0.0, 0.0, 1.0);
+        arrow.arrow.as_mut().unwrap().pierce = u8::from(op["pierce"].as_bool().unwrap_or(false));
+        self.projectile_hit(
+            &arrow,
+            horizon_client::projectiles::Hit::Entity {
+                who: horizon_client::mobs::Who::Player,
+                at: horizon_core::geometry::Vec3::ZERO,
+            },
+        )?;
+        let out = vec![format!(
+            "shield health={} used={} stack={}",
+            num(f64::from(self.player.as_ref().unwrap().health.health())),
+            self.stats.get("used", &item) - before,
+            self.offhand
+                .as_ref()
+                .map_or_else(|| "-".to_owned(), |s| format!("{}:{}", s.count, s.damage))
+        )];
+        self.player = None;
+        self.offhand = None;
+        self.using = None;
+        Ok(out)
+    }
+
     /// A player holding the case's item right-clicks the block at `pos`
     /// (`use_item_as_player`'s block steps): the statistics, the result
     /// and the held stack, as `VanillaDispenserOracle.use` prints them.
@@ -576,6 +642,7 @@ impl Game<'_> {
                 dim: self.dim,
                 pos: [p(0), p(1), p(2)],
                 yaw: 0.0,
+                pitch: 0.0,
                 forced: false,
             });
         }
@@ -664,6 +731,46 @@ impl Game<'_> {
         self.using = None;
         self.offhand = None;
         Ok(out)
+    }
+
+    /// Compare a raised item's durability across two frontal hits.
+    fn fixture_blocking_wear(&mut self, op: &Value) -> Result<Vec<String>> {
+        let stack = parse_stack(op["item"].as_str().ok_or("missing blocking stack")?)?
+            .ok_or("empty blocking stack")?;
+        // Reload the stack just as a player inventory does between sessions.
+        let saved = horizon_items::item_nbt::item_to_nbt(&stack);
+        self.inventory[self.selected] = horizon_items::item_nbt::item_from_nbt(&saved);
+        let (creative, mode) = (self.creative, self.mode);
+        self.creative = op["creative"].as_bool().unwrap_or(false);
+        self.mode = if self.creative {
+            GameMode::Creative
+        } else {
+            GameMode::Survival
+        };
+        self.combat = Default::default();
+        self.using = None;
+        self.shield_cooldown = 0;
+        self.yaw = 0.0;
+        self.player = Some(PlayerMotion::new(
+            self.motion,
+            horizon_core::geometry::Vec3::new(0.0, 64.0, 0.0),
+        )?);
+        if !self.raise_shield(self.selected) || self.using.is_none() {
+            return Err("could not raise blocking stack".into());
+        }
+        let mut lines = Vec::new();
+        for _ in 0..2 {
+            self.hurt_player_from(4.0, Some([0.0, 64.0, 2.0]), "minecraft:arrow", Some(None));
+            let stack = self.inventory[self.selected].as_ref();
+            let (count, damage) = stack.map_or((0, 0), |stack| (stack.count, stack.damage));
+            lines.push(format!("blocking wear {count} {damage}"));
+        }
+        self.player = None;
+        self.using = None;
+        self.inventory[self.selected] = None;
+        self.creative = creative;
+        self.mode = mode;
+        Ok(lines)
     }
 
     /// The player's hit on the first target with the case's item, from the
@@ -1079,6 +1186,8 @@ impl Game<'_> {
             let mut stand = horizon_client::entities::ArmorStand::new(id, at, yaw);
             stand.marker = e["marker"].as_bool().unwrap_or(false);
             stand.on_ground = e["ground"].as_bool().unwrap_or(false);
+            stand.show_arms = e["arms"].as_bool().unwrap_or(false);
+            stand.disabled_slots = e["disabled"].as_i64().unwrap_or(0) as i32;
             if let Some(last_hit) = e["last_hit"].as_i64() {
                 stand.last_hit = last_hit;
             }

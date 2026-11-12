@@ -131,6 +131,10 @@ pub(super) trait Editor {
     fn accepts(&self, _edit: usize, _current: &str, _cursor: usize, _c: char) -> bool {
         true
     }
+    /// The box's tooltip (`EditBox.setTooltip`), if it has one.
+    fn edit_tooltip(&self, _edit: usize) -> Option<Text> {
+        None
+    }
     /// Whether Enter is Done (a screen with its own `keyPressed`).
     fn enter_confirms(&self) -> bool {
         true
@@ -169,6 +173,41 @@ impl BlockEditScreen {
     pub(super) fn text_focused(&self) -> bool {
         self.focus.is_some()
     }
+}
+
+/// `WidgetTooltipHolder.refreshTooltipForNextRenderPass`: hovering or keyboard focus shows it.
+fn edit_tooltip(
+    atlas: &horizon_client::hud::HudAtlas,
+    editor: &dyn Editor,
+    items: &[Item],
+    cursor: (f32, f32),
+    focus: Option<usize>,
+    keyboard: bool,
+    virtual_pointer: bool,
+) -> Option<(Vec<Text>, [f32; 4], bool)> {
+    let mut hovered = None;
+    for item in items {
+        if let Item::Edit { index, x, y, w } = item {
+            let hover = !virtual_pointer && ui::hovered(cursor, *x, *y, *w, 20.0);
+            let focused = keyboard && focus == Some(*index);
+            if (hover || focused)
+                && let Some(tip) = editor.edit_tooltip(*index)
+            {
+                // `Tooltip.splitTooltip` uses 170 GUI pixels, including translated text.
+                let tooltip = (
+                    atlas.font.split(&tip, 170.0),
+                    [*x, *y, *w, 20.0],
+                    focused && !hover,
+                );
+                // `GuiGraphicsExtractor.setTooltipForNextFrame`: the focused widget wins.
+                if focused {
+                    return Some(tooltip);
+                }
+                hovered = Some(tooltip);
+            }
+        }
+    }
+    hovered
 }
 
 impl Game<'_> {
@@ -243,6 +282,11 @@ impl Game<'_> {
         match outcome {
             Outcome::Stay => {}
             Outcome::Send(packet) => {
+                // The integrated server is this game: vanilla's packet handler
+                // applies the edit there, so a local game applies it here.
+                if self.remote.is_none() {
+                    self.apply_local_editor_packet(&packet);
+                }
                 self.send(packet);
                 self.close_block_editor();
             }
@@ -253,6 +297,14 @@ impl Game<'_> {
                 self.close_block_editor();
             }
             Outcome::Cancel => self.close_block_editor(),
+        }
+    }
+
+    /// The server side of an editor's packet, for the game that is its own
+    /// server: `handleSetJigsawBlock` and its siblings run on the server.
+    fn apply_local_editor_packet(&mut self, packet: &S) {
+        if let S::SetJigsawBlock(p) = packet {
+            self.apply_set_jigsaw_block(p);
         }
     }
 
@@ -352,6 +404,29 @@ impl Game<'_> {
                         batch, atlas, *x, *y, *sw, label, *value, hover, true, dragging,
                     );
                 }
+            }
+        }
+        // The focus navigator's pointer is hidden, not an actual mouse hover.
+        let navigation_focus = self.pad_focus_rect();
+        let focus = navigation_focus.map_or(screen.focus, |rect| {
+            items.iter().find_map(|item| match item {
+                Item::Edit { index, x, y, w } if [*x, *y, *w, 20.0] == rect => Some(*index),
+                _ => None,
+            })
+        });
+        if let Some((lines, rect, focused)) = edit_tooltip(
+            atlas,
+            screen.editor.as_ref(),
+            &items,
+            cursor,
+            focus,
+            self.narration.input_type().is_keyboard(),
+            navigation_focus.is_some(),
+        ) {
+            if focused {
+                ui::tooltip_focused(batch, atlas, &lines, rect);
+            } else {
+                ui::tooltip_menu(batch, atlas, &lines, cursor, rect);
             }
         }
         self.block_editor = Some(screen);
@@ -643,6 +718,107 @@ pub(super) fn on_off(on: bool) -> Text {
 mod tests {
     use super::*;
 
+    struct TooltipEditor;
+
+    impl Editor for TooltipEditor {
+        fn edits(&mut self) -> &mut [EditBox] {
+            &mut []
+        }
+        fn items(&self, _entity: &BlockEntity, _w: f32, _h: f32) -> Vec<Item> {
+            Vec::new()
+        }
+        fn press(
+            &mut self,
+            _entity: &mut BlockEntity,
+            _pos: Pos,
+            _id: u8,
+            _shift: bool,
+            _alt: bool,
+        ) -> Outcome {
+            Outcome::Stay
+        }
+        fn done(&mut self, _entity: &mut BlockEntity, _pos: Pos) -> Outcome {
+            Outcome::Stay
+        }
+        fn cancel(&mut self, _entity: &mut BlockEntity) {}
+        fn edit_tooltip(&self, edit: usize) -> Option<Text> {
+            match edit {
+                4 => Some(Text::literal(
+                    "A long explanation of the selection priority that must wrap without losing any of its words.",
+                )),
+                5 => Some(Text::literal("Placement priority")),
+                _ => None,
+            }
+        }
+    }
+
+    #[test]
+    fn edit_tooltips_follow_hover_keyboard_and_hidden_navigation_pointer() {
+        let atlas = horizon_client::hud::HudAtlas::boot();
+        let items = [
+            Item::Edit {
+                index: 0,
+                x: 7.0,
+                y: 20.0,
+                w: 300.0,
+            },
+            Item::Edit {
+                index: 5,
+                x: 110.0,
+                y: 160.0,
+                w: 98.0,
+            },
+            Item::Edit {
+                index: 4,
+                x: 7.0,
+                y: 160.0,
+                w: 98.0,
+            },
+        ];
+        let get = |cursor, focus, keyboard, virtual_pointer| {
+            edit_tooltip(
+                &atlas,
+                &TooltipEditor,
+                &items,
+                cursor,
+                focus,
+                keyboard,
+                virtual_pointer,
+            )
+        };
+        let (lines, rect, focused) = get((20.0, 165.0), None, false, false).unwrap();
+        assert_eq!(rect, [7.0, 160.0, 98.0, 20.0]);
+        assert!(!focused);
+        assert!(lines.len() > 1);
+        assert!(
+            lines
+                .iter()
+                .all(|line| atlas.font.width_text(line) <= 170.0)
+        );
+        assert_eq!(
+            lines.iter().map(Text::plain).collect::<Vec<_>>().join(" "),
+            "A long explanation of the selection priority that must wrap without losing any of its words."
+        );
+        assert!(get((0.0, 0.0), Some(4), true, false).unwrap().2);
+        assert!(get((0.0, 0.0), Some(4), false, false).is_none());
+        // A real hover uses the menu positioner, even when the field has keyboard focus.
+        assert!(!get((20.0, 165.0), Some(4), true, false).unwrap().2);
+        // Keyboard/controller navigation puts a hidden pointer in the field's center.
+        assert!(get((56.0, 170.0), Some(4), true, true).unwrap().2);
+        assert!(get((56.0, 170.0), None, true, true).is_none());
+        assert!(get((20.0, 25.0), Some(0), true, false).is_none());
+        assert!(get((105.0, 180.0), None, false, false).is_none());
+        // A keyboard-focused field overrides a different field's real hover.
+        let (focused_lines, focused_rect, focused) =
+            get((120.0, 165.0), Some(4), true, false).unwrap();
+        assert_eq!(
+            focused_lines.iter().map(Text::plain).collect::<Vec<_>>(),
+            lines.iter().map(Text::plain).collect::<Vec<_>>()
+        );
+        assert_eq!(focused_rect, rect);
+        assert!(focused);
+    }
+
     #[test]
     fn name_characters_follow_screen_is_valid_character_for_name() {
         assert!(valid_character_for_name("", 'a', 0));
@@ -666,5 +842,47 @@ mod tests {
         assert_eq!(cycle(&[1, 2, 3], 1, -1), 3);
         assert_eq!(cycle(&[1, 2, 3], 9, 1), 1);
         assert_eq!(cycle(&[1, 2, 3], 9, -1), 2);
+    }
+
+    /// A single-player jigsaw edit is applied by the game that is its own
+    /// server, as `handleSetJigsawBlock` does there, and marks the chunk.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_local_jigsaw_edit_applies_and_marks_the_chunk() {
+        let mut game = crate::game::native_machines::tests::server_game();
+        let pos = (2, 4, 3);
+        let state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:jigsaw")
+            .unwrap();
+        game.world.set(pos.0, pos.1, pos.2, state).unwrap();
+        game.world
+            .block_entities
+            .insert(pos, BlockEntity::JigsawBlock(Box::default()));
+        game.world.modified.clear();
+        let packet = S::SetJigsawBlock(horizon_protocol::packets::play::SetJigsawBlock {
+            pos: [2, 4, 3],
+            name: "minecraft:test".into(),
+            target: "minecraft:test".into(),
+            pool: "minecraft:empty".into(),
+            final_state: "minecraft:air".into(),
+            joint: "aligned".into(),
+            selection_priority: 1,
+            placement_priority: 2,
+        });
+
+        game.block_editor_outcome(Outcome::Send(packet));
+
+        let Some(BlockEntity::JigsawBlock(b)) = game.world.block_entities.get(&pos) else {
+            panic!("no jigsaw");
+        };
+        assert_eq!(&*b.name, "minecraft:test", "the edit landed");
+        assert_eq!((b.selection_priority, b.placement_priority), (1, 2));
+        assert!(
+            game.world.modified.contains(&(0, 0)),
+            "the edit left the chunk unmarked"
+        );
     }
 }

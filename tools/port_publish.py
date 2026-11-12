@@ -24,6 +24,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 
 try:
@@ -252,3 +253,9 @@ def kira_card(new, url):
         return None
     return kira("card_add", {"title": f"Port Horizon to Minecraft {new}", "url": url, "column": "todo",
                              "labels": [LABEL]})
+
+
+if __name__ == "__main__":
+    # A module, not a command: say how it is used instead of doing nothing at all.
+    print(__doc__, file=sys.stderr)
+    raise SystemExit(2)

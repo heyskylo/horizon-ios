@@ -207,6 +207,7 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         path: out.join("cpu.png"),
         size: None,
         scaled: false,
+        background: false,
     });
     renderer.render(&frame)?;
     let expected = read(&out.join("cpu.png"));
@@ -251,6 +252,7 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         path: out.join("gpu.png"),
         size: None,
         scaled: false,
+        background: false,
     });
     renderer.render(&frame)?;
     assert_eq!(

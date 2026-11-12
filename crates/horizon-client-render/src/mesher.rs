@@ -21,9 +21,7 @@ use crate::{
     models::catalog::BakedFace,
 };
 use horizon_assets::model::Direction as ModelDirection;
-use horizon_core::{
-    biome::BiomeZoom, geometry::Direction, position::BlockPos, random::position_seed,
-};
+use horizon_core::{biome::BiomeZoom, geometry::Direction, position::BlockPos};
 use horizon_optifine::ctm::connect::{Axes as CtmAxes, Face as CtmFace};
 use horizon_world::{
     block_render::FaceVisibility,
@@ -59,6 +57,16 @@ pub const CULL_BACK: [i8; 4] = [0, 0, 0, 1];
 /// `Vertex::normal.w` of a shaded quad of an `entityCutoutCull` model (the bat): shaded by the
 /// normal like -127, and `entity.wgsl` also discards its back-facing pixels.
 pub const SHADED_CULL_W: i8 = -126;
+/// `Vertex::normal` of a quad of an `entitySolid` model, which culls its back faces: a quad
+/// the shader shades by its normal keeps it ([`SHADED_CULL_W`]), a baked-colour one (no
+/// normal) gets [`CULL_BACK`].
+pub fn cull_back(normal: [i8; 4]) -> [i8; 4] {
+    if normal == [0; 4] {
+        CULL_BACK
+    } else {
+        [normal[0], normal[1], normal[2], SHADED_CULL_W]
+    }
+}
 /// A section vertex: vanilla's `DefaultVertexFormat.BLOCK` (position, colour,
 /// UV0, UV2) with the sprite's array layer beside the light, in 24 bytes
 /// rather than vanilla's 28: the UV is fixed point, which holds model UVs
@@ -142,6 +150,17 @@ impl TerrainVertex {
     /// The UV the GPU samples.
     pub fn uv(&self) -> [f32; 2] {
         self.uv.map(|v| f32::from(v) / UV_STEPS)
+    }
+}
+#[cfg(test)]
+mod cull_back_tests {
+    use super::{CULL_BACK, SHADED_CULL_W, cull_back};
+    /// #15322: a shaded `entitySolid` quad keeps its normal and culls; a baked one has
+    /// no normal and only culls.
+    #[test]
+    fn cull_back_keeps_a_shaded_normal() {
+        assert_eq!(cull_back([0; 4]), CULL_BACK);
+        assert_eq!(cull_back([0, 127, 0, 127]), [0, 127, 0, SHADED_CULL_W]);
     }
 }
 #[cfg(test)]
@@ -761,6 +780,49 @@ pub struct MeshTables {
     colormaps: Vec<Arc<crate::environment::Colormap>>,
     water_colormap: Option<u16>,
 }
+/// Vanilla's four biome colour functions (`BiomeColors`) with what the packs replace them by:
+/// `biome_colors` (a colormap or a flat colour), else the colormap a block modifier gives
+/// `grass_block`, `oak_leaves` or `leaf_litter`, or a fluid modifier gives water, which Polytone
+/// spreads to every block of that function. Each with the tints that read it.
+fn biome_functions(
+    pack_root: &std::path::Path,
+    modifiers: &[(bool, horizon_polytone::Targets, String)],
+) -> Vec<(&'static [Tint], crate::environment::Colormap)> {
+    use crate::environment::Colormap;
+    use horizon_polytone::colors::BiomeColor;
+    const FUNCTIONS: [(&str, &str, &[Tint]); 4] = [
+        (
+            "grass",
+            "minecraft:grass_block",
+            &[
+                Tint::Grass,
+                Tint::GrassBlock,
+                Tint::TallGrassUpper,
+                Tint::SugarCane,
+            ],
+        ),
+        ("foliage", "minecraft:oak_leaves", &[Tint::Foliage]),
+        ("dry_foliage", "minecraft:leaf_litter", &[Tint::DryFoliage]),
+        ("water", "minecraft:water", &[Tint::Water]),
+    ];
+    let colors = horizon_polytone::colors::PackColors::read(pack_root);
+    FUNCTIONS
+        .into_iter()
+        .filter_map(|(function, block, tints)| {
+            let colormap = match colors.biome_color(function) {
+                Some(BiomeColor::Flat(rgb)) => Some(Colormap::flat(rgb)),
+                Some(BiomeColor::Colormap(id)) => Colormap::load(pack_root, &id),
+                None => modifiers
+                    .iter()
+                    .find(|(fluid, targets, _)| {
+                        *fluid == (function == "water") && targets.matches(block, |_| false)
+                    })
+                    .and_then(|(_, _, id)| Colormap::load(pack_root, id)),
+            }?;
+            Some((tints, colormap))
+        })
+        .collect()
+}
 fn stem_color(age: u8) -> u32 {
     let a = u32::from(age);
     (a * 32) << 16 | (255 - a * 8) << 8 | (a * 4)
@@ -863,19 +925,7 @@ impl MeshTables {
                 || (matches!(name, "sculk_sensor" | "calibrated_sculk_sensor")
                     && props.get("sculk_sensor_phase").map(String::as_str) == Some("active"));
             // OffsetType.XZ/XYZ with getMaxHorizontalOffset/getMaxVerticalOffset.
-            let offset = s.random_offset.then(|| {
-                let horizontal = if s.has_class("SpeleothemBlock") {
-                    0.125
-                } else {
-                    0.25
-                };
-                let vertical = match name {
-                    "small_dripleaf" => 0.1,
-                    "short_grass" | "fern" | "short_dry_grass" | "tall_dry_grass" => 0.2,
-                    _ => 0.0,
-                };
-                (horizontal, vertical)
-            });
+            let offset = s.max_offset();
             let mut face = [0u8; 6];
             let mut cover = [0f32; 6];
             // A server's visibility knows no state (`FaceVisibility::empty`):
@@ -945,7 +995,8 @@ impl MeshTables {
     }
     /// These tables with the colormaps of the Polytone block and fluid modifiers of the packs
     /// merged at `pack_root` (wiki "Colormaps"): a tinted block they target takes its colour
-    /// from the colormap, and its own tint where the colormap's pixel is transparent.
+    /// from the colormap, and its own tint where the colormap's pixel is transparent. Vanilla's
+    /// four biome colour functions take the packs' `biome_colors` first (wiki "Custom Colors").
     #[must_use]
     pub fn with_polytone_colormaps(
         mut self,
@@ -953,7 +1004,8 @@ impl MeshTables {
         registry: &horizon_world::registry::BlockRegistry,
     ) -> Self {
         let modifiers = crate::environment::polytone_colormap_modifiers(pack_root);
-        if modifiers.is_empty() {
+        let biome_functions = biome_functions(pack_root, &modifiers);
+        if modifiers.is_empty() && biome_functions.is_empty() {
             return self;
         }
         let mut loaded: std::collections::HashMap<String, Option<u16>> = Default::default();
@@ -964,7 +1016,24 @@ impl MeshTables {
                 Some((colormaps.len() - 1) as u16)
             })
         };
+        for (tints, colormap) in biome_functions {
+            self.colormaps.push(Arc::new(colormap));
+            let i = Some((self.colormaps.len() - 1) as u16);
+            if tints == [Tint::Water] {
+                self.water_colormap = i;
+            }
+            for info in &mut self.info {
+                let own = &info.tints[..usize::from(info.tint_count).min(2)];
+                if own.iter().any(|t| tints.contains(t)) {
+                    info.colormap = i;
+                }
+            }
+        }
+        let water_function = self.water_colormap;
         for (fluid, targets, id) in &modifiers {
+            if *fluid && water_function.is_some() {
+                continue;
+            }
             if *fluid {
                 if targets.matches("minecraft:water", |_| false) {
                     self.water_colormap = index(id, &mut self.colormaps);
@@ -1140,15 +1209,7 @@ impl MeshTables {
 }
 /// `OffsetType.XZ`/`XYZ`: a per-column jitter from `Mth.getSeed(x, 0, z)`.
 fn offset(info: &Info, x: i32, z: i32) -> Option<[f64; 3]> {
-    let (horizontal, vertical) = info.offset?;
-    let seed = position_seed(BlockPos::new(x, 0, z));
-    let nibble = |shift: u32| ((seed >> shift) & 15) as f32 / 15.0;
-    let h = f64::from(horizontal);
-    Some([
-        ((f64::from(nibble(0)) - 0.5) * 0.5).clamp(-h, h),
-        (f64::from(nibble(4)) - 1.0) * f64::from(vertical),
-        ((f64::from(nibble(8)) - 0.5) * 0.5).clamp(-h, h),
-    ])
+    Some(horizon_items::blocks::column_offset(info.offset?, x, z))
 }
 /// Border width: smooth lighting samples up to two blocks out along a face normal.
 const B: i32 = 2;
@@ -1495,9 +1556,9 @@ struct Tints<'a> {
     /// by colormap and section-local block.
     colormaps: &'a [Arc<crate::environment::Colormap>],
     water_colormap: Option<u16>,
-    sampled: std::collections::HashMap<(u16, [i32; 3]), Option<u32>>,
+    sampled: crate::fast_hash::FxHashMap<(u16, [i32; 3]), Option<u32>>,
     /// Each colormap's own colour by block, before the blend averages them.
-    cells: std::collections::HashMap<(u16, [i32; 3]), Option<u32>>,
+    cells: crate::fast_hash::FxHashMap<(u16, [i32; 3]), Option<u32>>,
 }
 impl<'a> Tints<'a> {
     fn new(
@@ -1518,8 +1579,8 @@ impl<'a> Tints<'a> {
             uniform: None,
             colormaps: &[],
             water_colormap: None,
-            sampled: std::collections::HashMap::new(),
-            cells: std::collections::HashMap::new(),
+            sampled: Default::default(),
+            cells: Default::default(),
         }
     }
     /// With the packs' colormaps of `tables`.
@@ -1531,10 +1592,16 @@ impl<'a> Tints<'a> {
     /// Colormap `index`'s colour at block `(x, y, z)` (section-local), `None` where its pixel
     /// is transparent.
     fn colormap(&mut self, index: u16, x: i32, y: i32, z: i32) -> Option<u32> {
+        let colormap = self.colormaps.get(usize::from(index))?.clone();
+        // A colormap that ignores the height, over one biome: one colour per column.
+        let y = if colormap.column && self.uniform_biome().is_some() {
+            0
+        } else {
+            y
+        };
         if let Some(&known) = self.sampled.get(&(index, [x, y, z])) {
             return known;
         }
-        let colormap = self.colormaps.get(usize::from(index))?.clone();
         // ClientLevel.calculateBlockTint: the mean of the (2r+1)^2 colours around the block, each
         // channel summed and divided. A transparent pixel in the square leaves the block's own.
         let r = if colormap.biome_blend { self.radius } else { 0 };
@@ -1573,7 +1640,11 @@ impl<'a> Tints<'a> {
         if let Some(&known) = self.cells.get(&(index, at)) {
             return known;
         }
-        let id = Self::biome_id(&self.zoom, self.region, self.plains, self.origin, at);
+        // One biome over the section and its blend margin: no zoom per block.
+        let id = match self.uniform_biome() {
+            Some(biome) => biome,
+            None => Self::biome_id(&self.zoom, self.region, self.plains, self.origin, at),
+        };
         let [cx, cz, base_y] = self.origin;
         let block = [cx * 16 + at[0], base_y + at[1], cz * 16 + at[2]];
         let mut host = crate::environment::BlockHost::new(block, self.biomes.get(id));
@@ -2188,22 +2259,14 @@ impl Mesher<'_> {
             translucent: face.translucent,
             opaque: face.opaque,
         };
-        // A tile keeps the quad's forced translucency; `<skip>` and `<default>` are its own.
-        let tile = |t: TileLayer| match t {
-            TileLayer::Layer {
-                layer,
-                translucent,
-                opaque,
-            } => TileLayer::Layer {
-                layer,
-                translucent: translucent || q.render_type.is_none() && q.material.force_translucent,
-                opaque,
-            },
-            TileLayer::Skip | TileLayer::Default => own,
-        };
+        let own_translucent = self.translucent(own);
+        let tile = |t: TileLayer| in_face_pass(t, own, own_translucent);
         match pick {
             Pick::Keep => self.quad(out, force_solid, own, corners.map(|c| c.0), tint),
-            Pick::Tile(t) => self.quad(out, force_solid, tile(t), corners.map(|c| c.0), tint),
+            Pick::Tile(t) => {
+                let v = corners.map(|c| c.0);
+                self.quad_as(out, force_solid, tile(t), v, false, tint);
+            }
             Pick::Quarters(tiles) => {
                 let cuts = cuts(&corners);
                 for s in cuts.windows(2) {
@@ -2212,7 +2275,7 @@ impl Mesher<'_> {
                             .map(|(s, t)| bilinear(&corners, s, t));
                         let quarter = quarter_of(&piece);
                         let piece = piece.map(|c| c.0);
-                        self.quad(out, force_solid, tile(tiles[quarter]), piece, tint);
+                        self.quad_as(out, force_solid, tile(tiles[quarter]), piece, false, tint);
                     }
                 }
             }
@@ -2225,12 +2288,7 @@ impl Mesher<'_> {
         if count == 0 {
             return;
         }
-        let face_translucent = match pick {
-            Pick::Keep => self.translucent(own),
-            Pick::Tile(t) => self.translucent(tile(t)),
-            Pick::Quarters(tiles) => tiles.into_iter().any(|t| self.translucent(tile(t))),
-            Pick::Nothing => false,
-        };
+        let face_translucent = !matches!(pick, Pick::Nothing) && own_translucent;
         // Overlay tiles face the standard way too (Continuity: "overlay textures always have the
         // standard orientation"), whatever turns the model's own UVs (dirt's and sand's random
         // rotations).
@@ -2379,6 +2437,21 @@ fn cuts(c: &[(TerrainVertex, [f32; 2]); 4]) -> Cuts {
     }
     out
 }
+/// Tile `t` as drawn over a face whose own sprite is `own`, in the face's pass
+/// (`own_translucent`): CTM picks a texture, not a render layer (OptiFine draws a tile in the
+/// block's). The tile's texels only drop the alpha test when all are opaque. A Conquest grass
+/// blade tile with 7 partly clear texels of 1024 blended, and wrote the depth of its clear
+/// rectangle, which Bliss fogs. `<skip>` and `<default>` are the face's own sprite.
+fn in_face_pass(t: TileLayer, own: TileLayer, own_translucent: bool) -> TileLayer {
+    match t {
+        TileLayer::Layer { layer, opaque, .. } => TileLayer::Layer {
+            layer,
+            translucent: own_translucent,
+            opaque,
+        },
+        TileLayer::Skip | TileLayer::Default => own,
+    }
+}
 /// The UV a vanilla cube's face gives the block-local point `p` (`BlockElement`'s default UVs),
 /// in sprite units: up is north on the top face, south on the bottom one, and up on the sides.
 fn standard_uv(facing: horizon_assets::model::Direction, [x, y, z]: [f32; 3]) -> [f32; 2] {
@@ -2500,6 +2573,38 @@ mod quarter_tests {
             ]
             .map(|p| quarter_of(&p)),
             [0, 1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn a_tile_draws_in_its_faces_pass() {
+        // Conquest's grass blade tile: a few partly clear texels, over an opaque face.
+        let blade = TileLayer::Layer {
+            layer: 5,
+            translucent: true,
+            opaque: false,
+        };
+        let face = |translucent| TileLayer::Layer {
+            layer: 1,
+            translucent,
+            opaque: !translucent,
+        };
+        let cut = TileLayer::Layer {
+            layer: 5,
+            translucent: false,
+            opaque: false,
+        };
+        assert_eq!(in_face_pass(blade, face(false), false), cut);
+        // Over stained glass the tile blends, as the face does.
+        let blend = TileLayer::Layer {
+            layer: 5,
+            translucent: true,
+            opaque: false,
+        };
+        assert_eq!(in_face_pass(blade, face(true), true), blend);
+        assert_eq!(
+            in_face_pass(TileLayer::Default, face(false), false),
+            face(false)
         );
     }
 

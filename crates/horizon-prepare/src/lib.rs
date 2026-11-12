@@ -166,10 +166,20 @@ fn mkdir(path: &Path) -> Result<(), String> {
 /// The lock file each preparation holds in the folders it writes (`LOCK`).
 pub const LOCK: &str = ".horizon-prepare.lock";
 
+pub(crate) struct PreparationLock(fs::File);
+
+impl Drop for PreparationLock {
+    fn drop(&mut self) {
+        // Closing one descriptor does not release a Unix lock while a forked child
+        // still holds another reference. End the preparation's lock explicitly.
+        let _ = self.0.unlock();
+    }
+}
+
 /// One preparation at a time per folder: two launchers or instances preparing into one `--output`,
 /// or sharing `root`'s `.local`, would interleave their writes. A second one waits, saying so;
-/// the lock goes with the returned file, so with the process too.
-pub(crate) fn hold_lock(dir: &Path, log: Log) -> Result<fs::File, String> {
+/// the returned guard releases it when preparation ends, even if a child inherited the file.
+pub(crate) fn hold_lock(dir: &Path, log: Log) -> Result<PreparationLock, String> {
     mkdir(dir)?;
     let path = dir.join(LOCK);
     let error = |e: std::io::Error| format!("{}: {e}", path.display());
@@ -190,7 +200,7 @@ pub(crate) fn hold_lock(dir: &Path, log: Log) -> Result<fs::File, String> {
         }
         Err(fs::TryLockError::Error(e)) => return Err(error(e)),
     }
-    Ok(file)
+    Ok(PreparationLock(file))
 }
 
 /// Whether two folders are one, through `..`, links and case; a missing folder is created first.

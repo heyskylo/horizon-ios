@@ -74,7 +74,7 @@ pub(crate) fn dropped_state(
 }
 
 /// `BlockEventData`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BlockEventData {
     pub pos: BlockPos,
     pub block: BlockId,
@@ -135,9 +135,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             param_a,
             param_b,
         };
-        if !self.ticks.block_events.contains(&event) {
-            self.ticks.block_events.push(event);
-        }
+        self.ticks.queue_block_event(event);
     }
     /// `BlockState.triggerEvent`.
     fn trigger_event(&mut self, state: BlockStateId, pos: BlockPos, a: i32, b: i32) -> bool {
@@ -162,25 +160,14 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
 
     // ---- moving piston block entities ----
     pub(crate) fn moving_piston(&self, pos: BlockPos) -> Option<MovingPiston> {
-        self.ticks
-            .moving_pistons
-            .iter()
-            .find(|(p, _)| *p == pos)
-            .map(|(_, m)| *m)
+        let slot = self.ticks.moving_piston_slot(pos)?;
+        Some(self.ticks.moving_pistons[slot].1)
     }
-    fn set_moving_piston(&mut self, pos: BlockPos, mut piston: MovingPiston) {
-        self.ticks.moving_pistons.retain(|(p, _)| *p != pos);
-        self.ticks.next_block_entity_id += 1;
-        piston.id = self.ticks.next_block_entity_id;
-        self.ticks.moving_pistons.push((pos, piston));
+    fn set_moving_piston(&mut self, pos: BlockPos, piston: MovingPiston) {
+        self.ticks.add_moving_piston(pos, piston);
     }
     pub(crate) fn remove_moving_piston(&mut self, pos: BlockPos) -> Option<MovingPiston> {
-        let index = self
-            .ticks
-            .moving_pistons
-            .iter()
-            .position(|(p, _)| *p == pos)?;
-        Some(self.ticks.moving_pistons.remove(index).1)
+        self.ticks.take_moving_piston(pos)
     }
     /// `PistonMovingBlockEntity.finalTick`.
     fn moving_piston_final_tick(&mut self, pos: BlockPos) {
@@ -221,13 +208,8 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 // The client's copy waits for the server's state before
                 // placing the block itself (deathTicks < 5).
                 piston.death_ticks += 1;
-                if let Some(entry) = self
-                    .ticks
-                    .moving_pistons
-                    .iter_mut()
-                    .find(|(p, _)| *p == pos)
-                {
-                    entry.1 = piston;
+                if let Some(slot) = self.ticks.moving_piston_slot(pos) {
+                    self.ticks.moving_pistons[slot].1 = piston;
                 }
                 return;
             }
@@ -260,14 +242,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             // so the push carries the piston as it was before the advance.
             let old = piston;
             let new_progress = (old.progress + 0.5).min(1.0);
-            let current = self
-                .ticks
-                .moving_pistons
-                .iter_mut()
-                .find(|(p, _)| *p == pos);
-            if let Some(entry) = current {
+            if let Some(slot) = self.ticks.moving_piston_slot(pos) {
                 piston.progress = new_progress;
-                entry.1 = piston;
+                self.ticks.moving_pistons[slot].1 = piston;
                 self.ticks.piston_pushes.push((pos, old, new_progress));
             }
         }
@@ -821,8 +798,7 @@ impl Behaviours {
     /// Call once per tick after scheduled and random ticks.
     pub fn run_block_events<L: LevelAccess + ?Sized>(&self, level: &mut L, ticks: &mut Ticks) {
         let mut reschedule = Vec::new();
-        while !ticks.block_events.is_empty() {
-            let event = ticks.block_events.remove(0);
+        while let Some(event) = ticks.pop_block_event() {
             if !level.should_tick_blocks_at(event.pos.chunk()) {
                 reschedule.push(event);
                 continue;
@@ -844,9 +820,7 @@ impl Behaviours {
             }
         }
         for event in reschedule {
-            if !ticks.block_events.contains(&event) {
-                ticks.block_events.push(event);
-            }
+            ticks.queue_block_event(event);
         }
     }
     /// `Level.tickBlockEntities` for moving pistons (the only block entities
@@ -859,12 +833,7 @@ impl Behaviours {
             .map(|(p, m)| (*p, m.id))
             .collect();
         for (pos, id) in tickers {
-            if !level.is_ticking_chunk(pos.chunk())
-                || !ticks
-                    .moving_pistons
-                    .iter()
-                    .any(|(p, m)| *p == pos && m.id == id)
-            {
+            if !level.is_ticking_chunk(pos.chunk()) || !ticks.moving_piston_has(pos, id) {
                 continue;
             }
             self.sim(level, ticks).moving_piston_tick(pos);
@@ -912,11 +881,7 @@ impl Behaviours {
             .map(|(p, m)| (*p, m.id))
             .collect();
         for (pos, id) in tickers {
-            if !ticks
-                .moving_pistons
-                .iter()
-                .any(|(p, m)| *p == pos && m.id == id)
-            {
+            if !ticks.moving_piston_has(pos, id) {
                 continue;
             }
             {
@@ -935,8 +900,7 @@ impl Behaviours {
     /// (`PistonBaseBlock.checkIfExtend` in a neighbour update): a client
     /// runs them as they come (`ClientLevel.blockEvent`), not in a tick pass.
     fn client_drain_block_events<L: LevelAccess + ?Sized>(&self, level: &mut L, ticks: &mut Ticks) {
-        while let Some(event) = ticks.block_events.first().copied() {
-            ticks.block_events.remove(0);
+        while let Some(event) = ticks.pop_block_event() {
             let mut sim = self.sim(level, ticks);
             let state = sim.state(event.pos);
             if self.block(state) == event.block

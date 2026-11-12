@@ -45,10 +45,11 @@ method-by-method reading misses:
     python3 tools/port_ledger.py diff OTHER/ledger.json        # against another build
     python3 tools/port_ledger.py todo [--package world/entity] # the next methods with no answer
 
-Add --json to any query for machine output. `build` reads the game jar (the lab's or the launcher's; --jar,
---no-jar) and the lab's decompiled sources (.local/minecraft/<version>/sources/{client,server},
-tools/lab.py decompile; --sources takes any directory of decompiled Java). Queries read the last build;
-`build` again after pulling. docs/port-ledger.md has the details.
+Add --json to any query for machine output, before or after the query's name. `build` reads the game jar
+(the lab's or the launcher's; --jar, --no-jar) and the lab's decompiled sources
+(.local/minecraft/<version>/sources/{client,server}, tools/lab.py decompile; --sources takes any directory
+of decompiled Java). Queries read the last build; `build` again after pulling. docs/port-ledger.md has the
+details.
 """
 
 import argparse
@@ -64,6 +65,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+
+try:
+    import lab
+except ImportError:
+    from . import lab
 
 ROOT = Path(os.environ.get("PORT_LEDGER_ROOT") or Path(__file__).resolve().parents[1])
 OUT = Path(os.environ.get("PORT_LEDGER_OUT") or ROOT / ".local" / "port-ledger")
@@ -714,7 +720,7 @@ def parse_class_bytes(item):
 
 def default_jars():
     lock = json.loads((ROOT / "research-lock.json").read_text()) if (ROOT / "research-lock.json").exists() else {}
-    version = str((lock.get("minecraft") or {}).get("version") or lock.get("version") or "26.3")
+    version = str((lock.get("minecraft") or {}).get("version") or lock.get("version") or lab.VERSION)
     home = Path.home()
     candidates = sorted((ROOT / ".local" / "minecraft" / version).glob("*.jar")) + [
         home / "Library/Application Support/minecraft/versions" / version / f"{version}.jar",
@@ -976,7 +982,7 @@ def rust_files():
 
 def default_sources():
     lock = json.loads((ROOT / "research-lock.json").read_text()) if (ROOT / "research-lock.json").exists() else {}
-    version = (lock.get("minecraft") or {}).get("version") or lock.get("version") or "26.3"
+    version = (lock.get("minecraft") or {}).get("version") or lock.get("version") or lab.VERSION
     base = ROOT / ".local" / "minecraft" / str(version) / "sources"
     return [str(base / side) for side in ("client", "server") if (base / side).is_dir()]
 
@@ -2996,39 +3002,48 @@ def write_html(led, rows, tot):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--json", action="store_true", help="machine-readable output")
+    # The same flag on every query, so `--json` reads the same before or after the query's name. A query
+    # parses into its own namespace that argparse then copies over the top-level one, so its default would
+    # wipe a --json given before the query; SUPPRESS keeps it out of the namespace unless it is passed.
+    query_flags = argparse.ArgumentParser(add_help=False)
+    query_flags.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                             help="machine-readable output")
     sub = parser.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("build")
     b.add_argument("--sources", action="append", help="a directory of decompiled vanilla Java (repeatable)")
     b.add_argument("--jar", action="append", help="a vanilla game jar (repeatable; default: the lab's or the launcher's)")
     b.add_argument("--no-jar", action="store_true", help="read the sources only")
     b.add_argument("--jobs", type=int, default=os.cpu_count())
-    sub.add_parser("where").add_argument("query")
-    sub.add_parser("what").add_argument("location")
-    sub.add_parser("class").add_argument("query")
-    c = sub.add_parser("coverage")
+    sub.add_parser("where", parents=[query_flags]).add_argument("query")
+    sub.add_parser("what", parents=[query_flags]).add_argument("location")
+    sub.add_parser("class", parents=[query_flags]).add_argument("query")
+    c = sub.add_parser("coverage", parents=[query_flags])
     c.add_argument("--package")
     c.add_argument("--depth", type=int, default=2)
-    g = sub.add_parser("gaps")
+    g = sub.add_parser("gaps", parents=[query_flags])
     g.add_argument("--kind", choices=["seam", "client", "float", "drift", "class", "callee", "stale", "map", "unported", "untested"])
     g.add_argument("--package")
     g.add_argument("--limit", type=int, default=50)
     sub.add_parser("report")
     mc = sub.add_parser("map-check", help="check verdict-map files against the last build, without rebuilding")
     mc.add_argument("paths", nargs="+")
-    t = sub.add_parser("todo", help="the next methods with no answer, for the verdict map (tools/port_map)")
+    t = sub.add_parser("todo", parents=[query_flags], help="the next methods with no answer, for the verdict map (tools/port_map)")
     t.add_argument("--package", help="e.g. world/entity/animal")
     t.add_argument("--limit", type=int, default=150, help="about this many methods, whole classes at a time")
     t.add_argument("--after", help="start after this class path (the last batch's last class)")
-    d = sub.add_parser("diff", help="what changed against another ledger.json")
+    d = sub.add_parser("diff", parents=[query_flags], help="what changed against another ledger.json")
     d.add_argument("other")
-    ck = sub.add_parser("check", help="what a branch's changes touch: ports, their open gaps, citations to add")
+    ck = sub.add_parser("check", parents=[query_flags],
+                        help="what a branch's changes touch: ports, their open gaps, citations to add")
     ck.add_argument("--base", default="origin/main")
     ck.add_argument("--no-compare", action="store_true", help="skip building the base to list gaps opened and closed")
-    bl = sub.add_parser("blame", help="which vanilla methods compute a traced field of an entity, and their ports")
+    bl = sub.add_parser("blame", parents=[query_flags],
+                        help="which vanilla methods compute a traced field of an entity, and their ports")
     bl.add_argument("entity", help="a class (Blaze) or registry name (blaze)")
     bl.add_argument("fields", nargs="+", help="trace keys (p v r g hp target in move look) or field/setter names")
     bl.add_argument("--limit", type=int, default=8)
-    sub.add_parser("issue", help="the vanilla classes, Rust code and gaps a bug report points at").add_argument(
+    sub.add_parser("issue", parents=[query_flags],
+                   help="the vanilla classes, Rust code and gaps a bug report points at").add_argument(
         "ref", help=f"an issue number on {ISSUE_REPO}, the report's text, or - to read it from stdin")
     args = parser.parse_args()
     if args.cmd == "build":

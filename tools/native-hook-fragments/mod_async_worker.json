@@ -1,0 +1,22 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "spawn_background_job",
+      "target": "horizon_client::game::native_tasks::Game<'_>::native_spawn_background_job"
+    },
+    {
+      "name": "spawn_task",
+      "target": "horizon_client::game::native_tasks::Game<'_>::native_spawn_task"
+    },
+    {
+      "name": "defer_main_thread",
+      "target": "horizon_client::game::native_tasks::Game<'_>::native_defer_main_thread"
+    }
+  ],
+  "rust_summary": "offload background tasks to worker threads with deferred main-thread callbacks (`native_spawn_task`, `native_spawn_background_job`, `native_defer_main_thread`).",
+  "doc_summary": "offload background tasks to a dedicated worker pool using `spawn_task` or `spawn_background_job` and safely run synchronization callbacks on the game/server thread during `native_tick`. API @API:mod_async_worker@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_tasks.rs"
+  ]
+}

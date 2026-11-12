@@ -67,6 +67,13 @@ impl ServerEntry {
     }
 }
 
+/// Held while servers.dat is read and written back, so a ping storing an icon and a list
+/// saved by the screen or at startup don't undo each other's change.
+pub fn lock() -> std::sync::MutexGuard<'static, ()> {
+    static SAVING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    SAVING.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// ServerList.load: the shown entries; missing or unreadable files give an empty list.
 pub fn load(path: &Path) -> Vec<ServerEntry> {
     load_all(path).0
@@ -208,7 +215,8 @@ fn insert(
 }
 fn write(path: &Path, root: &NamedTag) -> std::io::Result<()> {
     let bytes = nbt::write_named(root, nbt::Limits::default()).map_err(std::io::Error::other)?;
-    let tmp = path.with_extension("dat_tmp");
+    // Its own temporary file: another game on the same folder writes at the same time.
+    let tmp = path.with_extension(format!("dat_tmp.{}", std::process::id()));
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(tmp, path)
 }

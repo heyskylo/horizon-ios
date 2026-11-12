@@ -1,10 +1,12 @@
 AbstractFish.addAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	FromBucket always written; tadpole getter is always true
+AbstractFish.removeWhenFarAway	port	crates/horizon-client/src/mobs/aquatic.rs::named_keeps_it	`!fromBucket() && !hasCustomName()`: the bucket flag is persistence in check_despawn, the name keeps it there too
 AbstractFish.readAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	FromBucket via read_variant defaults false; tadpole ignores loaded input
 AgeableWaterCreature.handleAirSupply	inline	crates/horizon-client/src/mobs/ai.rs::base_tick	the needs_water branch of base_tick; dolphins override it to nothing and refill air in aquatic.rs
 AgeableWaterCreature.checkSurfaceAgeableWaterCreatureSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::surface_water	
 Animal.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	Animal fields: modeled InLove and optional LoveCause, removing stale raw when absent; inherited Ageable writer separate; UUID admission gaps retained
 Animal.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	InLove through NumericTag.intValue; existing LoveCause UUID loading retained
 Animal.canMate	port	crates/horizon-client/src/mobs/animal_brain.rs::can_mate_with	brain breeding; the Breed goal in goals.rs does the same for goal-driven animals
+Animal.mobInteract	port	crates/horizon-client/src/mobs/ai/feeding.rs::takes_food	the food branches: an adult at age 0 that canFallInLove, else canAgeUp (isBaby && !isAgeLocked), both then playEatingSound; the sit/stand fall-through is in game/creatures.rs::interact_mob
 Animal.handleEntityEvent	port	crates/horizon-client-render/src/particles.rs::entity_event_burst	event 18 love hearts
 Animal.getDismountLocationForPassenger	port	crates/horizon-client/src/game/mounts.rs::Game::dismount_mount	gap: tries both sides by the mob's yaw, then on top; not DismountHelper's offsets and pose boxes
 Allay.createAttributes	skip:data		attributes come from entity-types.json
@@ -43,6 +45,7 @@ ArmadilloAi.initCoreActivity	inline	crates/horizon-client/src/mobs/armadillo.rs:
 ArmadilloAi.initIdleActivity	inline	crates/horizon-client/src/mobs/armadillo.rs::register	gap: only look, stroll and random look; no AnimalMakeLove, FollowTemptation or BabyFollowAdult, so armadillos never seek a partner, follow food or have babies follow adults
 ArmadilloAi.initScaredActivity	inline	crates/horizon-client/src/mobs/armadillo.rs::server_ai_step	the PANIC activity and ArmadilloBallUp
 Axolotl.<init>	port	crates/horizon-client/src/mobs/aquatic.rs::register	the Axolotl arm: smooth swimming move and look control, amphibious navigation, water malus 0
+Axolotl.removeWhenFarAway	port	crates/horizon-client/src/mobs/aquatic.rs::named_keeps_it	the same pair as AbstractFish's
 Axolotl.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	variant and playing_dead; from_bucket is not synced
 Axolotl.addAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	Variant and FromBucket are written
 Axolotl.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::read_variant	Variant and FromBucket are read
@@ -70,6 +73,8 @@ PlayDead.canStillUse	inline	crates/horizon-client/src/mobs/animal_brain.rs::B::t
 PlayDead.start	inline	crates/horizon-client/src/mobs/animal_brain.rs::B::try_start	clears targets, regeneration for 200 ticks
 Bee.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	flags and anger end time
 Bee.registerGoals	port	crates/horizon-client/src/mobs/bee.rs::register	
+Bee.addAdditionalSaveData	inline	crates/horizon-client/src/mobs/bee.rs::to_nbt	hive_pos, flower_pos, the nectar and sting state, and NeutralMob's anger_end_time and angry_at (the target's UUID)
+Bee.readAdditionalSaveData	inline	crates/horizon-client/src/mobs/bee.rs::from_nbt	the same; angry_at is the player's UUID or a mob the level may not have loaded (Who::Mob(0))
 Bee.spawnFluidParticle	port	crates/horizon-client/src/mobs/ambient.rs::client_particles	the nectar drip
 Bee.updateRollAmount	inline	crates/horizon-client/src/mobs/bee.rs::tick	
 Bee.isHiveNearFire	port	crates/horizon-client/src/mobs/bee.rs::hive_near_fire	
@@ -137,7 +142,7 @@ Cow.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_fro
 Cow.getBreedOffspring	port	crates/horizon-client/src/game/creatures.rs::Game::breed	gap: baby copies the first parent's variant, no random parent
 Cow.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	variant by biome and a random sound variant
 CowVariants	skip:data		cow variants come from the registry data files
-MushroomCow.getWalkTargetValue	port	crates/horizon-client/src/mobs/spawn_selection.rs::mob_spawn_rules	gap: only the spawn check has the mycelium rule; ai.rs walk_target_value uses the grass rule for strolling
+MushroomCow.getWalkTargetValue	port	crates/horizon-client/src/mobs/ai/walk_target.rs::walk_target_value	mycelium 10, anything else by the light: its own override replaces Animal's grass rule, in the stroll's score and the spawn check
 MushroomCow.checkMushroomSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	
 MushroomCow.thunderHit	port	crates/horizon-client/src/game/lightning.rs::Game::thunder_hit	swaps colour once per bolt, convert sound
 MushroomCow.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	the type entry
