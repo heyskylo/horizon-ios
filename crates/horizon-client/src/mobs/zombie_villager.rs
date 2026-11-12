@@ -206,7 +206,10 @@ pub fn read_nbt(m: &mut Mob, tag: &Tag) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use horizon_core::{geometry::Vec3, random::LegacyRandom};
+    use horizon_core::{
+        geometry::Vec3,
+        random::{EntityRandom, LegacyRandom},
+    };
 
     fn kind() -> std::sync::Arc<super::super::MobType> {
         let mut kind = super::super::sensor_scan_tests::kind();
@@ -219,7 +222,7 @@ mod tests {
 
     fn zombie_villager() -> Mob {
         let mut m = Mob::new(42, kind(), Vec3::new(1.25, 2.0, 3.75), 0.0);
-        m.random = LegacyRandom::new(0);
+        m.random.set_seed(0);
         m
     }
 
@@ -234,7 +237,13 @@ mod tests {
             let _ = after.next_int_bound(15);
             // `LivingEntity`'s yaw, drawn after `defineSynchedData`.
             let _ = after.next_float();
-            let m = Mob::with_random(1, kind(), Vec3::ZERO, 0.0, LegacyRandom::new(seed));
+            let m = Mob::with_random(
+                1,
+                kind(),
+                Vec3::ZERO,
+                0.0,
+                EntityRandom::own(LegacyRandom::new(seed)),
+            );
             assert_eq!(i32::from(m.extra.variant2), first, "seed {seed}");
             // That one draw and no other: the mob's random sits where
             // vanilla's does after `initializeZombieVillagerData`.
@@ -252,12 +261,24 @@ mod tests {
             read_nbt(m, &tag);
         };
         // Seed 42: the constructor's draw is 5, its second draw 3.
-        let mut kept = Mob::with_random(1, kind(), Vec3::ZERO, 0.0, LegacyRandom::new(42));
+        let mut kept = Mob::with_random(
+            1,
+            kind(),
+            Vec3::ZERO,
+            0.0,
+            EntityRandom::own(LegacyRandom::new(42)),
+        );
         let before = kept.random.state();
         load(&mut kept, "{}");
         assert_eq!(kept.extra.variant2, 5);
         assert_eq!(kept.random.state(), before);
-        let mut redrawn = Mob::with_random(1, kind(), Vec3::ZERO, 0.0, LegacyRandom::new(42));
+        let mut redrawn = Mob::with_random(
+            1,
+            kind(),
+            Vec3::ZERO,
+            0.0,
+            EntityRandom::own(LegacyRandom::new(42)),
+        );
         load(&mut redrawn, "{VillagerDataFinalized:1b}");
         assert_eq!(redrawn.extra.variant2, 3);
     }

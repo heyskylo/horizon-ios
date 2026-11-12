@@ -66,7 +66,8 @@ Options: `--version vX.Y.Z`, `--dir FOLDER`, `--bin FOLDER` (Windows: `-Version`
 such as Linux on ARM, build from source: `cargo build --release -p horizon-client --bin horizon-client -p
 horizon-server` and keep both programs in one folder.
 
-On Nix and NixOS, the repository's flake builds `horizon-server` from source: [nix.md](nix.md).
+On Nix and NixOS, the repository's flake builds `horizon-server` from source and has a
+`services.horizon-server` module: [nix.md](nix.md).
 
 The Horizon launcher also installs releases. Every release folder holds `horizon-server`, so you can run it
 from there too.
@@ -620,7 +621,8 @@ Players join with any vanilla 26.3 client: only the server decides the damage.
 horizon-server service install
 ```
 
-- **Linux:** a systemd user unit (`--system` for a system unit, with sudo). To keep a user unit running while
+- **Linux:** a systemd user unit (`--system` for a system unit, with sudo from your own account: the unit runs
+  the server as that account, never as root). To keep a user unit running while
   you're logged out: `loginctl enable-linger $USER`.
 - **macOS:** a launchd agent in `~/Library/LaunchAgents`.
 - **Windows:** a task that starts at logon (a real Windows service comes later).

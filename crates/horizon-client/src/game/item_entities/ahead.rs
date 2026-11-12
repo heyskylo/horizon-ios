@@ -54,9 +54,11 @@ impl ItemTables<'_> {
         entity_boxes: &[Aabb],
         splash: &mut impl FnMut(ItemSplash),
     ) -> ItemStep {
+        // Entity.baseTick splashes before moving, except on the first tick, at
+        // the motion before the currents push it.
+        let before = item.velocity;
         let heights = item.push_by_fluid(self.world, &self.motion.fluids);
-        // Entity.baseTick splashes before moving, except on the first tick.
-        item.water_entry(heights.0 > 0.0, item.ticks == 0, splash);
+        item.water_entry(heights.0 > 0.0, item.ticks == 0, before, splash);
         item.lava_fall(heights.1 > 0.0);
         let step = item.tick_move_before_block_effects(
             self.world,
@@ -93,8 +95,9 @@ impl ItemTables<'_> {
         item.push_by_bubble_column(self.world, self.registry, self.facts, self.collision);
         let alive = item.tick_settle(self.world, self.facts, no_physics, step);
         // ItemEntity.tick refreshes immersion and splashes on water entry.
+        let before = item.velocity;
         let (water, _) = item.push_by_fluid(self.world, &self.motion.fluids);
-        item.water_entry(water > 0.0, false, splash);
+        item.water_entry(water > 0.0, false, before, splash);
         alive
     }
 }

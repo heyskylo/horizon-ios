@@ -81,7 +81,7 @@ pub enum ConsumeEffect {
 /// `minecraft:apply_effects`. A
 /// namespaced kind outside `minecraft:` is the mod's own, kept whole for
 /// the hook. An unknown `minecraft:` kind and a missing type are dropped.
-fn parse_consume_effect(effect: &serde_json::Value) -> Option<ConsumeEffect> {
+pub fn parse_consume_effect(effect: &serde_json::Value) -> Option<ConsumeEffect> {
     let kind = effect.get("type")?.as_str()?;
     // `Identifier.bySeparator`: no namespace, or an empty one (`:clear_all_effects`), is minecraft's.
     let kind = match kind.split_once(':') {
@@ -372,6 +372,7 @@ thread_local! {
     /// inside itself (`LootContext.pushVisitedElement`).
     static NESTED_ROLLS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
+#[derive(Clone)]
 pub struct Items {
     pub items: HashMap<Arc<str>, ItemInfo>,
     /// Default `minecraft:mob_visibility` by item id, with the `equippable`
@@ -396,6 +397,32 @@ pub struct Items {
     /// (`EnchantWithLevelsFunction`, `EnchantRandomlyFunction`), and the
     /// station menus share this copy.
     pub enchantments: Arc<crate::enchant::Enchantments>,
+}
+impl Items {
+    /// This table with a server's block and item tags in place of its own
+    /// (`ClientboundUpdateTagsPacket`): each tag's members in the order sent,
+    /// which is `TagLoader`'s. `None` keeps this table's tags of that kind.
+    pub fn with_tags(
+        &self,
+        block_tags: Option<HashMap<String, Vec<String>>>,
+        item_tags: Option<HashMap<String, Vec<String>>>,
+    ) -> Self {
+        let mut items = self.clone();
+        if let Some(tags) = block_tags {
+            items.block_tags = tags
+                .into_iter()
+                .map(|(name, members)| (name, members.into_iter().collect()))
+                .collect();
+        }
+        if let Some(tags) = item_tags {
+            items.item_tags = tags
+                .iter()
+                .map(|(name, members)| (name.clone(), members.iter().cloned().collect()))
+                .collect();
+            items.item_tag_order = tags;
+        }
+        items
+    }
 }
 /// A `JukeboxSong`.
 #[derive(Clone, Debug)]
@@ -1278,6 +1305,28 @@ impl Items {
         }
         self.get(&stack.item)?.tool_damage_per_block
     }
+    /// `Weapon.disableBlockingForSeconds`: the stack's `weapon` component,
+    /// else the item's prototype; zero without one.
+    pub fn weapon_disable_blocking(&self, stack: &ItemStack) -> f32 {
+        if stack.count == 0 || &*stack.item == "minecraft:air" {
+            return 0.0;
+        }
+        if stack
+            .data()
+            .is_some_and(|d| d.other("!minecraft:weapon").is_some())
+        {
+            return 0.0;
+        }
+        if let Some(weapon) = stack.data().and_then(|d| d.other("minecraft:weapon")) {
+            return horizon_world::datafix::dynamic::as_float(
+                weapon.get("disable_blocking_for_seconds"),
+                0.0,
+            );
+        }
+        self.get(&stack.item)
+            .map_or(0.0, |i| i.disable_blocking_seconds)
+    }
+
     /// `Weapon.itemDamagePerAttack`: the stack's `weapon` component, else the
     /// item's prototype. A removed component leaves no weapon.
     pub fn weapon_damage(&self, stack: &ItemStack) -> Option<u32> {
@@ -1336,24 +1385,13 @@ impl Items {
             .map(|i| i.modifiers.clone())
             .unwrap_or_default()
     }
-    /// Mining wear on an already durable item prototype. Custom durability on
-    /// non-durable items needs item-aware DAMAGE-presence decoding first.
+    /// The stack's damage capacity (`crate::durability::stack_max_damage`).
+    pub fn stack_max_damage(&self, stack: &ItemStack) -> u32 {
+        crate::durability::stack_max_damage(self, stack)
+    }
+    /// The damage capacity mining wear uses (`stack_max_damage`).
     pub fn mining_damage_capacity(&self, stack: &ItemStack) -> u32 {
-        let prototype_max = self.get(&stack.item).map_or(0, |info| info.max_damage);
-        let component = |id| stack.data().and_then(|d| d.other(id));
-        if prototype_max == 0
-            || stack.count == 0
-            || &*stack.item == "minecraft:air"
-            || component("!minecraft:max_damage").is_some()
-            || component("!minecraft:damage").is_some()
-            || component("minecraft:unbreakable").is_some()
-        {
-            return 0;
-        }
-        match component("minecraft:max_damage") {
-            Some(value) => horizon_world::datafix::dynamic::as_int(Some(value), 0).max(0) as u32,
-            _ => prototype_max,
-        }
+        self.stack_max_damage(stack)
     }
     /// Whether a loot table (`minecraft:blocks/stone`, ...) exists.
     pub fn has_loot_table(&self, id: &str) -> bool {
@@ -2954,6 +2992,59 @@ mod tests {
             )>::new())),
         );
         assert_eq!(items.weapon_damage(&sword), None);
+    }
+
+    #[test]
+    fn weapon_disable_blocking_comes_from_the_stack() {
+        let root = std::env::temp_dir().join(format!(
+            "horizon-weapon-disable-blocking-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("items.json"),
+            r#"{"minecraft:stick":{},"minecraft:diamond_axe":{"minecraft:weapon":{"disable_blocking_for_seconds":5.0}}}"#,
+        )
+        .unwrap();
+        let items = Items::catalog(&root, &PackOverlay::NONE).unwrap();
+        let mut axe = ItemStack::new("minecraft:diamond_axe", 1);
+        assert_eq!(items.weapon_disable_blocking(&axe), 5.0);
+        for item in ["minecraft:stick", "test:unknown", "minecraft:air"] {
+            assert_eq!(items.weapon_disable_blocking(&ItemStack::new(item, 1)), 0.0);
+        }
+
+        // A replacement component uses the codec's zero default, not the axe's.
+        let empty = crate::item_data::command_components("[weapon={}]").unwrap();
+        (axe.damage, axe.extra) = crate::item_data::decode_components(Some(&empty));
+        assert_eq!(items.weapon_disable_blocking(&axe), 0.0);
+
+        let custom =
+            crate::item_data::command_components("[weapon={disable_blocking_for_seconds:1.5f}]")
+                .unwrap();
+        (axe.damage, axe.extra) = crate::item_data::decode_components(Some(&custom));
+        assert_eq!(items.weapon_disable_blocking(&axe), 1.5);
+        let mut stick = ItemStack::new("minecraft:stick", 1);
+        (stick.damage, stick.extra) = crate::item_data::decode_components(Some(&custom));
+        assert_eq!(items.weapon_disable_blocking(&stick), 1.5);
+        stick.count = 0;
+        assert_eq!(items.weapon_disable_blocking(&stick), 0.0);
+        stick.count = 1;
+        stick.item = "minecraft:air".into();
+        assert_eq!(items.weapon_disable_blocking(&stick), 0.0);
+
+        axe.data_mut().set_other(
+            "!minecraft:weapon",
+            Some(horizon_world::nbt::Tag::compound(Vec::<(
+                &str,
+                horizon_world::nbt::Tag,
+            )>::new())),
+        );
+        assert_eq!(items.weapon_disable_blocking(&axe), 0.0);
+        let removal = crate::item_data::command_components("[!weapon]").unwrap();
+        (axe.damage, axe.extra) = crate::item_data::decode_components(Some(&removal));
+        let restored = crate::item_nbt::item_from_nbt(&crate::item_nbt::item_to_nbt(&axe)).unwrap();
+        assert_eq!(items.weapon_disable_blocking(&restored), 0.0);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

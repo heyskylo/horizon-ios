@@ -1585,8 +1585,12 @@ impl Game<'_> {
                 self.pad_follow_targets();
             }
         }
-        // Nothing scrolls under the on-screen keyboard.
-        let scroll = if self.pad.menu.osk.is_some() {
+        // Nothing scrolls under the on-screen keyboard; over chat its right stick picks a
+        // suggestion.
+        let scroll = if let Some(keyboard) = self.pad.menu.osk.as_mut() {
+            if let Some(out) = keyboard.stick(state.right[1]) {
+                self.pad_osk_output(out);
+            }
             [0.0, 0.0]
         } else {
             gamepad::radial(state.right, look_deadzone)
@@ -2404,7 +2408,8 @@ impl Game<'_> {
         {
             return;
         }
-        self.pad.menu.osk = Some(Keyboard::default());
+        let suggests = self.screen == Screen::Chat && self.title.is_none() && !self.dialog_open();
+        self.pad.menu.osk = Some(Keyboard::new(self.pad_enter_keeps_typing(), suggests));
     }
 
     /// Chat or a sign opened by the pad (either menu mode): the keyboard
@@ -2435,6 +2440,23 @@ impl Game<'_> {
             Output::Text(t) => (None, Some(t.as_str())),
             Output::Backspace => (Some(KeyCode::Backspace), None),
             Output::Enter => (Some(KeyCode::Enter), None),
+            Output::Done if self.pad_enter_keeps_typing() => {
+                self.pad_osk_done_lines();
+                return;
+            }
+            Output::Done => (Some(KeyCode::Enter), None),
+            // Chat's suggestions (CommandSuggestions.keyPressed): Tab, Up and Down.
+            Output::Complete | Output::Previous | Output::Next => {
+                if self.screen == Screen::Chat && !self.dialog_open() {
+                    let key = match out {
+                        Output::Complete => KeyCode::Tab,
+                        Output::Previous => KeyCode::ArrowUp,
+                        _ => KeyCode::ArrowDown,
+                    };
+                    self.chat_key_code(key, None);
+                }
+                return;
+            }
             Output::Close => {
                 self.pad.menu.osk = None;
                 self.pad.menu.osk_dismissed = true;
@@ -2539,6 +2561,24 @@ impl Game<'_> {
             || !self.pad_has_typing_screen()
         {
             self.pad.menu.osk = None;
+        }
+    }
+
+    /// Done over a field of many lines: what the screen's own Done button does (a book and
+    /// quill saves and closes, a sign closes and sends its text); a dialog's input has none, so
+    /// the keyboard closes. Never a new line: that's the New Line key.
+    fn pad_osk_done_lines(&mut self) {
+        self.pad.menu.osk = None;
+        self.pad.menu.osk_dismissed = true;
+        if self.dialog_typing_lines() {
+            return;
+        }
+        if self.sign_edit.is_some() {
+            self.close_sign_editor();
+        } else if self.book.is_some()
+            && let Err(e) = self.book_control(Some("done"))
+        {
+            log::warn!("Horizon: on-screen keyboard: {e}");
         }
     }
 

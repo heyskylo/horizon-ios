@@ -1,10 +1,12 @@
 //! Vanilla's two seeded random streams. No platform/default Rust RNG is used.
 mod hash;
 mod ordered;
+mod owner;
 mod positional;
 mod worldgen;
 pub use hash::{seed_from_hash, seed_from_hash_utf16};
 pub use ordered::{LaneDone, OrderedDraws};
+pub use owner::{EntityPositional, EntityRandom, LevelPositional, LevelRandom};
 pub use positional::{
     LegacyPositionalRandom, PositionalRandom, XoroshiroPositionalRandom, java_string_hash,
     position_seed,

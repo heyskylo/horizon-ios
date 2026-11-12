@@ -121,9 +121,10 @@ impl<R: RandomSource> CompiledRule<R> {
                 filler_gap,
                 positive_y,
             } => {
-                let density = context.surface.bind_density(density, true)?;
-                let richness = context.surface.bind_density(richness, true)?;
-                let gap = context.surface.bind_density(filler_gap, false)?;
+                let surface = &mut context.surface;
+                let density = surface.bind_density_rows(density, true, positive_y)?;
+                let richness = surface.bind_density_rows(richness, true, positive_y)?;
+                let gap = surface.bind_density_rows(filler_gap, false, positive_y)?;
                 let random = root.from_hash_of("minecraft:ore").fork_positional();
                 Self::OreVein {
                     blocks: [ore, raw_ore, filler],
@@ -630,22 +631,26 @@ where
 pub struct CompiledSurfaceRule<R: RandomSource> {
     rule: CompiledRule<R>,
     noises: Vec<((String, bool), Arc<dyn Noise>)>,
-    densities: Vec<(Arc<dyn DensitySampler>, bool)>,
+    densities: Vec<DensityBinding>,
 }
+/// A density a rule binds: its root, whether it is sampled over the volume,
+/// and the rows it is read at.
+type DensityBinding = (Arc<dyn DensitySampler>, bool, [i32; 2]);
 /// The densities `CompiledRule::compile` binds for `rule`, in its order,
-/// with whether it samples each over the volume now.
-fn density_bindings(rule: &MaterialRule, out: &mut Vec<(Arc<dyn DensitySampler>, bool)>) {
+/// with whether it samples each over the volume and the rows it reads.
+fn density_bindings(rule: &MaterialRule, out: &mut Vec<DensityBinding>) {
     match rule {
         MaterialRule::Reference(value) => density_bindings(value, out),
         MaterialRule::OreVein {
             density,
             richness,
             filler_gap,
+            positive_y,
             ..
         } => out.extend([
-            (Arc::clone(density), true),
-            (Arc::clone(richness), true),
-            (Arc::clone(filler_gap), false),
+            (Arc::clone(density), true, *positive_y),
+            (Arc::clone(richness), true, *positive_y),
+            (Arc::clone(filler_gap), false, *positive_y),
         ]),
         MaterialRule::Condition { then_run, .. } => density_bindings(then_run, out),
         MaterialRule::Sequence(children) => {
@@ -706,10 +711,10 @@ where
                     });
                     self.context.noise_indices.insert(key.clone(), index);
                 }
-                for (sampler, eager) in &shared.densities {
+                for (sampler, eager, rows) in &shared.densities {
                     self.context
                         .surface
-                        .bind_density(Arc::clone(sampler), *eager)?;
+                        .bind_density_rows(Arc::clone(sampler), *eager, *rows)?;
                 }
             }
             None => {

@@ -1548,7 +1548,6 @@ dependencies = [
  "horizon-anticheat",
  "horizon-assets",
  "horizon-bench",
- "horizon-chat-filter",
  "horizon-client-core",
  "horizon-client-input",
  "horizon-client-render",
@@ -1610,7 +1609,6 @@ dependencies = [
  "horizon-client-input",
  "horizon-command",
  "horizon-core",
- "horizon-cosmetics",
  "horizon-hdr",
  "horizon-hooks",
  "horizon-items",
@@ -1973,6 +1971,7 @@ name = "horizon-server-files"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "getrandom 0.3.4",
  "horizon-core",
  "horizon-protocol",
  "horizon-world",
