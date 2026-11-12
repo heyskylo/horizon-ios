@@ -143,6 +143,9 @@ pub(super) struct CombatTracker {
     /// A firework rocket's burst is hurting the player now: the rocket is
     /// the direct entity (`rocket_hurt_player`).
     pub(super) rocket_hit: bool,
+    /// The arrow hurting the player now pierces (`AbstractArrow.getPierceLevel` above 0):
+    /// `LivingEntity.applyItemBlocking` lets it past a raised shield (`arrow_hits_player`).
+    pub(super) piercing_hit: bool,
     /// The player whose melee hit is landing on the player now: where they
     /// stand and the seconds their weapon disables a shield for
     /// (`getSecondsToDisableBlocking`).
