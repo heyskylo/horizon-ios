@@ -109,12 +109,17 @@ pub(super) enum BlockInteraction {
 #[derive(Clone, Copy, Default)]
 pub(super) struct ExplosionSource {
     silent: bool,
+    pub(super) portal_proof: bool,
     /// The entity that exploded and its kind (`Explosion.getDirectSourceEntity`), when known.
     entity: Option<(u32, &'static str)>,
 }
 impl ExplosionSource {
     pub(super) fn with_silence(mut self, silent: bool) -> Self {
         self.silent = silent;
+        self
+    }
+    pub(super) fn with_portal_proof(mut self, portal_proof: bool) -> Self {
+        self.portal_proof = portal_proof;
         self
     }
     pub(super) fn with_entity(mut self, id: u32, kind: &'static str) -> Self {
@@ -417,10 +422,15 @@ impl Game<'_> {
         pos: [i32; 3],
         resists: Option<([i32; 3], f32)>,
         cap: Option<f32>,
+        portal_proof: bool,
         wither_immune: Option<&std::collections::HashSet<String, S>>,
     ) -> (f32, bool) {
         let state = self.world.block(pos[0], pos[1], pos[2]);
         let f = self.res.facts().get(state);
+        // USED_PORTAL_DAMAGE_CALCULATOR returns no resistance and never explodes a portal.
+        if portal_proof && &*f.name == "minecraft:nether_portal" {
+            return (0.0, true);
+        }
         let fluid = if f.fluid != Fluid::None {
             100.0f32
         } else {
@@ -453,6 +463,7 @@ impl Game<'_> {
         center: [f64; 3],
         radius: f32,
         resists: Option<([i32; 3], f32)>,
+        portal_proof: bool,
     ) -> Vec<[i32; 3]> {
         let (min_y, max_y) = self.with_level(|_, level, _| {
             use horizon_world::level::LevelAccess;
@@ -501,8 +512,13 @@ impl Game<'_> {
                         let (taken, spared, again) = match last {
                             Some((at, taken, spared)) if at == pos => (taken, spared, true),
                             _ => {
-                                let (taken, spared) =
-                                    self.blast_step(pos, resists, cap, wither_immune.as_ref());
+                                let (taken, spared) = self.blast_step(
+                                    pos,
+                                    resists,
+                                    cap,
+                                    portal_proof,
+                                    wither_immune.as_ref(),
+                                );
                                 last = Some((pos, taken, spared));
                                 (taken, spared, false)
                             }
@@ -1253,7 +1269,7 @@ impl Game<'_> {
         // Explosion.explode: the blast is heard.
         let ctx = horizon_client::sculk::Context::default();
         self.post_game_event("minecraft:explode", center, ctx);
-        let mut targets = self.exploded_positions(center, radius, resists);
+        let mut targets = self.exploded_positions(center, radius, resists, source.portal_proof);
         let dimension = self.dim.id();
         self.native_explosion_detonate(dimension, center, source.entity, &mut targets);
         let pushed =
@@ -1341,10 +1357,18 @@ impl Game<'_> {
         }
         let name = self.res.facts().get(state).name.clone();
         let is_tnt = &*name == "minecraft:tnt";
-        // CreakingHeartBlock.onExplosionHit: its creaking dies (no
-        // experience, as Horizon does not track a TNT's owner).
+        // CreakingHeartBlock.onExplosionHit: its creaking dies, and a blast
+        // whose indirect source is a player (a primed TNT's owner) awards
+        // the heart's experience (`tryAwardExperience`).
         if &*name == "minecraft:creaking_heart" {
-            self.creaking_heart_broken(pos, false);
+            // tryAwardExperience checks the TNT owner's own abilities.
+            let award = match self.combat.blast_guest {
+                Some(conn) => self
+                    .command_guest(conn)
+                    .is_some_and(|g| !g.creative() && !g.spectator()),
+                None => self.combat.blast_owner_player && !self.creative && !self.spectator(),
+            };
+            self.creaking_heart_broken_by(pos, award);
         }
         // Block.onExplosionHit: the drops copy from the block entity, which
         // then spills its contents as the block turns to air.
@@ -1375,6 +1399,15 @@ impl Game<'_> {
         // Block.onExplosionHit runs spawnAfterBreak before the drops.
         if !is_tnt && name.starts_with("minecraft:infested_") {
             self.spawn_infestation(pos);
+        }
+        // Its dropExperience is whether the blast's indirect source is a
+        // player (a primed TNT's owner, not a mob's): ores, sculk and spawners
+        // sample their experience then, and pop it while blocks drop.
+        if !is_tnt && self.combat.blast_owner_player {
+            let xp = self.block_experience(&name);
+            if xp > 0 && self.ui.rules.bool("block_drops") {
+                self.spawn_orbs(pos.map(|v| f64::from(v) + 0.5), xp);
+            }
         }
         if !is_tnt {
             let dynamic = self.pending.dynamic(pos);
@@ -1423,13 +1456,16 @@ impl Game<'_> {
             let rot = r.next_double() * f64::from(std::f32::consts::TAU);
             let fuse = r.next_int_bound(20).unwrap_or(0) + 10;
             // TntBlock.wasExploded hands the new TNT the blast's indirect
-            // source, so a chain reaction keeps the player who started it.
+            // source, so a chain reaction keeps a primed TNT's owner, player or mob.
             let (owner, guest) = match &self.combat.explicit_explosion_cause {
                 // A crystal/cart's explicit DamageSource does not change
                 // Explosion.getIndirectSourceEntity, which is null for them.
                 Some(_) => (None, None),
                 None => match &self.combat.blast_owner {
-                    Some(_) => (Some(Who::Player), self.combat.blast_guest),
+                    Some(_) if self.combat.blast_owner_player => {
+                        (Some(Who::Player), self.combat.blast_guest)
+                    }
+                    Some((id, _)) => (Some(Who::Mob(*id)), None),
                     None => (None, None),
                 },
             };
@@ -1690,7 +1726,7 @@ mod tests {
             game.world.random.set_seed(7);
             let expected = exploded_positions_stepwise(&mut game, center, radius, resists);
             game.world.random.set_seed(7);
-            let got = game.exploded_positions(center, radius, resists);
+            let got = game.exploded_positions(center, radius, resists, false);
             assert!(expected.len() > 20, "{radius}: {}", expected.len());
             assert_eq!(got, expected, "radius {radius}, {resists:?}");
         }

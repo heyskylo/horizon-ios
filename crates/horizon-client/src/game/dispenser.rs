@@ -909,7 +909,7 @@ impl Game<'_> {
         };
         let (Some(slot), true) = (
             info.equip_slot.as_deref().and_then(Slot::from_name),
-            info.equip_dispensable,
+            horizon_client::item_sync::dispensable(stack, info.equip_dispensable),
         ) else {
             return false;
         };
@@ -1240,6 +1240,7 @@ impl Game<'_> {
                     _ => ProjectileKind::Snowball,
                 };
                 let mut shot = Projectile::new(kind, at, None);
+                shot.set_egg_item(&one);
                 // ArrowItem/SpectralArrowItem.asProjectile: dispensed arrows
                 // may be picked up.
                 if let Some(a) = shot.arrow.as_mut() {
