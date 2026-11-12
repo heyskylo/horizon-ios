@@ -26,6 +26,11 @@ horizon-client-render = { path = "../horizon-client-render" }
 horizon-command = { path = "../horizon-command" }
 horizon-items = { path = "../horizon-items" }
 horizon-core = { path = "../horizon-core" }
+horizon-hooks = { path = "../horizon-hooks" }
+horizon-perf-format = { path = "../horizon-perf-format" }
+horizon-system = { path = "../horizon-system" }
+crc32fast = "1"
+toml = "1.1"
 horizon-cosmetics = { path = "../horizon-cosmetics" }
 # OptiFine-format pack files: custom entity models, random entity textures.
 horizon-optifine = { path = "../horizon-optifine" }

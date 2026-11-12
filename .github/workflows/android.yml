@@ -48,6 +48,8 @@ jobs:
         with:
           workspaces: crates/horizon-android
           shared-key: android-${{ env.ANDROID_TARGET }}
+      - name: Check shared gameplay dependencies
+        run: python3 tools/check_android_manifest.py
       - name: Build the game
         env:
           HORIZON_MSA_CLIENT_ID: 331e08f8-172d-43b9-835a-3108c2fcdbf3
