@@ -2390,13 +2390,10 @@ impl Goal for FollowMob {
         let area = m
             .bounds()
             .inflate(Vec3::new(self.area, self.area, self.area));
-        let found = cx
-            .w
-            .others_near(area)
-            .find(|s| {
-                s.species != species && s.bounds.intersects(area) && !s.has_effect("invisibility")
-            })
-            .map(|s| s.id);
+        let found =
+            cx.w.others_near(area)
+                .find(|s| s.species != species && s.bounds.intersects(area) && !s.invisible)
+                .map(|s| s.id);
         self.following = found;
         found.is_some()
     }
