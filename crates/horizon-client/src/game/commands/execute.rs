@@ -7,7 +7,7 @@ use horizon_client::{
     nbt_path::NbtPath,
     text::Text,
 };
-use horizon_world::nbt::Tag;
+use horizon_world::{dimension_type::DimensionFacts, nbt::Tag};
 
 /// `CommandSourceStack` fields Horizon models: the executing entity (None for
 /// the server), position, rotation, anchor, whether feedback is suppressed
@@ -656,19 +656,17 @@ impl Game<'_> {
                 let Some(Arg::Resource(dim)) = c.get("dimension") else {
                     return Ok(vec![s]);
                 };
-                if !matches!(
-                    dim.as_str(),
-                    "minecraft:overworld" | "minecraft:the_nether" | "minecraft:the_end"
-                ) {
+                let Some(dimension) = self.known_level(dim) else {
                     return Err(err("argument.dimension.invalid", &[dim]));
-                }
-                let dimension = Dim::from_id(dim);
-                let coordinate_scale = |dim| if dim == Dim::Nether { 8.0 } else { 1.0 };
-                let scale = coordinate_scale(s.dimension) / coordinate_scale(dimension);
+                };
+                let scale = DimensionFacts::teleportation_scale(
+                    self.dimension_type_of(s.dimension),
+                    self.dimension_type_of(dimension),
+                );
                 vec![Source {
                     pos: [s.pos[0] * scale, s.pos[1], s.pos[2] * scale],
                     dimension,
-                    level: Some(super::super::Dim::from_id(dim)),
+                    level: Some(dimension),
                     ..s
                 }]
             }

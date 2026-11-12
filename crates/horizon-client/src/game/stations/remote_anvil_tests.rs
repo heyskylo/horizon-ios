@@ -53,7 +53,7 @@ fn client_on_a_server_with_a_custom_enchantment() -> Game<'static> {
         .enchantments
         .with_entries([("fixture:drill", &definition)])
         .expect("the game's own table lacks fixture:drill");
-    game.remote.as_mut().unwrap().enchantments = Some(Arc::new(synced));
+    game.remote.as_mut().unwrap().tables.enchantments = Some(Arc::new(synced));
     game
 }
 

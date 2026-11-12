@@ -812,7 +812,7 @@ mod tests {
                     // 20 seconds in the pose (`getPoseTime() >= 20 * 20`).
                     m.extra.egg_time = (i64::from(m.age) - 401) as i32;
                     m.on_ground = true;
-                    m.random = horizon_core::random::LegacyRandom::new(1234 + i64::from(id));
+                    m.random.set_seed(1234 + i64::from(id));
                     m
                 };
                 // Under the ceiling, and out in the open.
