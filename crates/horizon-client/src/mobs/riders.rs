@@ -186,16 +186,23 @@ pub fn seat(attachment: [f64; 3], rider_offset: f64, at: Vec3, yaw: f32) -> Vec3
 
 /// `Entity.startRiding`: the link it makes, `rider` on `vehicle` as its first
 /// passenger (`addPassenger`).
-pub fn link(mobs: &mut [Mob], rider: u32, vehicle: u32) {
+pub fn link<M: super::MobSlot>(mobs: &mut [M], rider: u32, vehicle: u32) {
     if rider == vehicle {
         return;
     }
-    if let Some(m) = mobs.iter_mut().find(|m| m.id == rider) {
+    if let Some(m) = mobs
+        .iter_mut()
+        .map(super::MobSlot::mob_mut)
+        .find(|m| m.id == rider)
+    {
         super::shulker::on_start_riding(m);
         m.extra.mount = Some(vehicle);
         m.extra.passenger = true;
     }
-    if let Some(m) = mobs.iter_mut().find(|m| m.id == vehicle)
+    if let Some(m) = mobs
+        .iter_mut()
+        .map(super::MobSlot::mob_mut)
+        .find(|m| m.id == vehicle)
         && m.extra.rider.is_none()
     {
         m.extra.rider = Some(rider);
@@ -213,9 +220,10 @@ pub fn can_add_passenger(v: &Mob, aboard: usize) -> bool {
 }
 /// `Piglin.getTopPassenger`: down the chain of first passengers from
 /// `vehicle`, stopping at the `counter`th seat.
-fn top_passenger(mobs: &[Mob], vehicle: u32, counter: i32) -> u32 {
+fn top_passenger<M: super::MobSlot>(mobs: &[M], vehicle: u32, counter: i32) -> u32 {
     let first = mobs
         .iter()
+        .map(super::MobSlot::mob)
         .find(|m| m.id == vehicle)
         .and_then(|m| m.extra.rider);
     match first {
@@ -228,17 +236,22 @@ fn top_passenger(mobs: &[Mob], vehicle: u32, counter: i32) -> u32 {
 /// Not the vehicle it is on already, nor one it carries itself, and only
 /// after its boarding cooldown, onto a vehicle with no passenger
 /// (`canRide`, `canAddPassenger`). Returns whether it boarded.
-pub fn start_riding(mobs: &mut [Mob], rider: u32, vehicle: u32) -> bool {
+pub fn start_riding<M: super::MobSlot>(mobs: &mut [M], rider: u32, vehicle: u32) -> bool {
     // `Shulker.startRiding` puts its attach face back before the ride is
     // decided, so a shulker that is refused still ends up lid up.
-    if let Some(m) = mobs.iter_mut().find(|m| m.id == rider) {
+    if let Some(m) = mobs
+        .iter_mut()
+        .map(super::MobSlot::mob_mut)
+        .find(|m| m.id == rider)
+    {
         super::shulker::on_start_riding(m);
     }
-    let Some(r) = mobs.iter().find(|m| m.id == rider) else {
+    let Some(r) = mobs.iter().map(super::MobSlot::mob).find(|m| m.id == rider) else {
         return false;
     };
     let on_hoglin = mobs
         .iter()
+        .map(super::MobSlot::mob)
         .any(|m| m.id == vehicle && m.species() == Species::Hoglin);
     let vehicle = if r.species() == Species::Piglin && r.is_baby() && on_hoglin {
         top_passenger(mobs, vehicle, MAX_PASSENGERS_ON_ONE_HOGLIN)
@@ -252,17 +265,26 @@ pub fn start_riding(mobs: &mut [Mob], rider: u32, vehicle: u32) -> bool {
     // its vehicle.
     let mut up = Some(vehicle);
     while let Some(v) = up {
-        up = mobs.iter().find(|m| m.id == v).and_then(|m| m.extra.mount);
+        up = mobs
+            .iter()
+            .map(super::MobSlot::mob)
+            .find(|m| m.id == v)
+            .and_then(|m| m.extra.mount);
         if up == Some(rider) {
             return false;
         }
     }
-    let Some(v) = mobs.iter().find(|m| m.id == vehicle) else {
+    let Some(v) = mobs
+        .iter()
+        .map(super::MobSlot::mob)
+        .find(|m| m.id == vehicle)
+    else {
         return false;
     };
     let count = usize::from(v.rider.is_some())
         + mobs
             .iter()
+            .map(super::MobSlot::mob)
             .filter(|m| m.extra.mount == Some(vehicle))
             .count()
             .max(usize::from(v.extra.rider.is_some()));
@@ -470,25 +492,26 @@ pub fn solve_body_rot(head: f32, vehicle_body: f32) -> f32 {
 /// Tick a passenger with Mob.getNavigation's recursive vehicle redirection.
 /// Navigation is lent, not copied: goal start/stop/path progress all address
 /// the same object the vehicle ticks. The pathfinder sees the vehicle body.
-pub fn tick(
-    mobs: &mut [Mob],
+pub fn tick<M: super::MobSlot>(
+    mobs: &mut [M],
     index: usize,
     w: &MobWorld,
     random: &mut horizon_core::random::LegacyRandom,
     events: &mut Vec<super::MobEvent>,
 ) -> bool {
     let mut owner = index;
-    if !mobs[index].no_ai {
+    if !mobs[index].mob().no_ai {
         for _ in 0..mobs.len() {
             let Some(vehicle) = mobs[owner]
+                .mob()
                 .extra
                 .mount
-                .and_then(|id| mobs.iter().position(|m| m.id == id))
+                .and_then(|id| mobs.iter().position(|m| m.mob().id == id))
             else {
                 break;
             };
             if vehicle == index
-                || controller(&mobs[vehicle], w).is_none_or(|r| r.id != mobs[owner].id)
+                || controller(mobs[vehicle].mob(), w).is_none_or(|r| r.id != mobs[owner].mob().id)
             {
                 break;
             }
@@ -496,14 +519,14 @@ pub fn tick(
         }
     }
     if owner == index {
-        return mobs[index].tick(w, random, events);
+        return mobs[index].mob_mut().tick(w, random, events);
     }
     let (rider, vehicle) = if index < owner {
         let (left, right) = mobs.split_at_mut(owner);
-        (&mut left[index], &mut right[0])
+        (left[index].mob_mut(), right[0].mob_mut())
     } else {
         let (left, right) = mobs.split_at_mut(index);
-        (&mut right[0], &mut left[owner])
+        (right[0].mob_mut(), left[owner].mob_mut())
     };
     let body = vehicle.path_mob();
     std::mem::swap(&mut rider.ai.nav, &mut vehicle.ai.nav);

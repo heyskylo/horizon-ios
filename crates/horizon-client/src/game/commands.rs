@@ -13,6 +13,7 @@ pub(in crate::game) mod items;
 mod misc;
 mod place;
 mod players;
+mod position_args;
 pub(super) mod pregen;
 mod profiles;
 mod raid;
@@ -516,22 +517,6 @@ impl Game<'_> {
     }
     pub(super) fn position_arg(&self, ctx: &Context, name: &str) -> Option<[f64; 3]> {
         self.coords(ctx, name).map(|c| self.resolve_coords(&c))
-    }
-    /// BlockPosArgument.getLoadedBlockPos.
-    pub(super) fn block_pos_arg(&self, ctx: &Context, name: &str) -> R<[i32; 3]> {
-        let c = self
-            .coords(ctx, name)
-            .ok_or_else(|| err("argument.pos.missing.int", &[]))?;
-        // BlockPos.containing(getPosition)
-        let p = self.resolve_coords(&c).map(|v| v.floor() as i32);
-        let dimension = self.command_source.map_or(self.dim, |s| s.dimension);
-        if dimension != self.dim || !self.world.chunks.contains_key(&(p[0] >> 4, p[2] >> 4)) {
-            return Err(err("argument.pos.unloaded", &[]));
-        }
-        if p[1] < self.world.bottom_y() || p[1] >= self.world.top_y() {
-            return Err(err("argument.pos.outofworld", &[]));
-        }
-        Ok(p)
     }
     fn int(ctx: &Context, name: &str) -> Option<i32> {
         match ctx.get(name) {
@@ -2625,8 +2610,7 @@ impl Game<'_> {
                     return Err(err("commands.summon.failed", &[]));
                 }
                 "experience_orb" => {
-                    // `new ExperienceOrb(level, pos, Vec3.ZERO, 0)`, unstuck
-                    // like any other orb spawn.
+                    // `new ExperienceOrb(level, pos, Vec3.ZERO, 0)`, unstuck like any orb spawn.
                     let at = self.unstuck_orb(pos);
                     self.next_entity += 1;
                     self.orbs.push(horizon_client::entities::ExperienceOrb {
@@ -2643,6 +2627,7 @@ impl Game<'_> {
                         count: 1,
                         ticks: 0,
                         health: 5,
+                        air: 300,
                         following: None,
                     });
                     // tryAddFreshEntityWithPassengers refused: ERROR_DUPLICATE_UUID.
@@ -3794,7 +3779,7 @@ impl Game<'_> {
             vec![Target::Player]
         };
         let pos = if ctx.get("pos").is_some() {
-            self.block_pos_arg(ctx, "pos")?
+            self.spawnable_pos_arg(ctx, "pos")?
         } else {
             let p = self.source_position();
             [
@@ -3855,7 +3840,7 @@ impl Game<'_> {
     }
     fn cmd_setworldspawn(&mut self, ctx: &Context) -> R<i32> {
         let pos = if ctx.get("pos").is_some() {
-            self.block_pos_arg(ctx, "pos")?
+            self.spawnable_pos_arg(ctx, "pos")?
         } else {
             let p = self.source_position();
             [

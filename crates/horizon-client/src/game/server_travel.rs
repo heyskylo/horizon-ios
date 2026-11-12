@@ -14,6 +14,7 @@ use super::{Dim, Game, Mob, boats, lan::LanHost, minecarts};
 use horizon_client::{lan::hub::TickCtx, world_spawn::PlayerSpawnFinder};
 use horizon_core::{geometry::Vec3, position::BlockPos};
 use horizon_protocol::packets::play::{self, Clientbound as C};
+use horizon_world::dimension_type::DimensionFacts;
 
 /// A trip under way: the player is in the destination's level, whose
 /// chunks are loading around `target`.
@@ -555,13 +556,11 @@ impl Game<'_> {
         });
         let source = self.dim;
         let end = plan.is_none();
-        // Coordinates scale by 8 between the Overworld and the Nether; an
-        // End portal has fixed destinations.
-        let scale = match (source, target) {
-            (Dim::Overworld, Dim::Nether) | (Dim::End, Dim::Nether) => 1.0 / 8.0,
-            (Dim::Nether, Dim::Overworld) => 8.0,
-            _ => 1.0,
-        };
+        // Nether to End would scale by 8 here; an End portal always takes end_destination.
+        let scale = DimensionFacts::teleportation_scale(
+            self.dimension_type_of(source),
+            self.dimension_type_of(target),
+        );
         self.end_portal_travel = end;
         // Leaving the End: the player's own respawn point.
         let own = if end {
