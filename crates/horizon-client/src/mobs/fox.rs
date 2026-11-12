@@ -359,9 +359,14 @@ fn consume(w: &MobWorld, m: &mut Mob, events: &mut Vec<MobEvent>, item: &str) {
             other => m.apply_consume_effect(other),
         }
     }
-    // `user.gameEvent(GameEvent.EAT)` at its own position, itself the source.
+    // `user.gameEvent(animation == DRINK ? GameEvent.DRINK : GameEvent.EAT)` at
+    // its own position, itself the source.
     events.push(MobEvent::GameEvent {
-        event: "minecraft:eat",
+        event: if consumable.animation == horizon_world::consumable::UseAnimation::Drink {
+            "minecraft:drink"
+        } else {
+            "minecraft:eat"
+        },
         at: [m.position.x, m.position.y, m.position.z],
         source: m.id,
         state: BlockStateId(0),
