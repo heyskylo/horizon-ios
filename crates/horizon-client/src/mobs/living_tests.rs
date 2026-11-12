@@ -355,6 +355,39 @@ fn a_ridden_horse_floats_in_deep_water() {
     );
 }
 
+/// `Drowned.isPushedByFluid`: a drowned answers `!isSwimming()`, so the current
+/// of a stream pushes a drowned walking its bottom and leaves one swimming after
+/// its target alone, where every land mob feels it.
+#[test]
+fn a_swimming_drowned_is_not_pushed_by_the_current() {
+    use crate::mobs::Species;
+    let mob = |species| {
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.species = species;
+        Mob::new(1, std::sync::Arc::new(kind), Vec3::ZERO, 0.0)
+    };
+    // Drowned.updateSwimming keeps `isSwimming` on `extra.flag`.
+    let mut swimming = mob(Species::Drowned);
+    swimming.extra.flag = true;
+    assert!(
+        !swimming.pushed_by_fluid(),
+        "a swimming drowned holds still"
+    );
+    swimming.extra.flag = false;
+    assert!(swimming.pushed_by_fluid(), "one on the bottom is pushed");
+    // The water mobs answer false either way.
+    for quiet in [
+        Species::Cod,
+        Species::Squid,
+        Species::Turtle,
+        Species::Nautilus,
+    ] {
+        assert!(!mob(quiet).pushed_by_fluid(), "{quiet:?}");
+    }
+    // A land mob is pushed.
+    assert!(mob(Species::Zombie).pushed_by_fluid());
+}
+
 /// `Entity.collide` takes `getEntityCollisions` too: a zombie dropping
 /// onto a living shulker or a happy ghast held still (a player on its
 /// back) lands on it; a dead shulker, a happy ghast that is not held, or
