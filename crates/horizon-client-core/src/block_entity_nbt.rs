@@ -890,8 +890,9 @@ mod tests {
         assert_eq!(sign("257"), Some(Tag::Byte(1)));
         // `SignText` reads `has_glowing_text` through `Codec.BOOL`, which tests
         // the whole number: 256 is true there.
-        let glowing =
-            canon(r#"{id:"minecraft:sign",x:1,y:2,z:3,front_text:{has_glowing_text:256}}"#);
+        let glowing = canon(
+            r#"{id:"minecraft:sign",x:1,y:2,z:3,front_text:{messages:["","","",""],has_glowing_text:256}}"#,
+        );
         let front = glowing.get("front_text").unwrap();
         assert_eq!(front.get("has_glowing_text"), Some(&Tag::Byte(1)));
         let piston = canon(r#"{id:"minecraft:piston",x:1,y:2,z:3,extending:256,source:513}"#);
