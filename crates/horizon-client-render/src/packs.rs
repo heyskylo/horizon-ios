@@ -4,9 +4,11 @@
 //! and an overlay resource root that layers the enabled packs over the
 //! vanilla resources (later packs win), so every loader sees one tree.
 mod cache;
+mod import;
 use crate::text::Style;
 use crate::{text::Text, zip::Zip};
 pub use horizon_client_core::pattern;
+pub use import::copy_pack;
 use pattern::Pattern;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -466,6 +468,13 @@ fn read_meta(source: &Source) -> Option<serde_json::Value> {
 /// file with a comment after the closing brace. Gson reads past a UTF-8 byte order mark;
 /// serde_json rejects it.
 pub(crate) fn parse_meta(bytes: &[u8]) -> Option<serde_json::Value> {
+    first_json(bytes)
+}
+
+/// Reads the first JSON value from resource metadata, matching Gson's
+/// `JsonReader` (which ignores a trailing signature or comment). Resource
+/// packs commonly append such text to texture metadata as well as pack.mcmeta.
+pub(crate) fn first_json(bytes: &[u8]) -> Option<serde_json::Value> {
     serde_json::Deserializer::from_slice(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes))
         .into_iter()
         .next()?
@@ -653,7 +662,10 @@ pub fn folder(dir: &Path, format: (i64, i64)) -> Vec<Pack> {
             let name = e.file_name().to_string_lossy().into_owned();
             let source = if path.is_dir() {
                 Source::Dir(path)
-            } else if name.ends_with(".zip") {
+            } else if path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
+            {
                 Source::Zip(path)
             } else {
                 return None;

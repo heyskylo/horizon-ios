@@ -231,8 +231,7 @@ fn witch_attack(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
         Some(Who::Mob(m.id)),
     );
     // Splash potions throw with gravity 0.05.
-    p.shoot(
-        &mut crate::random_source::entity(),
+    p.shoot_own(
         [xd, yd + dist * 0.2, zd],
         if dist <= 2.0 { 0.45 } else { 0.75 },
         8.0,
@@ -405,10 +404,9 @@ mod tests {
     /// How many drink sounds forty attempts produce. Vanilla plays
     /// `entity.witch.drink` at volume 1, and skips it when the witch is silent.
     fn drink_sounds(silent: bool) -> usize {
-        use horizon_core::random::LegacyRandom;
         let mut m = witch();
         m.silent = silent;
-        m.random = LegacyRandom::new(1);
+        m.random.set_seed(1);
         m.fluids.eye_in_water = true;
         m.fire_ticks = 20;
         m.health = 1.0;
@@ -435,10 +433,10 @@ mod tests {
         assert_eq!(drink_sounds(true), 0);
 
         let mut loud = witch();
-        loud.random = LegacyRandom::new(11);
+        loud.random.set_seed(11);
         let mut quiet = witch();
         quiet.silent = true;
-        quiet.random = LegacyRandom::new(11);
+        quiet.random.set_seed(11);
         let mut oracle = LegacyRandom::new(11);
         // Vanilla: 0.8F + nextFloat() * 0.4F, volume 1.
         let pitch = 0.8 + oracle.next_float() * 0.4;

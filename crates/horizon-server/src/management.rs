@@ -12,7 +12,7 @@ use crate::{
     websocket::{Link, Socket},
 };
 use horizon_platform::server_files::properties::{
-    ServerProperties, SystemEntropy, generate_secret_key,
+    OsEntropy, ServerProperties, SystemEntropy, generate_secret_key,
 };
 use serde_json::{Value, json};
 use std::{
@@ -225,7 +225,7 @@ fn settings(dir: &Path) -> Result<Option<Settings>, String> {
     let heartbeat = p.status_heartbeat_interval;
     let mut secret = p.management_server_secret;
     if generated {
-        secret = generate_secret_key(&mut SystemEntropy::default());
+        secret = generate_secret_key(&mut OsEntropy);
         crate::config::update_all(
             dir,
             &[(
@@ -347,18 +347,30 @@ fn serve(
                     .map(|(_, socket)| socket.clone())
                     .collect();
                 for socket in sockets {
-                    let _ = socket.send_text(&text);
+                    // A write that timed out: that client is closed, its reader ends and
+                    // unregisters it.
+                    if socket.send_text(&text).is_err() {
+                        socket.close(1008);
+                    }
                 }
             }
         })?;
     std::thread::Builder::new()
         .name("management".into())
         .spawn(move || {
+            // Reachable by remote tools before they authenticate: at most `MAX_OPEN` at once.
+            let open = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             for stream in listener.incoming().flatten() {
+                let Some(slot) = http::Slot::take(&open, http::MAX_OPEN) else {
+                    continue;
+                };
                 let (shared, settings) = (shared.clone(), settings.clone());
                 let _ = std::thread::Builder::new()
                     .name("management-client".into())
-                    .spawn(move || connection(&shared, &settings, &stream));
+                    .spawn(move || {
+                        let _slot = slot;
+                        connection(&shared, &settings, &stream)
+                    });
             }
         })?;
     Ok(())
@@ -367,6 +379,8 @@ fn serve(
 static CONNECTIONS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 fn connection(shared: &Arc<Shared>, settings: &Settings, stream: &TcpStream) {
+    // A client that stops reading must not block the notification thread every client shares.
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
     let link = match &settings.tls {
         Some(tls) => Link::tls(stream, tls.config.clone()),
         None => Link::plain(stream),
