@@ -21,6 +21,43 @@ use horizon_core::geometry::{Aabb, Vec3};
 use serde_json::Value;
 use std::{cell::RefCell, collections::HashMap};
 
+/// The game's painter for the HUD kit's icons (`hud_kit::icon`): items by their models, the
+/// player's face from `face`, their skin's texture.
+pub(super) struct IconPainter<'g, 'a> {
+    pub(super) game: &'g Game<'a>,
+    pub(super) face: Option<&'g str>,
+}
+
+impl horizon_client::hud_kit::icon::IconPainter for IconPainter<'_, '_> {
+    fn item(&self, batch: &mut HudBatch, id: &str, [x, y, size]: [f32; 3]) -> bool {
+        let start = batch.vertices.len();
+        self.game
+            .draw_item_model(batch, &ItemStack::new(id, 1), x, y);
+        let scale = size / horizon_client::hud_kit::icon::ITEM_SIZE;
+        batch.scale_since(start, x, y, scale, scale);
+        batch.vertices.len() > start
+    }
+    fn face(&self, batch: &mut HudBatch, [x, y, size]: [f32; 3]) -> bool {
+        let Some(skin) = self.face else {
+            return false;
+        };
+        let mut draws = Vec::new();
+        // `PlayerFaceExtractor`: the face, then its hat layer.
+        horizon_client::tab_list::face(
+            &mut draws,
+            skin,
+            x as i32,
+            y as i32,
+            size as i32,
+            true,
+            false,
+            u32::MAX,
+        );
+        horizon_client::hud_layout::paint(batch, &self.game.gui.atlas, &draws);
+        true
+    }
+}
+
 /// The game's answers to what the resolver cannot read from the stack.
 pub(super) struct Env<'a, 'g> {
     game: &'a Game<'g>,
@@ -434,7 +471,7 @@ impl Game<'_> {
         light: u32,
         out: &mut Vec<Vertex>,
     ) {
-        let lights = diffuse_lights(self.dim == Dim::Nether);
+        let lights = diffuse_lights(self.nether_lighting());
         self.submit_item_lit(state, pose, light, lights, out);
     }
     /// [`Self::submit_item_world`] shaded by other diffuse lights (a
@@ -536,7 +573,7 @@ impl Game<'_> {
         light: u32,
         skinned: &mut super::creatures::Skinned,
     ) -> bool {
-        let lights = diffuse_lights(self.dim == Dim::Nether);
+        let lights = diffuse_lights(self.nether_lighting());
         let Some((mark, bounds)) = self.submit_item_skinned(state, &[pose], light, lights) else {
             return false;
         };
@@ -581,7 +618,7 @@ impl Game<'_> {
         let range =
             super::entity_culling::default_range(glam::DVec3::splat(0.25), self.view_scale());
         let skinning = self.skinning();
-        let lights = diffuse_lights(self.dim == Dim::Nether);
+        let lights = diffuse_lights(self.nether_lighting());
         for (item, at, partial, entity) in live.chain(taken) {
             let entity_start = out.len();
             self.mark_motion(entity_start, (2 << 32) | u64::from(item.id));

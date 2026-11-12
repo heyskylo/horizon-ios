@@ -30,6 +30,8 @@ use std::{
     time::Duration,
 };
 
+use horizon_hooks::tunnel;
+
 /// `CommonListenerCookie.serverCookies`: cookies the server asked the client
 /// to store (`ClientboundStoreCookiePacket`), answered to
 /// `ClientboundCookieRequestPacket`. A `transfer` carries them to the next
@@ -147,8 +149,20 @@ pub struct Session {
     far: Arc<crate::lod_net::Inbox>,
     /// The recording running, if any.
     recorder: RecorderSlot,
+    /// This connection's number, new for each one ([`Session::serial`]).
+    serial: u64,
+}
+/// The next [`Session::serial`].
+static NEXT_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+fn next_serial() -> u64 {
+    NEXT_SERIAL.fetch_add(1, Ordering::Relaxed)
 }
 impl Session {
+    /// A number of its own for each connection, never 0: entity ids are per connection, so what
+    /// is kept by id goes when it changes (`horizon_hooks::players::PlayerModels::connection`).
+    pub fn serial(&self) -> u64 {
+        self.serial
+    }
     /// The negotiated wire release, once the connection has been established.
     pub fn server_version(&self) -> horizon_protocol::adapter::ServerVersion {
         self.writer.lock().unwrap().as_ref().map_or(
@@ -254,6 +268,7 @@ impl Session {
             debug: false,
             far: Arc::new(crate::lod_net::Inbox::default()),
             recorder: Arc::new(Mutex::new(None)),
+            serial: next_serial(),
         }
     }
     fn start(
@@ -331,6 +346,7 @@ impl Session {
             debug,
             far,
             recorder,
+            serial: next_serial(),
         }
     }
     /// Everything received since the last poll.
@@ -496,62 +512,52 @@ impl Drop for Session {
 }
 
 /// An address of the form `friend:K7QM-3XPD` joins a friend's world through
-/// its invite code (horizon-friends): the session goes through a tunnel the
-/// client reaches on a loopback port, so everything after is a plain join.
-#[cfg(feature = "friends")]
-pub const FRIEND: &str = horizon_friends::ADDRESS_PREFIX;
-/// Without the `friends` feature such an address is refused (`join_friend`).
-#[cfg(not(feature = "friends"))]
-pub const FRIEND: &str = "friend:";
+/// its invite code (Play with Friends, through a hook's [`tunnel::Resolver`]):
+/// the session goes through a tunnel the client reaches on a loopback port, so
+/// everything after is a plain join.
+pub const FRIEND: &str = tunnel::PREFIX;
 
 /// Whether `code` is an invite code; with `full`, only a full one (a short
-/// relay code could also be a host name).
-#[cfg(feature = "friends")]
+/// relay code could also be a host name). Without a resolver nothing is one.
 pub fn is_invite(code: &str, full: bool) -> bool {
-    use horizon_friends::invite::{Parsed, parse};
-    match parse(code) {
-        Some(Parsed::Long(_)) => true,
-        Some(Parsed::Short(_)) => !full,
-        None => false,
-    }
+    horizon_hooks::engine::tunnel().is_some_and(|r| r.is_code(code, full))
 }
-/// Without the `friends` feature nothing is one.
-#[cfg(not(feature = "friends"))]
-pub fn is_invite(_code: &str, _full: bool) -> bool {
-    false
+
+/// Whether an invite code can be joined: a resolver is registered (horizon-official registers
+/// horizon-friends'). The title screen's Friends icon, which opens Join a Friend, is inactive
+/// without one, as the pause menu's is without a page to share from.
+pub fn joins_friends() -> bool {
+    #[cfg(test)]
+    if JOINS_FRIENDS_IN_TEST.get() {
+        return true;
+    }
+    horizon_hooks::engine::tunnel().is_some()
+}
+#[cfg(test)]
+thread_local! {
+    /// A test's stand-in for a registered resolver: the registry is the process's and sealed.
+    pub(crate) static JOINS_FRIENDS_IN_TEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// An address as players and logs see it: a friend's invite code stays
 /// out of it (its secret is in there).
 pub fn shown_address(address: &str) -> String {
     match address.strip_prefix(FRIEND) {
-        #[cfg(feature = "friends")]
-        Some(code) => match horizon_friends::invite::parse(code) {
-            Some(horizon_friends::invite::Parsed::Short(c)) => {
-                format!("Friend's world ({}-****)", c.nameplate)
-            }
-            _ => "Friend's world".to_owned(),
+        Some(code) => match horizon_hooks::engine::tunnel().and_then(|r| r.nameplate(code)) {
+            Some(nameplate) => format!("Friend's world ({nameplate}-****)"),
+            None => "Friend's world".to_owned(),
         },
-        #[cfg(not(feature = "friends"))]
-        Some(_) => "Friend's world".to_owned(),
         None => address.to_owned(),
     }
 }
 
 /// The relay the player set (`friendsRelay` in horizon.txt, beside
-/// options.txt), else `HORIZON_RELAY_URL`. None by default.
+/// options.txt), else the resolver's (`HORIZON_RELAY_URL`). None by default.
 pub fn friends_relay_setting() -> Option<String> {
     let dir = std::env::current_dir().ok()?;
     crate::ui_theme::preference(&dir, "friendsRelay")
         .filter(|r| !r.is_empty())
-        .or_else(relay_from_env)
-}
-#[cfg(feature = "friends")]
-use horizon_friends::relay_url as relay_from_env;
-/// `HORIZON_RELAY_URL` is the friends feature's: none without it.
-#[cfg(not(feature = "friends"))]
-fn relay_from_env() -> Option<String> {
-    None
+        .or_else(|| horizon_hooks::engine::tunnel().and_then(|r| r.relay_from_env()))
 }
 /// Remember the relay typed on Join a friend (empty forgets it).
 pub fn save_friends_relay(relay: &str) {
@@ -562,55 +568,35 @@ pub fn save_friends_relay(relay: &str) {
 
 /// Reach the friend's world from the code (directly, or through a relay)
 /// and open the tunnel: the loopback address to connect to, and the token to send on it first.
-#[cfg(feature = "friends")]
+/// Without a resolver (a build without Play with Friends) the address is refused, never retried.
 fn join_friend(
     code: &str,
     lang: &Language,
     send: &Sender<Event>,
 ) -> Result<(String, u16, Vec<u8>), Reason> {
-    use horizon_friends::{
-        PathMode,
-        guest::{self, GuestConfig},
+    let Some(resolver) = horizon_hooks::engine::tunnel() else {
+        return Err(Reason::keyed_arg(
+            "horizon.multiplayer.invalid_address",
+            lang,
+            &shown_address(&format!("{FRIEND}{code}")),
+        ));
     };
-    status(send, &tr(lang, "horizon.multiplayer.finding_friend"));
-    let tunnel = guest::join(&GuestConfig {
-        code: code.to_owned(),
-        relay: friends_relay_setting(),
-        protocol: PROTOCOL_VERSION,
-        game: horizon_protocol::GAME_VERSION.to_owned(),
-        path: PathMode::from_env(),
-    })
-    .map_err(|e| Reason::plain(e.to_string()))?;
-    status(
-        send,
-        &if tunnel.direct {
-            tr(lang, "horizon.multiplayer.connected_friend_direct")
-        } else {
-            tr(lang, "horizon.multiplayer.connected_friend_relay")
-        },
-    );
-    let loopback = tunnel
-        .serve_loopback()
-        .map_err(|e| Reason::plain(e.to_string()))?;
-    Ok((
-        "127.0.0.1".to_owned(),
-        loopback.port,
-        loopback.token.to_vec(),
-    ))
-}
-
-/// A build without Play with Friends: the address is refused, never retried.
-#[cfg(not(feature = "friends"))]
-fn join_friend(
-    code: &str,
-    lang: &Language,
-    _: &Sender<Event>,
-) -> Result<(String, u16, Vec<u8>), Reason> {
-    Err(Reason::keyed_arg(
-        "horizon.multiplayer.invalid_address",
-        lang,
-        &shown_address(&format!("{FRIEND}{code}")),
-    ))
+    let mut progress = |p: tunnel::Progress| {
+        let key = match p {
+            tunnel::Progress::Finding => "horizon.multiplayer.finding_friend",
+            tunnel::Progress::Connected { direct: true } => {
+                "horizon.multiplayer.connected_friend_direct"
+            }
+            tunnel::Progress::Connected { direct: false } => {
+                "horizon.multiplayer.connected_friend_relay"
+            }
+        };
+        status(send, &tr(lang, key));
+    };
+    let opened = resolver
+        .open(code, friends_relay_setting(), &mut progress)
+        .map_err(Reason::plain)?;
+    Ok(("127.0.0.1".to_owned(), opened.port, opened.token))
 }
 
 fn status(send: &Sender<Event>, text: &str) {
@@ -1306,13 +1292,31 @@ fn brand() -> Vec<u8> {
 }
 
 /// Flatten a JSON chat component (login disconnects are JSON).
+/// At most `horizon_protocol::text::MAX_TEXT` bytes, as `plain`: a login-phase reason from a
+/// server is any JSON it likes.
 pub fn json_text(v: &serde_json::Value, lang: &Language) -> String {
+    use horizon_protocol::text::{MAX_TEXT, push_capped};
     match v {
-        serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Array(a) => a.iter().map(|e| json_text(e, lang)).collect(),
+        serde_json::Value::String(s) => {
+            let mut out = String::new();
+            push_capped(&mut out, s);
+            out
+        }
+        serde_json::Value::Array(a) => {
+            let mut out = String::new();
+            for e in a {
+                if out.len() >= MAX_TEXT {
+                    break;
+                }
+                push_capped(&mut out, &json_text(e, lang));
+            }
+            out
+        }
         serde_json::Value::Object(o) => {
             let mut out = if let Some(t) = o.get("text").and_then(|t| t.as_str()) {
-                t.to_owned()
+                let mut out = String::new();
+                push_capped(&mut out, t);
+                out
             } else if let Some(key) = o.get("translate").and_then(|t| t.as_str()) {
                 let args: Vec<String> = o
                     .get("with")
@@ -1334,7 +1338,10 @@ pub fn json_text(v: &serde_json::Value, lang: &Language) -> String {
             };
             if let Some(extra) = o.get("extra").and_then(|e| e.as_array()) {
                 for e in extra {
-                    out.push_str(&json_text(e, lang));
+                    if out.len() >= MAX_TEXT {
+                        break;
+                    }
+                    push_capped(&mut out, &json_text(e, lang));
                 }
             }
             out
@@ -1488,6 +1495,18 @@ fn continues_after_failed_join(lan: bool, signed_in: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_login_reason_repeating_its_argument_stays_bounded() {
+        let pattern = "%1$s".repeat(16_000);
+        let mut v = serde_json::json!({ "text": "A" });
+        for _ in 0..3 {
+            v = serde_json::json!({ "translate": "x.unknown", "fallback": pattern, "with": [v] });
+        }
+        let v = serde_json::json!({ "text": "", "extra": [v.clone(), v] });
+        let text = json_text(&v, &Language::default());
+        assert!(text.len() <= horizon_protocol::text::MAX_TEXT);
+    }
 
     fn pack(namespace: &str, id: &str, version: &str) -> cfg::KnownPack {
         cfg::KnownPack {
@@ -1873,6 +1892,7 @@ mod tests {
                 debug: false,
                 far: Arc::default(),
                 recorder: Arc::new(Mutex::new(None)),
+                serial: next_serial(),
             };
             let started = std::time::Instant::now();
             if explicit_disconnect {
@@ -1976,6 +1996,7 @@ mod tests {
             debug: false,
             far: Arc::default(),
             recorder: Arc::new(Mutex::new(None)),
+            serial: next_serial(),
         };
         let (thread_writer, thread_configuring, thread_recorder) = (
             session.writer.clone(),
@@ -2259,6 +2280,7 @@ mod tests {
             debug: false,
             far: Arc::default(),
             recorder: Arc::new(Mutex::new(None)),
+            serial: next_serial(),
         };
         let recorder = TestRecorder::default();
         session.start_recording(recorder.clone(), |_| {});

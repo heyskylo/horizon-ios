@@ -5,6 +5,7 @@ desktop's disk on 2026-11-09. The script runs where no fetch is going on; these 
 like such a checkout and look at what is left.
 """
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -12,12 +13,25 @@ import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "tools/ci/git-slim.sh"
+# Since git 2.5x, `git commit` starts `git maintenance run --auto` in the background after every commit, and its
+# default strategy repacks geometrically even with gc.auto=0: the packs these tests count were folded while they were
+# being counted (12 built, 3 found on the desktop's git 2.54). No user or system config, and no automatic maintenance.
+NO_AUTO_MAINTENANCE = {"gc.auto": "0", "maintenance.auto": "false", "gc.autoDetach": "false",
+                       "maintenance.autoDetach": "false"}
 ENV = {
-    **os.environ,
+    **{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@localhost",
     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@localhost",
-    "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
+    "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_COUNT": str(len(NO_AUTO_MAINTENANCE)),
+    **{f"GIT_CONFIG_{kind}_{i}": value for i, (key, val) in enumerate(NO_AUTO_MAINTENANCE.items())
+       for kind, value in (("KEY", key), ("VALUE", val))},
 }
+# The bash on PATH, as in test_pr_ready: Windows' CreateProcess looks in System32 before PATH, so a bare "bash" there is
+# WSL's (#5383), which can't see the host's paths.
+BASH = shutil.which("bash")
+POSIX_BASH = BASH is not None and not (
+    os.name == "nt" and os.path.dirname(os.path.normcase(BASH)).endswith(os.path.normcase(r"\system32")))
 
 
 def git(repo, *args, check=True):
@@ -25,7 +39,7 @@ def git(repo, *args, check=True):
 
 
 def slim(repo, **env):
-    return subprocess.run(["bash", str(SCRIPT), str(repo)], env={**ENV, **{k: str(v) for k, v in env.items()}},
+    return subprocess.run([BASH, str(SCRIPT), str(repo)], env={**ENV, **{k: str(v) for k, v in env.items()}},
                           check=True, capture_output=True, text=True).stdout
 
 
@@ -38,6 +52,9 @@ def checkout_with_packs(root, count):
     repo = Path(root) / "checkout"
     subprocess.run(["git", "init", "-q", str(repo)], env=ENV, check=True)
     git(repo, "config", "gc.auto", "0")
+    # The runners' packs pile up (1051 of them), but git 2.54's automatic maintenance after a commit repacks them
+    # whatever gc.auto says: the 12 packs below came back as 1.
+    git(repo, "config", "maintenance.auto", "false")
     for i in range(count):
         (repo / f"file{i}.txt").write_text("".join(f"line {j} of file {i}\n" for j in range(200)))
         git(repo, "add", ".")
@@ -46,6 +63,7 @@ def checkout_with_packs(root, count):
     return repo
 
 
+@unittest.skipUnless(POSIX_BASH, "git-slim.sh needs a bash that is not WSL's")
 class GitSlim(unittest.TestCase):
     def test_many_packs_fold_without_losing_history(self):
         with tempfile.TemporaryDirectory() as root:

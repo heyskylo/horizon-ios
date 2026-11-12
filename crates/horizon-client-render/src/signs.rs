@@ -83,6 +83,14 @@ impl SignText {
     pub fn is_empty(&self) -> bool {
         self.lines.iter().all(String::is_empty)
     }
+    /// `SignText.hasEditableText`: every line's contents is plain text, so the
+    /// editor can rewrite it without losing anything. A style does not count
+    /// (a red literal is still plain), a `translatable`, `score` or other
+    /// contents does. (Horizon keeps no filtered text, so
+    /// `Player.isTextFilteringEnabled` never selects that copy.)
+    pub fn has_editable_text(&self) -> bool {
+        (0..self.lines.len()).all(|i| plain_contents(&self.message(i)))
+    }
     /// `DyeColor.getTextColor` of this side.
     pub fn text_color(&self) -> u32 {
         crate::pack_palette::text(usize::from(self.color.min(15)))
@@ -192,7 +200,12 @@ impl SignData {
         let side = |t: Option<&Tag>| -> SignText {
             let mut out = SignText::default();
             let Some(t) = t else { return out };
-            if let Some(Tag::List(messages)) = t.get("messages") {
+            if let Some(messages) = t.get("messages") {
+                // `SignText.CODEC` reads a side all or nothing: a messages
+                // field that is not a list leaves the side empty.
+                let Tag::List(messages) = messages else {
+                    return SignText::default();
+                };
                 for (i, m) in messages.iter().take(4).enumerate() {
                     out.lines[i] = component_text(m);
                     out.click[i] = click_event(m);
@@ -237,6 +250,17 @@ fn is_styled(tag: &Tag) -> bool {
     match tag {
         Tag::List(_) => true,
         Tag::Compound(c) => !(c.len() == 1 && matches!(tag.get("text"), Some(Tag::String(_)))),
+        _ => false,
+    }
+}
+/// Whether a message's contents is `PlainTextContents` (`Component.getContents`):
+/// a string, a `{text: ...}` object, or a list of them (`createFromList` keeps
+/// the first element's contents and appends the rest as siblings).
+fn plain_contents(tag: &Tag) -> bool {
+    match tag {
+        Tag::String(_) => true,
+        Tag::List(list) => list.first().is_some_and(plain_contents),
+        Tag::Compound(_) => tag.get("text").is_some(),
         _ => false,
     }
 }
@@ -307,6 +331,27 @@ pub fn editor_sprite(folder: &str, wood: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `SignText.CODEC` reads messages as a list: a string field fails the
+    /// whole side, taking its colour and glow with it.
+    #[test]
+    fn messages_that_are_not_a_list_load_an_empty_side() {
+        let tag = Tag::compound([(
+            "front_text",
+            Tag::compound([
+                ("messages", Tag::String("not a list".into())),
+                ("color", Tag::String("red".into())),
+                ("has_glowing_text", Tag::Byte(1)),
+            ]),
+        )]);
+        let mut decoded = SignData::default();
+        decoded.decode(&tag);
+        assert_eq!(
+            decoded.front,
+            SignText::default(),
+            "a failed message list takes the side's colour and glow with it"
+        );
+    }
+
     #[test]
     fn waxed_and_glowing_text_take_any_number() {
         let tag = Tag::compound([

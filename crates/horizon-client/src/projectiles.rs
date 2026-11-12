@@ -275,6 +275,18 @@ pub struct Projectile {
     /// charge until [`Projectile::set_item`] gives it another. None for the
     /// kinds that are no `Fireball` (a wither skull, a wind charge).
     pub item: Option<crate::items::ItemStack>,
+    /// The UUID its own random made (`Mth.createInsecureUUID`), for the server
+    /// to keep unless a save gives one: an arrow's at construction, another
+    /// kind's when it is shot (`shoot_own`), which is the same stream since
+    /// nothing else draws from it between.
+    pub uuid: Option<[i32; 4]>,
+}
+/// A new projectile's own random (`Entity.random`) and the UUID its first two
+/// draws make (`Mth.createInsecureUUID`).
+pub fn new_own_random() -> (horizon_core::random::LegacyRandom, [i32; 4]) {
+    let mut random = crate::random_source::entity();
+    let uuid = crate::save::insecure_uuid(&mut random);
+    (random, uuid)
 }
 /// `ThrownEnderpearl.isAllowedToTeleportOwner(owner, level)` for an owner in
 /// the pearl's own dimension: vanilla reaches
@@ -314,7 +326,18 @@ pub trait ProjectileWorld {
     /// `Entity.isInWater` as `updateFluidInteraction` sets it: some water
     /// block's surface reaches the bottom of the box (deflated by 0.001).
     fn in_water(&self, bounds: Aabb) -> bool;
+    /// `velocity` after the currents of the water and the lava the box
+    /// touches (`EntityFluidInteraction.applyCurrentTo`): a projectile is
+    /// pushed by fluids like any entity (`Entity.isPushedByFluid`).
+    fn pushed_by_currents(&self, _bounds: Aabb, velocity: Vec3) -> Vec3 {
+        velocity
+    }
     fn targets(&self) -> &[(Who, Aabb)];
+    /// `Level.getMinY() - 64` (`Entity.checkBelowWorld`); the Overworld's
+    /// unless the world says otherwise.
+    fn below_world_y(&self) -> f64 {
+        -128.0
+    }
     /// Server-only mod-block contacts along the completed movement.
     fn block_contacts(&self, _entity: i32, _kind: &str, _from: Vec3, _to: Vec3, _bounds: Aabb) {}
     /// `Level.isEmptyBlock`.
@@ -457,6 +480,9 @@ impl Projectile {
         } else {
             0.1
         };
+        // An arrow keeps its own random (`Entity.random`) for its later draws.
+        let own = kind_is_arrow.then(new_own_random);
+        let uuid = own.as_ref().map(|o| o.1);
         Self {
             join: Default::default(),
             id: 0,
@@ -490,12 +516,8 @@ impl Projectile {
             fall_distance: 0.0,
             synced_fire: false,
             item,
-            arrow: kind_is_arrow.then(|| {
-                // The arrow's own random (`Entity.random`).
-                Box::new(crate::arrows::ArrowState::new(
-                    crate::random_source::entity(),
-                ))
-            }),
+            arrow: own.map(|(random, _)| Box::new(crate::arrows::ArrowState::new(random))),
+            uuid,
         }
     }
     /// Entity box (`EntityType.sized` cube of `kind.size()`), as `bounds`.
@@ -604,7 +626,11 @@ impl Projectile {
     fn fire_tick(&mut self, w: &impl ProjectileWorld, client_side: bool) {
         if !(self.is_thrown()
             || self.kind == ProjectileKind::ExperienceBottle
-            || self.is_fireball())
+            || self.is_fireball()
+            || matches!(
+                self.kind,
+                ProjectileKind::WindCharge | ProjectileKind::BreezeWindCharge
+            ))
         {
             return;
         }
@@ -786,10 +812,33 @@ impl Projectile {
         self.velocity = Vec3::new(v[0], v[1], v[2]);
         self.update_rotation();
     }
-    /// Projectile.shootFromRotation for player throws.
+    /// The UUID a loaded or summoned projectile keeps (`Entity.load`): the
+    /// tag's, else the one its own random made. The constructor makes that
+    /// random either way, so a kind that makes it at the shot makes it here.
+    pub fn own_uuid(&mut self, tag_uuid: Option<[i32; 4]>) -> [i32; 4] {
+        let own = self.uuid.take().unwrap_or_else(|| new_own_random().1);
+        tag_uuid.unwrap_or(own)
+    }
+    /// `Projectile.shoot` from the projectile's own random, after its UUID's
+    /// draws: an arrow's, or for another kind one made now.
+    pub fn shoot_own(&mut self, dir: [f64; 3], speed: f32, uncertainty: f32) {
+        let mut random = match self.arrow.as_mut() {
+            Some(a) => a.random.clone(),
+            None => {
+                let (random, uuid) = new_own_random();
+                self.uuid = Some(uuid);
+                random
+            }
+        };
+        self.shoot(&mut random, dir, speed, uncertainty);
+        if let Some(a) = self.arrow.as_mut() {
+            a.random = random;
+        }
+    }
+    /// Projectile.shootFromRotation for player throws, from the projectile's
+    /// own random (`shoot_own`).
     pub fn shoot_from_rotation(
         &mut self,
-        random: &mut impl RandomSource,
         pitch: f32,
         yaw: f32,
         offset: f32,
@@ -808,7 +857,7 @@ impl Projectile {
             f64::from(-o.sin()),
             f64::from(y.cos() * p.cos()),
         ];
-        self.shoot(random, dir, speed, uncertainty);
+        self.shoot_own(dir, speed, uncertainty);
         self.velocity = Vec3::new(
             self.velocity.x + source_velocity.x,
             self.velocity.y
@@ -860,6 +909,49 @@ impl Projectile {
         // aimed along, not from where it was created.
         self.previous_yaw = self.yaw;
         self.previous_pitch = self.pitch;
+    }
+    /// `ProjectileUtil.rotateTowardsMovement`: eases the rotation from the
+    /// previous tick's towards the movement by `t`.
+    fn rotate_towards_movement(&mut self, t: f32) {
+        let v = self.velocity;
+        if v.x * v.x + v.y * v.y + v.z * v.z == 0.0 {
+            return;
+        }
+        let horizontal = (v.x * v.x + v.z * v.z).sqrt();
+        let y_rot = horizon_core::geometry::trig::atan2_degrees(v.z, v.x) + 90.0;
+        let x_rot = horizon_core::geometry::trig::atan2_degrees(horizontal, v.y) - 90.0;
+        // Shift the old angles by whole turns so the lerp takes the shortest
+        // way; the shifted old angles are what rendering interpolates from.
+        while x_rot - self.previous_pitch < -180.0 {
+            self.previous_pitch -= 360.0;
+        }
+        while x_rot - self.previous_pitch >= 180.0 {
+            self.previous_pitch += 360.0;
+        }
+        while y_rot - self.previous_yaw < -180.0 {
+            self.previous_yaw -= 360.0;
+        }
+        while y_rot - self.previous_yaw >= 180.0 {
+            self.previous_yaw += 360.0;
+        }
+        self.pitch = self.previous_pitch + t * (x_rot - self.previous_pitch);
+        self.yaw = self.previous_yaw + t * (y_rot - self.previous_yaw);
+    }
+    /// The kinds whose tick turns them with `Projectile.updateRotation`: a
+    /// `ThrowableProjectile` (the thrown kinds and the experience bottle) and
+    /// llama spit.
+    fn turns_with_update_rotation(&self) -> bool {
+        self.is_thrown() || self.kind == ProjectileKind::ExperienceBottle
+    }
+    /// `Projectile.updateRotation`: a fifth of the way (`lerpRotation`) from
+    /// the rotation the tick started with toward the motion's direction.
+    fn turn_towards_movement(&mut self) {
+        use horizon_core::geometry::trig::atan2_degrees;
+        let v = self.velocity;
+        let x_rot = atan2_degrees(v.y, v.horizontal_distance());
+        let y_rot = atan2_degrees(v.x, v.z);
+        self.pitch = crate::arrows::lerp_rotation(self.previous_pitch, x_rot);
+        self.yaw = crate::arrows::lerp_rotation(self.previous_yaw, y_rot);
     }
     /// `Entity.setOldPosAndRot`: where the renderer interpolates from.
     pub fn set_old_pos_and_rot(&mut self) {
@@ -1136,7 +1228,7 @@ impl Projectile {
                 }
             }
         }
-        (self.position.y > -128.0, Hit::None)
+        (self.position.y >= w.below_world_y(), Hit::None)
     }
     /// AbstractHurtingProjectile.applyInertia, on both server and client.
     pub fn apply_hurting_inertia(&mut self, water: bool) {
@@ -1212,6 +1304,12 @@ impl Projectile {
     fn bubble_column_push(&mut self, drag: bool, surface: bool, at: [i32; 3]) {
         if surface {
             self.bubble_surfaces.push(at);
+        } else {
+            // Projectile.onInsideBubbleColumn's resetFallDistance.
+            self.fall_distance = 0.0;
+            if let Some(arrow) = self.arrow.as_mut() {
+                arrow.fall_distance = 0.0;
+            }
         }
         self.velocity.y += match (drag, surface) {
             (true, _) => -0.03,
@@ -1222,7 +1320,7 @@ impl Projectile {
     /// `applyEffectsFromBlocks`' bubble columns (`Entity.checkInsideBlocks`):
     /// the blocks the box swept through from `from`, each once, pushing when
     /// the move was long or the final box (deflated by 1e-5F) is inside it.
-    fn bubble_columns_along(&mut self, w: &impl ProjectileWorld, from: Vec3) {
+    pub fn bubble_columns_along(&mut self, w: &impl ProjectileWorld, from: Vec3) {
         self.bubble_columns_since(from, |p| w.bubble_column(p));
     }
     /// [`bubble_columns_along`](Self::bubble_columns_along) with the bubble
@@ -1426,6 +1524,11 @@ impl Projectile {
                 );
             }
         }
+        // ThrowableProjectile.tick and LlamaSpit.tick turn with this move's
+        // motion, hit or not (a spit's drag and gravity come after).
+        if self.turns_with_update_rotation() {
+            self.turn_towards_movement();
+        }
         let from = self.position;
         let to = Vec3::new(
             from.x + self.velocity.x,
@@ -1471,7 +1574,7 @@ impl Projectile {
         {
             self.position = at;
             self.touching_water = w.in_water(self.bounds());
-            let alive = self.position.y > -128.0 && self.age < 1200;
+            let alive = self.position.y >= w.below_world_y() && self.age < 1200;
             return (alive, Hit::None);
         }
         // LlamaSpit never discards on an entity: `onHitEntity` only hurts, so
@@ -1519,17 +1622,26 @@ impl Projectile {
                 self.velocity.y * drag - self.get_gravity(),
                 self.velocity.z * drag,
             );
-            self.update_rotation();
-            return (self.position.y > -128.0 && self.age < 6000, spit_hit);
+            return (
+                self.position.y >= w.below_world_y() && self.age < 6000,
+                spit_hit,
+            );
         }
         self.position = to;
-        if !self.is_fireball() {
+        // Fireballs ease towards the motion (`ProjectileUtil.rotateTowardsMovement`);
+        // wind charges still face their motion at once; the thrown kinds turned
+        // in `tick` above.
+        if self.is_fireball() {
+            self.rotate_towards_movement(0.2);
+        } else if !self.turns_with_update_rotation() {
             self.update_rotation();
         }
-        // Entity.baseTick's updateFluidInteraction, after the move.
+        // Entity.baseTick's updateFluidInteraction, after the move: the fluids
+        // it touches now, and their currents push it.
         self.touching_water = w.in_water(self.bounds());
-        let alive =
-            self.position.y > -128.0 && self.age < if self.is_fireball() { 1200 } else { 6000 };
+        self.velocity = w.pushed_by_currents(self.bounds(), self.velocity);
+        let alive = self.position.y >= w.below_world_y()
+            && self.age < if self.is_fireball() { 1200 } else { 6000 };
         (alive, Hit::None)
     }
     /// AbstractArrow.onHitEntity damage: ceil(speed * base) plus crit bonus.
@@ -1950,6 +2062,18 @@ mod tests {
         client.synced_fire = server.synced_fire;
         client.tick_remote(&air);
         assert!(client.on_fire());
+    }
+
+    #[test]
+    fn restored_wind_charge_fire_counts_down_and_syncs_visual_fire() {
+        for kind in [ProjectileKind::WindCharge, ProjectileKind::BreezeWindCharge] {
+            let mut p = Projectile::new(kind, Vec3::ZERO, None);
+            p.fire_ticks = 20;
+            p.has_visual_fire = true;
+            p.tick(&Empty(vec![]));
+            assert_eq!(p.fire_ticks, 19, "{:?}", p.kind);
+            assert!(p.synced_fire, "{:?}", p.kind);
+        }
     }
 
     #[test]
@@ -2415,6 +2539,39 @@ mod tests {
         let mut r = LegacyRandom::new(1);
         // ceil(3 * 2) = 6 for a non-critical arrow.
         assert_eq!(p.arrow_damage(&mut r), 6.0);
+    }
+    #[test]
+    fn a_dragon_fireball_turns_towards_its_flight_a_fifth_per_tick() {
+        let mut p = Projectile::new(
+            ProjectileKind::DragonFireball,
+            Vec3::new(8.5, 231.0, 8.5),
+            None,
+        );
+        p.velocity = Vec3::new(0.1, 0.25, -0.3);
+        p.yaw = 0.0;
+        p.pitch = 0.0;
+        for _ in 0..3 {
+            p.tick(&Wall(vec![]));
+        }
+        assert!((p.yaw - 8.996_265).abs() < 4e-6, "yaw {}", p.yaw);
+        assert!((p.pitch + 18.704_494).abs() < 4e-6, "pitch {}", p.pitch);
+    }
+    #[test]
+    fn a_fireball_turns_the_short_way_across_the_wrap_boundary() {
+        let mut p = Projectile::new(
+            ProjectileKind::DragonFireball,
+            Vec3::new(8.5, 231.0, 8.5),
+            None,
+        );
+        // Movement along -z aims at yaw 0 and pitch 0.
+        p.velocity = Vec3::new(0.0, 0.0, -1.0);
+        p.previous_yaw = 350.0;
+        p.previous_pitch = 350.0;
+        p.rotate_towards_movement(0.2);
+        assert!((p.yaw + 8.0).abs() < 1e-3, "yaw {}", p.yaw);
+        assert!((p.pitch + 8.0).abs() < 1e-3, "pitch {}", p.pitch);
+        assert!((p.previous_yaw + 10.0).abs() < 1e-3);
+        assert!((p.previous_pitch + 10.0).abs() < 1e-3);
     }
     #[test]
     fn fireball_accelerates_along_its_direction() {

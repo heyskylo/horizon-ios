@@ -203,6 +203,9 @@ pub struct Settings {
     pub startup_api: crate::graphics::GraphicsApi,
     /// `Monitor.videoModes` of the window's monitor, for the Video page (set by the game).
     pub video_modes: Vec<crate::window::VideoMode>,
+    /// Fullbright is held off: this window plays on another's server (set by the game, not
+    /// saved). The graphics screen hides its row; `extras.fullbright` keeps the choice.
+    pub fullbright_held: bool,
     /// Controller settings (`horizon-controller.txt`, Horizon's own).
     pub controller: crate::gamepad::PadSettings,
     /// Horizon's optional extras (`horizon-extras.txt`), all off by default.
@@ -293,6 +296,7 @@ impl Default for Settings {
             horizon: Default::default(),
             startup_api: Default::default(),
             video_modes: Vec::new(),
+            fullbright_held: false,
             controller: Default::default(),
             extras: Default::default(),
             mods: Default::default(),
@@ -337,6 +341,13 @@ impl Settings {
             .and_then(|mode| self.video_modes.iter().position(|m| *m == mode))
             .map_or(-1, |i| i as i32)
     }
+    /// Loads only the crates' settings stores (`horizon_hooks::settings`) from the files next to
+    /// `path`, into the seat whose turn it is (`horizon_hooks::seat`): a splitscreen player whose
+    /// settings were made from P1's rather than loaded.
+    pub fn load_stores(path: &Path) {
+        let dir = path.parent();
+        horizon_hooks::settings::engine::load(&mut |file| fs::read_to_string(dir?.join(file)).ok());
+    }
     pub fn load(path: &Path) -> Self {
         let mut horizon = path
             .parent()
@@ -362,6 +373,13 @@ impl Settings {
             .and_then(|dir| fs::read_to_string(dir.join(crate::extras::FILE)).ok())
             .unwrap_or_default();
         let mut extras = crate::extras::Extras::parse(&extras_text);
+        // The settings stores of the crates above the engine: their lines of this file, or of
+        // their own (docs/layers.md, "Platform registries").
+        horizon_hooks::settings::engine::load(&mut |file| match path.parent() {
+            _ if file == crate::extras::FILE => Some(extras_text.clone()),
+            Some(dir) => fs::read_to_string(dir.join(file)).ok(),
+            None => None,
+        });
         // The enabled mods are the game folder's, shared by its players (`--player-dir`).
         let mods = path
             .parent()
@@ -500,6 +518,7 @@ impl Settings {
             horizon: Default::default(),
             startup_api: Default::default(),
             video_modes: Vec::new(),
+            fullbright_held: false,
             controller: Default::default(),
             extras: Default::default(),
             mods: Default::default(),
@@ -690,6 +709,7 @@ impl Settings {
             let mut extras = self.extras.clone();
             extras.emote_key = self.keys.get("key.emote").to_owned();
             extras.save(dir);
+            horizon_hooks::settings::engine::save_own(dir, &[crate::extras::FILE]);
             self.mods.save(&crate::logging::shared_dir(dir));
         }
     }
@@ -854,8 +874,14 @@ pub enum Opt {
     PadNintendoButtons,
     PadKeyboard,
     PadGameplayGuide,
+    /// The radial menu's opener held or pressed once (`PadSettings::radial_mode`).
+    PadRadialMode,
+    /// The stick the radial menu selects with (`PadSettings::radial_stick`).
+    PadRadialStick,
     /// `options.modelPart.*`: one skin layer (index into `options_file::MODEL_PARTS`).
     ModelPart(usize),
+    /// A slider of a page a crate registered (`horizon_hooks::pages`): (page, row).
+    Page(usize, usize),
     /// 3D skin layers: the player's outer layer as extruded slabs.
     SkinLayers3d,
     MainHand,

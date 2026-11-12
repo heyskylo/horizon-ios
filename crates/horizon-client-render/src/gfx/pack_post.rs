@@ -18,8 +18,7 @@
 use std::collections::HashMap;
 
 use glam::{DMat4, DVec3};
-use horizon_render_pipeline::{BUFFERS, Format, Kind, SHADOW_COLORS};
-use horizon_shaders::{Group, Post};
+use horizon_shaders::{BUFFERS, Format, Group, Kind, Post, SHADOW_COLORS};
 use smallvec::SmallVec;
 
 use super::pack_draw::DrawUniforms;
@@ -893,7 +892,7 @@ fn depth_linear(interface: &horizon_shaders::Interface, linear: u8) -> [f32; 4] 
 }
 
 fn source(name: &str, shadow_space: bool, shadow_pass: bool, watershadow: bool) -> Source {
-    let shadow_color = horizon_render_pipeline::shadow_color(name);
+    let shadow_color = horizon_shaders::shadow_color(name);
     let shadow_depth = match name {
         "shadowtex0" | "watershadow" | "shadowtex0HW" => Some(0),
         "shadowtex1" | "shadowtex1HW" => Some(1),
@@ -912,7 +911,7 @@ fn source(name: &str, shadow_space: bool, shadow_pass: bool, watershadow: bool) 
             };
         }
     }
-    if shadow_space && horizon_render_pipeline::buffer_index(name).is_some() {
+    if shadow_space && horizon_shaders::buffer_index(name).is_some() {
         // colortex buffers are not this pass's.
         return Source::Dummy;
     }
@@ -926,7 +925,7 @@ fn source(name: &str, shadow_space: bool, shadow_pass: bool, watershadow: bool) 
         "normals" => Source::Normals,
         "specular" => Source::Specular,
         horizon_shaders::WATER_MASK => Source::WaterMask,
-        n => horizon_render_pipeline::buffer_index(n).map_or(Source::Dummy, Source::Color),
+        n => horizon_shaders::buffer_index(n).map_or(Source::Dummy, Source::Color),
     }
 }
 
@@ -1202,31 +1201,7 @@ pub(super) type TerrainDraw<'a> = dyn FnMut(
         Option<(u32, &wgpu::BindGroupLayout)>,
     ) + 'a;
 
-/// What the shadow camera sees of the terrain, for the game's draw lists: its view and
-/// projection in wgpu's clip space, the direction toward the light, and how far from the camera
-/// terrain is drawn (`shadowDistanceRenderMul`).
-pub(super) struct ShadowView {
-    pub cull: glam::Mat4,
-    pub light: glam::Vec3,
-    pub distance: Option<f32>,
-    /// Draw everything, every face, within this many blocks (`shadow.culling=false|reversed`):
-    /// packs that voxelize the world in their shadow pass need all of it.
-    pub unculled: Option<f32>,
-    /// Every face of the drawn sections, not only those that can face the light. Iris 1.11.7's
-    /// shadow map holds the faces turned away from the light too (#9033): under a hill at low sun
-    /// a cave's ceiling, which faces away, is often all that shadows the cave.
-    pub every_face: bool,
-    /// Only the sections whose shadow can fall into the camera's view: those the camera's
-    /// frustum, stretched toward the light, takes in (`shadow_casters`). Our probes' Iris 1.11.7
-    /// maps fit keeping only those with `shadow.culling` unset (#8464): under a noon sun, only
-    /// the terrain above the ground the camera sees; with a low sun ahead, none behind the camera.
-    pub view_casters: bool,
-    /// Whether the projection's near and far planes in `cull` drop sections too. Our probes'
-    /// Iris 1.11.7 maps hold the terrain at every depth we put it along the light (from 535 blocks
-    /// beyond the shadow camera to about 120 before it), whatever `shadowNearPlane` and
-    /// `shadowFarPlane` the pack sets, or none (#10403): only its sides cull.
-    pub depth_planes: bool,
-}
+pub(super) use super::external::ShadowView;
 
 /// An arena page's key, native vertices and optional per-quad source records.
 pub(super) type TerrainPage = (u32, wgpu::Buffer, Option<wgpu::Buffer>);
@@ -1583,7 +1558,7 @@ fn bindings(
             !unbound
                 && (t.stage != pack_textures::stage(group)
                     || released.0 != t.stage
-                    || horizon_render_pipeline::buffer_index(&t.name)
+                    || horizon_shaders::buffer_index(&t.name)
                         .is_none_or(|b| released.1 & 1 << b == 0))
         });
         let image = pack
@@ -2433,7 +2408,7 @@ impl PackPost {
         let shadow_config = post.config.shadow.clone();
         let noise_size = post.config.noise_resolution.unwrap_or(256);
         let half_lives = post.config.half_lives;
-        for (name, ticks) in horizon_render_pipeline::HALF_LIVES.iter().zip(half_lives) {
+        for (name, ticks) in horizon_shaders::HALF_LIVES.iter().zip(half_lives) {
             if let Some(t) = ticks {
                 notes.push(format!("`{name}` is {t} ticks"));
             }
@@ -2965,17 +2940,13 @@ impl PackPost {
                 p.name
             ));
         }
-        match (&terrain, &mut terrain_cutout) {
+        match (&terrain, &terrain_cutout) {
             (Some(t), None) => notes.push(format!("terrain draws with {}", t.name)),
             (t, Some(c)) => {
                 if let Some(t) = t {
                     notes.push(format!("solid terrain draws with {}", t.name));
                 }
                 notes.push(format!("cutout terrain draws with {}", c.name));
-                // Timed (and labelled) apart from the solid part when it runs the same program.
-                if t.as_ref().is_some_and(|t| t.name == c.name) {
-                    c.name.push_str(" (cutout)");
-                }
             }
             (None, None) => {}
         }
@@ -3836,7 +3807,7 @@ impl PackPost {
             timestamp_writes: self
                 .timing
                 .as_mut()
-                .and_then(|t| t.compute_writes(&pass.name)),
+                .and_then(|t| t.compute_writes(&format!("{} (compute)", pass.name))),
         });
         cp.set_pipeline(&pipeline);
         cp.set_bind_group(0, &group, &[]);
@@ -3912,8 +3883,8 @@ impl PackPost {
     }
 
     /// Terrain (or, `translucent`, translucent terrain) with the pack's program; `draw` issues
-    /// the game's draws. Solid terrain in two parts has its cutout part drawn second, from the
-    /// same draws.
+    /// the game's draws. Solid terrain in two parts (a pack's `gbuffers_terrain_solid` and
+    /// `_cutout`) has its cutout part drawn second, from the same draws.
     fn draw_terrain(
         &mut self,
         device: &wgpu::Device,

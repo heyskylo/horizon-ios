@@ -1,6 +1,8 @@
 //! ResourceOrIdArgument and the data-fixer-upper decoding of inline values
 //! commands accept (loot predicates, item modifiers, slot sources, context
 //! providers, dialogs), reproducing the codec error messages vanilla reports.
+mod slot_sources;
+
 use super::args::{Registries, is_id_char, parse_identifier, slot_ranges};
 use super::{CmdResult, CommandError, Reader};
 use horizon_world::nbt::{Compound, JavaString, Tag};
@@ -150,9 +152,11 @@ fn predicate_fields(id: &str, map: &Compound, t: &Tag, reg: &Registries) -> Resu
     }
 }
 
-/// ConfiguredFeature.DIRECT_CODEC: validates the feature `type` against
+/// `Feature.DIRECT_CODEC`: validates the feature `type` against
 /// `minecraft:worldgen/feature_type` and checks required configuration keys
-/// with DataFixerUpper error formatting.
+/// with DataFixerUpper error formatting. The type's fields sit beside `type`
+/// in the same map (there is no `config` wrapper), so a missing one names
+/// the whole map.
 fn check_feature(tag: &Tag, reg: &Registries) -> Result<(), String> {
     const KNOWN_FEATURE_TYPES: &[&str] = &[
         "minecraft:no_op",
@@ -242,14 +246,8 @@ fn check_feature(tag: &Tag, reg: &Registries) -> Result<(), String> {
             "Unknown registry key in ResourceKey[minecraft:root / minecraft:worldgen/feature_type]: {full}"
         ));
     }
-    if full == "minecraft:simple_block" {
-        let cfg_tag = get(c, "config").unwrap_or(tag);
-        let Tag::Compound(cfg_map) = cfg_tag else {
-            return Err(not_map(cfg_tag));
-        };
-        if get(cfg_map, "to_place").is_none() {
-            return Err(no_key("to_place", cfg_tag));
-        }
+    if full == "minecraft:simple_block" && get(c, "to_place").is_none() {
+        return Err(no_key("to_place", tag));
     }
     Ok(())
 }
@@ -269,9 +267,8 @@ fn dfu_feature_error(tag: &Tag, msg: &str) -> String {
                 "Unknown registry key in ResourceKey[minecraft:root / minecraft:worldgen/feature_type]: {full}"
             );
         }
-        let cfg_tag = tag.get("config").unwrap_or(tag);
-        if matches!(cfg_tag, Tag::Compound(c) if get(c, field).is_none()) {
-            return no_key(field, cfg_tag);
+        if matches!(tag, Tag::Compound(c) if get(c, field).is_none()) {
+            return no_key(field, tag);
         }
     }
     msg.to_owned()
@@ -296,41 +293,7 @@ pub fn decode(registry: &str, t: &Tag, reg: &Registries) -> Result<(), String> {
         "minecraft:item_modifier" => element_or_list(t, &|x| {
             dispatch(x, reg, "minecraft:loot_function_type", &|_, _, _| Ok(()))
         }),
-        "minecraft:slot_source" => element_or_list(t, &|x| {
-            dispatch(x, reg, "minecraft:slot_source_type", &|id, map, t| {
-                if id == "minecraft:contents" {
-                    require(map, t, &["component"])?;
-                    let value = get(map, "component").expect("required component");
-                    let name = as_string(value).ok_or_else(|| "Not a string".to_owned())?;
-                    let component = parse_identifier(&name)
-                        .ok_or_else(|| format!("Not a valid resource location: {name}"))?;
-                    let known = reg.ids("minecraft:data_component_type");
-                    if !known.is_empty() && !known.contains(&component) {
-                        return Err(format!(
-                            "Unknown registry key in ResourceKey[minecraft:root / minecraft:data_component_type]: {component}"
-                        ));
-                    }
-                    if !matches!(
-                        component.as_str(),
-                        "minecraft:container"
-                            | "minecraft:bundle_contents"
-                            | "minecraft:charged_projectiles"
-                    ) {
-                        return Err("No items in component".into());
-                    }
-                } else if id == "minecraft:slot_range" {
-                    // RangeSlotSource.MAP_CODEC uses the global SlotRanges.CODEC,
-                    // independently of the eventual target inventory's size.
-                    require(map, t, &["slots"])?;
-                    let value = get(map, "slots").expect("required slots");
-                    let name = as_string(value).ok_or_else(|| "Not a string".to_owned())?;
-                    if !slot_ranges().iter().any(|(known, _)| known == &name) {
-                        return Err(format!("Unknown element name:{name}"));
-                    }
-                }
-                Ok(())
-            })
-        }),
+        "minecraft:slot_source" => slot_sources::decode(t, reg),
         // Dialog types: CommonDialogData's title, then each type's own.
         "minecraft:dialog" => dispatch(t, reg, "minecraft:dialog_type", &|id, map, t| {
             let own: &[&str] = match id {
@@ -512,6 +475,43 @@ mod predicate_tests {
         ] {
             assert_eq!(decode_text(bad), Err("No key type in MapLike[{}]".into()));
         }
+    }
+}
+
+#[cfg(test)]
+mod feature_tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_feature_field_names_the_whole_map() {
+        // Feature.DIRECT_CODEC dispatches on `type` to the type's own map
+        // codec; a `config` key is just another unread key.
+        let reg = Registries::default();
+        let decode_text = |text| {
+            let (tag, _) = horizon_world::nbt::parse_snbt(text).unwrap();
+            decode("minecraft:worldgen/feature", &tag, &reg)
+        };
+        assert_eq!(
+            decode_text(r#"{type:"minecraft:simple_block"}"#),
+            Err(r#"No key to_place in MapLike[{type:"minecraft:simple_block"}]"#.into())
+        );
+        assert_eq!(
+            decode_text(r#"{type:"minecraft:simple_block",config:{}}"#),
+            Err(r#"No key to_place in MapLike[{config:{},type:"minecraft:simple_block"}]"#.into())
+        );
+        assert_eq!(
+            decode_text(
+                r#"{type:"minecraft:simple_block",config:{to_place:{type:"minecraft:simple_state_provider",state:{Name:"minecraft:stone"}}}}"#
+            ),
+            Err(
+                r#"No key to_place in MapLike[{config:{to_place:{state:{Name:"minecraft:stone"},type:"minecraft:simple_state_provider"}},type:"minecraft:simple_block"}]"#
+                    .into()
+            )
+        );
+        assert!(
+            decode_text(r#"{type:"minecraft:simple_block",to_place:{id:"minecraft:stone"}}"#)
+                .is_ok()
+        );
     }
 }
 

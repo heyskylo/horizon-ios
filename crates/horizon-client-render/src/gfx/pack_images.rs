@@ -4,8 +4,8 @@
 
 use std::collections::BTreeMap;
 
-use horizon_render_pipeline::{Format, Kind};
-use horizon_shaders::{BufferObject, CustomImage};
+use horizon_shaders::{BufferObject, CustomImage, Format, Kind};
+use wgpu::util::DeviceExt;
 
 pub(super) struct PackImage {
     pub(super) def: CustomImage,
@@ -469,19 +469,33 @@ impl Buffers {
             .iter()
             .map(|(binding, o)| {
                 let least = self.minimums.get(binding).copied().unwrap_or(0);
-                let wanted = buffer_size(*o, size, least);
+                let wanted = buffer_size(o, size, least);
                 if wanted > largest {
                     log::warn!(
                         "shader pack: bufferObject.{binding} wants {wanted} bytes, this device \
                          binds at most {largest}"
                     );
                 }
-                device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("Shader pack buffer"),
-                    size: wanted.min(largest),
-                    usage: wgpu::BufferUsages::STORAGE,
-                    mapped_at_creation: false,
-                })
+                let size = wanted.min(largest);
+                // A buffer the pack initializes from a file starts with the file's bytes, the
+                // rest of it zero.
+                match o.initial_data() {
+                    Some(data) => {
+                        let mut contents = data.to_vec();
+                        contents.resize(size as usize, 0);
+                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("Shader pack buffer"),
+                            contents: &contents,
+                            usage: wgpu::BufferUsages::STORAGE,
+                        })
+                    }
+                    None => device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("Shader pack buffer"),
+                        size,
+                        usage: wgpu::BufferUsages::STORAGE,
+                        mapped_at_creation: false,
+                    }),
+                }
             })
             .collect();
         let entries: Vec<_> = self
@@ -510,7 +524,7 @@ impl Buffers {
 /// The bytes a storage buffer is made with for a render size of `render`: what the pack
 /// declares, or more when a shader binds it as a larger block (`least`), which wgpu needs where
 /// OpenGL binds the smaller buffer; a multiple of 4.
-fn buffer_size(object: BufferObject, render: [u32; 2], least: u64) -> u64 {
+fn buffer_size(object: &BufferObject, render: [u32; 2], least: u64) -> u64 {
     object.size(render).max(least).next_multiple_of(4)
 }
 
@@ -613,18 +627,18 @@ mod tests {
     /// bound as a 48-byte block failed wgpu's validation, #7178); a larger one keeps its size.
     #[test]
     fn a_buffer_is_at_least_its_shaders_block() {
-        assert_eq!(buffer_size(BufferObject::Bytes(40), [1, 1], 48), 48);
+        assert_eq!(buffer_size(&BufferObject::Bytes(40), [1, 1], 48), 48);
         assert_eq!(
-            buffer_size(BufferObject::Bytes(40980), [1, 1], 40992),
+            buffer_size(&BufferObject::Bytes(40980), [1, 1], 40992),
             40992
         );
-        assert_eq!(buffer_size(BufferObject::Bytes(100), [1, 1], 48), 100);
-        assert_eq!(buffer_size(BufferObject::Bytes(41), [1, 1], 0), 44);
+        assert_eq!(buffer_size(&BufferObject::Bytes(100), [1, 1], 48), 100);
+        assert_eq!(buffer_size(&BufferObject::Bytes(41), [1, 1], 0), 44);
         let per_pixel = BufferObject::PerPixel {
             bytes: 4,
             scale: [0.5, 0.5],
         };
-        assert_eq!(buffer_size(per_pixel, [10, 10], 64), 100);
-        assert_eq!(buffer_size(per_pixel, [4, 4], 64), 64);
+        assert_eq!(buffer_size(&per_pixel, [10, 10], 64), 100);
+        assert_eq!(buffer_size(&per_pixel, [4, 4], 64), 64);
     }
 }

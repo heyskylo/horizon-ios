@@ -23,10 +23,7 @@ use horizon_client::{
     projectiles::ProjectileKind,
     world::World,
 };
-use horizon_core::{
-    position::BlockPos,
-    random::{LegacyRandom, RandomSource},
-};
+use horizon_core::{position::BlockPos, random::RandomSource};
 use horizon_world::{level::Ticks, registry::BlockStateId};
 use serde_json::Value;
 use std::{cell::RefCell, collections::HashMap, fmt::Write as _, io::Write as _, sync::Arc};
@@ -304,7 +301,7 @@ impl Game<'_> {
             }
         }
         // Creating the targets must not move the stream the dispenser draws from.
-        self.world.random = LegacyRandom::new(seed);
+        self.world.random.set_seed(seed);
         self.world.block_log = Some(Vec::new());
         self.audio.capture = Some(Vec::new());
         LOG.with(|log| *log.borrow_mut() = Some(Vec::new()));
@@ -324,6 +321,8 @@ impl Game<'_> {
         let mut used = Vec::new();
         if let Some(op) = case.get("shield_hit") {
             used = self.fixture_shield_hit(op)?;
+        } else if let Some(op) = case.get("special_attack") {
+            used = self.fixture_special_attack(op)?;
         } else if let Some(op) = case.get("wind_burst") {
             let center = [
                 op["center"][0].as_f64().ok_or("wind center x")?,
@@ -355,7 +354,7 @@ impl Game<'_> {
             let found =
                 self.find_respawn_and_use(config, op["consume"].as_bool().unwrap_or(true))?;
             used.push(match found {
-                Some((p, yaw)) => format!(
+                Some((p, yaw, _pitch)) => format!(
                     "respawn {} {} {} {}",
                     num(p.x),
                     num(p.y),
@@ -643,6 +642,7 @@ impl Game<'_> {
                 dim: self.dim,
                 pos: [p(0), p(1), p(2)],
                 yaw: 0.0,
+                pitch: 0.0,
                 forced: false,
             });
         }
@@ -1186,6 +1186,8 @@ impl Game<'_> {
             let mut stand = horizon_client::entities::ArmorStand::new(id, at, yaw);
             stand.marker = e["marker"].as_bool().unwrap_or(false);
             stand.on_ground = e["ground"].as_bool().unwrap_or(false);
+            stand.show_arms = e["arms"].as_bool().unwrap_or(false);
+            stand.disabled_slots = e["disabled"].as_i64().unwrap_or(0) as i32;
             if let Some(last_hit) = e["last_hit"].as_i64() {
                 stand.last_hit = last_hit;
             }

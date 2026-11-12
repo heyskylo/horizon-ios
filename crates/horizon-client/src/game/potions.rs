@@ -415,7 +415,7 @@ impl Game<'_> {
 /// a guest keeps their own while the host's are in `PotionState`.
 #[derive(Default)]
 pub(super) struct BodyPotions {
-    applied: Vec<(&'static str, &'static str, f64, &'static str)>,
+    pub(super) applied: Vec<(&'static str, &'static str, f64, &'static str)>,
     protection_for: Option<(u64, Vec<Option<ItemStack>>)>,
     enchant_modifiers: Vec<(String, String, f64, String)>,
 }
@@ -426,7 +426,7 @@ pub(super) struct PotionState {
     thrown: Vec<ThrownPotion>,
     /// The area effect clouds a server tracks (game/remote_projectiles.rs).
     pub(super) clouds: Vec<super::remote_projectiles::RemoteCloud>,
-    applied: Vec<(&'static str, &'static str, f64, &'static str)>,
+    pub(super) applied: Vec<(&'static str, &'static str, f64, &'static str)>,
     /// Armor the protection table was computed for.
     protection_for: Option<(u64, Vec<Option<ItemStack>>)>,
 
@@ -1410,7 +1410,7 @@ impl Game<'_> {
                 return false;
             }
             if deflect_stop {
-                return t.age < 1200 && t.position.y > -128.0;
+                return t.age < 1200 && t.position.y >= self.world.below_world_y();
             }
             t.position = next;
             let bounds = Aabb::new(
@@ -1418,7 +1418,7 @@ impl Game<'_> {
                 next.add_vector(Vec3::new(0.125, 0.25, 0.125)),
             );
             self.entity_powder_snow_particles(t.previous, next, bounds, t.velocity, false);
-            t.age < 1200 && t.position.y > -128.0
+            t.age < 1200 && t.position.y >= self.world.below_world_y()
         });
         self.potions.thrown = thrown;
         for id in deflected {
@@ -1608,6 +1608,7 @@ impl Game<'_> {
         self.breath_clouds.push(Breath {
             id,
             at,
+            motion: [0.0; 3],
             radius: 2.5,
             age: 0,
             duration: 300,
@@ -1949,7 +1950,14 @@ impl Game<'_> {
         // Projectile.onHit calls onHitBlock first, then the potion's
         // affectEntitiesAround; both read the stack's `potion_contents`.
         if let Some((cell, face)) = hit {
-            self.potion_hit_block(stack, cell, face);
+            // `AbstractThrownPotion.douseFire` passes `getOwner()` to the
+            // campfire's `douse`, which is where the game event's source is.
+            let who = if owner.player {
+                Some(Who::Player)
+            } else {
+                owner.attacker.map(Who::Mob)
+            };
+            self.potion_hit_block(stack, cell, face, who);
         }
         self.affect_entities_around(stack, at, owner.player);
         let lingering = &*stack.item == "minecraft:lingering_potion";
@@ -2006,6 +2014,7 @@ impl Game<'_> {
                 self.breath_clouds.push(Breath {
                     id,
                     at: [at.x, at.y, at.z],
+                    motion: [0.0; 3],
                     radius: 3.0,
                     age: 0,
                     duration: 600,
@@ -2189,6 +2198,7 @@ mod tests {
         let cloud = Breath {
             id: 7,
             at: [1.5, 64.0, -2.5],
+            motion: [0.6, 0.0, 0.0],
             radius: 3.5,
             age: 12,
             duration: 400,
@@ -2217,6 +2227,7 @@ mod tests {
         let tag = potion_cloud_to_nbt(&cloud, [1, 2, 3, 4], None);
         let (at, back) = potion_cloud_from_nbt(&tag).expect("the cloud reads back");
         assert_eq!(at, Vec3::new(1.5, 64.0, -2.5), "the position");
+        assert_eq!(back.motion, [0.6, 0.0, 0.0], "the motion");
         assert_eq!((back.age, back.duration), (12, 400));
         assert!((back.radius - 3.5).abs() < 1.0e-6, "{}", back.radius);
         let potion = back.potion.expect("a potion cloud");
@@ -2388,6 +2399,7 @@ mod tests {
         let mut clouds = vec![super::super::dragon::Breath {
             id: 1,
             at: [1.0, 64.0, 0.0],
+            motion: [0.0; 3],
             radius: 5.0,
             age: 0,
             duration: 200,
@@ -2410,6 +2422,7 @@ mod tests {
         let mut non_dragon = vec![super::super::dragon::Breath {
             id: 1,
             at: [0.0, 64.0, 0.0],
+            motion: [0.0; 3],
             radius: 3.0,
             age: 0,
             duration: 600,
@@ -2424,6 +2437,7 @@ mod tests {
         let mut lingering = vec![super::super::dragon::Breath {
             id: 2,
             at: [0.0, 64.0, 0.0],
+            motion: [0.0; 3],
             radius: 3.0,
             age: 0,
             duration: 600,
@@ -2451,6 +2465,7 @@ mod tests {
         let mut last = vec![super::super::dragon::Breath {
             id: 3,
             at: [0.0, 64.0, 0.0],
+            motion: [0.0; 3],
             radius: 5.0,
             age: 219,
             duration: 200,
@@ -2465,6 +2480,7 @@ mod tests {
         let mut expired = vec![super::super::dragon::Breath {
             id: 3,
             at: [0.0, 64.0, 0.0],
+            motion: [0.0; 3],
             radius: 5.0,
             age: 220,
             duration: 200,
@@ -2480,6 +2496,7 @@ mod tests {
         let mut far = vec![super::super::dragon::Breath {
             id: 4,
             at: [10.0, 64.0, 0.0],
+            motion: [0.0; 3],
             radius: 1.0,
             age: 0,
             duration: 200,
@@ -2496,6 +2513,7 @@ mod tests {
         let mut ground_cloud = vec![super::super::dragon::Breath {
             id: 5,
             at: [0.0, 64.0, 0.0],
+            motion: [0.0; 3],
             radius: 1.0,
             age: 0,
             duration: 200,
@@ -3267,5 +3285,161 @@ mod depleted_absorption_tests {
             }
             assert!(failures.is_empty(), "infinite absorption: {failures:#?}");
         });
+    }
+}
+
+#[cfg(test)]
+mod arrow_contents {
+    //! Actual in-memory Game potion paths. No run loop, world load or server startup.
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, execution_role, load_resources};
+    use horizon_client::chunk::Chunk;
+    use serde_json::{Value, json};
+    use std::{path::PathBuf, sync::Arc, time::Instant};
+
+    fn stack(row: &Value) -> ItemStack {
+        let mut stack = ItemStack::new("minecraft:tipped_arrow", 1);
+        if let Some(potion) = row["potion"].as_str() {
+            stack = stack.with_potion(&format!("minecraft:{potion}"));
+        }
+        let effects = row["custom"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                Tag::compound([
+                    (
+                        "id",
+                        Tag::String(
+                            format!("minecraft:{}", e["id"].as_str().unwrap())
+                                .as_str()
+                                .into(),
+                        ),
+                    ),
+                    ("duration", Tag::Int(e["duration"].as_i64().unwrap() as i32)),
+                    ("amplifier", Tag::Int(e["amp"].as_i64().unwrap() as i32)),
+                    (
+                        "ambient",
+                        Tag::Byte(i8::from(e["ambient"].as_bool().unwrap())),
+                    ),
+                    (
+                        "show_particles",
+                        Tag::Byte(i8::from(e["visible"].as_bool().unwrap())),
+                    ),
+                ])
+            })
+            .collect();
+        stack
+            .data_mut()
+            .potion_extra
+            .push(("custom_effects".into(), Tag::List(effects)));
+        if let Some(color) = row["color"].as_i64() {
+            stack
+                .data_mut()
+                .potion_extra
+                .push(("custom_color".into(), Tag::Int(color as i32)));
+        }
+        if let Some(name) = row["name"].as_str() {
+            stack
+                .data_mut()
+                .potion_extra
+                .push(("custom_name".into(), Tag::String(name.into())));
+        }
+        stack
+    }
+    #[test]
+    #[ignore = "explicit HORIZON_TEST_RESOURCES and isolated potion oracle input/output"]
+    fn actual_arrow_contents_match_pinned_methods() {
+        let root =
+            PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").expect("explicit resources"));
+        let input =
+            PathBuf::from(std::env::var_os("HORIZON_POTION_INPUT").expect("explicit input"));
+        let output =
+            PathBuf::from(std::env::var_os("HORIZON_POTION_OUTPUT").expect("explicit output"));
+        let expected: Vec<Value> = serde_json::from_slice(
+            &std::fs::read(
+                std::env::var_os("HORIZON_POTION_EXPECTED").expect("pinned method output"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let rows: Vec<Value> = serde_json::from_slice(&std::fs::read(input).unwrap()).unwrap();
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(std::env::current_dir().unwrap());
+        options.execution_role = execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        game.world.set(0, 64, 0, stone).unwrap();
+        assert_eq!(rows.len(), 5, "all five arrow cases must execute");
+        let mut results = Vec::new();
+        for (index, row) in rows.iter().enumerate() {
+            let id = row["id"].clone();
+            let mut arrow = Projectile::new(
+                ProjectileKind::Arrow {
+                    base_damage: 2.,
+                    critical: false,
+                    effect: None,
+                },
+                Vec3::new(0.5, 64.5, 0.5),
+                None,
+            );
+            let st = arrow.arrow.as_mut().unwrap();
+            st.pickup_item = stack(row);
+            st.in_ground = true;
+            st.in_ground_time = 598;
+            st.last_state = Some(stone);
+            arrow.stuck = true;
+            let rain = |_| false;
+            let scene = game.arrow_scene(&rain);
+            horizon_client::arrows::tick(&mut arrow, &scene, &[]);
+            let st = arrow.arrow.as_ref().unwrap();
+            let item599 = st
+                .pickup_item
+                .item
+                .trim_start_matches("minecraft:")
+                .to_owned();
+            let color599 = st.potion_color().map_or(-1, |v| v as i32);
+            horizon_client::arrows::tick(&mut arrow, &scene, &[]);
+            let st = arrow.arrow.as_ref().unwrap();
+            results.push(json!({"id":id,"item599":item599,"color599":color599,"item600":st.pickup_item.item.trim_start_matches("minecraft:"),"color600":st.potion_color().map_or(-1,|v|v as i32)}));
+            assert_eq!(
+                results.last().unwrap(),
+                &expected[index],
+                "actual arrow tick: {}",
+                id
+            );
+        }
+        std::fs::write(output, serde_json::to_vec_pretty(&results).unwrap()).unwrap();
     }
 }

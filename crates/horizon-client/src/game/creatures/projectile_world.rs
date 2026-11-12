@@ -3,6 +3,9 @@
 use super::*;
 
 impl ProjectileWorld for ProjWorld<'_, '_> {
+    fn below_world_y(&self) -> f64 {
+        self.w.world.below_world_y()
+    }
     fn block_contacts(&self, entity: i32, kind: &str, from: Vec3, to: Vec3, bounds: Aabb) {
         horizon_client::block_contact::swept_inside(entity, kind, from, to, bounds, |p| {
             let state = self.w.world.block(p.x, p.y, p.z);
@@ -46,6 +49,9 @@ impl ProjectileWorld for ProjWorld<'_, '_> {
     /// block at its feet (#3072).
     fn in_water(&self, bounds: Aabb) -> bool {
         self.w.fluids(bounds, bounds.max_position().y).in_water
+    }
+    fn pushed_by_currents(&self, bounds: Aabb, velocity: Vec3) -> Vec3 {
+        self.w.pushed_by_currents(bounds, velocity)
     }
     fn targets(&self) -> &[(Who, Aabb)] {
         &self.targets

@@ -54,8 +54,9 @@ def unpack(archive: bytes, out: Path, zip_sha256: str = ZIP_SHA256, files=None) 
 
 
 def main(argv: list[str]) -> None:
-    if len(argv) != 1:
-        raise SystemExit(__doc__)
+    if len(argv) != 1 or argv[0].startswith('-'):
+        # A flag is not a folder: it used to download the whole archive into ./--help.
+        raise SystemExit(__doc__.strip() + '\nUsage: python3 tools/ci/fetch_dxc.py FOLDER')
     out = Path(argv[0])
     if not out.is_dir():
         raise SystemExit(f'{out} is not a folder')
