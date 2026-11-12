@@ -89,6 +89,7 @@ pub(super) fn start_mob(kind: &MobType) -> Option<(Instant, MobType)> {
 
 /// The mob [`start_mob`] started ended its tick in level `dim`.
 pub(super) fn end_mob(dim: &'static str, sampled: Option<(Instant, MobType)>) {
+    horizon_threads::work::clear_work();
     if let Some((started, kind)) = sampled {
         add(dim, &kind, started);
     }

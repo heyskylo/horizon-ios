@@ -1252,6 +1252,7 @@ impl Projectile {
 
     /// One tick: returns whether to keep the projectile and what it hit.
     pub fn tick(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
+        horizon_threads::work::set_entity(horizon_threads::work::entity_id(self.kind.id()));
         self.tick_with(w, true, false)
     }
     /// One tick of a server's projectile on its client: [`tick`](Self::tick),

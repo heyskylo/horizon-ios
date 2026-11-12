@@ -1409,7 +1409,6 @@ impl Game<'_> {
             let bounds = m.bounds();
             self.effects_on_death(&names, bounds, false, Some(m.id), Some(&mut m.random));
         }
-        horizon_threads::work::clear_work();
         self.creatures.deferred_hits = true;
         let event_result = self.handle_mob_events_reusable(&mut events);
         self.creatures.deferred_hits = false;
@@ -1419,7 +1418,6 @@ impl Game<'_> {
         laps.lap("creature_events");
         self.ordered_before(super::ordered_tick::Batch::Projectiles)?;
         self.tick_projectiles()?;
-        horizon_threads::work::clear_work();
         self.tick_fangs();
         laps.lap("creature_projectiles");
         self.tick_allays();
@@ -4386,7 +4384,6 @@ impl Game<'_> {
                     pickable_projectile_hitboxes_into(&projectiles, &keep_flags, i, &mut winds);
                 }
                 let p = &mut projectiles[i];
-                horizon_threads::work::set_entity(horizon_threads::work::entity_id(p.kind.id()));
                 if vanish
                     && matches!(p.kind, ProjectileKind::EnderPearl)
                     && p.owner == Some(Who::Player)
