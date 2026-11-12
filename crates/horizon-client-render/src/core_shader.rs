@@ -56,6 +56,15 @@ pub struct Glue<'a> {
 pub struct CoreProgram {
     pub vertex: naga::Module,
     pub fragment: naga::Module,
+    /// The blocks and samplers that are none of vanilla's, in binding order: the `i`th is at
+    /// [`other_binding`]`(i)` (a sampler's object one after its texture; a block leaves that
+    /// binding unused).
+    pub other: Vec<String>,
+}
+
+/// The binding of the `index`th block or sampler of [`CoreProgram::other`].
+pub fn other_binding(index: usize) -> u32 {
+    OTHER_BINDINGS + 2 * index as u32
 }
 
 /// The shaders of one pipeline (`text.vsh`, `text.fsh`) with vanilla's `defines` for it.
@@ -67,6 +76,20 @@ pub fn translate_core(
     include: &dyn Fn(&str) -> Option<String>,
     glue: &Glue,
 ) -> Result<CoreProgram, String> {
+    translate_core_with(vertex, fragment, defines, include, glue, &|_| false)
+}
+
+/// [`translate_core`] for a pipeline that also gives the blocks and samplers `provided` says
+/// yes to, at their [`CoreProgram::other`] bindings; the others are still an error. `provided`
+/// answers a block's name and a sampler's alike: the caller knows which kind each one is.
+pub fn translate_core_with(
+    vertex: &str,
+    fragment: &str,
+    defines: &[&str],
+    include: &dyn Fn(&str) -> Option<String>,
+    glue: &Glue,
+    provided: &dyn Fn(&str) -> bool,
+) -> Result<CoreProgram, String> {
     const CORE: &str = "minecraft:shaders/core/";
     let vertex_text = glsl_fixups::fixups(&strip_comments(&expand(vertex, CORE, include)?));
     let fragment_text = glsl_fixups::fixups(&strip_comments(&expand(fragment, CORE, include)?));
@@ -75,10 +98,16 @@ pub fn translate_core(
         .map_err(|e| format!("vertex shader: {e}"))?;
     let fragment_code = rewrite(&fragment_text, ShaderStage::Fragment, glue, &mut names)
         .map_err(|e| format!("fragment shader: {e}"))?;
-    let vertex = compile(ShaderStage::Vertex, &vertex_code, defines)
+    let vertex = compile(ShaderStage::Vertex, &vertex_code, defines, &names, provided)
         .map_err(|e| format!("vertex shader: {e}"))?;
-    let fragment = compile(ShaderStage::Fragment, &fragment_code, defines)
-        .map_err(|e| format!("fragment shader: {e}"))?;
+    let fragment = compile(
+        ShaderStage::Fragment,
+        &fragment_code,
+        defines,
+        &names,
+        provided,
+    )
+    .map_err(|e| format!("fragment shader: {e}"))?;
     let given = locations(&vertex, false);
     if let Some(missing) = locations(&fragment, true)
         .into_iter()
@@ -88,7 +117,11 @@ pub fn translate_core(
             "the fragment shader reads location {missing}, which the vertex shader doesn't write"
         ));
     }
-    Ok(CoreProgram { vertex, fragment })
+    Ok(CoreProgram {
+        vertex,
+        fragment,
+        other: names.other,
+    })
 }
 
 /// A bound on a pack's includes, which are pasted every time.
@@ -309,7 +342,9 @@ fn block_name(line: &str) -> Option<&str> {
     let rest = line[at + "uniform".len()..].trim();
     let name_end = rest.find(|c: char| !is_ident(c)).unwrap_or(rest.len());
     let (name, tail) = rest.split_at(name_end);
-    (!name.is_empty() && matches!(tail.trim(), "" | "{")).then_some(name)
+    // `{` alone, or the whole block on the line (`uniform Day { float daylight; };`).
+    (!name.is_empty() && (tail.trim().is_empty() || tail.trim_start().starts_with('{')))
+        .then_some(name)
 }
 
 /// What the two stages share: the vertex stage's outputs and their locations, and the names of
@@ -337,7 +372,7 @@ impl Names {
                 self.other.len() - 1
             }
         };
-        OTHER_BINDINGS + 2 * index as u32
+        other_binding(index)
     }
 }
 
@@ -551,7 +586,13 @@ fn rename_main(text: &str) -> String {
 }
 
 /// Parses and validates one stage; errors name the line of the rewritten code.
-fn compile(stage: ShaderStage, code: &str, defines: &[&str]) -> Result<naga::Module, String> {
+fn compile(
+    stage: ShaderStage,
+    code: &str,
+    defines: &[&str],
+    names: &Names,
+    provided: &dyn Fn(&str) -> bool,
+) -> Result<naga::Module, String> {
     let mut options = Options::from(stage);
     for define in defines {
         let (name, value) = define.split_once(' ').unwrap_or((define, ""));
@@ -583,16 +624,16 @@ fn compile(stage: ShaderStage, code: &str, defines: &[&str]) -> Result<naga::Mod
         })?;
     let entry = info.get_entry_point(0);
     for (handle, global) in module.global_variables.iter() {
-        let other = global
-            .binding
-            .as_ref()
-            .is_some_and(|b| b.binding >= OTHER_BINDINGS);
-        if other && !entry[handle].is_empty() {
-            let name = global.name.as_deref().unwrap_or("?");
-            let name = name
-                .strip_prefix("hz_tex_")
-                .or_else(|| name.strip_prefix("hz_smp_"))
-                .unwrap_or(name);
+        let Some(binding) = global.binding.as_ref().map(|b| b.binding) else {
+            continue;
+        };
+        if binding >= OTHER_BINDINGS && !entry[handle].is_empty() {
+            // The name it was declared with (a block's instance may have none).
+            let index = ((binding - OTHER_BINDINGS) / 2) as usize;
+            let name = names.other.get(index).map_or("?", String::as_str);
+            if provided(name) {
+                continue;
+            }
             return Err(format!("{name} is not a block or sampler of this pipeline"));
         }
     }
@@ -866,6 +907,63 @@ mod tests {
         let fsh = "#version 330\nin vec4 vertexColor;out vec4 fragColor;\
             void main() { fragColor = vertexColor; }\n";
         translate_core(vsh, fsh, &[], &include, &GLUE).unwrap();
+    }
+
+    /// A block declared on one line, as packs write a one-float uniform, is bound like one
+    /// over several lines; the blocks and samplers the caller provides are accepted, in binding
+    /// order, and one it doesn't provide is not.
+    #[test]
+    fn a_block_on_one_line_is_bound_and_provided_blocks_are_accepted() {
+        let vsh = "#version 330\nlayout(std140) uniform Day { float daylight; };\nout vec4 vertexColor;\n\
+            void main() { vertexColor = vec4(daylight); gl_Position = vec4(0.0); }\n";
+        let fsh = "#version 330\nuniform sampler2D Bounds;\nin vec4 vertexColor;\nout vec4 fragColor;\n\
+            void main() { fragColor = vertexColor * texture(Bounds, vec2(0.5)); }\n";
+        let both = |name: &str| name == "Day" || name == "Bounds";
+        let program = translate_core_with(vsh, fsh, &[], &include, &GLUE, &both).unwrap();
+        assert_eq!(program.other, ["Day", "Bounds"]);
+        // The bindings the caller gives them at.
+        let bindings = |module: &naga::Module| -> Vec<(Option<String>, u32)> {
+            module
+                .global_variables
+                .iter()
+                .filter_map(|(_, g)| Some((g.name.clone(), g.binding.as_ref()?.binding)))
+                .collect()
+        };
+        assert!(
+            bindings(&program.vertex)
+                .iter()
+                .any(|(_, b)| *b == other_binding(0)),
+            "{:?}",
+            bindings(&program.vertex)
+        );
+        let fragment = bindings(&program.fragment);
+        assert!(
+            fragment.contains(&(Some("hz_tex_Bounds".into()), other_binding(1))),
+            "{fragment:?}"
+        );
+        assert!(
+            fragment.contains(&(Some("hz_smp_Bounds".into()), other_binding(1) + 1)),
+            "{fragment:?}"
+        );
+        let error = translate_core(vsh, fsh, &[], &include, &GLUE).unwrap_err();
+        assert!(error.contains("Day is not a block or sampler"), "{error}");
+        let only_day = |name: &str| name == "Day";
+        let error = translate_core_with(vsh, fsh, &[], &include, &GLUE, &only_day).unwrap_err();
+        assert!(
+            error.contains("Bounds is not a block or sampler"),
+            "{error}"
+        );
+    }
+
+    /// Only a uniform block's declaration names a block, written over several lines or on one.
+    #[test]
+    fn block_names_are_read_from_block_declarations_only() {
+        assert_eq!(block_name("layout(std140) uniform Day {"), Some("Day"));
+        assert_eq!(block_name("uniform Day { float daylight; };"), Some("Day"));
+        assert_eq!(block_name("uniform Foo{"), Some("Foo"));
+        assert_eq!(block_name("uniform Globals"), Some("Globals"));
+        assert_eq!(block_name("uniform float x;"), None);
+        assert_eq!(block_name("uniform sampler2D Sampler0;"), None);
     }
 
     #[test]
