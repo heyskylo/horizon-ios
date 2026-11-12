@@ -7834,6 +7834,38 @@ def comparator_setblock_output():
     return ops + setup('/tick unfreeze', f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0} {z0 + 15} air',
                        f'/forceload remove {x0} {z0}')
 
+def explosion_player_experience():
+    """#11330: `Block.onExplosionHit` passes `dropExperience` = the blast's indirect source is a player (a primed
+    TNT's `owner`) to `spawnAfterBreak`, so blasted sculk pops its constant experience (catalyst 5, sculk 1) only
+    for a player's TNT, not for one whose `owner` is a zombie's UUID. Orbs may merge, so only whether any came
+    out is compared."""
+    # Entities tick once the forced chunk's 2-column neighbourhood is loaded (ChunkMap.prepareEntityTickingChunk).
+    x0, y0, z0 = 4096 - 384, 260, 3584
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks',
+            'chunks': [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]},
+           cmd('/tick freeze', False)]
+    near = f'x={x0},y={y0 - 4},z={z0},dx=16,dy=16,dz=16'
+    for owner in (None, '@p', 'zombie'):
+        ops += [cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 6} {z0 + 15} air', False),
+                cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} bedrock', False),
+                cmd(f'/setblock {x0 + 8} {y0} {z0 + 8} sculk_catalyst', expect_result=1),
+                cmd(f'/setblock {x0 + 7} {y0} {z0 + 8} sculk', expect_result=1),
+                cmd(f'/summon tnt {x0 + 8}.5 {y0 + 1} {z0 + 8}.5 {{fuse:1,Tags:["xp_tnt"]}}', expect_result=1)]
+        if owner == 'zombie':
+            ops.append(cmd(f'/summon zombie {x0 + 1}.5 {y0} {z0 + 1}.5 '
+                           f'{{NoAI:1b,Silent:1b,PersistenceRequired:1b,Tags:["xp_owner"]}}',
+                           expect_result=1))
+            owner = f'@e[type=zombie,tag=xp_owner,{near},limit=1]'
+        if owner:
+            ops.append(cmd(f'/data modify entity @e[type=tnt,tag=xp_tnt,limit=1] owner set from entity {owner} UUID'))
+        ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 2}, cmd('/tick freeze', False),
+                cmd(f'/execute if block {x0 + 8} {y0} {z0 + 8} air', expect_result=1),
+                cmd(f'/execute if entity @e[type=experience_orb,{near}]', comparison='positive_result'),
+                cmd(f'/kill @e[type=!player,{near}]', False), cmd(f'/kill @e[type=item,{near}]', False)]
+    return ops + setup('/tick unfreeze', f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 6} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
 def explosion_creaking_heart_experience():
     """#11330: `CreakingHeartBlock.onExplosionHit` awards a natural heart's experience (`tryAwardExperience`)
     when the blast's indirect source is a player (a primed TNT's `owner`); an ownerless blast awards none. The
@@ -8068,6 +8100,7 @@ def groups():
         ('primed tnt fall', primed_tnt_fall()),
         ('dispensed item escape', dispensed_item_escape()),
         ('command block last output', command_block_last_output()),
+        ('explosion player experience', explosion_player_experience()),
         ('explosion creaking heart experience', explosion_creaking_heart_experience()),
         ('comparator setblock output', comparator_setblock_output()),
         ('glide fall accumulation', glide_fall_accumulation()),
