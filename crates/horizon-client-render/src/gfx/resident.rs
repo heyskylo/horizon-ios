@@ -92,7 +92,6 @@ impl<T> Resident<T> {
         self.items.iter_mut().map(|(_, v)| v)
     }
     /// Every section's key, value and bounds.
-    #[cfg(any(test, debug_assertions))]
     pub fn iter(&self) -> impl Iterator<Item = (SectionKey, &T, Option<[Vec3; 2]>)> {
         let items = self.items.iter().zip(&self.bounds);
         items.map(|((key, value), bounds)| (*key, value, *bounds))

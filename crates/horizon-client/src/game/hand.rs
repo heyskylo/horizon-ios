@@ -574,7 +574,7 @@ impl Game<'_> {
             self.hands_busy(),
             self.hand_strength.swap_scale(1.0, speed),
             changed,
-            self.settings.extras.pvp.combat.legacy,
+            self.pvp_legacy_look(),
         );
         for h in 0..2 {
             if replace[h] {
