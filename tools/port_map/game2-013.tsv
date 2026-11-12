@@ -108,7 +108,7 @@ FarmlandBlock.getStateForPlacement	port	crates/horizon-world/src/level/place.rs:
 FarmlandBlock.tick	port	crates/horizon-world/src/level/tick.rs::Sim::tick_block	Farmland arm turns the block to its base when it cannot survive
 FarmlandBlock.randomTick	port	crates/horizon-world/src/level/tick.rs::Sim::farmland_random_tick	moisture falls or rises with water in reach and rain above, else turns to base
 FarmlandBlock.turnToBaseBlock	port	crates/horizon-world/src/level/tick.rs::Sim::turn_to_base_block	the base block is set and Block.pushEntitiesUp goes out as the push_entities_up block event
-FarmlandBlock.isNearWater	inline	crates/horizon-world/src/level/tick.rs::Sim::farmland_random_tick	gap: minor: the 9x2x9 water search is inline and tests the water fluid only, not canBeHydrated
+FarmlandBlock.isNearWater	inline	crates/horizon-world/src/level/tick.rs::Sim::farmland_random_tick	the 9x2x9 inline search matches vanilla's predicate, `state.getFluidState().is(FluidTags.WATER)` (sources and flowing water alike), not a block tag
 FenceBlock.isSameFence	inline	crates/horizon-world/src/level/shapes.rs::Sim::fence_connects_to	the same-fence test (fence tag and wooden match) is inline in fence_connects_to
 FenceBlock.getStateForPlacement	port	crates/horizon-world/src/level/place.rs::Sim::placement_class	Fence arm: each horizontal side connects per neighbour and waterlogged from the spot
 FenceBlock.updateShape	port	crates/horizon-world/src/level/shapes.rs::Sim::update_shape_class	Fence arm: waterlogged tick and the horizontal side connection update
