@@ -44,6 +44,7 @@ fn pack() -> Post {
     let (properties, _) = horizon_shaders::read_properties(&pack, &mut macros);
     let inputs = horizon_shaders::GameInputs {
         terrain: Some(horizon_shaders::GbuffersInputs {
+            parts: None,
             item_id_declared: false,
             far_depth: false,
             paged_maps: false,

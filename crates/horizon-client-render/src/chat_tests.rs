@@ -1066,3 +1066,60 @@ fn a_server_filter_mask_hides_or_masks_the_message() {
             .all(|s| s.style.color.is_none())
     );
 }
+
+/// `ChatComponent.refreshTrimmedMessages`: a filter change lays the lines out
+/// again but keeps `chatScrollbarPos` and `newMessageSinceScroll`; only
+/// `rescaleChat` resets them, after `resetChatScroll`.
+#[test]
+fn a_chat_option_change_keeps_the_readers_place_but_a_rescale_does_not() {
+    let font = font();
+    let mut chat = Chat::default();
+    for i in 0..60 {
+        chat.add_message(
+            &font,
+            Text::literal(format!("line {i}")),
+            None,
+            ChatSource::Server,
+            0,
+            false,
+        );
+    }
+    chat.scroll = 3;
+    chat.new_since_scroll = true;
+    chat.set_abilities(&font, ChatAbilities::new(ChatVisibility::System));
+    assert_eq!(chat.scroll, 3);
+    assert!(chat.new_since_scroll);
+    let atlas = crate::hud::HudAtlas::build(Path::new("/nonexistent/horizon-test-assets")).unwrap();
+    chat.rescale(&atlas);
+    assert_eq!(chat.scroll, 0);
+    assert!(!chat.new_since_scroll);
+}
+
+/// `SuggestionsList.extractRenderState`: the list's rectangle asks for the
+/// pointing hand; outside it the cursor stays the arrow.
+#[test]
+fn the_suggestion_list_asks_for_the_pointing_hand() {
+    let font = font();
+    let m = Measure(&font);
+    let registries = Registries::default();
+    let c = Commands {
+        dispatcher: crate::command::vanilla::game_dispatcher(),
+        registries: &registries,
+    };
+    let mut screen = ChatScreen::new(&m, &c, "", false, 0, 640, 360, full());
+    screen.type_text(&m, &c, "/");
+    let rect = screen
+        .suggestions
+        .as_ref()
+        .expect("the root commands are a suggestion list")
+        .rect;
+    let _ = crate::widgets::take_cursor();
+    screen.draw(&m, (rect[0] + 2, rect[1] + 2), 0, 0);
+    assert_eq!(
+        crate::widgets::take_cursor(),
+        crate::widgets::Cursor::PointingHand
+    );
+    let _ = crate::widgets::take_cursor();
+    screen.draw(&m, (rect[0] - 1, rect[1] + 2), 0, 0);
+    assert_eq!(crate::widgets::take_cursor(), crate::widgets::Cursor::Arrow);
+}

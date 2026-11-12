@@ -7,7 +7,7 @@ ChatComponent.addMessageToQueue	port	crates/horizon-client-render/src/chat.rs::C
 ChatComponent.processMessageDeletionQueue	port	crates/horizon-client-render/src/chat.rs::Chat::process_deletions	
 ChatComponent.deleteMessage	port	crates/horizon-client-render/src/chat.rs::Chat::delete_message	
 ChatComponent.deleteMessageOrDelay	port	crates/horizon-client-render/src/chat.rs::Chat::delete_or_delay	
-ChatComponent.refreshTrimmedMessages	port	crates/horizon-client-render/src/chat.rs::Chat::rewrap	gap: minor: rewrap also resets the scroll to 0; vanilla keeps the position
+ChatComponent.refreshTrimmedMessages	port	crates/horizon-client-render/src/chat.rs::Chat::rewrap	keeps the scroll; Chat::rescale is rescaleChat's resetChatScroll first, and the search and qol extras reset their own filters
 ChatComponent.scrollChat	port	crates/horizon-client-render/src/chat.rs::Chat::scroll_by	clamp to the page and clear new-message marker at the bottom
 ChatComponent.getHeight	port	crates/horizon-client-render/src/chat.rs::ChatOptions::height_px	focused or unfocused chat height in px
 ChatComponent.defaultUnfocusedPct	inline	crates/horizon-client-render/src/chat.rs::ChatOptions::default	the default 70/160 is stored as a constant, not computed from the height formula
@@ -15,8 +15,8 @@ ChatComponent.getLineHeight	port	crates/horizon-client-render/src/chat.rs::ChatO
 ChatComponent.saveAsDraft	port	crates/horizon-client/src/game/chat.rs::Game::keep_chat_draft	the text left in the box becomes the draft unless the screen was closed on purpose without Save Chat Drafts or the text was sent
 ChatComponent.createScreen	port	crates/horizon-client/src/game/chat.rs::Game::open_chat_method	T or / opens the chat with the draft kept last time, a command draft only for /, else with its prefix, and records whether the box starts on a draft
 ChatComponent.preserveCurrentChatScreen	missing		minor: unsure: Horizon keeps no chat screen across a dimension change; game/nether_portal.rs:577 only leaves Chat alone during a portal effect, the change path was not checked
-ChatComponent.storeState	inline	crates/horizon-client/src/game/remote.rs::Game::poll_remote	no snapshot: the Reconfigured arm only resets boss bars and registries, so the chat survives a reconfigure without a copy
-ChatComponent.restoreState	inline	crates/horizon-client/src/game/remote.rs::Game::poll_remote	no restore: the chat is never cleared on Reconfigured, so there is nothing to put back
+ChatComponent.storeState	inline	crates/horizon-client/src/game/remote_poll.rs::Game::poll_remote	no snapshot: the Reconfigured arm only resets boss bars and registries, so the chat survives a reconfigure without a copy
+ChatComponent.restoreState	inline	crates/horizon-client/src/game/remote_poll.rs::Game::poll_remote	no restore: the chat is never cleared on Reconfigured, so there is nothing to put back
 ChatComponent.ClickableTextOnlyGraphicsAccess.updatePose	skip:ui		pose bookkeeping of the text collector; chat draws with its own scale and translate
 ChatComponent.DrawingBackgroundGraphicsAccess.updatePose	skip:ui		pose bookkeeping of the text collector; chat draws with its own scale and translate
 ChatComponent.DrawingBackgroundGraphicsAccess.handleMessage	port	crates/horizon-client-render/src/chat.rs::Chat::layout	line text drawn at its bottom with the text opacity
@@ -48,7 +48,7 @@ CommandSuggestions.extractSuggestions	port	crates/horizon-client-render/src/chat
 CommandSuggestions.extractUsage	port	crates/horizon-client-render/src/chat.rs::ChatScreen::draw	usage lines drawn upward from the bottom, as vanilla's bottom anchor
 CommandSuggestions.getNarrationMessage	inline	crates/horizon-client-render/src/chat.rs::SuggestionList::narration_message	the selected suggestion, said when the selection moves (ChatScreen::select); gap: minor: the chat screen's own narration does not add it (screen_info::chat reads the usage and the typed message)
 CommandSuggestions.hasAllowedInput	port	crates/horizon-client-render/src/chat.rs::ChatAbilities::allows	gap: minor: a /say style command is judged as a command, not a message (see hasMessageArguments)
-CommandSuggestions.SuggestionsList.extractRenderState	port	crates/horizon-client-render/src/chat.rs::ChatScreen::draw_list	rows, scroll marks, highlight and tooltip; gap: minor: no pointing-hand cursor over the rows
+CommandSuggestions.SuggestionsList.extractRenderState	port	crates/horizon-client-render/src/chat.rs::ChatScreen::draw_list	rows, scroll marks, highlight and tooltip, and the pointing hand over the list's rectangle
 CommandSuggestions.SuggestionsList.mouseClicked	port	crates/horizon-client-render/src/chat.rs::ChatScreen::click	row click selects and uses the suggestion
 CommandSuggestions.SuggestionsList.keyPressed	port	crates/horizon-client-render/src/chat.rs::ChatScreen::key	up, down and tab cycle and use the suggestion
 CommandSuggestions.SuggestionsList.cycle	port	crates/horizon-client-render/src/chat.rs::ChatScreen::cycle	moves the selection and the scroll offset
@@ -104,6 +104,7 @@ EditBox.applyFormat	port	crates/horizon-client-render/src/ui.rs::EditBox::draw	t
 EditBox.updateTextPosition	port	crates/horizon-client-render/src/ui.rs::EditBox::text_x	text_x of the shown part; text_y is its sibling
 EditBox.setMaxLength	port	crates/horizon-client-render/src/ui.rs::Caret::sync	gap: minor: sets the limit only; a longer value is not cut to it
 EditBox.setFocused	port	crates/horizon-client-render/src/ui.rs::Caret::draw	focus restarts the blink clock here; gap: minor: no IME or narration side effects
+EditBox.handleCursor	port	crates/horizon-client-render/src/widgets.rs::text_cursor	IBEAM over an editable field, NOT_ALLOWED otherwise
 EditBox.setEditable	missing		minor: unsure: no read-only flag on the box in ui.rs; a box vanilla locks would accept typing
 EditBox.setHighlightPos	port	crates/horizon-client-render/src/ui.rs::EditBox::set_cursor	sets the highlight and scrolls
 EditBox.setCentered	port	crates/horizon-client-render/src/ui.rs::EditBox::text_start_x	the text and a click start (width - text width) / 2 in; BookSignScreen's title box sets it

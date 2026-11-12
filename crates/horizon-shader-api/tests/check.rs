@@ -348,6 +348,15 @@ fn a_0_2_pack_is_checked_against_its_own_line() {
     let report = pack_0_2(POST, TONEMAP, "[frame]\nblend = \"linear\"\n").unwrap();
     let kinds: Vec<_> = report.stages.iter().map(|s| s.kind).collect();
     assert_eq!(kinds, [StageKind::Post, StageKind::Tonemap]);
+    // A wide-gamut pack passes the check (the game refuses it for now), and reads its space.
+    let wide = "fn tonemap(input: TonemapInput) -> vec3<f32> {\n    \
+                return vec3<f32>(dot(input.color, frame.luminance)) * f32(frame.primaries);\n}\n";
+    let frame = "[frame]\nblend = \"linear\"\nprimaries = \"bt2020\"\n";
+    let report = pack_0_2(POST, wide, frame).unwrap();
+    assert_eq!(
+        report.manifest.primaries,
+        horizon_shader_api::Primaries::Bt2020
+    );
     // The 0.2 prelude's display fields and colour boundary are there to use.
     let source = &report.stages[1].source;
     assert!(source.contains("    black_level: f32,\n") && source.contains("fn horizon_decode("));

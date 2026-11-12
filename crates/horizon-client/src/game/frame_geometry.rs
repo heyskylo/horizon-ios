@@ -8,39 +8,7 @@ impl Game<'_> {
     /// other players' (`renderBlockDestroyAnimation`: within 32 blocks of the camera, the
     /// furthest progress on each block).
     pub(super) fn cracks(&self, camera: glam::DVec3) -> Vec<([i32; 3], [f32; 2])> {
-        // `destroy_stage_0` .. `destroy_stage_9`: the sprite name by stage, so the
-        // lookup does not format a string per crack.
-        const DESTROY_STAGES: [&str; 10] = [
-            "block/destroy_stage_0",
-            "block/destroy_stage_1",
-            "block/destroy_stage_2",
-            "block/destroy_stage_3",
-            "block/destroy_stage_4",
-            "block/destroy_stage_5",
-            "block/destroy_stage_6",
-            "block/destroy_stage_7",
-            "block/destroy_stage_8",
-            "block/destroy_stage_9",
-        ];
-        // `ModelBakery.DESTROY_STAGES_OIT`: with improved transparency the cracks are
-        // ordinary translucent quads (`OIT_CRUMBLING`) and use their own sprites.
-        const DESTROY_STAGES_OIT: [&str; 10] = [
-            "block/destroy_oit_stage_0",
-            "block/destroy_oit_stage_1",
-            "block/destroy_oit_stage_2",
-            "block/destroy_oit_stage_3",
-            "block/destroy_oit_stage_4",
-            "block/destroy_oit_stage_5",
-            "block/destroy_oit_stage_6",
-            "block/destroy_oit_stage_7",
-            "block/destroy_oit_stage_8",
-            "block/destroy_oit_stage_9",
-        ];
-        let names = if self.settings.improved_transparency {
-            &DESTROY_STAGES_OIT
-        } else {
-            &DESTROY_STAGES
-        };
+        let names = crack_stage_names(self.settings.improved_transparency);
         let mut stages: Vec<([i32; 3], u32)> = Vec::new();
         let mut add = |pos: [i32; 3], stage: u32| match stages.iter_mut().find(|c| c.0 == pos) {
             Some(c) => c.1 = c.1.max(stage),
@@ -193,7 +161,7 @@ impl Game<'_> {
         // replay player's hands remain visible in first person; freecam has
         // no player-view hand.
         if !fov::studio_draws_hand(
-            self.studio.freecam.active,
+            self.studio.flying(),
             self.ui.hands_drawn(
                 self.spectator(),
                 self.sleeping.is_some(),
@@ -228,7 +196,7 @@ impl Game<'_> {
             eye[2].floor() as i32,
         );
         let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
-        let shown = self.hands_to_render();
+        let shown = self.hands_shown();
         let used_hand = self.used_hand();
         let spinning = self
             .player
@@ -238,7 +206,7 @@ impl Game<'_> {
         let off_hand_empty = items[1].is_none();
         // Combat feel Legacy: a sword is held up while use is held, as 1.8.9's block looked.
         // Only the picture changes: the clicks and what they send stay 26.3's.
-        let legacy_block = self.settings.extras.pvp.combat.legacy
+        let legacy_block = self.pvp_legacy_look()
             && self.right
             && self.screen == Screen::Playing
             && items[0]
@@ -426,7 +394,7 @@ impl Game<'_> {
             let mut m = to_world
                 * horizon_client::first_person::item_pose(left, inverse_height, attack, pose);
             // PvP & HUD's shield size (100% is vanilla's), toward the hand holding it.
-            let shield_size = self.settings.extras.pvp.tweaks.shield_size;
+            let shield_size = self.pvp_shield_size();
             if shield_size != 100 && &*stack.item == "minecraft:shield" {
                 m *= glam::Mat4::from_scale(glam::Vec3::splat(f32::from(shield_size) / 100.0));
             }
@@ -449,7 +417,7 @@ impl Game<'_> {
             };
             let state = self.resolve_item_in_hand(&stack, context, Some(&owner), seed, cit_hand);
             // Combat feel Legacy: 1.8.9's pose for a flat item drawn with vanilla's display.
-            if self.settings.extras.pvp.combat.legacy
+            if self.pvp_legacy_look()
                 && !state.layers.is_empty()
                 && state
                     .layers
@@ -565,5 +533,88 @@ impl Game<'_> {
         // Vanilla draws every rain column before the snow ones.
         rain.extend(snow_vertices);
         rain
+    }
+}
+
+// `destroy_stage_0` .. `destroy_stage_9`: the sprite name by stage, so the
+// lookup does not format a string per crack.
+const DESTROY_STAGES: [&str; 10] = [
+    "block/destroy_stage_0",
+    "block/destroy_stage_1",
+    "block/destroy_stage_2",
+    "block/destroy_stage_3",
+    "block/destroy_stage_4",
+    "block/destroy_stage_5",
+    "block/destroy_stage_6",
+    "block/destroy_stage_7",
+    "block/destroy_stage_8",
+    "block/destroy_stage_9",
+];
+// `ModelBakery.DESTROY_STAGES_OIT`: with improved transparency the cracks are
+// ordinary translucent quads (`OIT_CRUMBLING`) and use their own sprites.
+const DESTROY_STAGES_OIT: [&str; 10] = [
+    "block/destroy_oit_stage_0",
+    "block/destroy_oit_stage_1",
+    "block/destroy_oit_stage_2",
+    "block/destroy_oit_stage_3",
+    "block/destroy_oit_stage_4",
+    "block/destroy_oit_stage_5",
+    "block/destroy_oit_stage_6",
+    "block/destroy_oit_stage_7",
+    "block/destroy_oit_stage_8",
+    "block/destroy_oit_stage_9",
+];
+
+/// The crack sprites drawn: with improved transparency vanilla's own OIT set.
+fn crack_stage_names(improved_transparency: bool) -> &'static [&'static str; 10] {
+    if improved_transparency {
+        &DESTROY_STAGES_OIT
+    } else {
+        &DESTROY_STAGES
+    }
+}
+
+/// The crack's sprite size (and stage 0's origin) the crumbling shaders read: of the set drawn,
+/// as a resource pack may replace one set and not the other (a 32x pack's `destroy_stage_*`
+/// beside vanilla's 16x `destroy_oit_stage_*`, #11164).
+pub(super) fn crumbling_sprite(
+    sprites: &std::collections::HashMap<String, horizon_client::hud::Rect>,
+    improved_transparency: bool,
+) -> [f32; 4] {
+    sprites
+        .get(crack_stage_names(improved_transparency)[0])
+        .map_or([0.0; 4], |r| [r.u0, r.v0, r.u1 - r.u0, r.v1 - r.v0])
+}
+
+#[cfg(test)]
+mod crumbling_sprite_tests {
+    use super::*;
+
+    #[test]
+    fn the_crack_takes_the_size_of_the_set_it_draws() {
+        let rect = |u0: f32, size: f32| horizon_client::hud::Rect {
+            u0,
+            v0: 0.0,
+            u1: u0 + size,
+            v1: size,
+            w: 16,
+            h: 16,
+        };
+        // A pack's 32x destroy stages beside vanilla's 16x OIT stages, in a 1024-wide atlas.
+        let sprites = std::collections::HashMap::from([
+            ("block/destroy_stage_0".to_owned(), rect(0.0, 32.0 / 1024.0)),
+            (
+                "block/destroy_oit_stage_0".to_owned(),
+                rect(0.5, 16.0 / 1024.0),
+            ),
+        ]);
+        assert_eq!(
+            crumbling_sprite(&sprites, false),
+            [0.0, 0.0, 32.0 / 1024.0, 32.0 / 1024.0]
+        );
+        assert_eq!(
+            crumbling_sprite(&sprites, true),
+            [0.5, 0.0, 16.0 / 1024.0, 16.0 / 1024.0]
+        );
     }
 }

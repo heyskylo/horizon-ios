@@ -13,7 +13,10 @@ COMMON = 'NoAI:1b,NoGravity:1b,PersistenceRequired:1b,Silent:1b'
 # (Enderman.setTarget, from readPersistentAngerSaveData), an untamed wolf's max_health
 # (TamableAnimal.readAdditionalSaveData -> setTame(false, true) -> applyTamingSideEffects) and a baby
 # goat's or hoglin's attack_damage (setAge -> ageBoundaryReached).
-KINDS = {'pig': COMMON, 'allay': COMMON, 'armor_stand': 'NoGravity:1b', 'enderman': COMMON, 'wolf': COMMON,
+# `armor_stand_empty` is a stand whose summon NBT already says `attributes:[]` (a save made before its
+# first tick): vanilla still saves movement_speed (base 0.7d) once the first tick has made the instance.
+KINDS = {'pig': COMMON, 'allay': COMMON, 'armor_stand': 'NoGravity:1b',
+         'armor_stand_empty': 'NoGravity:1b,attributes:[]', 'enderman': COMMON, 'wolf': COMMON,
          'goat': COMMON + ',Age:-24000', 'hoglin': COMMON + ',Age:-24000', 'rabbit': COMMON}
 IDS = ['movement_speed', 'max_health', 'follow_range', 'flying_speed', 'armor', 'scale', 'attack_damage']
 
@@ -57,8 +60,9 @@ def mob_attribute_save(raw=False):
         for kind, fields in KINDS.items():
             n += 1
             tag = f'h105_{phase}_{kind}'
-            actors.append((phase, tag, kind))
-            run(f'/summon minecraft:{kind} {1.5 + n} 200 3.5 {{UUID:{uuid(n)},Tags:["{tag}"],{fields}}}', 1)
+            entity = kind.removesuffix('_empty')
+            actors.append((phase, tag, entity))
+            run(f'/summon minecraft:{entity} {1.5 + n} 200 3.5 {{UUID:{uuid(n)},Tags:["{tag}"],{fields}}}', 1)
     run(f'/summon minecraft:pig 2.5 200 8.5 {{UUID:{uuid(20)},Tags:["h105_read"],{COMMON}}}', 1)
     saved = ('attributes:[{id:"minecraft:max_health",base:20d,'
              'modifiers:[{id:"h105:extra",amount:2d,operation:"add_value"}]}]')

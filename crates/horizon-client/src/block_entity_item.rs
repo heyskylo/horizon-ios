@@ -40,6 +40,17 @@ pub fn carries_record(stack: &crate::items::ItemStack) -> bool {
         .is_some_and(|data| data.get("RecordItem").is_some())
 }
 
+/// `LecternBlock.getStateForPlacement`: the item's `minecraft:block_entity_data`
+/// carries a `Book` (`TypedEntityData.contains` checks the key only), so the
+/// placed lectern's `has_book` state says so. Vanilla reads the item's data,
+/// not the block entity the placement just filled.
+pub fn carries_book(stack: &crate::items::ItemStack) -> bool {
+    stack
+        .data()
+        .and_then(|d| d.other(BLOCK_ENTITY_DATA))
+        .is_some_and(|data| data.get("Book").is_some())
+}
+
 /// `BlockItem.shouldPrintOpWarning` for a player with game master permission:
 /// the item carries data of an op-only type.
 pub fn op_warning(stack: &crate::items::ItemStack) -> bool {

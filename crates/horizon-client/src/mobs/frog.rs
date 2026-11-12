@@ -399,6 +399,16 @@ impl LaySpawn {
             if open_top && supports && Self::is_air(cx.w, spawn) {
                 if let Some(state) = cx.w.registry.default_state("minecraft:frogspawn") {
                     cx.events.push(MobEvent::SetBlock { pos: spawn, state });
+                    cx.events.push(MobEvent::GameEvent {
+                        event: "minecraft:block_place",
+                        at: [
+                            f64::from(spawn[0]) + 0.5,
+                            f64::from(spawn[1]) + 0.5,
+                            f64::from(spawn[2]) + 0.5,
+                        ],
+                        source: m.id,
+                        state,
+                    });
                 }
                 cx.events.push(MobEvent::entity_sound(
                     m,
@@ -617,14 +627,14 @@ pub(super) fn count_down_cooldown(m: &mut Mob) {
     }
 }
 /// `LONG_JUMP_COOLDOWN_TICKS`.
-fn jump_cooldown(m: &Mob) -> Option<i64> {
+pub(crate) fn jump_cooldown(m: &Mob) -> Option<i64> {
     m.extra
         .memories
         .iter()
         .find(|x| x.0 == LONG_JUMP_COOLDOWN)
         .map(|x| x.1)
 }
-fn set_jump_cooldown(m: &mut Mob, ticks: Option<i64>) {
+pub(crate) fn set_jump_cooldown(m: &mut Mob, ticks: Option<i64>) {
     let memories = &mut m.extra.memories;
     let at = memories.iter().position(|x| x.0 == LONG_JUMP_COOLDOWN);
     match (at, ticks) {
@@ -1235,5 +1245,58 @@ mod tests {
         assert_eq!(memory(&saved), None, "a laid frog saves no pregnancy");
         let back = mob_from_nbt(&saved, &types, 3, None).unwrap();
         assert!(!is_pregnant(&back), "and does not come back pregnant");
+    }
+
+    /// `TryLaySpawnOnFluidNearLand`: the frogspawn is set, then
+    /// `block_place` is posted from the frog at the new block, then the lay
+    /// sound, and the pregnancy is erased.
+    #[test]
+    fn laying_frogspawn_posts_block_place_from_the_frog() {
+        let ran = crate::mobs::world::with_built_test_world(
+            &[],
+            |world, registry| {
+                world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                );
+                let water = registry.default_state("minecraft:water").unwrap();
+                world.set(8, 63, 7, water).unwrap();
+            },
+            |w, _| {
+                let mut m = frog();
+                m.position = Vec3::new(8.5, 64.0, 8.5);
+                m.on_ground = true;
+                set_pregnant(&mut m, true);
+                let mut lr = LegacyRandom::new(3);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                LaySpawn::lay(&mut m, &mut cx);
+                let spawn = w.registry.default_state("minecraft:frogspawn").unwrap();
+                assert!(
+                    events
+                        .iter()
+                        .any(|e| matches!(e, MobEvent::SetBlock { pos: [8, 64, 7], state } if *state == spawn)),
+                    "the frogspawn is set: {events:?}"
+                );
+                assert!(
+                    events.iter().any(|e| matches!(
+                        e,
+                        MobEvent::GameEvent {
+                            event: "minecraft:block_place",
+                            at: [8.5, 64.5, 7.5],
+                            source: 1,
+                            state,
+                        } if *state == spawn
+                    )),
+                    "the new frogspawn posts block_place from the frog: {events:?}"
+                );
+                assert!(!is_pregnant(&m), "laying erases the pregnancy");
+            },
+        );
+        let _ = ran;
     }
 }

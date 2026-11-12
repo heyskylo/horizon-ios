@@ -465,7 +465,7 @@ impl<'a> Draw<'a> {
     }
 
     fn material(&mut self, api: horizon_shader_api::Api) {
-        let source = super::super::native_material::coverage_test_shader(api);
+        let source = super::super::native_material::coverage_test_shader((api, false));
         self.shader = self
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -478,7 +478,7 @@ impl<'a> Draw<'a> {
             Vec::new(),
             Default::default(),
             None,
-            api,
+            (api, false),
         );
         self.queue.write_buffer(
             &frame.buffer,

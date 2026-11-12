@@ -253,6 +253,11 @@ pub fn apply(
 /// The settings the control API may change: none of `[engine]` (which program runs), `[panel]` and `[api]`
 /// (who can reach the server), `[discord]` (its webhook is a secret), nor the vanilla keys that open another remote console.
 pub fn changeable_remotely(key: &str) -> bool {
+    // Checked as written, but applied trimmed (parse_change): a key with any space in it,
+    // " engine.path" for one, would pass here as another section and be written as itself.
+    if key.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return false;
+    }
     let (section, field) = key.split_once('.').unwrap_or((key, ""));
     !matches!(section, "engine" | "panel" | "api" | "discord")
         && !(section == "properties"
@@ -279,6 +284,23 @@ pub fn shown(dir: &Path) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keys_the_api_may_not_change_stay_refused_however_spaced() {
+        for key in [
+            "engine.path",
+            " engine.path",
+            "\tapi.allow_public",
+            "discord.webhook ",
+            " properties.enable-rcon",
+            "properties. rcon.password",
+            "panel\n.allow_public",
+        ] {
+            assert!(!changeable_remotely(key), "{key:?}");
+        }
+        assert!(changeable_remotely("world.difficulty"));
+        assert!(changeable_remotely("properties.motd"));
+    }
 
     fn table() -> toml::Table {
         toml::Table::try_from(config::Config::default()).unwrap()
