@@ -116,6 +116,7 @@ fn hookless<'w>(base: &MobWorld<'w>) -> impl Fn() -> MobWorld<'w> + Sync + use<'
         lid_openers,
         mod_effects: _,
         who_lookup: _,
+        foreign: _,
         border,
     } = base.clone();
     move || MobWorld {
@@ -160,6 +161,7 @@ fn hookless<'w>(base: &MobWorld<'w>) -> impl Fn() -> MobWorld<'w> + Sync + use<'
         lid_openers,
         mod_effects: None,
         who_lookup: None,
+        foreign: None,
         border,
     }
 }
