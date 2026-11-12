@@ -863,7 +863,14 @@ pub fn with_included(
 /// Where `fetch` keeps the pack's loader jar, and where it comes from:
 /// NeoForge's own Maven repository. Only NeoForge packs need it today.
 pub fn loader_jar(work: &Path, loader: &str, version: &str) -> Option<(PathBuf, String)> {
-    (loader == "neoforge" && !version.is_empty()).then(|| {
+    // The version comes from the modpack: only a plain version (`21.1.77`, `21.1.0-beta`) makes a
+    // file name or a URL, never `/`, `..` or a `#` that would end the URL early.
+    let plain = (1..=64).contains(&version.len())
+        && !version.contains("..")
+        && version
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b));
+    (loader == "neoforge" && plain).then(|| {
         (
             work.join("loader").join(format!("neoforge-{version}-universal.jar")),
             format!(
@@ -877,6 +884,26 @@ pub fn loader_jar(work: &Path, loader: &str, version: &str) -> Option<(PathBuf, 
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn only_a_plain_neoforge_version_makes_a_loader_path() {
+        let work = Path::new("/work");
+        let (dest, url) = loader_jar(work, "neoforge", "21.1.77").unwrap();
+        assert_eq!(dest, work.join("loader/neoforge-21.1.77-universal.jar"));
+        assert!(url.ends_with("/21.1.77/neoforge-21.1.77-universal.jar"));
+        assert!(loader_jar(work, "neoforge", "21.1.0-beta").is_some());
+        for bad in [
+            "",
+            "21.1.1/neoforge-21.1.1-universal.jar#/../../../../x",
+            "../x",
+            "21.1.1#",
+            "a/b",
+            "a\\b",
+        ] {
+            assert_eq!(loader_jar(work, "neoforge", bad), None, "{bad:?}");
+        }
+        assert_eq!(loader_jar(work, "fabric", "0.16.0"), None);
+    }
 
     const NO_TAGS: BTreeMap<String, Vec<String>> = BTreeMap::new();
 

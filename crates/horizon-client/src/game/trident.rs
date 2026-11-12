@@ -1084,12 +1084,16 @@ impl Game<'_> {
                         }
                         self.thrower_dealt_absorbed(t.guest);
                         // ThrownTrident.onHitEntity on a boat or minecart:
-                        // VehicleEntity.hurtServer takes the damage.
+                        // VehicleEntity.hurtServer takes the damage; an item
+                        // frame's ItemFrame.hurtServer.
                         let creative = t.guest.is_none() && self.creative;
                         if let Some(i) = self.boats.iter().position(|b| b.id == id) {
                             self.hurt_boat(i, damage, creative);
                         } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
                             self.hurt_cart(i, damage, creative, false);
+                        } else {
+                            // ItemFrame.hurtServer: the item comes out, or the frame breaks.
+                            self.projectile_hurts_frame(id, true, creative);
                         }
                         // ThrownTrident.onHitEntity on another player.
                         if let Some(conn) = self.trident_guest_conn(id) {

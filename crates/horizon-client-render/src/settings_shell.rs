@@ -310,6 +310,9 @@ pub(crate) fn search_field(
     let frame = [x, y, clear[0] - x, h];
     search.frame = Some(frame);
     search.draw(batch, atlas, None);
+    if ui::hovered(cursor, x, y, frame[2], h) {
+        crate::widgets::text_cursor(true, true);
+    }
     if search.value.is_empty() && !focused {
         let hint = Text::literal(search.message.clone());
         batch.text_styled(atlas, &hint, x + 5.0, search.y, style::muted(), true);

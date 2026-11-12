@@ -56,6 +56,8 @@ pub struct Overlay {
 struct LoadedRule {
     rule: Rule,
     tiles: Vec<TileLayer>,
+    /// By tile: the rules whose `matchTiles` name it (a range of `lists`), which chain on it.
+    chain: Vec<(u32, u32)>,
     overlay: OverlayJoin,
 }
 
@@ -188,6 +190,7 @@ impl ConnectedTextures {
                     Ok(tiles) => Some(LoadedRule {
                         rule,
                         tiles,
+                        chain: Vec::new(),
                         overlay: OverlayJoin::default(),
                     }),
                     Err(e) => {
@@ -292,10 +295,23 @@ impl ConnectedTextures {
         let mut by_layer: Vec<Vec<u16>> = Vec::new();
         // Block rules by the block each entry names, so a state tests only its own.
         let mut by_block: HashMap<&str, Vec<u16>> = HashMap::new();
+        // Tile rules by the sprite or tile file each names, for chaining on a picked tile.
+        let mut by_name: HashMap<String, Vec<u16>> = HashMap::new();
         for (i, r) in out.rules.iter().enumerate() {
             let i = i as u16;
             for tile in &r.rule.match_tiles {
-                if let Some(l) = layer(&sprite_name(tile)) {
+                let name = sprite_name(tile);
+                let list = by_name.entry(name.clone()).or_default();
+                if list.last() != Some(&i) {
+                    list.push(i);
+                }
+                // A tile file (`./1.png`) is no model's sprite: only chaining reaches it, by
+                // name. By layer it would match every face whose sprite has the same pixels
+                // (identical stills share a layer: Conquest's blank placeholders, dozens).
+                if !name.contains(':') {
+                    continue;
+                }
+                if let Some(l) = layer(&name) {
                     let l = l as usize;
                     if by_layer.len() <= l {
                         by_layer.resize(l + 1, Vec::new());
@@ -316,6 +332,26 @@ impl ConnectedTextures {
             let range = push_list(&mut out.lists, &list);
             out.by_layer.push(range);
         }
+        let by_name: HashMap<String, (u32, u32)> = by_name
+            .into_iter()
+            .map(|(name, list)| (name, push_list(&mut out.lists, &list)))
+            .collect();
+        // Set at the end: `by_block` borrows the rules' names.
+        let chains: Vec<Vec<(u32, u32)>> = out
+            .rules
+            .iter()
+            .map(|r| {
+                r.rule
+                    .tiles
+                    .iter()
+                    .map(|t| match t {
+                        Tile::Texture(path) => by_name.get(&sprite_name(path)).copied(),
+                        _ => None,
+                    })
+                    .map(Option::unwrap_or_default)
+                    .collect()
+            })
+            .collect();
         let mut list = Vec::new();
         for state in states {
             let Some((name, props)) = state else {
@@ -355,6 +391,9 @@ impl ConnectedTextures {
             let range = push_list(&mut out.lists, &list);
             out.by_state.push(range);
         }
+        for (r, chain) in out.rules.iter_mut().zip(chains) {
+            r.chain = chain;
+        }
         out
     }
 
@@ -392,9 +431,11 @@ impl ConnectedTextures {
     }
 
     fn list(&self, ranges: &[(u32, u32)], i: usize) -> &[u16] {
-        ranges.get(i).map_or(&[], |&(start, len)| {
-            &self.lists[start as usize..(start + len) as usize]
-        })
+        ranges.get(i).map_or(&[], |&range| self.range(range))
+    }
+
+    fn range(&self, (start, len): (u32, u32)) -> &[u16] {
+        &self.lists[start as usize..(start + len) as usize]
     }
 
     /// What the `face` of the block `state` at `pos` draws, for a quad with sprite `layer`.
@@ -441,7 +482,7 @@ impl ConnectedTextures {
             let r = &self.rules[usize::from(i)];
             if (block || r.rule.match_blocks.is_empty())
                 && (tile || r.rule.match_tiles.is_empty())
-                && let Some(pick) = self.apply(
+                && let Some((pick, index)) = self.apply(
                     r,
                     state,
                     layer,
@@ -454,7 +495,7 @@ impl ConnectedTextures {
                 )
             {
                 // "Tiles output by CTM rules can also be matched by another rule": once, by the
-                // tile rules naming the picked tile (and this block, if they name blocks).
+                // tile rules naming the picked tile by name (and this block, if they name blocks).
                 // A tile on the face's own sprite (`tiles=stone`) is no new tile.
                 let Pick::Tile(TileLayer::Layer { layer: picked, .. }) = pick else {
                     return pick;
@@ -467,7 +508,7 @@ impl ConnectedTextures {
                 // again: an overlay would draw twice.
                 let first = self.list(&self.by_layer, layer as usize);
                 let again = self
-                    .list(&self.by_layer, picked as usize)
+                    .range(r.chain.get(index).copied().unwrap_or_default())
                     .iter()
                     .map(|&j| (j, &self.rules[usize::from(j)]))
                     .filter(|&(j, r)| {
@@ -488,8 +529,8 @@ impl ConnectedTextures {
                         &texture,
                         &mut overlay,
                     ) {
-                        Some(Pick::Keep) => return pick,
-                        Some(chained) => return chained,
+                        Some((Pick::Keep, _)) => return pick,
+                        Some((chained, _)) => return chained,
                         None => {}
                     }
                 }
@@ -512,7 +553,7 @@ impl ConnectedTextures {
         biome: &impl Fn() -> Option<&'b str>,
         texture: &impl Fn() -> Option<Axes>,
         overlay: &mut impl FnMut(Overlay),
-    ) -> Option<Pick> {
+    ) -> Option<(Pick, usize)> {
         let rule = &r.rule;
         // `Rule::applies_at`, with the biome looked up only for rules that test one. Rules with
         // a custom name are not loaded.
@@ -602,7 +643,7 @@ impl ConnectedTextures {
                         return if quarters.contains(&TileLayer::Skip) {
                             None
                         } else {
-                            Some(Pick::Quarters(quarters))
+                            Some((Pick::Quarters(quarters), 0))
                         };
                     }
                 }
@@ -617,7 +658,7 @@ impl ConnectedTextures {
                     return None;
                 }
                 if !joins([0, 1, 0]) {
-                    return Some(Pick::Keep);
+                    return Some((Pick::Keep, 0));
                 }
                 0
             }
@@ -644,8 +685,8 @@ impl ConnectedTextures {
         }
         match tile(index) {
             TileLayer::Skip => None,
-            TileLayer::Default => Some(Pick::Keep),
-            t => Some(Pick::Tile(t)),
+            TileLayer::Default => Some((Pick::Keep, index)),
+            t => Some((Pick::Tile(t), index)),
         }
     }
 }
@@ -675,6 +716,7 @@ mod tests {
             .enumerate()
             .map(|(n, rule)| LoadedRule {
                 overlay: OverlayJoin::default(),
+                chain: Vec::new(),
                 tiles: rule
                     .tiles
                     .iter()
@@ -722,6 +764,10 @@ mod tests {
                 "assets/minecraft/optifine/ctm/b0.png" => Some(2000),
                 // And `a0` of the first rule.
                 "assets/minecraft/optifine/ctm/a0.png" => Some(1000),
+                // Two blank placeholders with the same pixels, so one layer: the tile `grass/1`
+                // of the third rule (`chaining_follows_the_tile_not_its_pixels`).
+                "assets/minecraft/optifine/ctm/grass/1.png"
+                | "assets/minecraft/optifine/ctm/aaa/1.png" => Some(3000),
                 _ => None,
             },
         )
@@ -1174,6 +1220,31 @@ mod tests {
             ),
         ]);
         assert_eq!(pick_in(&ctm, 1, 3, Face::Up, &[]), tile(2000));
+    }
+
+    #[test]
+    fn chaining_follows_the_tile_not_its_pixels() {
+        // Conquest's grass top: a placeholder tile that a rule beside it replaces. Another
+        // folder's placeholder has the same pixels, hence the same layer, and its rule sorts
+        // first; it must not draw on the grass.
+        let ctm = world(&[
+            (
+                "grass/top.properties",
+                "matchTiles=glass\nmethod=fixed\ntiles=1",
+            ),
+            (
+                "grass/random_1.properties",
+                "matchTiles=./1.png\nmethod=fixed\ntiles=17\nfaces=top",
+            ),
+            (
+                "aaa/random_1.properties",
+                "matchTiles=./1.png\nmethod=fixed\ntiles=5\nfaces=top",
+            ),
+        ]);
+        // Rules in path order: aaa/random_1 (1000), grass/random_1 (2000), grass/top (3000).
+        assert_eq!(pick_in(&ctm, 1, 3, Face::Up, &[]), tile(2000));
+        // A face whose own sprite has a placeholder's pixels is no placeholder.
+        assert_eq!(pick_in(&ctm, 2, 3000, Face::Up, &[]), Pick::Keep);
     }
 
     #[test]

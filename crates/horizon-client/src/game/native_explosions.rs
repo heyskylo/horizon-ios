@@ -86,6 +86,10 @@ impl Game<'_> {
     fn take_blast_state(&mut self) -> BlastState {
         let c = &mut self.combat;
         BlastState {
+            explicit_cause: c.explicit_explosion_cause.take(),
+            blast_owner: c.blast_owner.take(),
+            blast_guest: c.blast_guest.take(),
+            explicit_direct: c.explicit_explosion_direct.take(),
             source: c.explosion_source.take(),
             cause: c.explosion_cause.take(),
             source_named: std::mem::take(&mut c.explosion_source_named),
@@ -93,12 +97,19 @@ impl Game<'_> {
             hive_emptying: std::mem::take(&mut c.hive_emptying_blast),
             rail_proof: std::mem::take(&mut c.rail_proof_blast),
             owner: c.explosion_owner.take(),
+            tnt_owner: c.blast_owner.take(),
+            tnt_guest: c.blast_guest.take(),
+            tnt_owner_player: std::mem::take(&mut c.blast_owner_player),
         }
     }
 
     /// Puts back what `take_blast_state` cleared.
     fn restore_blast_state(&mut self, s: BlastState) {
         let c = &mut self.combat;
+        c.explicit_explosion_cause = s.explicit_cause;
+        c.blast_owner = s.blast_owner;
+        c.blast_guest = s.blast_guest;
+        c.explicit_explosion_direct = s.explicit_direct;
         c.explosion_source = s.source;
         c.explosion_cause = s.cause;
         c.explosion_source_named = s.source_named;
@@ -106,11 +117,18 @@ impl Game<'_> {
         c.hive_emptying_blast = s.hive_emptying;
         c.rail_proof_blast = s.rail_proof;
         c.explosion_owner = s.owner;
+        c.blast_owner = s.tnt_owner;
+        c.blast_guest = s.tnt_guest;
+        c.blast_owner_player = s.tnt_owner_player;
     }
 }
 
 /// The fields of `CombatTracker` that describe the blast going off now.
 struct BlastState {
+    explicit_cause: Option<Option<super::explosion::ExplosionCause>>,
+    blast_owner: Option<(u32, horizon_client::text::Text)>,
+    blast_guest: Option<u32>,
+    explicit_direct: Option<horizon_client::text::Text>,
     source: Option<u32>,
     cause: Option<horizon_client::advancements::EntityView>,
     source_named: bool,
@@ -118,6 +136,9 @@ struct BlastState {
     hive_emptying: bool,
     rail_proof: bool,
     owner: Option<u32>,
+    tnt_owner: Option<(u32, horizon_client::text::Text)>,
+    tnt_guest: Option<u32>,
+    tnt_owner_player: bool,
 }
 
 #[cfg(test)]

@@ -112,6 +112,22 @@ impl Editor for JigsawEditor {
         &mut self.edits
     }
 
+    /// `JigsawBlockEditScreen` gives its two priority boxes their explanation;
+    /// the other boxes have none.
+    fn edit_tooltip(&self, edit: usize) -> Option<Text> {
+        match edit {
+            SELECTION_PRIORITY => Some(Text::translate(
+                "jigsaw_block.selection_priority.tooltip",
+                &[],
+            )),
+            PLACEMENT_PRIORITY => Some(Text::translate(
+                "jigsaw_block.placement_priority.tooltip",
+                &[],
+            )),
+            _ => None,
+        }
+    }
+
     fn items(&self, _entity: &BlockEntity, w: f32, _h: f32) -> Vec<Item> {
         let mid = (w / 2.0).floor();
         let tr = |key: &str| Text::translate(key, &[]);
@@ -328,5 +344,78 @@ mod tests {
         assert_eq!(e.levels, 20);
         e.press(&mut entity, (0, 0, 0), JOINT, false, false);
         assert_eq!(e.joint, JointType::Aligned);
+    }
+
+    /// `JigsawBlockEditScreen` sets a tooltip on the two priority boxes and
+    /// no other.
+    #[test]
+    fn the_priority_boxes_explain_themselves() {
+        let e = editor();
+        assert_eq!(
+            e.edit_tooltip(SELECTION_PRIORITY)
+                .unwrap()
+                .translation_key(),
+            Some("jigsaw_block.selection_priority.tooltip")
+        );
+        assert_eq!(
+            e.edit_tooltip(PLACEMENT_PRIORITY)
+                .unwrap()
+                .translation_key(),
+            Some("jigsaw_block.placement_priority.tooltip")
+        );
+        for edit in [POOL, NAME, TARGET, FINAL_STATE] {
+            assert!(e.edit_tooltip(edit).is_none(), "box {edit}");
+        }
+    }
+
+    #[test]
+    fn priority_fields_keep_their_labels_values_and_packet_fields() {
+        let block = JigsawBlock {
+            selection_priority: 17,
+            placement_priority: -5,
+            ..JigsawBlock::default()
+        };
+        let mut e = JigsawEditor::new(&block, false);
+        let entity = BlockEntity::JigsawBlock(Box::new(block));
+        let items = e.items(&entity, 320.0, 240.0);
+        for (x, label, tip, value, changed) in [
+            (
+                7.0,
+                "jigsaw_block.selection_priority",
+                "jigsaw_block.selection_priority.tooltip",
+                "17",
+                "8",
+            ),
+            (
+                110.0,
+                "jigsaw_block.placement_priority",
+                "jigsaw_block.placement_priority.tooltip",
+                "-5",
+                "3",
+            ),
+        ] {
+            assert!(items.iter().any(|item| matches!(item,
+                Item::Label { text, x: lx, y, .. } if *lx == x && *y == 150.0 && text.translation_key() == Some(label)
+            )));
+            let index = items
+                .iter()
+                .find_map(|item| match item {
+                    Item::Edit { index, x: ex, y, w } if *ex == x && *y == 160.0 && *w == 98.0 => {
+                        Some(*index)
+                    }
+                    _ => None,
+                })
+                .expect("priority field below its label");
+            assert_eq!(e.edits[index].value, value);
+            assert_eq!(e.edit_tooltip(index).unwrap().translation_key(), Some(tip));
+            e.edits[index].set_value(changed);
+        }
+        let S::SetJigsawBlock(packet) = e.set_packet((0, 0, 0)).unwrap() else {
+            panic!("sends jigsaw fields");
+        };
+        assert_eq!(
+            (packet.selection_priority, packet.placement_priority),
+            (8, 3)
+        );
     }
 }
