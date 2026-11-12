@@ -4884,7 +4884,7 @@ mod burn_and_rose_tests {
         let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
         register(&mut m);
         m.no_ai = true;
-        m.random = LegacyRandom::new(3);
+        m.random = horizon_core::random::EntityRandom::own(LegacyRandom::new(3));
         m
     }
 
