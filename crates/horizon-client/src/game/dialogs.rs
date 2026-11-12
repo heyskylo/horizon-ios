@@ -207,7 +207,11 @@ impl Game<'_> {
                     } else {
                         format!("minecraft:{name}")
                     };
-                    let ids = r.registries.dialog_tags.get(&name).into_iter().flatten();
+                    let ids = r
+                        .registries
+                        .tag("minecraft:dialog", &name)
+                        .into_iter()
+                        .flatten();
                     ids.filter_map(|&i| list?.get(usize::try_from(i).ok()?)?.1.clone())
                         .collect()
                 };
@@ -942,7 +946,7 @@ impl Game<'_> {
                 Some(ClickEvent::CopyToClipboard(value)) => Click::CopyToClipboard(value),
                 Some(ClickEvent::ShowDialog(dialog)) => Click::ShowDialog(dialog),
                 Some(ClickEvent::Custom { id, payload }) => Click::Custom { id, payload },
-                Some(ClickEvent::OpenFile(_)) | None => return Ok(()),
+                Some(ClickEvent::OpenFile(_) | ClickEvent::Profiler(_)) | None => return Ok(()),
             };
             let after = open.dialog.after_action;
             return self.run_dialog_action(Some(click), after);

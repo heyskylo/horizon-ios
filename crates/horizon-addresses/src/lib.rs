@@ -23,6 +23,10 @@ pub const WITHDRAWN_PARTNER_SERVER: &str = "afri-network.co.za";
 /// (the telemetry server's status checks).
 pub const OFFICIAL_SERVER_STATUS: &str = "play.playhorizon.dev:24454";
 
+/// Horizon's website, where the launcher is downloaded: the game started without its prepared
+/// files sends the player there.
+pub const WEBSITE: &str = "https://playhorizon.dev";
+
 /// The cosmetics service: cosmetics, emotes, "Show me as a Horizon player"
 /// (`HORIZON_COSMETICS_API` overrides it).
 pub const COSMETICS_API: &str = "https://cosmetics.playhorizon.dev";
@@ -30,6 +34,12 @@ pub const COSMETICS_API: &str = "https://cosmetics.playhorizon.dev";
 /// The telemetry ingest server (`crates/horizon-telemetry-server`): opt-in telemetry, the
 /// "I'm playing" ping, benchmark uploads (`HORIZON_TELEMETRY_URL` overrides it).
 pub const TELEMETRY: &str = "https://telemetry.playhorizon.dev";
+
+/// The performance viewer page a saved capture opens in (`HORIZON_PERF_VIEWER` overrides it).
+pub const PERF_VIEWER: &str = "https://playhorizon.dev/perf";
+
+/// The capture upload API behind Share (`HORIZON_PERF_CAPTURES` overrides it).
+pub const PERF_CAPTURES: &str = "https://playhorizon.dev/api/perf/captures";
 
 /// Public STUN servers for Play with Friends' NAT discovery: two independent operators, so one
 /// outage doesn't break discovery (`HORIZON_STUN_SERVERS` overrides them).

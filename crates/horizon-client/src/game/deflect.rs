@@ -37,6 +37,10 @@ pub(super) fn aim_deflect(
     owner_uuid: Option<[i32; 4]>,
     guest: Option<u32>,
 ) {
+    // `WindCharge.deflect`: refused while its `noDeflectTicks` last.
+    if !p.deflectable() {
+        return;
+    }
     if let Some(look) = look {
         p.velocity = look;
         p.needs_sync = true;
@@ -183,6 +187,27 @@ impl Game<'_> {
         let dir = view_vector(self.yaw, self.pitch);
         let (guest, owner_uuid) = (self.lan_acting, Some(self.acting_player_uuid()));
         let p = &mut self.creatures.projectiles[i];
+        // `WindCharge.deflect` refuses while its `noDeflectTicks` last: the
+        // blow goes on as an attack that hurts nothing.
+        if p.deflectable() {
+            Self::turn_by_player(p, dir, guest, owner_uuid);
+        }
+        self.reset_attack_strength();
+        self.swing_arm();
+        let from = self
+            .player
+            .as_ref()
+            .map(|p| [p.position.x, p.position.y, p.position.z]);
+        self.audio
+            .play("minecraft:entity.player.attack.nodamage", from, 1.0, 1.0);
+    }
+    /// `AIM_DEFLECT` by a player's blow: along their view, theirs now.
+    fn turn_by_player(
+        p: &mut Projectile,
+        dir: [f64; 3],
+        guest: Option<u32>,
+        owner_uuid: Option<[i32; 4]>,
+    ) {
         p.velocity = Vec3::new(dir[0], dir[1], dir[2]);
         p.yaw = dir[0].atan2(dir[2]).to_degrees() as f32;
         p.pitch = dir[1].atan2(dir[0].hypot(dir[2])).to_degrees() as f32;
@@ -196,14 +221,6 @@ impl Game<'_> {
         // at once, not at the fireball's next update ten ticks later.
         p.acceleration = 0.1;
         p.needs_sync = true;
-        self.reset_attack_strength();
-        self.swing_arm();
-        let from = self
-            .player
-            .as_ref()
-            .map(|p| [p.position.x, p.position.y, p.position.z]);
-        self.audio
-            .play("minecraft:entity.player.attack.nodamage", from, 1.0, 1.0);
     }
 }
 
@@ -245,6 +262,7 @@ mod tests {
         assert_eq!(b.max_position().y, 66.0);
     }
 
+    /// A wind charge past its first five ticks (`noDeflectTicks` run out).
     fn wind_charge() -> Projectile {
         let mut p = Projectile::new(
             ProjectileKind::WindCharge,
@@ -252,7 +270,24 @@ mod tests {
             Some(Who::Mob(7)),
         );
         p.velocity = Vec3::new(0.0, 1.5, 0.0);
+        p.no_deflect_ticks = 0;
         p
+    }
+
+    #[test]
+    fn a_fresh_wind_charge_is_not_turned() {
+        let mut p = wind_charge();
+        p.no_deflect_ticks = 5;
+        aim_deflect(
+            &mut p,
+            Some(Vec3::new(0.0, -1.0, 0.0)),
+            Some(Who::Player),
+            Some([4; 4]),
+            Some(3),
+        );
+        assert_eq!(p.velocity, Vec3::new(0.0, 1.5, 0.0));
+        assert_eq!(p.owner, Some(Who::Mob(7)));
+        assert!(!p.needs_sync);
     }
 
     #[test]

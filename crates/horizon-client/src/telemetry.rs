@@ -50,6 +50,11 @@ fn readiness_ms(mark: &AtomicU32) -> Option<u32> {
     (ms != u32::MAX).then_some(ms)
 }
 
+/// The adapter's name, once the renderer has one.
+pub fn gpu_name() -> Option<String> {
+    crate::gfx::adapter().map(|gpu| gpu.name)
+}
+
 /// The screen the window is on: size in physical pixels, refresh rate, scale.
 pub fn set_display(width: u32, height: u32, refresh_hz: u32, scale: f64) {
     *DISPLAY.lock().unwrap_or_else(|e| e.into_inner()) = Some(Display {

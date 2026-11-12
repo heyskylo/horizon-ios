@@ -485,7 +485,7 @@ impl Game<'_> {
             brewing: &self.stations().brewing,
             banners: &self.stations().banners,
             station_recipes: &self.stations().recipes,
-            enchantments: &self.stations().enchantments,
+            enchantments: self.enchantments(),
             names: &self.pack.names,
             trade: Some(&trade_env),
             maps: level_maps
@@ -602,6 +602,9 @@ impl Game<'_> {
         let equipped = std::mem::take(&mut menu.equipped);
         let item_crafted = std::mem::take(&mut menu.item_crafted);
         for (_, stack) in &item_crafted {
+            if !predicting {
+                self.award_stat("crafted", &stack.item, stack.count as i32);
+            }
             self.tutorial_get_item(Some(stack));
         }
         for (i, stack) in after.into_iter().enumerate() {
@@ -675,14 +678,8 @@ impl Game<'_> {
             // EnchantmentMenu.slotsChanged: new offers for the item.
             self.station_changed();
         }
-        if kind == Kind::CrafterBlock
-            && let Some(BlockEntity::Crafter(c)) = self
-                .container
-                .and_then(|k| self.world.block_entities.get_mut(&k))
-        {
-            for (i, d) in c.disabled.iter_mut().enumerate() {
-                *d = menu.data[i] == 1;
-            }
+        if kind == Kind::CrafterBlock {
+            self.apply_crafter_slot_states(&menu);
         }
         if matches!(kind, Kind::Furnace(_))
             && let Some(BlockEntity::Furnace(f)) = self
@@ -705,6 +702,25 @@ impl Game<'_> {
             self.register_made_maps(maps);
         }
         true
+    }
+    /// `CrafterBlockEntity.setSlotState`: the menu's slot states land on the
+    /// block entity, whose `setChanged` marks the chunk for saving.
+    pub(super) fn apply_crafter_slot_states(&mut self, menu: &horizon_client::menu::Menu) {
+        let Some(key) = self.container else {
+            return;
+        };
+        let Some(BlockEntity::Crafter(c)) = self.world.block_entities.get_mut(&key) else {
+            return;
+        };
+        let mut changed = false;
+        for (i, d) in c.disabled.iter_mut().enumerate() {
+            let disabled = menu.data[i] == 1;
+            changed |= *d != disabled;
+            *d = disabled;
+        }
+        if changed {
+            self.container_changed(key);
+        }
     }
     pub(super) fn click_inventory(&mut self, right: bool) {
         if self.mod_browser_press(right) || self.mount_click(right) {

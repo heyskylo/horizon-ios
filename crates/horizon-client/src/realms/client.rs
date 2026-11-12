@@ -1067,6 +1067,9 @@ pub enum RealmsError {
     Cancelled,
     /// No worker could be started, or this service's bounded queue is full.
     WorkerUnavailable,
+    /// `CustomError.unknownCompatibilityResponse`: `mco/client/compatible` answered
+    /// something other than a `CompatibleVersionResponse` name (the answer, as sent).
+    UnknownCompatibility(String),
 }
 
 impl RealmsError {
@@ -1077,14 +1080,31 @@ impl RealmsError {
             Self::Authentication(_) => 401,
             Self::Retry(_) => 503,
             Self::Service { status, code, .. } => code.unwrap_or(i32::from(*status)),
-            Self::Parse | Self::Timeout | Self::Cancelled | Self::WorkerUnavailable => 500,
+            Self::Parse
+            | Self::Timeout
+            | Self::Cancelled
+            | Self::WorkerUnavailable
+            | Self::UnknownCompatibility(_) => 500,
         }
     }
-    /// `RealmsError.errorMessage`, as `RealmsGenericErrorScreen` shows it after the
-    /// `mco.errorMessage.realmsService.realmsError` line.
+    /// `RealmsError.errorMessage` after the `mco.errorMessage.realmsService.realmsError`
+    /// line.
     pub fn text(&self) -> String {
+        let code = self.code();
+        format!(
+            "{} {}",
+            crate::lang::tr(
+                "mco.errorMessage.realmsService.realmsError",
+                &[&code as &dyn std::fmt::Display]
+            ),
+            self.message()
+        )
+    }
+    /// `RealmsError.errorMessage`: what `RealmsGenericErrorScreen.ErrorMessage.forServiceError`
+    /// shows under the `mco.errorMessage.realmsService.realmsError` title.
+    pub fn message(&self) -> String {
         let no_details = || crate::lang::get("mco.errorMessage.noDetails");
-        let detail = match self {
+        match self {
             Self::Connectivity(e) => crate::lang::tr(
                 "mco.errorMessage.realmsService.connectivity",
                 &[e as &dyn std::fmt::Display],
@@ -1110,15 +1130,11 @@ impl RealmsError {
             Self::Parse | Self::Timeout | Self::Cancelled | Self::WorkerUnavailable => {
                 crate::lang::get("mco.errorMessage.connectionFailure")
             }
-        };
-        let code = self.code();
-        format!(
-            "{} {detail}",
-            crate::lang::tr(
-                "mco.errorMessage.realmsService.realmsError",
-                &[&code as &dyn std::fmt::Display]
-            )
-        )
+            Self::UnknownCompatibility(answer) => crate::lang::tr(
+                "mco.errorMessage.realmsService.unknownCompatibility",
+                &[answer as &dyn std::fmt::Display],
+            ),
+        }
     }
     /// `RealmsError.parse` of a non-2xx answer.
     fn from_answer(status: u16, body: &str, html: bool) -> Self {
@@ -1155,6 +1171,14 @@ impl RealmsError {
         // ErrorWithRawPayload.
         service(None, None, Some(body.chars().take(256).collect()))
     }
+}
+
+/// `RealmsClient.CompatibleVersionResponse`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompatibleVersion {
+    Compatible,
+    Outdated,
+    Other,
 }
 
 /// The client for one signed-in account.
@@ -1668,6 +1692,27 @@ impl RealmsClient {
         Ok(serde_json::from_str::<News>(&json)
             .ok()
             .and_then(|news| news.news_link))
+    }
+
+    /// `RealmsClient.clientCompatible`: `GET mco/client/compatible`, whose text answer names
+    /// a `CompatibleVersionResponse` exactly (`Enum.valueOf`: no trimming, case counts).
+    pub fn client_compatible(&self) -> Result<CompatibleVersion, RealmsError> {
+        let url = self.url("mco/client/compatible");
+        let answer = self.execute(self.request("GET", &url, READ_TIMEOUT), None)?;
+        match answer.as_str() {
+            "COMPATIBLE" => Ok(CompatibleVersion::Compatible),
+            "OUTDATED" => Ok(CompatibleVersion::Outdated),
+            "OTHER" => Ok(CompatibleVersion::Other),
+            _ => Err(RealmsError::UnknownCompatibility(answer)),
+        }
+    }
+
+    /// `RealmsClient.hasParentalConsent`: `GET mco/available`, read with
+    /// `Boolean.parseBoolean` (`true` in any case is yes, anything else is no).
+    pub fn has_parental_consent(&self) -> Result<bool, RealmsError> {
+        let url = self.url("mco/available");
+        let answer = self.execute(self.request("GET", &url, READ_TIMEOUT), None)?;
+        Ok(answer.eq_ignore_ascii_case("true"))
     }
 
     /// `RealmsClient.trialAvailable`: `GET trial`, the service's yes or no. The product
@@ -2959,5 +3004,86 @@ mod tests {
             .put_into_minigame_mode(7, "../worlds")
             .unwrap_err();
         assert!(matches!(error, RealmsError::Service { status: 400, .. }));
+    }
+
+    /// A `200 OK` text answer, as the fake service sends it.
+    fn text_answer(body: &str) -> &'static str {
+        let answer = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        Box::leak(answer.into_boxed_str())
+    }
+
+    #[test]
+    fn the_compatibility_answer_is_one_of_three_exact_names() {
+        for (body, expected) in [
+            ("COMPATIBLE", Ok(CompatibleVersion::Compatible)),
+            ("OUTDATED", Ok(CompatibleVersion::Outdated)),
+            ("OTHER", Ok(CompatibleVersion::Other)),
+            // `Enum.valueOf` neither trims nor ignores case: these are
+            // `CustomError.unknownCompatibilityResponse`, a 500 carrying the answer.
+            (
+                "compatible",
+                Err(RealmsError::UnknownCompatibility("compatible".into())),
+            ),
+            (
+                "COMPATIBLE\n",
+                Err(RealmsError::UnknownCompatibility("COMPATIBLE\n".into())),
+            ),
+            ("", Err(RealmsError::UnknownCompatibility(String::new()))),
+        ] {
+            let (base, server) = serve_once(text_answer(body));
+            let answer = client(&base).client_compatible();
+            let request = server.join().unwrap();
+            assert!(
+                request.starts_with("GET /mco/client/compatible HTTP/1.1"),
+                "{request}"
+            );
+            assert_eq!(answer, expected, "{body:?}");
+        }
+        assert_eq!(RealmsError::UnknownCompatibility("x".into()).code(), 500);
+    }
+
+    #[test]
+    fn parental_consent_reads_like_javas_parse_boolean() {
+        // `Boolean.parseBoolean`: "true" in any case, nothing else (not even padded).
+        for (body, expected) in [
+            ("true", true),
+            ("TRUE", true),
+            ("True", true),
+            ("false", false),
+            ("yes", false),
+            (" true", false),
+            ("", false),
+        ] {
+            let (base, server) = serve_once(text_answer(body));
+            let answer = client(&base).has_parental_consent();
+            let request = server.join().unwrap();
+            assert!(
+                request.starts_with("GET /mco/available HTTP/1.1"),
+                "{request}"
+            );
+            assert_eq!(answer, Ok(expected), "{body:?}");
+        }
+    }
+
+    #[test]
+    fn the_availability_calls_fail_like_any_other_request() {
+        // `RealmsClient.execute`: a 401 is `AuthenticationError`, whose code is 401.
+        let (base, server) = serve_once(
+            "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        let error = client(&base).client_compatible().unwrap_err();
+        server.join().unwrap();
+        assert_eq!(error, RealmsError::Authentication("Bearer".into()));
+        assert_eq!(error.code(), 401);
+        // A JSON error's own `errorCode` wins over the status (`ErrorWithJsonPayload`).
+        let (base, server) = serve_once(
+            "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: 17\r\nConnection: close\r\n\r\n{\"errorCode\":401}",
+        );
+        let error = client(&base).has_parental_consent().unwrap_err();
+        server.join().unwrap();
+        assert_eq!(error.code(), 401);
     }
 }

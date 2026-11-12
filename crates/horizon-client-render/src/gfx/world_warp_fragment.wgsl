@@ -64,7 +64,7 @@ fn warp_fragment(in: TerrainOut, front: bool) -> Fragment {
         let fog = max(linear_fog(in.spherical, globals.fog.x, globals.fog.y),
             linear_fog(in.cylindrical, globals.fog.z, globals.fog.w)) * globals.fog_color.a;
         let mark = hdr_scene_alpha(mix(hdr_scene(in.scene.x, in.scene.y, hdr_facing()), globals.hdr_light.y, fog));
-        return vec4(hdr_written(finished.rgb, mark, globals.hdr_settings, globals.hdr_shares), finished.a);
+        return vec4(hdr_written(finished.rgb, mark, globals.hdr_settings, globals.hdr_gains), finished.a);
     }
-    return finished;
+    return frame_stored(finished);
 }

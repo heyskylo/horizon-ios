@@ -473,7 +473,7 @@ impl Game<'_> {
         let mut rows = Vec::new();
         for preference in [Others::Hidden, Others::NameTags] {
             for path in ["frame_without_tick", "tick_without_frame"] {
-                self.settings.extras.cosmetics_others = Some(Others::Shown);
+                super::service(|seat| seat.settings.others = Some(Others::Shown));
                 self.cosmetics_frame();
                 let mut mannequin = horizon_client::mobs::Mob::new(
                     5501,
@@ -495,7 +495,7 @@ impl Game<'_> {
                 let started = self.mobs.iter().all(|m| {
                     pose_playing(m.emote.as_ref()).is_some_and(|p| p.at(m.age as f32).is_some())
                 });
-                self.settings.extras.cosmetics_others = Some(preference);
+                super::service(|seat| seat.settings.others = Some(preference));
                 // No simulation tick occurs in the frame case, matching paused settings.
                 if path == "frame_without_tick" {
                     self.cosmetics_frame();
@@ -631,7 +631,7 @@ mod catalogue_tests {
 impl Game<'_> {
     /// Apply visibility without waiting for a simulation tick, including local mannequins.
     pub(in crate::game) fn tick_others_emotes(&mut self) {
-        if self.settings.extras.effective_others() != horizon_cosmetics::prefs::Others::Shown {
+        if super::service(|seat| seat.others()) != horizon_cosmetics::prefs::Others::Shown {
             for mob in &mut self.mobs {
                 set_playing(mob, None);
             }

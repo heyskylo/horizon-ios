@@ -282,3 +282,6 @@ impl Game<'_> {
         })
     }
 }
+#[cfg(test)]
+#[path = "enderman_occupancy_tests.rs"]
+mod occupancy_tests;

@@ -38,8 +38,8 @@ use horizon_protocol::{
 use horizon_world::entity_move::EntityMoveWorld;
 use winit::keyboard::KeyCode;
 
+mod guest_body;
 mod horizon_channels;
-use horizon_channels::horizon_channel;
 
 #[cfg(test)]
 mod crack_feedback_tests;
@@ -47,8 +47,6 @@ mod crack_feedback_tests;
 /// Per-guest state of the gameplay code that lives outside `Guest`.
 #[derive(Default)]
 pub(super) struct GuestPlay {
-    /// The sign this guest may write on (`SignBlockEntity.playerWhoMayEdit`).
-    pub(super) sign_editing: Option<[i32; 3]>,
     mining: Option<Mining>,
     destroy_delay: u32,
     using: Option<(usize, u32)>,
@@ -517,42 +515,7 @@ impl Game<'_> {
         );
         let fresh = host.hub.guests[i].motion.is_none();
         if fresh {
-            let p = Vec3::new(
-                host.hub.guests[i].position[0],
-                host.hub.guests[i].position[1],
-                host.hub.guests[i].position[2],
-            );
-            host.hub.guests[i].motion = PlayerMotion::new(&self.motion, p).ok().map(Box::new);
-            // The first body after joining burns, breathes and falls on as saved.
-            let g = &mut host.hub.guests[i];
-            if let Some(saved) = g.loaded_body.take()
-                && let Some(m) = g.motion.as_mut()
-            {
-                saved.apply(m);
-                // LivingEntity.readAdditionalSaveData: the saved attributes.
-                let _ =
-                    m.apply_saved_attributes(g.saved.as_ref().and_then(|t| t.get("attributes")));
-            }
-            // ServerPlayer.restoreFrom: a body that follows another takes its
-            // attributes (a scale of 0.1 stays 0.1 after a respawn or a trip
-            // to another level).
-            let g = &mut host.hub.guests[i];
-            if let Some(carried) = g.carried_attributes.take()
-                && let Some(m) = g.motion.as_mut()
-            {
-                let _ = m.apply_saved_attributes(Some(&carried));
-            }
-            // The saved golden hearts go on the first body of a player who
-            // has been here before.
-            let saved = host.hub.guests[i].saved_absorption.take();
-            if let (Some(m), Some(amount)) = (host.hub.guests[i].motion.as_mut(), saved) {
-                let _ = m.internal_set_absorption(amount);
-            }
-            let kept = host.hub.guests[i].logs_kept.take();
-            if let (Some(m), Some((hurts, attacks))) = (host.hub.guests[i].motion.as_mut(), kept) {
-                m.hurt_log = hurts;
-                m.attack_log = attacks;
-            }
+            guest_body::initialize(&self.motion, &mut host.hub.guests[i]);
         }
         let mut play = host.play.remove(&conn).unwrap_or_default();
         if fresh {
@@ -1629,6 +1592,45 @@ impl Game<'_> {
         } else {
             return false;
         };
+        // `ContainerEntity.unpackChestVehicleLootTable`: a chest boat still
+        // holding a loot table rolls it on the first open.
+        if let Some(i) = self
+            .boats
+            .iter()
+            .position(|b| b.id as i32 == pos.2 && b.chest)
+        {
+            // AbstractChestBoat.createMenu: a spectator opens no boat whose
+            // loot table is still to roll, and the table stays.
+            let spectator = host.hub.guest(conn).is_some_and(|g| g.spectator());
+            if spectator && self.boat_loot_pending(self.boats[i].id) {
+                // ServerPlayer.openMenu: the refused spectator's action bar, red.
+                let message =
+                    horizon_client::text::Text::translate("container.spectatorCantOpen", &[])
+                        .with_color(horizon_client::text::RED);
+                host.hub.send_to(
+                    conn,
+                    &C::SystemChat(play::SystemChat {
+                        content: horizon_client::lan::data::component_nbt(&message.component()),
+                        overlay: true,
+                    }),
+                );
+                return false;
+            }
+            let id = self.boats[i].id;
+            if self.boat_loot_pending(id) {
+                // Usually the interaction unpacked this in the guest's turn.
+                // A direct menu open must not award the host the guest's criterion.
+                if self.lan_acting == Some(conn) {
+                    self.unpack_boat_loot(i, true);
+                } else {
+                    self.as_guest(host, conn, |game| {
+                        if let Some(i) = game.boats.iter().position(|boat| boat.id == id) {
+                            game.unpack_boat_loot(i, true);
+                        }
+                    });
+                }
+            }
+        }
         // `createMenu` (ChestMenu.threeRows or a HopperMenu), and
         // `MenuProvider.getDisplayName`, the vehicle's name key.
         let Some((menu, _)) = horizon_client::containers::vehicle_menu(&entity_type) else {
@@ -2134,22 +2136,8 @@ impl Game<'_> {
         let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
             return;
         };
-        // Plugin channels a client registers in play (minecraft:register), from a dead player
-        // too; the packet goes on as before.
-        if let S::CustomPayload(p) = &packet
-            && let Some(register) = horizon_client::lan::channel_registration(&p.channel)
-        {
-            self.guest_channels(host, gi, &p.data, register);
-        }
-        // A plugin channel's message on a channel that isn't one of Horizon's own (the match below
-        // takes those) is for the mods, from a dead player too: vanilla's handleCustomPayload doesn't
-        // look at health.
-        let packet = match packet {
-            S::CustomPayload(p) if !horizon_channel(&p.channel) => {
-                self.guest_custom_payload(host, conn, p.channel, p.data);
-                return;
-            }
-            packet => packet,
+        let Some(packet) = self.guest_plugin_channels(host, conn, gi, packet) else {
+            return;
         };
         // A dead player acts no more, but the death screen still respawns and chats: its
         // commands run as anyone's (ServerGamePacketListenerImpl.handleChatCommand doesn't
@@ -2325,7 +2313,7 @@ impl Game<'_> {
                 }
                 4 | 5 => {
                     if !spectator {
-                        self.as_guest(host, conn, |g| g.drop_held(a.action == 4));
+                        self.guest_drop_held(host, gi, conn, a.action == 4);
                     }
                 }
                 // RELEASE_USE_ITEM: ServerPlayer.releaseUsingItem, with the
@@ -2878,6 +2866,9 @@ impl Game<'_> {
             }
             S::CustomPayload(p) if p.channel == horizon_client::lod_net::CHANNEL => {
                 self.guest_far_terrain(host, conn, &p.data)
+            }
+            S::CustomPayload(p) if p.channel == horizon_client::perf_net::CHANNEL => {
+                self.guest_perf(host, conn, &p.data)
             }
             S::CustomPayload(p) if p.channel == horizon_client::lan::recipes::TRANSFER_CHANNEL => {
                 self.guest_recipe_transfer(host, conn, &p.data);
@@ -3479,13 +3470,7 @@ impl Game<'_> {
         if host.hub.guests[gi].spectator() {
             return;
         }
-        // handleAttack: a target inside the world border, then
-        // `isWithinAttackRange(mainHandItem, box, 3.0)` before anything else, players,
-        // mobs, objects and fireballs alike.
-        if let Some(target) = self.guest_target_box(host, gi, id)
-            && (!self.inside_border(&target)
-                || self.as_guest(host, conn, |g| g.within_attack_range(&target)) != Some(true))
-        {
+        if self.guest_attack_stops(host, gi, id) {
             return;
         }
         // Native mods, where Player.attack starts: a canceled blow does
@@ -3522,13 +3507,9 @@ impl Game<'_> {
                 && self.pvp_land(host, victim, &strike)
             {
                 let on_ground = Self::pvp_victim_on_ground(host, victim);
-                self.as_guest(host, conn, |g| {
-                    g.weapon_hit_player(on_ground);
-                    g.pvp_exhaustion();
-                    if strike.stops_sprint() {
-                        g.stop_sprint_after_extra_knockback();
-                    }
-                });
+                let stops_sprint = strike.stops_sprint();
+                let sent = self.as_guest(host, conn, |g| g.pvp_hit_after(on_ground, stops_sprint));
+                self.send_guest_motion(host, conn, sent.flatten());
             }
             return;
         }
@@ -4354,16 +4335,11 @@ impl Game<'_> {
             // Player.tick: a different main-hand item resets the attack
             // strength, and detectEquipmentUpdates gives the guest its modifiers.
             let g = &host.hub.guests[gi];
-            let held = g
-                .inventory
-                .get(g.selected)
-                .cloned()
-                .flatten()
-                .map(|s| s.item);
+            let held = super::held_items::held_attack_item(&g.inventory, g.selected);
             let play = host.play.entry(conn).or_default();
-            if play.attack_item != held {
+            if play.attack_item.as_ref() != held {
                 play.attack_ticks = 0;
-                play.attack_item = held;
+                play.attack_item = held.cloned();
             }
             self.guest_delayed_destroy(host, conn);
             self.guest_server_tick(host, conn);
@@ -4524,7 +4500,7 @@ impl Game<'_> {
             let me = self.player_text(&name, uuid);
             let text = match cause {
                 Some(key) => horizon_client::text::Text::translate(&key, &[me]),
-                None if at[1] < f64::from(self.world.bottom_y() - 64) => {
+                None if at[1] < self.world.below_world_y() => {
                     horizon_client::text::Text::translate("death.attack.outOfWorld", &[me])
                 }
                 None => self.guest_death_message(conn, me),
@@ -5235,14 +5211,8 @@ impl Game<'_> {
                 w.server_player_pose_tick()
             };
             let mut events = std::mem::take(&mut w.player.events);
-            // LayeredCauldronBlock.handleEntityOnFireInside along those moves.
-            for event in &events {
-                match event {
-                    MotionEvent::CauldronExtinguish { pos } => game.cauldron_extinguish(*pos),
-                    MotionEvent::PowderSnowMelt { pos } => game.powder_snow_melt(*pos),
-                    _ => {}
-                }
-            }
+            // Powder snow and cauldrons put the fire out along those moves.
+            game.block_extinguish_player(&events);
             // Entity.baseTick: rain puts out a burning player.
             game.rain_extinguish_player();
             // WitherRoseBlock.entityInside along those moves.
@@ -6248,6 +6218,7 @@ fn eye_columns(at: [f64; 3], body: Dimensions) -> [std::ops::RangeInclusive<i32>
     [range(at[0]), range(at[2])]
 }
 
+mod attack_checks;
 mod dig_stop;
 use dig_stop::{StopDig, stop_dig};
 
@@ -7140,7 +7111,7 @@ mod guest_close_listener_tests {
 
 #[cfg(test)]
 mod horizon_channel_tests {
-    use super::horizon_channel;
+    use super::horizon_channels::horizon_channel;
 
     #[test]
     fn horizon_channels_reach_their_handlers_and_others_go_to_the_mods() {
@@ -7152,6 +7123,7 @@ mod horizon_channel_tests {
         assert!(horizon_channel(horizon_protocol::quiet::CHANNEL));
         assert!(horizon_channel(horizon_protocol::mod_net::CHANNEL));
         assert!(horizon_channel(horizon_client::lod_net::CHANNEL));
+        assert!(horizon_channel(horizon_client::perf_net::CHANNEL));
         assert!(!horizon_channel("mymod:hello"));
         assert!(!horizon_channel("minecraft:brand"));
     }

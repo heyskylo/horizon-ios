@@ -362,6 +362,12 @@ impl KeyBinds {
     pub fn is_default(&self, name: &str) -> bool {
         self.get(name) == Self::default_of(name)
     }
+    /// `KeyBindsScreen.extractRenderState`: Reset All is active only while a
+    /// mapping differs from its default (`KeyMapping.isDefault`, the bound key
+    /// against `defaultKey`).
+    pub fn changed_from_defaults(&self) -> bool {
+        self.keys.keys().any(|name| !self.is_default(name))
+    }
     pub fn set(&mut self, name: &str, key: &str) {
         if let Some((n, _, _)) = all_mappings().find(|m| m.0 == name) {
             self.keys.insert(n, key.to_owned());
@@ -650,6 +656,22 @@ mod tests {
         assert_eq!(k.translate_all(KeyCode::Digit2), [Ok(KeyCode::Digit2)]);
         assert_eq!(k.translate_all(KeyCode::Digit9), [Ok(KeyCode::Digit9)]);
         assert_eq!(k.translate_all(KeyCode::F3), [Ok(KeyCode::F3)]);
+    }
+
+    /// `KeyBindsScreen.extractRenderState`: Reset All is active only while a
+    /// binding differs from its default.
+    #[test]
+    fn reset_all_is_active_only_after_a_binding_moves() {
+        let mut keys = KeyBinds::default();
+        assert!(!keys.changed_from_defaults());
+        keys.set("key.attack", "key.mouse.right");
+        assert!(keys.changed_from_defaults());
+        // Setting a mapping back to its own default leaves nothing to reset.
+        keys.set("key.attack", KeyBinds::default_of("key.attack"));
+        assert!(!keys.changed_from_defaults());
+        keys.set("key.jump", "key.keyboard.z");
+        keys.reset_all();
+        assert!(!keys.changed_from_defaults());
     }
     #[test]
     fn display_names() {

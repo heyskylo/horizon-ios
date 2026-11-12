@@ -505,6 +505,14 @@ impl Game<'_> {
                     )],
                 );
             }
+            // Dynamic Resolution's scale, which moves on its own.
+            if self.settings.horizon.dynamic_resolution {
+                let scale = super::frame_autotune::world_scale(
+                    &self.settings.horizon,
+                    &self.dynamic_resolution,
+                );
+                d.group("system", [format!("Resolution Scale: {scale}% (dynamic)")]);
+            }
             let kind = match info.device_type {
                 wgpu::DeviceType::IntegratedGpu => " (iGPU)",
                 wgpu::DeviceType::DiscreteGpu => " (dGPU)",

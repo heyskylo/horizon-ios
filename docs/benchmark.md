@@ -42,11 +42,40 @@ horizon-client --benchmark standard --render-distance 16
 
 It starts at the title screen, creates the world `horizon-benchmark` (seed 1234, creative; the next run replaces it, and it never touches a world it didn't create), flies the four scenes as above, writes a report to `benchmarks/` in the game folder and quits. `--benchmark village` (or `forest`, `ocean`, `mountain`) flies one scene. For the run only, VSync is off, the frame rate unlimited and the game doesn't pause or slow down without focus; your options are not changed. Your other settings (render distance unless given, graphics, window size) are used as they are, and stored in the report, so compare reports with the same conditions.
 
+### A fixed trip
+
+`horizon-client --benchmark travel` measures what a spawn-only run cannot: the renderer after travel. GPU culling's slowdown only showed after a few hundred blocks, because section ids and arena pages scramble as chunks unload and reload. The run is deterministic: the same seed, path and speed, with the time frozen at noon and the weather clear (`gamerule advance_time` and `advance_weather` off, `weather clear`, `time 6000`), so two runs, or two machines, are comparable. The player is placed at (-960, 150, -176), the view loads, then the camera flies to (-960, 150, 336) in 32 seconds (512 blocks at 16 blocks per second, pitch 30), reported as phase `travel`. It then holds at the end, waits for the view to load and measures four 4-second `hold` blocks. The report's scenario is `travel` and its `repeats` is 4. Besides the figures of the scenes it has `cpu.<phase>.p50_ms` and `gpu.<phase>.p50_ms` for `travel` and `hold` (the median over the hold blocks), so a regression that grows with travel shows in `hold` against a fresh spawn.
+
+`--benchmark-set SWITCH=VALUE` (only with `--benchmark travel`) sets a graphics switch before the world opens: `gpu-culling` (`off`, `on`), `section-cull` (`on`, `off`), `section-sides` (`on`, `off`) or `section-draws` (`flat`, `indirect`), the first value being the default. A switch the device does not offer (`gpu-culling on` where it is not) ends the run with the game's reason and no report. To time a block yourself in any world, `horizon-ctl bench SECONDS raw` replies with the summary and every frame time.
+
+`--profile` (with `--benchmark`) also records a performance capture of the run, `reports/profile-<time>Z.hzperf` in the game home, with the render thread's call trees, and embeds the report in it verbatim; the game prints both paths. `horizon-perf query bench FILE` lists the report's metrics and frames from the capture, and `horizon-perf summary` and `diff` take a bare `benchmarks/*.json` wherever they take a capture ([perf-platform.md](perf-platform.md)). A run longer than the capture's 10 minute window (`standard` on a slow machine) ends the capture early and keeps the report out of it.
+
+### Compare a setting
+
+`horizon-client --benchmark ab:SWITCH` tells whether one renderer setting changes the frame time, or only the noise of the machine. It runs the trip of `travel` with the switch's B value set before the world opens, then measures 8 pairs of 4-second blocks in the order B A A B B A A B..., each after 2 seconds at that arm that are discarded and with the time reset to noon before each pair. Neighbouring blocks are in different arms and the order alternates, so drift (heat, streaming finishing, other programs) cancels. Afterwards each arm's render passes are timed once (`gpu_pass.ab_a.<pass>_ms`, `gpu_pass.ab_b.<pass>_ms`), and the setting is put back to what it was before the run, also when the run fails. It takes about 3 minutes.
+
+| `SWITCH` | A (the default) | B |
+| --- | --- | --- |
+| `gpu-culling` | `off` | `on` |
+| `section-cull` | `on` | `off` |
+| `section-sides` | `on` | `off` |
+| `section-draws` | `flat` | `indirect` |
+
+```sh
+horizon-client --benchmark ab:gpu-culling --render-distance 12
+horizon-ctl --socket $PWD/ctl.sock launch --offscreen --benchmark ab:gpu-culling
+python3 tools/bench_stats.py benchmarks/game-*-ab_gpu-culling.json
+```
+
+The game quits when it is done, so `launch` without `--wait` is enough; the report is under `benchmarks/` in the game folder.
+
+The report's scenario is `ab:SWITCH`, its `repeats` the number of blocks (16) and its `warmup_s` 2. The blocks are `frames` entries with phase `ab.a` or `ab.b`, and the report's `ab` field holds the result for the GPU, CPU and frame time of a frame: B minus A, a 95% interval and a verdict (`slower`, `faster`, `negligible`, `within_noise`), computed as described in [the report format](benchmark-report.md). A difference inside the interval around 0 is noise. `ab.first_block_outside_range` is true when the first B block, the only one measured before any switch, lies outside the later B blocks: switching reset part of what the trip built (turning GPU culling on rebuilds its records from the renderer's resident order, which can undo the scrambled ids of the trip), so the comparison may understate the difference. A switch the device does not offer (`gpu-culling on` where it is not) ends the run with the game's reason and no report.
+
 The report is the [benchmark report format](benchmark-report.md): startup to the title screen and to in-world, each scene's chunk load time, chunks generated and section meshes built, every flight's frame figures and histogram, resident and GPU memory, the binary's size, and the machine (OS, CPU, RAM, GPU, driver, backend, display), the load average before the run and whether it ran on battery. If you allowed benchmark uploads (the launcher's data collection choices, [docs/telemetry.md](telemetry.md)), the same report, dated to the day and without local fields, is kept for the launcher to send; otherwise it stays on your machine.
 
 ## Reproduce it
 
-You need Horizon built (`cargo build --release -p horizon-client -p horizon-client-lib --bins`) and its resources prepared from your own copy of 26.3 (which also provides `.local/minecraft/26.3`, the vanilla client the driver starts), Java 25 with `javac`, and Python 3.10 or newer.
+You need Horizon built (`cargo build --release -p horizon-client -p horizon-client-lib --bins`) and its resources prepared from your own copy of 26.3 (which also provides `.local/minecraft/26.3`, the vanilla client the driver starts), Java 25 with `javac`, and Python 3.11 or newer.
 
 ```sh
 python3 tools/perf_bench.py --game horizon --label horizon-mine
@@ -77,8 +106,10 @@ On Windows, run `python tools\perf_bench.py ...` the same way. Horizon's control
 hitches, a fast flight (64 blocks a second over new terrain), eight long teleports, trips to the Nether and back, and
 the inventory and pause menu opened and closed twenty times. For each it reports the median, p99 and p99.9 frame
 times, the slowest frame, the 1% and 0.1% lows and the frames over 33 ms. The game runs with `HORIZON_SPIKES`, so
-every slow frame also logs its timed spans (wall and thread CPU time): the report keeps the slowest ones next to the
-figures, which says whether a hitch was work (a span's CPU time) or waiting (the GPU, a lock, a file).
+its slow ring keeps every slow frame's timed spans (wall and thread CPU time), and a client capture (`profile client start`) records each scenario: the report keeps the 12
+slowest frames' spans, read with `horizon-perf query ticks`, next to the figures, which says whether a hitch was work (a
+span's CPU time) or waiting (the GPU, a lock, a file). Build `horizon-perf` beside the game first
+(`cargo build --profile fast -p horizon-perf`, or pass `--perf`). The ring holds 256 frames, and the threshold (`--spike-ms`, 20 by default) is on the frame's wall time.
 `Renderer`'s frame and `entity_geometry` time their steps as spans too (`spans::laps`).
 
 ```sh

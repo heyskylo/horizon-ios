@@ -9,7 +9,7 @@ impl Game<'_> {
     /// Whether this game resolves hits using the opt-in legacy-inspired rules: this game
     /// is the server (its own server thread, a LAN host, a dedicated server).
     pub(super) fn legacy_rules(&self) -> bool {
-        self.remote.is_none() && self.settings.extras.pvp.combat.rules
+        self.remote.is_none() && self.pvp_legacy_rules()
     }
 
     /// `melee_damage` under legacy rules: (damage, attack strength, critical, enchanted).

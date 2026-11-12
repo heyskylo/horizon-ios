@@ -325,23 +325,22 @@ fn join_server_once(session: &AuthSession, server_hash: &str) -> Result<(), Join
     join_server_with_agent(session, server_hash, &agent())
 }
 
-/// The cosmetics owner's close-only transport covers discovery, TLS handshakes,
-/// join, and response reads. Ordinary auth callers keep their original agent.
-pub fn join_server_managed(
+/// A caller-owned connector can cancel TLS and response reads. Keep transport
+/// ownership outside this rendering/platform crate.
+pub fn join_server_managed<T: ureq::TlsConnector + 'static>(
     session: &AuthSession,
     server_hash: &str,
-    cancellation: Arc<horizon_cosmetics::transport::Cancellation>,
+    connector: Arc<T>,
+    cancelled: impl Fn() -> bool,
 ) -> Result<(), JoinError> {
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(15))
         .user_agent(&format!("Horizon/{}", horizon_core::release::VERSION))
-        .tls_connector(Arc::new(horizon_cosmetics::transport::Connector::new(
-            cancellation.clone(),
-        )))
+        .tls_connector(connector)
         .build();
     with_one_retry(
         || {
-            if cancellation.cancelled() {
+            if cancelled() {
                 return Err(JoinError::Unavailable);
             }
             join_server_with_agent(session, server_hash, &agent)

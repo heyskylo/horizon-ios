@@ -55,11 +55,43 @@ fn load(root: &std::path::Path) -> Option<Data> {
         camel_husk,
     })
 }
+fn load_or_log(root: &std::path::Path) -> Option<Data> {
+    let data = load(root);
+    if data.is_none() {
+        log::error!("Horizon: no mob data, structure mobs are finalized when loaded");
+    }
+    data
+}
+/// Fills `cell` with `load()` on a thread of its own, unless something fills it
+/// first. A `get_or_init` while it loads waits for it instead of loading again.
+fn fill_behind<T: Send + Sync + 'static>(
+    cell: &Arc<OnceLock<T>>,
+    name: &str,
+    load: impl FnOnce() -> T + Send + 'static,
+) -> Option<std::thread::JoinHandle<()>> {
+    let cell = Arc::downgrade(cell);
+    let spawned = std::thread::Builder::new()
+        .name(name.into())
+        .spawn(move || {
+            // The world closed before the thread ran: nothing to load for.
+            if let Some(cell) = cell.upgrade() {
+                cell.get_or_init(load);
+            }
+        });
+    match spawned {
+        Ok(handle) => Some(handle),
+        Err(e) => {
+            log::warn!("Horizon: {name} not loaded ahead ({e}): loaded when first needed");
+            None
+        }
+    }
+}
 
 pub struct StructureMobFinalizer {
     root: PathBuf,
     dimension: String,
-    data: OnceLock<Option<Data>>,
+    /// Shared with the thread `load_behind` starts.
+    data: Arc<OnceLock<Option<Data>>>,
     /// The level's difficulty (0 peaceful to 3 hard) and overworld clock.
     difficulty: AtomicU8,
     day_time: AtomicI64,
@@ -71,7 +103,7 @@ impl StructureMobFinalizer {
         Self {
             root,
             dimension: dimension.to_owned(),
-            data: OnceLock::new(),
+            data: Arc::new(OnceLock::new()),
             difficulty: AtomicU8::new(2),
             day_time: AtomicI64::new(0),
             #[cfg(test)]
@@ -235,15 +267,16 @@ impl StructureMobs for StructureMobFinalizer {
 
 impl StructureMobFinalizer {
     fn data(&self) -> Option<&Data> {
-        self.data
-            .get_or_init(|| {
-                let data = load(&self.root);
-                if data.is_none() {
-                    log::error!("Horizon: no mob data, structure mobs are finalized when loaded");
-                }
-                data
-            })
-            .as_ref()
+        self.data.get_or_init(|| load_or_log(&self.root)).as_ref()
+    }
+    /// Starts reading the mob data on a thread of its own. Otherwise the first
+    /// mob a fresh chunk generates reads it on the server's tick, which stalls
+    /// for seconds where the resources are slow to read (#13857). The thread
+    /// does not run at idle priority: the tick waits for it if it gets there
+    /// first, and idle work could starve while the tick blocks on it.
+    pub fn load_behind(&self) {
+        let root = self.root.clone();
+        fill_behind(&self.data, "Structure mobs", move || load_or_log(&root));
     }
     /// A mob chunk generation spawns (`spawnOriginalMobs`): a new one of
     /// `kind` finalized as a structure mob is, as the chunk saves it; `group`
@@ -561,5 +594,76 @@ mod tests {
         ];
         expected.sort();
         assert_eq!(got, expected);
+    }
+
+    /// A caller that needs the data while the thread reads it waits for that
+    /// read, and it is read once.
+    #[test]
+    fn fill_behind_is_awaited_not_repeated() {
+        use std::sync::{atomic::AtomicUsize, mpsc};
+        use std::time::Duration;
+        let cell = Arc::new(OnceLock::new());
+        let loads = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started) = mpsc::channel();
+        let (open, gate) = mpsc::channel::<()>();
+        let handle = {
+            let loads = loads.clone();
+            fill_behind(&cell, "fill test", move || {
+                started_tx.send(()).unwrap();
+                gate.recv().unwrap();
+                loads.fetch_add(1, Ordering::SeqCst);
+                7u32
+            })
+            .unwrap()
+        };
+        started.recv().unwrap();
+        let (done_tx, done) = mpsc::channel();
+        let waiter = {
+            let (cell, loads) = (cell.clone(), loads.clone());
+            std::thread::spawn(move || {
+                let got = *cell.get_or_init(|| {
+                    loads.fetch_add(1, Ordering::SeqCst);
+                    0
+                });
+                done_tx.send(got).unwrap();
+            })
+        };
+        // The read isn't finished: the caller is still waiting.
+        assert!(done.recv_timeout(Duration::from_millis(50)).is_err());
+        open.send(()).unwrap();
+        assert_eq!(done.recv_timeout(Duration::from_secs(10)), Ok(7));
+        handle.join().unwrap();
+        waiter.join().unwrap();
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+    }
+
+    /// A read that fails leaves the same answer as a failed read on the tick:
+    /// no data, kept, and not read again.
+    #[test]
+    fn fill_behind_keeps_a_failed_read() {
+        let cell: Arc<OnceLock<Option<u32>>> = Arc::new(OnceLock::new());
+        fill_behind(&cell, "fill test", || None)
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(cell.get(), Some(&None));
+        assert_eq!(*cell.get_or_init(|| Some(1)), None);
+    }
+
+    /// Without resources the finalizer has no data, read ahead or not.
+    #[test]
+    fn load_behind_without_resources_has_no_data() {
+        let dir = std::env::temp_dir().join("horizon-structure-mobs-none");
+        let finalizer = StructureMobFinalizer::new(dir, "minecraft:overworld");
+        finalizer.load_behind();
+        // The thread has to fill the cell on its own, before anyone asks.
+        for _ in 0..1000 {
+            if finalizer.data.get().is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(finalizer.data.get().is_some(), "the thread filled nothing");
+        assert!(finalizer.data().is_none());
     }
 }

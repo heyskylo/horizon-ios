@@ -843,6 +843,11 @@ pub struct Graphics {
     pub overlay: Overlay,
     /// World resolution as a percentage of the window's (50..=200).
     pub resolution_scale: u32,
+    /// Dynamic Resolution: below 100%, `resolution_scale` is the floor, and the scale rises
+    /// toward 100% while the GPU keeps `target_fps` (`crate::dynamic_resolution`). Off by default.
+    pub dynamic_resolution: bool,
+    /// The frame rate Dynamic Resolution keeps (30..=240).
+    pub target_fps: u32,
     /// FXAA over the world.
     pub fxaa: bool,
     /// TAA over the world (FXAA is off while it is on).
@@ -941,6 +946,8 @@ impl Default for Graphics {
             // A phone's GPU is fill-bound at its screen's resolution (a Mali-G51 at 2340x1080: 27 fps with
             // 14 ms of CPU a frame); the HUD stays at the screen's own resolution.
             resolution_scale: if cfg!(target_os = "android") { 50 } else { 100 },
+            dynamic_resolution: false,
+            target_fps: 60,
             fxaa: false,
             taa: false,
             upscaling: Upscaling::Native,
@@ -1111,6 +1118,8 @@ impl Graphics {
                 }
                 "workers" => g.workers = number(g.workers).min(64),
                 "resolutionScale" => g.resolution_scale = number(g.resolution_scale).clamp(50, 200),
+                "dynamicResolution" => g.dynamic_resolution = flag(g.dynamic_resolution),
+                "targetFps" => g.target_fps = number(g.target_fps).clamp(30, 240),
                 "fxaa" => g.fxaa = flag(g.fxaa),
                 "taa" => g.taa = flag(g.taa),
                 "upscaling" => g.upscaling = Upscaling::parse(value),
@@ -1165,7 +1174,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrLighting:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\ndynamicResolution:{}\ntargetFps:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrLighting:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -1202,6 +1211,8 @@ impl Graphics {
                 Overlay::Graph => "graph",
             },
             self.resolution_scale,
+            bool_text(self.dynamic_resolution),
+            self.target_fps,
             bool_text(self.fxaa),
             bool_text(self.taa),
             self.upscaling.name(),
@@ -1589,6 +1600,8 @@ mod tests {
             workers: 6,
             overlay: Overlay::Graph,
             resolution_scale: 75,
+            dynamic_resolution: false,
+            target_fps: 60,
             fxaa: true,
             taa: true,
             upscaling: Upscaling::Balanced,
@@ -1949,10 +1962,12 @@ mod tests {
         let g = Graphics::default();
         assert_eq!(g.workers, 0);
         let cores = horizon_threads::worker_count();
+        // Vanilla's bound: one core is always left for the render and server threads.
         assert!((1..=cores.saturating_sub(1).max(1)).contains(&g.worker_threads()));
-        if !cfg!(target_vendor = "apple") {
-            assert_eq!(g.worker_threads(), cores.saturating_sub(1).max(1));
-        }
+        // The count itself is `horizon_threads::default_workers`, which is one less than
+        // the *smaller* of the machine's cores and its performance cores (a Linux hybrid
+        // CPU reports fewer of the latter), so it is not always `cores - 1`.
+        assert_eq!(g.worker_threads(), horizon_threads::default_workers());
         // A manual count is the player's own choice, kept as asked.
         let manual = Graphics { workers: 3, ..g };
         assert_eq!(manual.worker_threads(), 3);

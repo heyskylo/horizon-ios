@@ -24,6 +24,7 @@ mod flat;
 mod onboarding;
 #[cfg(test)]
 mod tests;
+mod world_folder;
 pub mod world_management;
 pub use buffet::State as BuffetEditor;
 pub use create_world::{DIFFICULTIES, WorldOptions};
@@ -609,29 +610,8 @@ pub fn list_worlds(saves: &Path) -> Vec<WorldEntry> {
 }
 /// The folder a new world named `name` gets in `saves` (`findResultFolder`).
 pub fn new_world_folder(saves: &Path, name: &str) -> String {
-    let base: String = name
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let base = if base.trim().is_empty() {
-        "World".to_owned()
-    } else {
-        base.trim().to_owned()
-    };
-    // FileUtil.findAvailableName: append (n) until unused.
-    let mut folder = base.clone();
-    let mut n = 1;
-    while saves.join(&folder).exists() {
-        folder = format!("{base} ({n})");
-        n += 1;
-    }
-    folder
+    let new_world = lang::get_or("selectWorld.newWorld", "New World");
+    world_folder::result_folder(name, &new_world, |folder| saves.join(folder).exists())
 }
 
 /// `FeatureFlags.isExperimental` of `LevelStorageSource.parseFeatureFlagsFromSummary`:
@@ -2007,7 +1987,7 @@ impl Title {
                         y + 72.0,
                         20.0,
                         &lang::get_or(key, plain),
-                        id != 5 || crate::net::joins_friends(),
+                        id != 5 || crate::multiplayer::has_title_entry(),
                         id,
                     );
                     button.icon = Some((icon, 15.0));
@@ -3774,12 +3754,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             .map(|b| b.id);
         if hit.is_some() {
             self.focused_button = hit;
-        } else if matches!(
-            self.mode,
-            Mode::Multiplayer(
-                crate::multiplayer::Screen::Edit { .. } | crate::multiplayer::Screen::Friend { .. }
-            )
-        ) {
+        } else if matches!(&self.mode, Mode::Multiplayer(screen) if screen.has_fields()) {
             // A press on a text field takes the focus from the button.
             self.focused_button = None;
         }
@@ -3902,7 +3877,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 crate::multiplayer::Outcome::None => Action::None,
             },
             (Mode::Main, Some(5)) => {
-                self.mode = Mode::Multiplayer(crate::multiplayer::Screen::friend(true));
+                self.mode = crate::multiplayer::title_entry().map_or(Mode::Main, Mode::Multiplayer);
                 Action::None
             }
             (Mode::Onboarding(_), Some(onboarding::SOUNDS)) => Action::Sounds,

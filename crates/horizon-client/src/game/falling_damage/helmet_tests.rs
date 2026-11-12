@@ -1,9 +1,6 @@
 use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
 use horizon_client::{items::ItemStack, motion::PlayerMotion};
-use horizon_core::{
-    geometry::Vec3,
-    random::{LegacyRandom, RandomSource},
-};
+use horizon_core::{geometry::Vec3, random::RandomSource};
 
 #[test]
 #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
@@ -85,7 +82,7 @@ fn falling_impacts_wear_the_helmet_before_normal_armor_and_reduction() {
             }
             game.apply_equipment();
             game.apply_effect_status();
-            game.world.random = LegacyRandom::new(case["seed"].as_i64().unwrap());
+            game.world.random.set_seed(case["seed"].as_i64().unwrap());
             let source = format!("minecraft:{}", case["source"].as_str().unwrap());
             if path == 0 {
                 game.falling_hurt_player(position, 8.0, &source);

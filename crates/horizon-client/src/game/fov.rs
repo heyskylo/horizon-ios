@@ -22,9 +22,6 @@ use horizon_client::{
     hud_layout, hud_overlays,
 };
 
-/// `Abilities.walkingSpeed`.
-const WALKING_SPEED: f32 = 0.1;
-
 fn valid_fov_modifier(modifier: f32, fallback: f32) -> f32 {
     if modifier.is_finite() && (0.01..=10.0).contains(&modifier) {
         modifier
@@ -80,7 +77,7 @@ impl Game<'_> {
         });
         Some(FovPlayer {
             flying: p.flying,
-            walking_speed: WALKING_SPEED,
+            walking_speed: self.remote_walking_speed(),
             // Player.aiStep keeps `speed` as the float movement speed attribute.
             movement_speed: f64::from(p.speed),
             using,
@@ -98,12 +95,12 @@ impl Game<'_> {
             valid_fov_modifier(modifier, base)
         });
         let target = self.zoomed_fov_target(target);
-        // A server's spectator camera on a mob: its eye height. Its modifier
-        // stays 1 (another player's own modifier is not modelled here); the
-        // zoom extra still narrows it.
-        if let Some(m) = self.camera_mob() {
-            let eye = m.eye_height() as f32;
-            self.view.tick(Some(eye), self.zoomed_fov_target(1.0));
+        // A server's spectator camera on a mob or an armor stand: its eye
+        // height. Its modifier stays 1 (another player's own modifier is not
+        // modelled here); the zoom extra still narrows it.
+        if let Some(e) = self.camera_entity() {
+            self.view
+                .tick(Some(e.eye_height), self.zoomed_fov_target(1.0));
             return;
         }
         let eye = self.player.as_ref().map(|p| {

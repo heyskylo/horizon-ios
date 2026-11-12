@@ -57,7 +57,7 @@ impl Visbuffer {
         device: &wgpu::Device,
         terrain_layout: &wgpu::BindGroupLayout,
         flat: &Flat,
-        color: wgpu::TextureFormat,
+        (color, linear): (wgpu::TextureFormat, bool),
         constants: &[(&str, f64)],
     ) -> Self {
         let flat_layout = &flat.draw_layout;
@@ -65,13 +65,8 @@ impl Visbuffer {
         let resolve_constants: Vec<(&str, f64)> = constants
             .iter()
             .copied()
-            .chain([
-                ("VIS_BLOCKS_PER_PAGE", blocks_per_page as f64),
-                (
-                    "HDR_WRITE_LIGHT",
-                    f64::from(u8::from(color == super::LINEAR_FRAME)),
-                ),
-            ])
+            .chain([("VIS_BLOCKS_PER_PAGE", blocks_per_page as f64)])
+            .chain(super::linear_blend::frame_constants(color, linear))
             .collect();
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon visibility buffer"),
@@ -244,17 +239,17 @@ impl Visbuffer {
         encoder: &'e mut wgpu::CommandEncoder,
         depth: &wgpu::TextureView,
         clear: bool,
-        timing: Option<&mut PassTiming>,
-    ) -> wgpu::RenderPass<'e> {
+        mut timing: Option<&mut PassTiming>,
+    ) -> super::pack_timing::CountedPass<'e> {
         let (ids, _) = self.ids.as_ref().expect("fitted before the world pass");
         let name = if clear {
             "Visibility IDs"
         } else {
             "Visibility IDs after culling"
         };
-        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Horizon visibility buffer"),
-            timestamp_writes: timing.and_then(|t| t.writes(name)),
+            timestamp_writes: timing.as_deref_mut().and_then(|t| t.writes(name)),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: ids,
                 resolve_target: None,
@@ -277,7 +272,8 @@ impl Visbuffer {
                 stencil_ops: None,
             }),
             ..Default::default()
-        })
+        });
+        super::pack_timing::counted(timing, pass, super::pixel_count(depth), name)
     }
 
     /// Phase 1's solid calls into the IDs, as the normal passes draw them: the opaque

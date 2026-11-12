@@ -38,8 +38,12 @@ class ConsumableDispatchTests(unittest.TestCase):
 #![allow(dead_code)]
 mod item_use { HELPERS }
 mod fixture { use super::*;
+mod item_sync {
+ pub fn food(_: &super::ItemStack, prototype: Option<()>) -> Option<()> {prototype}
+ pub fn can_always_eat(_: &super::ItemStack, prototype: bool) -> bool {prototype}
+}
 #[derive(Clone)] struct ItemStack { item: &'static str, cooldown: &'static str }
-struct ItemConsumable { ticks: i32 }
+#[derive(Clone)] struct ItemConsumable { ticks: i32 }
 impl ItemConsumable { fn ticks(&self) -> i32 { self.ticks } }
 struct ItemInfo { food: Option<()>, can_always_eat: bool, consumable: Option<ItemConsumable> }
 struct Food { food: i32 }
@@ -55,6 +59,7 @@ impl Game {
    creative: false, using: None, slot, remote: None, use_duration: 2,
    held: Some(ItemStack { item: "original", cooldown: "original-group" }), events: vec![] }
  }
+ fn consumable(&self,_:&ItemStack)->Option<ItemConsumable>{Some(ItemConsumable{ticks:self.use_duration})}
  fn can_eat(&self,_:&ItemStack,always:bool)->bool{always||self.creative||self.player.as_ref().is_some_and(|p|p.health.food.food<20)}
  fn start_using_item(&mut self){if self.using.is_none(){self.using=Some((self.slot,0));}}
  fn item_on_use_tick(&mut self,_:&ItemStack,_:u32){}
@@ -85,7 +90,7 @@ fn info(ticks:i32) -> ItemInfo {
 }
 pub fn run() {
  for slot in [0,40] {
-  let mut g=Game::new(slot);
+  let mut g=Game::new(slot);g.use_duration=0;
   assert!(g.start_eating(&info(0)));
   assert!(g.using.is_none(),"instant use must not wait for a tick/release");
   assert_eq!(g.events,vec!["consume:original","remainder:bowl","cooldown:original-group"]);
@@ -101,19 +106,21 @@ pub fn run() {
   assert_eq!(timed.events,vec!["event","consume:original","remainder:bowl","cooldown:original-group","finish","vibration:minecraft:item_interact_finish"]);
  }
  for ticks in [0,1] {
-  let mut full=Game::new(0);full.player.as_mut().unwrap().health.food.food=20;
+  let mut full=Game::new(0);full.use_duration=ticks;full.player.as_mut().unwrap().health.food.food=20;
   assert!(!full.start_eating(&info(ticks)));assert!(full.events.is_empty());assert!(full.using.is_none());
  }
- let mut always=Game::new(0);always.player.as_mut().unwrap().health.food.food=20;
+ // A stack patch overrides the prototype's positive duration.
+ let mut patched=Game::new(0);patched.use_duration=0;assert!(patched.start_eating(&info(2)));
+ assert!(patched.using.is_none());assert_eq!(patched.events,vec!["consume:original","remainder:bowl","cooldown:original-group"]);
+ let mut always=Game::new(0);always.use_duration=0;always.player.as_mut().unwrap().health.food.food=20;
  let mut edible=info(0);edible.can_always_eat=true;
  assert!(always.start_eating(&edible));assert_eq!(always.events.len(),3);
- let mut remote=Game::new(0);remote.remote=Some(());assert!(remote.start_eating(&info(0)));assert!(remote.events.is_empty());
+ let mut remote=Game::new(0);remote.use_duration=0;remote.remote=Some(());assert!(remote.start_eating(&info(0)));assert!(remote.events.is_empty());
 }
 }
 fn main(){fixture::run();}
 '''
-        fixture = fixture.replace("METHODS", "\n".join(method(consume, name) for name in
-            ("start_eating", "complete_consuming")) + "\n" + method(item_use,"complete_using_item")).replace("TICK_COMPLETION", completion).replace("HELPERS", "\n".join(method(item_use,n) for n in ("consumes_at_once", "count_down")))
+        fixture = fixture.replace("METHODS", method(game, "start_eating").replace("horizon_client::items::ItemInfo", "ItemInfo").replace("horizon_client::item_sync::", "item_sync::") + "\n" + method(consume, "complete_consuming") + "\n" + method(item_use,"complete_using_item")).replace("TICK_COMPLETION", completion).replace("HELPERS", "\n".join(method(item_use,n) for n in ("consumes_at_once", "count_down")))
         with tempfile.TemporaryDirectory(prefix="horizon-consumable-dispatch-") as directory:
             directory = Path(directory)
             (directory / "probe.rs").write_text(fixture)

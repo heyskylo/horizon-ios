@@ -101,7 +101,7 @@ fn main() {
     let mut slots = vec![0.0f32; NAMES.len()];
     let frames = 2_000_000u32;
     let pid = std::process::id();
-    let cpu = horizon_bench::cpu_seconds(pid);
+    let cpu = horizon_system::cpu_seconds(pid);
     let start = Instant::now();
     for frame in 0..frames {
         // An entity walking in and out of water.
@@ -125,7 +125,7 @@ fn main() {
         evals / elapsed / 1e6,
         elapsed * 1e6 / f64::from(frames),
     );
-    match cpu.zip(horizon_bench::cpu_seconds(pid)) {
+    match cpu.zip(horizon_system::cpu_seconds(pid)) {
         Some((before, after)) => println!(
             "  cpu time {:.1} ns per expression, {:.2} us per entity frame",
             (after - before) * 1e9 / evals,

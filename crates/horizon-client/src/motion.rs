@@ -2,6 +2,8 @@
 //! jump, collision, support, restitution and stored health bindings, and
 //! powder snow's block-inside effects and freezing. Entity lifecycle, other
 //! block-inside effects and audiovisual event consumers remain separate work.
+mod body;
+
 use crate::{Result, assets::Assets, collisions::SceneCollisions, world::World};
 use horizon_core::{
     geometry::{Aabb, Axis, Direction, Vec3, VoxelShape, traverse_blocks, trig},
@@ -279,6 +281,10 @@ pub enum MotionEvent {
 }
 #[derive(Clone)]
 pub struct PlayerMotion {
+    /// Entity-owned random stream, independent of the level. Like mobs, a new
+    /// body seeds it from its initial identity/position without drawing from the
+    /// level. It lives with this body (including guest turns), not player NBT.
+    pub random: horizon_core::random::EntityRandom,
     pub swimming: bool,
     /// `Entity.isPassenger()`: this body rides a vehicle. `Entity.updateSwimming`
     /// needs it false, so the server's copy of a guest who boards a boat while
@@ -530,113 +536,6 @@ impl PlayerMotion {
             identity
         });
         Self::with_attribute_identities(resources, position, &hashes, next)
-    }
-    /// Explicit identity allocation for deterministic reference replay.
-    pub fn with_attribute_identities(
-        resources: &MotionResources,
-        position: Vec3,
-        hashes: &[i32],
-        next: Box<dyn horizon_world::attributes::live::Identities>,
-    ) -> Result<Self> {
-        let mut attributes = LiveAttributes::new(
-            resources.attributes.clone(),
-            "minecraft:player",
-            hashes,
-            next,
-        )
-        .map_err(attribute_error)?;
-        Ok(Self {
-            health: crate::health::PlayerHealth::new(&resources.health, &mut attributes)?,
-            status: crate::effects::StatusFlags::default(),
-            impulse: ImpulseContext::default(),
-            spawn_extra_particles_on_fall: false,
-            position,
-            velocity: Vec3::ZERO,
-            ground: GroundState::default(),
-            collision: CollisionFlags::default(),
-            history: MovementHistory::default(),
-            fall_distance: 0.0,
-            block_landing: None,
-            stuck_multiplier: Vec3::ZERO,
-            piston: Default::default(),
-            yaw: 0.0,
-            head_yaw: 0.0,
-            jumping: false,
-            no_jump_delay: 0,
-            jump_trigger_time: 0,
-            may_fly: false,
-            mobility_restricted: false,
-            invulnerable: false,
-            spectator: false,
-            flying: false,
-            flying_speed: 0.05,
-            was_jumping: false,
-            auto_jump_enabled: false,
-            auto_jump_time: 0,
-            was_auto_jump: false,
-            move_vector: [0.0, 0.0],
-            applied_input: [0.0, 0.0],
-            glider: false,
-            pitch: 0.0,
-            fall_flying: false,
-            sleeping: false,
-            fall_fly_ticks: 0,
-            glide_ending: false,
-            server_owns_glide: false,
-            glider_wear: 0,
-            location_effects: LocationEffects::default(),
-            auto_spin_attack_ticks: 0,
-            auto_spin_attack_dmg: 0.0,
-            spin_targets: Vec::new(),
-            spin_hit: None,
-            sprinting: false,
-            sprint_input: crate::sprint::SprintState::default(),
-            shift_key_down: false,
-            local_crouching: false,
-            pose: crate::pose::Pose::Standing,
-            dimensions: crate::pose::Pose::Standing.dimensions(1.0),
-            scale: 1.0,
-            swimming: false,
-            is_passenger: false,
-            fire_ticks: -20,
-            air: 300,
-            respiration: 0,
-            speed: 0.0,
-            item_use_speed: None,
-            item_use_slows_sprint: false,
-            nudge: [None; 2],
-            last_climbable: None,
-            on_climbable: false,
-            steps: MovementDistances {
-                next_step: 1.0,
-                ..MovementDistances::default()
-            },
-            crystal_sound_intensity: 0.0,
-            last_crystal_sound_play_tick: 0,
-            needs_sync: false,
-            sync_position: false,
-            teleported: false,
-            events: Vec::new(),
-            attributes,
-            fluids: PlayerFluids::default(),
-            in_powder_snow: false,
-            was_in_powder_snow: false,
-            ticks_frozen: 0,
-            leather_boots: false,
-            freeze_immune: false,
-            burn_from_stepping_immune: false,
-            old_position: position,
-            server_copy: false,
-            replaying: false,
-            wall_hit_events: None,
-            client_side: false,
-            entity_id: 0,
-            client_loaded: true,
-            block_effects: true,
-            hurt_log: Vec::new(),
-            attack_log: Vec::new(),
-            border: None,
-        })
     }
     /// LivingEntity.aiStep: speeds too small to matter stop.
     fn drop_tiny_velocity(&mut self) {
@@ -2938,7 +2837,7 @@ impl LivingAirWorld for MotionWorld<'_, '_, '_> {
             == "minecraft:scaffolding")
     }
     fn suppressing_ladder_slide(&mut self) -> Result<bool> {
-        Ok(self.player.shift_key_down)
+        Ok(self.player.shift_key_down && !(self.player.client_side && self.player.flying))
     }
     fn is_player_class(&self) -> bool {
         true
@@ -4017,7 +3916,7 @@ mod tests {
         let mut player = PlayerMotion::new(&resources, at).unwrap();
         let mut found = 0;
         for seed in 0..64 {
-            scene.random = horizon_core::random::LegacyRandom::new(seed);
+            scene.random.set_seed(seed);
             player.events.clear();
             MotionWorld {
                 entities: &[],
@@ -4049,7 +3948,7 @@ mod tests {
             assert_eq!(velocity.y, f64::from(0.05_f32));
         }
         player.events.clear();
-        scene.random = horizon_core::random::LegacyRandom::new(1);
+        scene.random.set_seed(1);
         MotionWorld {
             entities: &[],
             player: &mut player,
@@ -6303,6 +6202,53 @@ mod tests {
             .controlled_simulation_tick(Default::default())
             .unwrap();
             assert_eq!(player.velocity.y, want, "client_side={client_side}");
+        }
+    }
+    /// `LocalPlayer.isSuppressingSlidingDownLadder` is `!abilities.flying && super...()`, where
+    /// `LivingEntity`'s is `isShiftKeyDown()`: a flying player on the client keeps sliding down a
+    /// ladder whether it sneaks or not. The server's player (`ServerPlayer` has no override) only
+    /// looks at the sneak.
+    #[test]
+    fn a_flying_client_does_not_stop_sliding_down_a_ladder_by_sneaking() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let binding = crate::collisions::load(&root, assets.registry).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        // (client_side, flying, sneaking, suppressing)
+        for (client_side, flying, sneaking, want) in [
+            (true, false, true, true),
+            (true, false, false, false),
+            (true, true, true, false),
+            (true, true, false, false),
+            (false, false, true, true),
+            (false, true, true, true),
+            (false, true, false, false),
+        ] {
+            let mut scene = World::test_scene(&assets, &render, 2).unwrap();
+            let mut player = PlayerMotion::new(&resources, Vec3::new(0.5, 64.0, 0.5)).unwrap();
+            player.client_side = client_side;
+            player.flying = flying;
+            player.shift_key_down = sneaking;
+            let mut w = MotionWorld {
+                entities: &[],
+                player: &mut player,
+                scene: &mut scene,
+                assets: &assets,
+                collision_binding: &binding,
+                resources: &resources,
+                health: &resources.health,
+            };
+            assert_eq!(
+                w.suppressing_ladder_slide().unwrap(),
+                want,
+                "client_side={client_side} flying={flying} sneaking={sneaking}"
+            );
         }
     }
 }

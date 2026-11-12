@@ -316,7 +316,7 @@ fn a_landing_posts_the_block_game_event_its_rule_posts() {
         .unwrap();
     for (eggs, left) in [(2, egg(1)), (1, game.world.air)] {
         game.world.set(2, 4, 3, egg(eggs)).unwrap();
-        game.world.random = LegacyRandom::new(seed);
+        game.world.random.set_seed(seed);
         let posted = land(&mut game, egg(eggs));
         assert_eq!(game.world.block(2, 4, 3), left, "{eggs} egg(s)");
         assert_eq!(

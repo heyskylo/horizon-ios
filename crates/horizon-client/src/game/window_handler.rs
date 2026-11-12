@@ -184,6 +184,7 @@ impl Game<'_> {
         if let Err(e) = self.save_for_exit() {
             log::warn!("Horizon: failed to save the world on exit: {e}");
         }
+        self.finish_profile();
         self.finish_perf();
     }
     /// winit's `about_to_wait`: what happens between frames (stop requests, the closing
@@ -388,6 +389,10 @@ impl ApplicationHandler for Game<'_> {
             }
         };
         horizon_client::window::settle_created_fullscreen(&window, fullscreen);
+        #[cfg(target_os = "windows")]
+        if let Some(hwnd) = hwnd(&window) {
+            horizon_threads::system_menu::suppress(hwnd);
+        }
         drop(window_step);
         horizon_client::telemetry::note_display(&window);
         match self.new_renderer(window.clone()) {

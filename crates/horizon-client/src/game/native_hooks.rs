@@ -8026,7 +8026,7 @@ impl Game<'_> {
         mod_api::dispatch_server_packets(self, mod_api::mods(), player, packets, outbound);
     }
     /// After each pass of the server tick (paused ones too) while its spans
-    /// are recorded: always on a dedicated server, whose slow-tick log keeps
+    /// are recorded: always on a dedicated server, whose slow ring keeps
     /// them on, elsewhere while `native_spans(true)`, `HORIZON_SPIKES` or a
     /// performance report asks for them. `wall_ms` is the pass's wall time,
     /// `cpu_ms` the server thread's CPU time in it (None where the system
@@ -10771,11 +10771,11 @@ impl Game<'_> {
             _ => return None,
         };
         if dim == self.dim {
-            Some(&mut self.world.random)
+            Some(&mut *self.world.random)
         } else {
             self.levels
                 .parked_world_mut(dim)
-                .map(|world| &mut world.random)
+                .map(|world| &mut *world.random)
         }
     }
     /// The item entities of the server level `dimension` whose box meets

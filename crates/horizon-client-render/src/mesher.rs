@@ -21,9 +21,7 @@ use crate::{
     models::catalog::BakedFace,
 };
 use horizon_assets::model::Direction as ModelDirection;
-use horizon_core::{
-    biome::BiomeZoom, geometry::Direction, position::BlockPos, random::position_seed,
-};
+use horizon_core::{biome::BiomeZoom, geometry::Direction, position::BlockPos};
 use horizon_optifine::ctm::connect::{Axes as CtmAxes, Face as CtmFace};
 use horizon_world::{
     block_render::FaceVisibility,
@@ -59,6 +57,16 @@ pub const CULL_BACK: [i8; 4] = [0, 0, 0, 1];
 /// `Vertex::normal.w` of a shaded quad of an `entityCutoutCull` model (the bat): shaded by the
 /// normal like -127, and `entity.wgsl` also discards its back-facing pixels.
 pub const SHADED_CULL_W: i8 = -126;
+/// `Vertex::normal` of a quad of an `entitySolid` model, which culls its back faces: a quad
+/// the shader shades by its normal keeps it ([`SHADED_CULL_W`]), a baked-colour one (no
+/// normal) gets [`CULL_BACK`].
+pub fn cull_back(normal: [i8; 4]) -> [i8; 4] {
+    if normal == [0; 4] {
+        CULL_BACK
+    } else {
+        [normal[0], normal[1], normal[2], SHADED_CULL_W]
+    }
+}
 /// A section vertex: vanilla's `DefaultVertexFormat.BLOCK` (position, colour,
 /// UV0, UV2) with the sprite's array layer beside the light, in 24 bytes
 /// rather than vanilla's 28: the UV is fixed point, which holds model UVs
@@ -142,6 +150,17 @@ impl TerrainVertex {
     /// The UV the GPU samples.
     pub fn uv(&self) -> [f32; 2] {
         self.uv.map(|v| f32::from(v) / UV_STEPS)
+    }
+}
+#[cfg(test)]
+mod cull_back_tests {
+    use super::{CULL_BACK, SHADED_CULL_W, cull_back};
+    /// #15322: a shaded `entitySolid` quad keeps its normal and culls; a baked one has
+    /// no normal and only culls.
+    #[test]
+    fn cull_back_keeps_a_shaded_normal() {
+        assert_eq!(cull_back([0; 4]), CULL_BACK);
+        assert_eq!(cull_back([0, 127, 0, 127]), [0, 127, 0, SHADED_CULL_W]);
     }
 }
 #[cfg(test)]
@@ -1048,19 +1067,7 @@ impl MeshTables {
                 || (matches!(name, "sculk_sensor" | "calibrated_sculk_sensor")
                     && props.get("sculk_sensor_phase").map(String::as_str) == Some("active"));
             // OffsetType.XZ/XYZ with getMaxHorizontalOffset/getMaxVerticalOffset.
-            let offset = s.random_offset.then(|| {
-                let horizontal = if s.has_class("SpeleothemBlock") {
-                    0.125
-                } else {
-                    0.25
-                };
-                let vertical = match name {
-                    "small_dripleaf" => 0.1,
-                    "short_grass" | "fern" | "short_dry_grass" | "tall_dry_grass" => 0.2,
-                    _ => 0.0,
-                };
-                (horizontal, vertical)
-            });
+            let offset = s.max_offset();
             let mut face = [0u8; 6];
             let mut cover = [0f32; 6];
             // A server's visibility knows no state (`FaceVisibility::empty`):
@@ -1344,15 +1351,7 @@ impl MeshTables {
 }
 /// `OffsetType.XZ`/`XYZ`: a per-column jitter from `Mth.getSeed(x, 0, z)`.
 fn offset(info: &Info, x: i32, z: i32) -> Option<[f64; 3]> {
-    let (horizontal, vertical) = info.offset?;
-    let seed = position_seed(BlockPos::new(x, 0, z));
-    let nibble = |shift: u32| ((seed >> shift) & 15) as f32 / 15.0;
-    let h = f64::from(horizontal);
-    Some([
-        ((f64::from(nibble(0)) - 0.5) * 0.5).clamp(-h, h),
-        (f64::from(nibble(4)) - 1.0) * f64::from(vertical),
-        ((f64::from(nibble(8)) - 0.5) * 0.5).clamp(-h, h),
-    ])
+    Some(horizon_items::blocks::column_offset(info.offset?, x, z))
 }
 /// Border width: smooth lighting samples up to two blocks out along a face normal.
 const B: i32 = 2;
@@ -2409,19 +2408,8 @@ impl Mesher<'_> {
             translucent: face.translucent,
             opaque: face.opaque,
         };
-        // A tile keeps the quad's forced translucency; `<skip>` and `<default>` are its own.
-        let tile = |t: TileLayer| match t {
-            TileLayer::Layer {
-                layer,
-                translucent,
-                opaque,
-            } => TileLayer::Layer {
-                layer,
-                translucent: translucent || q.render_type.is_none() && q.material.force_translucent,
-                opaque,
-            },
-            TileLayer::Skip | TileLayer::Default => own,
-        };
+        let own_translucent = self.translucent(own);
+        let tile = |t: TileLayer| in_face_pass(t, own, own_translucent);
         match pick {
             Pick::Keep => self.quad(
                 out,
@@ -2431,14 +2419,10 @@ impl Mesher<'_> {
                 source(tint),
                 tint,
             ),
-            Pick::Tile(t) => self.quad(
-                out,
-                force_solid,
-                tile(t),
-                corners.map(|c| c.0),
-                source(tint),
-                tint,
-            ),
+            Pick::Tile(t) => {
+                let v = corners.map(|c| c.0);
+                self.quad_as(out, force_solid, tile(t), v, false, source(tint), tint);
+            }
             Pick::Quarters(tiles) => {
                 let cuts = cuts(&corners);
                 for s in cuts.windows(2) {
@@ -2447,11 +2431,12 @@ impl Mesher<'_> {
                             .map(|(s, t)| bilinear(&corners, s, t));
                         let quarter = quarter_of(&piece);
                         let points = [(s[0], t[0]), (s[1], t[0]), (s[1], t[1]), (s[0], t[1])];
-                        self.quad(
+                        self.quad_as(
                             out,
                             force_solid,
                             tile(tiles[quarter]),
                             piece.map(|c| c.0),
+                            false,
                             source_piece(source(tint), points),
                             tint,
                         );
@@ -2467,12 +2452,7 @@ impl Mesher<'_> {
         if count == 0 {
             return;
         }
-        let face_translucent = match pick {
-            Pick::Keep => self.translucent(own),
-            Pick::Tile(t) => self.translucent(tile(t)),
-            Pick::Quarters(tiles) => tiles.into_iter().any(|t| self.translucent(tile(t))),
-            Pick::Nothing => false,
-        };
+        let face_translucent = !matches!(pick, Pick::Nothing) && own_translucent;
         // Overlay tiles face the standard way too (Continuity: "overlay textures always have the
         // standard orientation"), whatever turns the model's own UVs (dirt's and sand's random
         // rotations).
@@ -2632,6 +2612,21 @@ fn cuts(c: &[(TerrainVertex, [f32; 2]); 4]) -> Cuts {
         }
     }
     out
+}
+/// Tile `t` as drawn over a face whose own sprite is `own`, in the face's pass
+/// (`own_translucent`): CTM picks a texture, not a render layer (OptiFine draws a tile in the
+/// block's). The tile's texels only drop the alpha test when all are opaque. A Conquest grass
+/// blade tile with 7 partly clear texels of 1024 blended, and wrote the depth of its clear
+/// rectangle, which Bliss fogs. `<skip>` and `<default>` are the face's own sprite.
+fn in_face_pass(t: TileLayer, own: TileLayer, own_translucent: bool) -> TileLayer {
+    match t {
+        TileLayer::Layer { layer, opaque, .. } => TileLayer::Layer {
+            layer,
+            translucent: own_translucent,
+            opaque,
+        },
+        TileLayer::Skip | TileLayer::Default => own,
+    }
 }
 /// The UV a vanilla cube's face gives the block-local point `p` (`BlockElement`'s default UVs),
 /// in sprite units: up is north on the top face, south on the bottom one, and up on the sides.
@@ -2797,6 +2792,38 @@ mod quarter_tests {
             ]
             .map(|p| quarter_of(&p)),
             [0, 1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn a_tile_draws_in_its_faces_pass() {
+        // Conquest's grass blade tile: a few partly clear texels, over an opaque face.
+        let blade = TileLayer::Layer {
+            layer: 5,
+            translucent: true,
+            opaque: false,
+        };
+        let face = |translucent| TileLayer::Layer {
+            layer: 1,
+            translucent,
+            opaque: !translucent,
+        };
+        let cut = TileLayer::Layer {
+            layer: 5,
+            translucent: false,
+            opaque: false,
+        };
+        assert_eq!(in_face_pass(blade, face(false), false), cut);
+        // Over stained glass the tile blends, as the face does.
+        let blend = TileLayer::Layer {
+            layer: 5,
+            translucent: true,
+            opaque: false,
+        };
+        assert_eq!(in_face_pass(blade, face(true), true), blend);
+        assert_eq!(
+            in_face_pass(TileLayer::Default, face(false), false),
+            face(false)
         );
     }
 

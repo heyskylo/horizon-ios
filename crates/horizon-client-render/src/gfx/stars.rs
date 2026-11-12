@@ -47,7 +47,7 @@ struct Uniform {
     clip_from_sky: [[f32; 4]; 4],
     color: [f32; 4],
     hdr_settings: [f32; 4],
-    hdr_shares: [f32; 4],
+    hdr_gains: [f32; 4],
     hdr_light: [f32; 4],
 }
 
@@ -60,7 +60,11 @@ pub(super) struct Stars {
 }
 
 impl Stars {
-    pub(super) fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+    /// The stars onto a frame of `format`, holding linear light when `linear`.
+    pub(super) fn new(
+        device: &wgpu::Device,
+        (format, linear): (wgpu::TextureFormat, bool),
+    ) -> Self {
         let triangles = star_triangles();
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Stars vertex buffer"),
@@ -141,10 +145,7 @@ impl Stars {
                     module: &shader,
                     entry_point: Some("fs_stars"),
                     compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: &[(
-                            "HDR_WRITE_LIGHT",
-                            f64::from(u8::from(format == super::LINEAR_FRAME)),
-                        )],
+                        constants: &super::linear_blend::frame_constants(format, linear),
                         ..Default::default()
                     },
                     targets: &[Some(wgpu::ColorTargetState {
@@ -190,7 +191,7 @@ impl Stars {
             clip_from_sky: clip_from_sky.to_cols_array_2d(),
             color: [b; 4],
             hdr_settings: globals.hdr_settings,
-            hdr_shares: globals.hdr_shares,
+            hdr_gains: globals.hdr_gains,
             hdr_light: globals.hdr_light,
         };
         uploads.buffer(encoder, &self.uniform, 0, bytemuck::bytes_of(&uniform));

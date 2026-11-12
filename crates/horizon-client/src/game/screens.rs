@@ -5,7 +5,7 @@ use horizon_client::{
     confirm_screen::Confirm,
     dialog::Dialog,
     hud::{HudBatch, rgba},
-    text::{self, Text},
+    text::{self, ClickEvent, Text},
     ui,
     widgets::{self, ScreenInfo},
 };
@@ -282,6 +282,37 @@ fn death_buttons(w: f32, h: f32, hardcore: bool) -> [(f32, f32, &'static str, u8
         (x, y + 96.0, "deathScreen.titleScreen", 1),
     ]
 }
+/// `ActiveTextCollector`'s width of one line: every glyph's `advance`.
+fn line_width(advance: &dyn Fn(char, &text::Style) -> f32, line: &Text) -> f32 {
+    line.resolve_legacy()
+        .chars()
+        .map(|(c, style)| advance(c, style))
+        .sum()
+}
+
+/// `DeathScreen.mouseClicked`'s `ClickableStyleFinder` over the cause line,
+/// which `DeathScreen.visitText` draws centred at y 85: the style of the glyph
+/// under `cursor`.
+fn death_style_at(
+    advance: &dyn Fn(char, &text::Style) -> f32,
+    cause: &Text,
+    width: f32,
+    cursor: (f32, f32),
+) -> Option<text::Style> {
+    let left = ((width - line_width(advance, cause)) / 2.0).floor();
+    let top = 85.0;
+    if cursor.1 < top || cursor.1 >= top + 9.0 || cursor.0 < left {
+        return None;
+    }
+    let mut x = cursor.0 - left;
+    for (c, style) in cause.resolve_legacy().chars() {
+        x -= advance(c, style);
+        if x < 0.0 {
+            return Some(style.clone());
+        }
+    }
+    None
+}
 impl Game<'_> {
     /// `PauseScreen.getCustomAdditions`'s additions: the
     /// `minecraft:pause_screen_additions` tag's one dialog, or the
@@ -291,9 +322,7 @@ impl Game<'_> {
     fn pause_screen_additions(&self) -> Option<(Text, Tag)> {
         let registries = &self.remote.as_ref()?.registries;
         let dialogs = registries.registries.get("minecraft:dialog")?;
-        let tag = registries
-            .dialog_tags
-            .get("minecraft:pause_screen_additions")?;
+        let tag = registries.tag("minecraft:dialog", "minecraft:pause_screen_additions")?;
         // addCustomDialogButtons' label: computeExternalTitle falls back to the title.
         let button = |dialog_tag: Tag| -> Option<(Text, Tag)> {
             let dialog = Dialog::parse(&dialog_tag)?;
@@ -849,6 +878,24 @@ impl Game<'_> {
                 hover,
             );
         }
+        // DeathScreen.visitText(HoveredTextEffects.TOOLTIP_AND_CURSOR): a
+        // styled cause shows its hover tooltip, and a clickable one asks for
+        // the hand.
+        if let Some(cause) = &self.ui.death_text
+            && let Some(style) = death_style_at(
+                &|c, style| atlas.font.advance(c, style),
+                cause,
+                w,
+                self.cursor,
+            )
+        {
+            if let Some(hover) = &style.hover {
+                ui::tooltip(batch, atlas, &[(**hover).clone()], self.cursor);
+            }
+            if style.click.is_some() {
+                widgets::request_cursor(widgets::Cursor::PointingHand);
+            }
+        }
     }
     /// LocalPlayer.respawn: the player comes back (the death screen's
     /// button, or at once with `immediate_respawn`).
@@ -885,6 +932,24 @@ impl Game<'_> {
                 self.death_confirm_answer(yes)?;
             }
             return Ok(());
+        }
+        // DeathScreen.mouseClicked first looks for a click event on the
+        // cause line: an open_url link goes through the chat link flow.
+        if let Some(cause) = &self.ui.death_text {
+            let atlas = &self.gui.atlas;
+            let mid = self.gui_size().0;
+            if let Some(text::Style {
+                click: Some(ClickEvent::OpenUrl(url)),
+                ..
+            }) = death_style_at(
+                &|c, style| atlas.font.advance(c, style),
+                cause,
+                mid,
+                self.cursor,
+            ) {
+                self.click_url(url);
+                return Ok(());
+            }
         }
         let size = self
             .renderer
@@ -1267,5 +1332,35 @@ mod tests {
                     .any(|b| b.4 == 30)
             );
         }
+    }
+
+    /// `DeathScreen.mouseClicked`'s `ClickableStyleFinder`: the cause line's
+    /// glyph under the pointer decides the link, and the line's edges are no
+    /// link.
+    #[test]
+    fn a_death_causes_link_is_the_glyph_under_the_pointer() {
+        use horizon_client::text::{ClickEvent, Style, Text};
+        let link = Style {
+            click: Some(ClickEvent::OpenUrl("https://example.com".into())),
+            ..Style::default()
+        };
+        let cause = Text::literal("ab").append(Text::styled("cd", link));
+        let advance = |_: char, _: &Style| 6.0;
+        let at = |x: f32, y: f32| {
+            super::death_style_at(&advance, &cause, 427.0, (x, y)).and_then(|s| s.click)
+        };
+        // Four 6-pixel glyphs centred in 427: the line starts at 201.
+        assert_eq!(at(203.0, 86.0), None);
+        assert_eq!(at(209.0, 86.0), None);
+        assert_eq!(
+            at(215.0, 86.0),
+            Some(ClickEvent::OpenUrl("https://example.com".into()))
+        );
+        assert_eq!(
+            at(221.0, 86.0),
+            Some(ClickEvent::OpenUrl("https://example.com".into()))
+        );
+        assert_eq!(at(227.0, 86.0), None);
+        assert_eq!(at(215.0, 84.0), None);
     }
 }

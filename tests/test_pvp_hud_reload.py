@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def program(case):
-    pvp = (ROOT / 'crates/horizon-client/src/game/pvp.rs').read_text()
+    pvp = (ROOT / 'crates/horizon-client/src/game/extras/pvp.rs').read_text()
     options = (ROOT / 'crates/horizon-client/src/game/options.rs').read_text()
     hud = (ROOT / 'crates/horizon-client-render/src/pvp_hud.rs').read_text().split('#[cfg(test)]')[0]
     states = []
@@ -19,13 +19,10 @@ def program(case):
         declaration = pvp.index(f'struct {name} {{')
         start = pvp.rfind('#[derive(Default)]', 0, declaration)
         end = pvp.index('\n}', declaration) + 2
-        states.append(pvp[start:end].replace('pub(super) ', '').replace('super::hud_editor::HudEditor', 'HudEditor'))
+        states.append(pvp[start:end].replace('pub(super) ', '').replace('pub(in crate::game) ', '').replace('crate::game::hud_editor::HudEditor', 'HudEditor').replace('super::hud_editor::HudEditor', 'HudEditor'))
     state = '\n'.join(states)
     methods = method(options, 'load_language') + method(pvp, 'pvp_effects_shown')
-    if 'fn invalidate_pvp_hud(' in pvp:
-        methods += method(pvp, 'invalidate_pvp_hud')
-    else:
-        methods += 'fn invalidate_pvp_hud(&mut self) {}'
+    methods += method(pvp, 'invalidate_pvp_hud')
     return STUBS + '\nmod pvp_hud {\n' + hud + '}\nuse pvp_hud::{Combo, Widget, Line, Icon};\nuse text::Text;\n' + state + '\nimpl Game {\n' + methods + '}\n' + HELPERS + case
 
 

@@ -118,7 +118,7 @@ pub struct BodyRotation {
 impl Mob {
     /// `Mob.getMaxHeadXRot`, with `Wolf`'s 20 degrees while sitting.
     pub fn max_head_x_rot(&self) -> f32 {
-        if self.species() == Species::Wolf && self.extra.sitting {
+        if self.species() == Species::Wolf && self.extra.sitting_pose {
             20.0
         } else {
             self.kind.max_head_x_rot
@@ -479,6 +479,16 @@ impl Mob {
 /// Entity.rotlerp used by Mob.lookAt (clamped turn, no wrap of the result).
 fn rotate_toward_max(from: f32, to: f32, max: f32) -> f32 {
     from + wrap(to - from).clamp(-max, max)
+}
+
+impl Mob {
+    /// The end of `Entity.applyEffectsFromBlocks`: an entity that is not burning
+    /// and was not just ignited gets `setRemainingFireTicks(-getFireImmuneTicks())`.
+    /// `getFireImmuneTicks` is 0 outside `Player`, so a negative `Fire` ends at 0;
+    /// a fresh ignition is positive and an extinguish already leaves 0.
+    pub(super) fn reset_unlit_fire(&mut self) {
+        self.fire_ticks = self.fire_ticks.max(0);
+    }
 }
 
 #[cfg(test)]

@@ -65,7 +65,7 @@ fn slot(name: &'static str) -> u32 {
 
 /// The OS name of the calling thread, read without allocating.
 #[cfg(all(not(miri), any(target_vendor = "apple", target_os = "linux")))]
-fn thread_name(buf: &mut [u8; 64]) -> &[u8] {
+pub(crate) fn thread_name(buf: &mut [u8; 64]) -> &[u8] {
     // SAFETY: writes at most `buf.len()` bytes, NUL included, into `buf`.
     let ok = unsafe {
         libc::pthread_getname_np(libc::pthread_self(), buf.as_mut_ptr().cast(), buf.len())
@@ -85,7 +85,7 @@ fn thread_name(buf: &mut [u8; 64]) -> &[u8] {
 /// `BUSY` guard in [`thread_tag`] answers the nested call `UNTAGGED` rather
 /// than recursing, as the module's note on naming allocations says.
 #[cfg(any(miri, not(any(target_vendor = "apple", target_os = "linux"))))]
-fn thread_name(buf: &mut [u8; 64]) -> &[u8] {
+pub(crate) fn thread_name(buf: &mut [u8; 64]) -> &[u8] {
     let current = std::thread::current();
     let Some(name) = current.name() else {
         return &[];
@@ -214,6 +214,7 @@ unsafe impl GlobalAlloc for CensusAllocator {
         }
         let tag = current();
         LIVE[tag as usize].fetch_add(layout.size() as isize, Relaxed);
+        crate::alloc_count::on_alloc(layout.size());
         // SAFETY: `h` bytes precede the caller's block inside the allocation.
         unsafe {
             let block = base.add(h);
@@ -227,6 +228,7 @@ unsafe impl GlobalAlloc for CensusAllocator {
         unsafe {
             let tag = block.sub(4).cast::<u32>().read_unaligned();
             LIVE[tag as usize].fetch_sub(layout.size() as isize, Relaxed);
+            crate::alloc_count::on_free(layout.size());
             let outer =
                 Layout::from_size_align_unchecked(layout.size() + h, layout.align().max(16));
             BackingAlloc.dealloc(block.sub(h), outer);
@@ -250,6 +252,8 @@ unsafe impl GlobalAlloc for CensusAllocator {
                 return base;
             }
             LIVE[tag as usize].fetch_add(new_size as isize - layout.size() as isize, Relaxed);
+            crate::alloc_count::on_free(layout.size());
+            crate::alloc_count::on_alloc(new_size);
             base.add(h)
         }
     }
@@ -286,6 +290,26 @@ mod tests {
         .unwrap();
         assert_eq!(live("test.step"), 0);
         assert_eq!(live("test.other"), 0);
+    }
+
+    #[test]
+    fn the_census_counts_allocations_like_the_counting_allocator() {
+        use crate::alloc_count::{Counts, here};
+        let layout = Layout::from_size_align(1000, 8).unwrap();
+        let start = here();
+        // SAFETY: nonzero layouts; the block is freed with the size it has.
+        unsafe {
+            let block = CensusAllocator.alloc(layout);
+            let grown = CensusAllocator.realloc(block, layout, 3000);
+            CensusAllocator.dealloc(grown, Layout::from_size_align(3000, 8).unwrap());
+        }
+        let expected = Counts {
+            allocs: 2,
+            bytes: 4000,
+            frees: 2,
+            freed: 4000,
+        };
+        assert_eq!(here().since(start), expected);
     }
 
     #[test]

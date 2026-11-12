@@ -23,33 +23,6 @@ type ItemConsumable = Consumable<String, ConsumeEffect>;
 pub(super) const USE_ITEM_COMPLETE_EVENT: i8 = 9;
 
 impl Game<'_> {
-    /// `Consumable.startConsuming`: positive durations begin a held use;
-    /// zero-tick consumables execute onConsume in this interaction, not a later tick.
-    pub(super) fn start_eating(&mut self, info: &ItemInfo) -> bool {
-        let Some(stack) = self.held().cloned() else {
-            return false;
-        };
-        let Some(consumable) = info.consumable.as_ref() else {
-            return false;
-        };
-        if info.food.is_some()
-            && (self.player.is_none() || !self.can_eat(&stack, info.can_always_eat))
-        {
-            return false;
-        }
-        if super::item_use::consumes_at_once(consumable.ticks()) {
-            // Instant use is authoritative on the server; a connected client
-            // receives its resulting inventory instead of consuming twice.
-            if self.remote.is_none() {
-                self.complete_consuming(info, consumable, &stack);
-            }
-        } else {
-            // Also initializes the duration and lets native use hooks adjust it.
-            self.start_using_item();
-        }
-        true
-    }
-
     /// ItemStack.use/finishUsingItem apply remainder and cooldown side effects
     /// after onConsume, using the original stack's components even if the hand changed.
     pub(super) fn complete_consuming(
@@ -60,6 +33,11 @@ impl Game<'_> {
     ) {
         self.finish_consuming(info, consumable, stack);
         self.apply_use_cooldown(stack);
+    }
+
+    /// `stack.get(DataComponents.CONSUMABLE)`: item prototype, data patch or wire patch.
+    pub(super) fn consumable(&self, stack: &ItemStack) -> Option<ItemConsumable> {
+        horizon_client::item_sync::consumable(stack, self.items())
     }
 
     /// `ServerPlayer.completeUsingItem`: the player's own client is told
@@ -86,12 +64,15 @@ impl Game<'_> {
         consumable: &ItemConsumable,
         stack: &ItemStack,
     ) {
+        // Consumable.onConsume runs on the stack's own component.
+        let consumable = horizon_client::item_sync::stack_consumable(stack, consumable);
+        let consumable = &*consumable;
         self.emit_consume(consumable, stack, 16);
         // ServerPlayer: the used statistic and the consume_item trigger.
         self.award_stat("used", &stack.item, 1);
         self.trigger_item("minecraft:consume_item", stack);
         // FoodProperties.onConsume, the player's one ConsumableListener.
-        if let Some((nutrition, saturation)) = info.food {
+        if let Some((nutrition, saturation)) = horizon_client::item_sync::food(stack, info.food) {
             let at = self.feet();
             let pitch = self.world.random.triangle_float(1.0, 0.4);
             self.audio.play(&consumable.sound, at, 1.0, pitch);
@@ -130,10 +111,11 @@ impl Game<'_> {
         // with infinite materials, the hand when emptied, else the inventory
         // (ServerPlayer.handleExtraItemsCreatedOnUse) or a drop.
         self.consume_held();
-        if let Some(remainder) = &info.use_remainder
+        if let Some(remainder) =
+            horizon_client::item_sync::use_remainder(stack, info.use_remainder.clone())
             && !self.creative
         {
-            let remainder = ItemStack::new(remainder, 1);
+            let remainder = ItemStack::new(&remainder, 1);
             if self.held().is_none() {
                 *self.held_mut() = Some(remainder);
             } else if let Some(rest) = self.give(remainder) {

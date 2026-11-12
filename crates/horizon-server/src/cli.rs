@@ -283,65 +283,83 @@ pub fn moderate(dir: &Path, command: &str, words: &[String]) -> Result<(), Strin
     Ok(())
 }
 
-/// `report [SECONDS]`: the running game records a performance report for that long (60 s by default,
-/// at most 600), writes it to `reports/` (a JSON file and a short text summary, nothing about who
-/// plays) and this prints the summary.
+/// `report [SECONDS] [--no-samples]`: records a capture into `reports/profile-<time>Z.hzperf`, prints a few lines on it and where it went.
 pub fn report(dir: &Path, words: &[String]) -> Result<(), String> {
-    let seconds = match words.first() {
-        None => 60,
-        Some(word) => word
-            .parse::<u64>()
-            .ok()
-            .filter(|s| (1..=600).contains(s))
-            .ok_or("report takes the seconds to record, 1 to 600 (60 by default)")?,
-    };
+    let (seconds, line) = report_line(words)?;
     let client = running(dir)?;
     wait_running(&client, None)?;
     let reports = dir.join("reports");
-    let before = report_files(&reports);
-    let reply = client.call(
-        "POST",
-        "/api/v1/command",
-        Some(&json!({ "line": format!("horizon-report {seconds}") })),
-    )?;
+    let before = capture_files(&reports);
+    let reply = client.call("POST", "/api/v1/command", Some(&json!({ "line": line })))?;
     for line in reply["output"].as_array().into_iter().flatten() {
         println!("{}", line.as_str().unwrap_or_default());
     }
     println!("Recording for {seconds} s...");
-    // The report is written a moment after the last recorded tick; a slow server gets a minute more.
-    let deadline = Instant::now() + Duration::from_secs(seconds + 60);
+    // The file grows from the start and is finished a moment after the last tick; checking it earlier re-inflates it for nothing.
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(seconds + 60);
     while Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(500));
-        if let Some(text) = report_files(&reports)
+        if started.elapsed().as_secs() < seconds {
+            continue;
+        }
+        if let Some(path) = capture_files(&reports)
             .into_iter()
             .find(|p| !before.contains(p))
+            && horizon_platform::perf_format::files::is_complete(&path).unwrap_or(false)
         {
-            let summary =
-                std::fs::read_to_string(&text).map_err(|e| format!("{}: {e}", text.display()))?;
-            print!("{summary}");
-            println!("Saved: {} (and the .json beside it)", text.display());
+            match horizon_platform::perf_format::server_brief(&path) {
+                Ok(lines) => lines.iter().for_each(|line| println!("{line}")),
+                Err(e) => println!("(no summary: {e})"),
+            }
+            println!(
+                "{}",
+                horizon_platform::perf_format::files::saved_line(&path)
+            );
             return Ok(());
         }
     }
     Err(format!(
-        "no report in {} after {} s: is the game on a release with `horizon-report`?",
+        "no capture in {} after {} s: is the game on a release with `horizon-report`?",
         reports.display(),
         seconds + 60
     ))
 }
 
-/// The text summaries in `reports/`.
-fn report_files(dir: &Path) -> Vec<PathBuf> {
+/// The seconds and the console line for `report`'s words: `[SECONDS] [--no-samples] [--profile]`.
+fn report_line(words: &[String]) -> Result<(u64, String), String> {
+    let usage = "report takes the seconds to record, 1 to 600 (60 by default), and --no-samples";
+    let mut seconds = None;
+    let mut flags = String::new();
+    for word in words {
+        if matches!(word.as_str(), "--no-samples" | "--profile") {
+            flags.push(' ');
+            flags.push_str(word);
+            continue;
+        }
+        match (
+            word.parse::<u64>().ok().filter(|s| (1..=600).contains(s)),
+            seconds,
+        ) {
+            (Some(s), None) => seconds = Some(s),
+            _ => return Err(usage.into()),
+        }
+    }
+    let seconds = seconds.unwrap_or(60);
+    Ok((seconds, format!("horizon-report {seconds}{flags}")))
+}
+
+/// The captures in `reports/`.
+fn capture_files(dir: &Path) -> Vec<PathBuf> {
     std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
         .map(|e| e.path())
         .filter(|p| {
-            p.extension().is_some_and(|e| e == "txt")
-                && p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("perf-"))
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(horizon_platform::perf_format::files::is_capture_name)
         })
         .collect()
 }
@@ -625,6 +643,48 @@ pub fn logs(dir: &Path, follow: bool, count: usize) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn words(w: &[&str]) -> Vec<String> {
+        w.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn report_words_become_the_console_line() {
+        assert_eq!(report_line(&[]).unwrap(), (60, "horizon-report 60".into()));
+        assert_eq!(
+            report_line(&words(&["--no-samples", "90"])).unwrap(),
+            (90, "horizon-report 90 --no-samples".into())
+        );
+        assert_eq!(
+            report_line(&words(&["600", "--profile"])).unwrap().1,
+            "horizon-report 600 --profile"
+        );
+        for bad in [
+            &["0"][..],
+            &["601"],
+            &["30", "40"],
+            &["--seconds"],
+            &["abc"],
+        ] {
+            assert!(report_line(&words(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn only_captures_named_by_the_game_are_waited_for() {
+        let dir = std::env::temp_dir().join(format!("hz-cli-captures-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in [
+            "profile-20251107-143844Z.hzperf",
+            "profile-20251107-143844Z-renamed.hzperf",
+            "perf-2025-11-07_14-38-44Z.txt",
+        ] {
+            std::fs::write(dir.join(name), b"").unwrap();
+        }
+        let found = capture_files(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(found, [dir.join("profile-20251107-143844Z.hzperf")]);
+    }
 
     #[test]
     fn status_reads_well() {

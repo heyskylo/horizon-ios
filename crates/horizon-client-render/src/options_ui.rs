@@ -2,10 +2,14 @@
 //! Controls, Key Binds, Mouse Settings, Chat Settings, Accessibility,
 //! Language and Resource Packs, laid out like vanilla's HeaderAndFooter /
 //! OptionsList screens and drawn with the shared widgets.
+mod pack_drop;
+
 use std::time::Instant;
 
 pub use crate::settings::Opt;
 
+#[path = "options_ui_widgets.rs"]
+mod widgets;
 use crate::{
     gamepad::{self, GlyphStyle},
     hdr_calibration::Picture,
@@ -17,8 +21,17 @@ use crate::{
     text::{self, Style, Text},
     ui,
 };
+pub(crate) use widgets::{button, inactive};
+
+#[path = "options_ui_values.rs"]
+mod values;
+pub(crate) use values::{chat_delay_label, chat_px, generic, on_off, percent};
 
 mod shell_pages;
+
+#[path = "options_ui_wheel.rs"]
+mod wheel;
+pub(crate) use wheel::slider_unsnapped;
 
 fn tr(key: &str) -> Text {
     Text::translate(key, &[])
@@ -30,18 +43,6 @@ fn tr(key: &str) -> Text {
 pub static HORIZON_EXTRAS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 fn horizon_extras() -> bool {
     HORIZON_EXTRAS.load(std::sync::atomic::Ordering::Relaxed)
-}
-fn generic(caption: &str, value: Text) -> Text {
-    Text::translate("options.generic_value", &[tr(caption), value])
-}
-fn percent(caption: &str, value: f32) -> Text {
-    Text::translate(
-        "options.percent_value",
-        &[
-            tr(caption),
-            Text::literal(((f64::from(value) * 100.0) as i32).to_string()),
-        ],
-    )
 }
 /// `text` cut into lines of at most `width` characters, at spaces where it has them.
 fn wrap(text: &str, width: usize) -> Vec<String> {
@@ -67,19 +68,10 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     }
     lines
 }
-fn on_off(v: bool) -> Text {
-    tr(if v { "options.on" } else { "options.off" })
-}
 /// A music track's name as its row shows it: the file, without its folder
 /// (`minecraft:music/game/calm1` -> `calm1`; the group names the situation).
 fn track_name(id: &str) -> &str {
     id.rsplit('/').next().unwrap_or(id)
-}
-fn chat_px(caption: &str, px: f32) -> Text {
-    Text::translate(
-        "options.pixel_value",
-        &[tr(caption), Text::literal((px as i32).to_string())],
-    )
 }
 pub(crate) enum Kind {
     /// Slider position 0..1.
@@ -349,6 +341,7 @@ impl Opt {
     pub(crate) fn kind(self, s: &Settings) -> Kind {
         let unit = |v: f32, lo: f32, hi: f32| Kind::Slider(((v - lo) / (hi - lo)).clamp(0.0, 1.0));
         match self {
+            Opt::ChatDelay => values::kind(s.file.double("chatDelay")),
             Opt::FovEffects | Opt::DarknessPulsing => {
                 Kind::Slider(s.file.double(self.file_key().unwrap()).sqrt() as f32)
             }
@@ -365,7 +358,7 @@ impl Opt {
             ),
             Opt::SimulationDistance => unit(s.simulation_distance as f32, 5.0, 32.0),
             Opt::Sensitivity => Kind::Slider(s.sensitivity),
-            Opt::WheelSensitivity => unit(s.mouse_wheel_sensitivity, 0.01, 10.0),
+            Opt::WheelSensitivity => wheel::kind(s.mouse_wheel_sensitivity),
             Opt::Volume(i) => Kind::Slider(if i == 0 {
                 s.master_volume
             } else {
@@ -457,6 +450,7 @@ impl Opt {
     /// The discrete step count for stepped sliders, or `None` if continuous.
     pub fn slider_steps(self) -> Option<u32> {
         match self {
+            Opt::ChatDelay => Some(60),
             Opt::Fov => Some(80),
             Opt::RenderDistance => Some((crate::options_file::MAX_RENDER_DISTANCE - 2) as u32),
             Opt::SimulationDistance => Some(27),
@@ -507,7 +501,7 @@ impl Opt {
     pub fn label(self, s: &Settings) -> Text {
         let c = self.caption();
         match self {
-            Opt::ChatDelay => tr("options.chat.delay_none"),
+            Opt::ChatDelay => chat_delay_label(s),
             Opt::FovEffects
             | Opt::DarknessPulsing
             | Opt::DistortionEffects
@@ -712,7 +706,7 @@ impl Opt {
             } else {
                 "options.narrator.notavailable"
             }),
-            Opt::ChatDelay => tr("options.chat.delay_none"),
+            Opt::ChatDelay => chat_delay_label(s),
             Opt::HideLightningFlashes => on_off(s.file.bool("hideLightningFlashes")),
             Opt::MonochromeLogo => on_off(s.file.bool("darkMojangStudiosBackground")),
             Opt::HideSplashTexts => on_off(s.file.bool("hideSplashTexts")),
@@ -897,6 +891,7 @@ impl Opt {
         let v = v.clamp(0.0, 1.0);
         let step = |lo: f32, hi: f32| (lo + v * (hi - lo)).round();
         match self {
+            Opt::ChatDelay => values::set(s, v),
             Opt::FovEffects | Opt::DarknessPulsing => s.file.set(
                 self.file_key().unwrap(),
                 crate::options_file::V::Double(f64::from(v).powi(2)),
@@ -916,7 +911,7 @@ impl Opt {
             }
             Opt::SimulationDistance => s.simulation_distance = step(5.0, 32.0) as i32,
             Opt::Sensitivity => s.sensitivity = v,
-            Opt::WheelSensitivity => s.mouse_wheel_sensitivity = 0.01 + v * 9.99,
+            Opt::WheelSensitivity => s.mouse_wheel_sensitivity = wheel::from_slider(v),
             Opt::Volume(0) => s.master_volume = v,
             Opt::Volume(i) => s.volumes[i] = v,
             Opt::Gamma => s.gamma = v,
@@ -924,7 +919,7 @@ impl Opt {
             Opt::CloudRange => s.cloud_range = step(2.0, 128.0) as i32,
             Opt::EntityDistance => s.entity_distance = step(2.0, 20.0) / 4.0,
             Opt::BiomeBlend => s.biome_blend = step(0.0, 7.0) as i32,
-            Opt::Preset => s.graphics_preset = PRESETS[step(0.0, 3.0) as usize].into(),
+            Opt::Preset => s.graphics_preset = PRESETS[preset_from_slider(v)].into(),
             Opt::Mipmaps => s.mipmap_levels = step(0.0, 4.0) as i32,
             Opt::MaxAnisotropy => s.file.set(
                 "maxAnisotropyBit",
@@ -1214,92 +1209,6 @@ impl Opt {
         }
     }
 }
-const PRESETS: [&str; 4] = ["fast", "fancy", "fabulous", "custom"];
-fn preset_index(p: &str) -> usize {
-    PRESETS.iter().position(|x| *x == p).unwrap_or(1)
-}
-/// A slider moved to `v` (OptionInstance.set): the graphics preset applies
-/// its options when its value changes (`Options.applyGraphicsPreset`).
-pub fn set_slider(opt: Opt, s: &mut Settings, v: f32) {
-    let preset = preset_index(&s.graphics_preset);
-    opt.set_slider(s, v);
-    if opt == Opt::Preset && preset_index(&s.graphics_preset) != preset {
-        apply_preset(s);
-    }
-}
-/// A slider pressed or dragged to `v`: apply it live, and tell the game when
-/// a category volume changed (`Options.createSoundSliderOptionInstance`'s
-/// callback, which `OptionInstance.set` runs only for a new value).
-fn drag_slider(opt: Opt, s: &mut Settings, v: f32, events: &mut Vec<Event>) {
-    let volume = |s: &Settings| match opt {
-        Opt::Volume(0) => Some(s.master_volume),
-        Opt::Volume(i) => Some(s.volumes[i]),
-        _ => None,
-    };
-    let before = volume(s);
-    set_slider(opt, s, v);
-    events.push(Event::SliderDrag);
-    if let (Opt::Volume(source), Some(after)) = (opt, volume(s))
-        && before != Some(after)
-    {
-        events.push(Event::Volume(source, after));
-    }
-}
-/// GraphicsPreset.apply: the options Fast, Fancy and Fabulous set.
-pub fn apply_preset(s: &mut Settings) {
-    let fabulous = s.graphics_preset == "fabulous";
-    match s.graphics_preset.as_str() {
-        "fast" => {
-            s.biome_blend = 1;
-            s.render_distance = 8;
-            s.prioritize_chunk_updates = 0;
-            s.simulation_distance = 6;
-            s.smooth_lighting = false;
-            s.clouds = "fast".into();
-            s.particles = 1;
-            s.mipmap_levels = 2;
-            s.entity_shadows = false;
-            s.entity_distance = 0.75;
-            s.menu_blur = 2;
-            s.cloud_range = 32;
-            s.cutout_leaves = false;
-            s.improved_transparency = false;
-            s.weather_radius = 5;
-            set_filtering(s, 1, 0);
-        }
-        "fancy" | "fabulous" => {
-            s.biome_blend = 2;
-            s.render_distance = if fabulous { 32 } else { 16 };
-            s.prioritize_chunk_updates = 1;
-            s.simulation_distance = 12;
-            s.smooth_lighting = true;
-            s.clouds = "true".into();
-            s.particles = 0;
-            s.mipmap_levels = 4;
-            s.entity_shadows = true;
-            s.entity_distance = if fabulous { 1.25 } else { 1.0 };
-            s.menu_blur = 5;
-            s.cloud_range = if fabulous { 128 } else { 64 };
-            s.cutout_leaves = true;
-            s.improved_transparency = fabulous;
-            s.weather_radius = 10;
-            // Fabulous takes anisotropic filtering (RGSS on a device with known issues, which
-            // wgpu does not report).
-            set_filtering(
-                s,
-                if fabulous { 2 } else { 1 },
-                if fabulous { 2 } else { 1 },
-            );
-        }
-        _ => {}
-    }
-}
-/// The preset's `maxAnisotropyBit` and `textureFiltering` (0 none, 1 RGSS, 2 anisotropic).
-fn set_filtering(s: &mut Settings, anisotropy_bit: i32, filtering: i32) {
-    use crate::options_file::V;
-    s.file.set("maxAnisotropyBit", V::Int(anisotropy_bit));
-    s.file.set("textureFiltering", V::Int(filtering));
-}
 
 /// `Options.preferredGraphicsBackend`'s tooltip: the restart note once the choice differs from
 /// the startup one, the description, and Vulkan's warning.
@@ -1388,7 +1297,7 @@ pub enum Page {
     Music,
 }
 #[derive(Clone, Debug, PartialEq)]
-enum Act {
+pub(crate) enum Act {
     None,
     Push(Page),
     Done,
@@ -1453,7 +1362,7 @@ enum WKind {
         code: String,
     },
 }
-struct Widget {
+pub(crate) struct Widget {
     x: f32,
     y: f32,
     w: f32,
@@ -1508,6 +1417,8 @@ fn matches_focus(id: &FocusId, i: usize, wd: &Widget) -> bool {
 /// What the game must do after an interaction.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
+    /// Dropped resource packs accepted on the confirmation screen.
+    ImportPacks(Vec<std::path::PathBuf>),
     /// The Pack Options page closed with changes: the player's choices of its entries, the
     /// ones that differ from their defaults (the others went back to theirs).
     PackOptions {
@@ -1603,23 +1514,6 @@ pub struct MusicGroup {
     pub label: String,
     /// The rows, in `sounds.json` order.
     pub tracks: Vec<MusicTrack>,
-}
-/// `SliderableValueSet.applyValueImmediately`: these apply 600 ms after
-/// the last change (`OptionInstanceSliderButton.delayedApplyAt`).
-fn delays_apply(opt: Opt) -> bool {
-    matches!(
-        opt,
-        Opt::RenderDistance | Opt::SimulationDistance | Opt::BiomeBlend | Opt::WheelSensitivity
-    )
-}
-/// Whether a slider still shows its own position: while held, or for a
-/// delayed one until its value applies (both then `resetValue`).
-fn slider_unsnapped(opt: Opt, held: bool, moved: Instant) -> bool {
-    if delays_apply(opt) {
-        moved.elapsed().as_millis() < 600
-    } else {
-        held
-    }
 }
 pub struct OptionsUi {
     pub stack: Vec<Page>,
@@ -1805,27 +1699,6 @@ impl Default for OptionsUi {
             wide_extras: Vec::new(),
         }
     }
-}
-fn button(x: f32, y: f32, w: f32, label: Text, act: Act) -> Widget {
-    Widget {
-        x,
-        y,
-        w,
-        h: 20.0,
-        kind: WKind::Button {
-            label,
-            active: true,
-            act,
-        },
-        list: false,
-        row: 0,
-    }
-}
-fn inactive(mut w: Widget) -> Widget {
-    if let WKind::Button { active, .. } = &mut w.kind {
-        *active = false;
-    }
-    w
 }
 fn option_widget(s: &Settings, opt: Opt, x: f32, y: f32, w: f32) -> Widget {
     // OptionsSubScreen.addContents: the narrator button is active only while
@@ -2121,23 +1994,6 @@ impl OptionsUi {
             return None;
         };
         Some([search.x, search.y, search.width, search.height])
-    }
-    /// Whether the resource pack screen is open (not Create World's data packs on the same
-    /// page).
-    pub fn resource_packs_open(&self) -> bool {
-        self.page() == Page::Packs && self.data_pack_dir.is_none()
-    }
-    /// The packs in `resourcepacks/` changed while the pack screen is open
-    /// (`PackSelectionScreen`'s directory watcher): the screen is made again over
-    /// `infos`, keeping the selection made on it so far.
-    pub fn update_pack_infos(&mut self, infos: Vec<crate::pack_screen::PackInfo>) {
-        if let Some(p) = self.pack_screen.take()
-            && p.changed
-        {
-            self.pack_selection = p.commit();
-            self.pack_reselected = true;
-        }
-        self.pack_infos = infos;
     }
     pub fn page(&self) -> Page {
         *self.stack.last().unwrap_or(&Page::Main)
@@ -3217,13 +3073,20 @@ impl OptionsUi {
                 }
                 content = y + self.scroll - top + 2.0;
                 out[list_start..].iter_mut().for_each(|w| w.list = true);
-                out.push(button(
+                let reset_all = button(
                     cx - 154.0,
                     h - 27.0,
                     150.0,
                     tr("controls.resetAll"),
                     Act::ResetKeys,
-                ));
+                );
+                // KeyBindsScreen.extractRenderState: active only while some
+                // binding differs from its default.
+                out.push(if s.keys.changed_from_defaults() {
+                    reset_all
+                } else {
+                    inactive(reset_all)
+                });
                 out.push(button(cx + 4.0, h - 27.0, 150.0, tr("gui.done"), Act::Done));
             }
             Page::Language => {
@@ -3981,6 +3844,7 @@ impl OptionsUi {
                 self.pack_focus = Instant::now();
             }
             match action {
+                crate::pack_screen::Action::Import(paths) => events.push(Event::ImportPacks(paths)),
                 crate::pack_screen::Action::OpenFolder => events.push(match &self.data_pack_dir {
                     Some(dir) => Event::OpenDataPackFolder(dir.clone()),
                     None => Event::OpenPackFolder,
@@ -8408,6 +8272,11 @@ mod tests {
     }
 }
 
+#[path = "options_ui_preset.rs"]
+mod preset;
+pub(crate) use preset::{
+    PRESETS, apply_preset, drag_slider, preset_from_slider, preset_index, set_slider,
+};
 #[cfg(test)]
 #[path = "options_ui_graphics_tests.rs"]
 mod graphics_tests;

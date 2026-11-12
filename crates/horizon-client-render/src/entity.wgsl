@@ -36,7 +36,7 @@ struct Globals {
     // w: apply the no-pack HDR gain; HDR_WRITE_LIGHT independently keeps float alpha as coverage.
     hdr_light: vec4<f32>,
     hdr_settings: vec4<f32>,
-    hdr_shares: vec4<f32>,
+    hdr_gains: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var atlas: texture_2d<f32>;
@@ -155,7 +155,8 @@ fn entity_vertex(position: vec3<f32>, uv: vec2<f32>,
     var back = c;
     // Normal w: 0 keeps the baked colour, +-127 shades by the normal, and a small positive 1
     // keeps the baked colour but culls back faces (entitySolid models such as the decorated pot).
-    // -126/127 shades like -127 and also culls (entityCutoutCull models such as the bat).
+    // -126/127 shades like -127 and also culls (entityCutoutCull models such as the bat, and the
+    // entitySolid decorated pot).
     out.cull = select(0u, 1u, (normal.w > 0.0 && normal.w < 0.5) || (normal.w < 0.0 && normal.w > -0.996));
     if abs(normal.w) >= 0.5 {
         c = vec4(c.rgb * entity_light(normal.xyz, globals.time.y != 0.0), c.a);
@@ -291,12 +292,17 @@ fn entity_written_color(in: Out, color: vec4<f32>) -> vec4<f32> {
     if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 && in.overlay != 11u && in.overlay != 12u {
         var mark = hdr_entity_mark(in);
         if in.overlay == 4u { mark = hdr_scene_alpha(globals.hdr_light.y); }
-        return vec4(hdr_written(color.rgb, mark, globals.hdr_settings, globals.hdr_shares), color.a);
+        return vec4(hdr_written(color.rgb, mark, globals.hdr_settings, globals.hdr_gains), color.a);
     }
-    return color;
+    if FRAME_LINEAR && (in.overlay == 11u || in.overlay == 12u) {
+        // The cracks scale what is under them by twice their colour (CRUMBLING_BLEND). Vanilla's
+        // product is in gamma, so under light it is (2c)^2.2: they give half of that.
+        return vec4(pow(2.0 * max(color.rgb, vec3(0.0)), vec3(2.2)) * 0.5, color.a);
+    }
+    return frame_stored(color);
 }
 @fragment fn fs_entity_unmarked(in: Out, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    return entity_color(in, front);
+    return frame_stored(entity_color(in, front));
 }
 fn entity_color(in: Out, front: bool) -> vec4<f32> {
     var uv = in.uv;
@@ -354,7 +360,7 @@ fn entity_color(in: Out, front: bool) -> vec4<f32> {
 // rendertype_entity_shadow.fsh: the shadow texture times the vertex colour,
 // then fog, with no alpha cutout, so a faint shadow in dim light still draws.
 @fragment fn fs_entity_shadow(in: Out) -> @location(0) vec4<f32> {
-    return shadow_color(in);
+    return frame_stored(shadow_color(in));
 }
 fn shadow_color(in: Out) -> vec4<f32> {
     var color = textureSample(atlas, atlas_sampler, in.uv) * in.color;
@@ -445,9 +451,9 @@ fn celestial_color(in: Out) -> vec4<f32> {
 @fragment fn fs_celestial(in: Out) -> @location(0) vec4<f32> {
     let color = celestial_color(in);
     if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
-        return vec4(hdr_written(color.rgb, hdr_entity_mark(in), globals.hdr_settings, globals.hdr_shares), color.a);
+        return vec4(hdr_written(color.rgb, hdr_entity_mark(in), globals.hdr_settings, globals.hdr_gains), color.a);
     }
-    return color;
+    return frame_stored(color);
 }
 
 // The sky's celestial pass (sun, moon, the End sky): fs_celestial's light,
@@ -466,9 +472,10 @@ fn celestial_color(in: Out) -> vec4<f32> {
     // or it would come out darker than the sky around it.
     let full = y >= globals.hdr_windows[1][clamp(tier, 1u, 4u) - 1u];
     if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
-        return vec4(hdr_written(added, select(1.0, hdr_mark(tier, y), full), globals.hdr_settings, globals.hdr_shares), color.a);
+        return vec4(hdr_written(added, select(1.0, hdr_mark(tier, y), full), globals.hdr_settings, globals.hdr_gains), color.a);
     }
-    if HDR_WRITE_LIGHT { return vec4(added, color.a); }
+    // Premultiplied after the decode: the light the texel adds, at its coverage.
+    if HDR_WRITE_LIGHT { return vec4(frame_stored(color).rgb * color.a, color.a); }
     if !full { return vec4(added, 0.0); }
     return vec4(added, 1.0 - hdr_mark(tier, y));
 }
@@ -491,7 +498,7 @@ fn energy_swirl_fog(in: Out) -> f32 {
 }
 @fragment fn fs_energy_swirl(in: Out) -> @location(0) vec4<f32> {
     let color = energy_swirl_base(in);
-    return vec4(mix(color.rgb, globals.fog_color.rgb, energy_swirl_fog(in)), color.a);
+    return frame_stored(vec4(mix(color.rgb, globals.fog_color.rgb, energy_swirl_fog(in)), color.a));
 }
 
 // RenderPipelines.WATER_MASK: depth only (the pipeline masks the colour off).
@@ -627,7 +634,7 @@ struct WeatherTime { values: vec4<f32> }
     return out;
 }
 @fragment fn fs_weather(in: Out) -> @location(0) vec4<f32> {
-    return weather_color(in);
+    return frame_stored(weather_color(in));
 }
 fn weather_color(in: Out) -> vec4<f32> {
     // Repeat within this sprite, never across the atlas. The atlas uses nearest

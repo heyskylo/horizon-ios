@@ -205,16 +205,12 @@ pub fn pack_world(world: &Path, progress: &UploadProgress) -> Result<Archive, Up
 }
 
 fn temp_archive_path() -> PathBuf {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "realms-upload-file-{}-{n}.tar.gz",
-        std::process::id()
-    ))
+    super::download::unguessable("realms-upload-file", ".tar.gz")
 }
 
 fn write_archive(world: &Path, path: &Path, progress: &UploadProgress) -> Result<u64, UploadError> {
-    let file = File::create(path).map_err(|e| UploadError::Failed(e.to_string()))?;
+    let file =
+        super::download::create_private(path).map_err(|e| UploadError::Failed(e.to_string()))?;
     let gz = flate2::write::GzEncoder::new(file, flate2::Compression::default());
     let mut tar = TarWriter::new(gz);
     add_tree(&mut tar, world, "world", progress)?;

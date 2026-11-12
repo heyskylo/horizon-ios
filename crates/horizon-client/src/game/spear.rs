@@ -455,4 +455,33 @@ impl Game<'_> {
             self.kinetic_hit_feedback(if own { OWN } else { id }, &kinetic, [at.x, at.y, at.z]);
         }
     }
+
+    /// Synchronize look rotation before sending a spear jab so the server
+    /// raycasts along the player's updated look direction.
+    pub(super) fn remote_sync_look(&mut self) {
+        let (yaw, pitch) = (self.yaw, self.pitch);
+        let (riding, controls) = (self.riding.is_some(), self.controls_camera());
+        if let Some(p) = self.player.as_ref()
+            && let Some(r) = self.remote.as_mut()
+        {
+            let pos = [p.position.x, p.position.y, p.position.z];
+            let (g, c) = (p.ground.on_ground, p.collision.horizontal);
+            let pkt = if riding {
+                Some(horizon_protocol::packets::play::Serverbound::MovePlayerRot(
+                    horizon_protocol::packets::play::MovePlayerRot {
+                        yaw,
+                        pitch,
+                        flags: u8::from(g) | u8::from(c) << 1,
+                    },
+                ))
+            } else if controls {
+                r.position_sender.update(pos, (yaw, pitch), g, c)
+            } else {
+                None
+            };
+            if let Some(pkt) = pkt {
+                r.session.send(pkt);
+            }
+        }
+    }
 }

@@ -13,9 +13,13 @@ pub enum Cursor {
     #[default]
     Arrow,
     PointingHand,
+    /// `CursorTypes.IBEAM`: over a text field that takes input.
+    Ibeam,
     NotAllowed,
     /// `CursorTypes.RESIZE_NS`: a scroller held vertically (`MerchantScreen`).
     ResizeNs,
+    /// `CursorTypes.RESIZE_EW`: a slider held horizontally.
+    ResizeEw,
 }
 
 thread_local! {
@@ -34,6 +38,31 @@ pub fn widget_cursor(hovered: bool, active: bool) {
     if hovered {
         request_cursor(if active {
             Cursor::PointingHand
+        } else {
+            Cursor::NotAllowed
+        });
+    }
+}
+/// `AbstractSliderButton.handleCursor`: a dragged slider resizes, a hovered
+/// one points, and an inactive one is not allowed.
+pub fn slider_cursor(hovered: bool, active: bool, dragging: bool) {
+    if hovered {
+        request_cursor(if !active {
+            Cursor::NotAllowed
+        } else if dragging {
+            Cursor::ResizeEw
+        } else {
+            Cursor::PointingHand
+        });
+    }
+}
+
+/// `EditBox.handleCursor`: a hovered text field shows the I-beam, or the
+/// forbidden sign when it takes no input.
+pub fn text_cursor(hovered: bool, editable: bool) {
+    if hovered {
+        request_cursor(if editable {
+            Cursor::Ibeam
         } else {
             Cursor::NotAllowed
         });
@@ -470,6 +499,28 @@ pub fn record_as(label: &str, [x, y, w, h]: [f32; 4], enabled: bool, kind: Kind)
 mod cursor_tests {
     use super::*;
 
+    #[test]
+    fn a_hovered_text_field_asks_for_the_i_beam() {
+        let _ = take_cursor();
+        text_cursor(false, true);
+        assert_eq!(take_cursor(), Cursor::Arrow);
+        text_cursor(true, true);
+        assert_eq!(take_cursor(), Cursor::Ibeam);
+        text_cursor(true, false);
+        assert_eq!(take_cursor(), Cursor::NotAllowed);
+    }
+    #[test]
+    fn a_dragged_slider_asks_for_the_horizontal_resize_cursor() {
+        let _ = take_cursor();
+        slider_cursor(false, true, true);
+        assert_eq!(take_cursor(), Cursor::Arrow);
+        slider_cursor(true, true, true);
+        assert_eq!(take_cursor(), Cursor::ResizeEw);
+        slider_cursor(true, true, false);
+        assert_eq!(take_cursor(), Cursor::PointingHand);
+        slider_cursor(true, false, true);
+        assert_eq!(take_cursor(), Cursor::NotAllowed);
+    }
     #[test]
     fn hovered_widgets_ask_for_the_hand_or_not_allowed() {
         let _ = take_cursor();

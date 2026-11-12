@@ -13,7 +13,7 @@ with ARM64 libraries. Install LLVM/Clang and put `clang.exe` on `PATH`; the `rin
 Clang to compile its ARM64 code. The MSVC target also needs the Visual C++ linker and Windows import
 libraries.
 
-To run `horizon-prepare compile-exporters`, install JDK 25 and Python 3.10+; that command compiles
+To run `horizon-prepare compile-exporters`, install JDK 25 and Python 3.11+; that command compiles
 the Java exporters used by the game.
 
 ```powershell

@@ -54,6 +54,12 @@ impl Game<'_> {
         }
     }
     fn set_has_record(&mut self, pos: [i32; 3], has: bool) {
+        self.set_has_record_notify(pos, has, true);
+    }
+    /// The state change alone (`level.setBlock` with flag 2); `notify` adds
+    /// `notifyItemChangedInJukebox`'s `block_change`, which
+    /// `JukeboxBlock.setPlacedBy` does not post.
+    fn set_has_record_notify(&mut self, pos: [i32; 3], has: bool, notify: bool) {
         let state = self.world.block(pos[0], pos[1], pos[2]);
         let registry = self.pack.assets.registry;
         let Some(mut s) = registry.state(state).cloned() else {
@@ -70,7 +76,7 @@ impl Game<'_> {
             });
             // `JukeboxBlockEntity.notifyItemChangedInJukebox`: the disc coming
             // or going is a block change the sculk sensors hear.
-            if self.world.block(pos[0], pos[1], pos[2]) != state {
+            if notify && self.world.block(pos[0], pos[1], pos[2]) != state {
                 self.post_block_game_event("minecraft:block_change", pos, None, Some(new));
             }
         }
@@ -82,7 +88,8 @@ impl Game<'_> {
     /// `updateCustomBlockEntityTag` has filled the block entity.
     pub(super) fn jukebox_placed(&mut self, pos: [i32; 3], stack: &ItemStack) {
         if block_entity_item::carries_record(stack) {
-            self.set_has_record(pos, true);
+            // #15320: no `block_change` here, only the `block_place` after it.
+            self.set_has_record_notify(pos, true, false);
         }
     }
     /// `onSongChanged`: neighbours (the signal) and comparators.
@@ -838,6 +845,17 @@ mod block_change_tests {
                 "{:?}",
                 events.borrow()
             );
+        });
+        // #15320: `JukeboxBlock.setPlacedBy` sets the state alone; the
+        // placement's `block_place` is the only event.
+        game.world.set(2, 4, 5, jukebox).unwrap();
+        super::super::sculk::TEST_POSTED_EVENTS
+            .with(|events| *events.borrow_mut() = Some(Vec::new()));
+        game.set_has_record_notify([2, 4, 5], true, false);
+        let with_record = game.world.block(2, 4, 5);
+        assert_ne!(with_record, jukebox, "the state still turns has_record on");
+        super::super::sculk::TEST_POSTED_EVENTS.with(|events| {
+            assert_eq!(events.borrow().as_ref().unwrap(), &[], "nothing posted");
         });
     }
 }

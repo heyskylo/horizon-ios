@@ -160,11 +160,16 @@ impl Game<'_> {
     // ---- the world's data packs' content tables ---------------------------
 
     /// The content tables the world plays with: its data packs' over the
-    /// game's own when it has packs, `Resources.rest`'s own otherwise.
+    /// game's own when it has packs, a server's tags over the game's own on a
+    /// server, `Resources.rest`'s own otherwise.
     pub(super) fn items(&self) -> &Items {
         match &self.world_tables {
             Some(t) => &t.items,
-            None => self.res.items(),
+            None => self
+                .remote
+                .as_ref()
+                .and_then(|r| r.tables.items.as_deref())
+                .unwrap_or_else(|| self.res.items()),
         }
     }
     pub(super) fn mob_suffocation(
@@ -189,7 +194,11 @@ impl Game<'_> {
     /// The enchantments item names and tooltips read: a server's, with the
     /// entries its data packs add, else the world's.
     pub(super) fn enchantments(&self) -> &Arc<horizon_client::enchant::Enchantments> {
-        match self.remote.as_ref().and_then(|r| r.enchantments.as_ref()) {
+        match self
+            .remote
+            .as_ref()
+            .and_then(|r| r.tables.enchantments.as_ref())
+        {
             Some(e) => e,
             None => &self.stations().enchantments,
         }

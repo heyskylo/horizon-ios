@@ -1,6 +1,27 @@
 import XCTest
 @testable import LauncherPreview
 
+/// Only a presence marker for the in-memory engine; never actual Minecraft assets.
+private final class PreparedGameFilesFixture {
+    private var created: URL?
+    init() throws {
+        let marker = GameFolder.resources.appendingPathComponent("horizon-resources.json")
+        if !FileManager.default.fileExists(atPath: marker.path) {
+            try FileManager.default.createDirectory(at: marker.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            try Data("{}".utf8).write(to: marker, options: .withoutOverwriting)
+            created = marker
+        }
+    }
+    func cleanUp() throws {
+        // Preserve a marker/resources already supplied by the preview host.
+        if let marker = created {
+            try FileManager.default.removeItem(at: marker)
+            created = nil
+        }
+    }
+}
+
 private final class MemoryAccountVault: AccountVault {
     var values: [String: AccountSecrets] = [:]
     var failWrites = false
@@ -40,6 +61,7 @@ final class AccountTests: XCTestCase {
     private var requests: [String] = []
     private var bridgeCommands: [String] = []
     private let lock = NSLock()
+    private var preparedGameFiles: PreparedGameFilesFixture?
 
     override func setUp() async throws {
         suite = "horizon.auth.fixture." + UUID().uuidString
@@ -51,6 +73,8 @@ final class AccountTests: XCTestCase {
         requests = []; bridgeCommands = []; AuthURLProtocol.failure = nil
     }
     override func tearDown() async throws {
+        try preparedGameFiles?.cleanUp()
+        preparedGameFiles = nil
         session.invalidateAndCancel()
         defaults.removePersistentDomain(forName: suite)
         AuthURLProtocol.response = { _ in (500, [:]) }; AuthURLProtocol.failure = nil
@@ -288,6 +312,7 @@ final class AccountTests: XCTestCase {
         XCTAssertTrue(bridgeCommands.last?.contains("fixture-new-access") == true)
     }
     func testCancelledJoinReplyCannotUncoverOrClearNewLaunch() async throws {
+        preparedGameFiles = try PreparedGameFilesFixture()
         let connectStarted = expectation(description: "connect started")
         var connection: CheckedContinuation<[String: Any], Never>?
         let game = GameLink { command in
@@ -328,6 +353,20 @@ final class AccountTests: XCTestCase {
 
 @MainActor
 final class LaunchCancellationTests: XCTestCase {
+    private var preparedGameFiles: PreparedGameFilesFixture?
+
+    override func setUp() async throws {
+        // These tests start/cancel a prepared game. GameLink deliberately refuses
+        // a waiting engine when its resource-ready marker is absent.
+        preparedGameFiles = try PreparedGameFilesFixture()
+        XCTAssertTrue(GameFolder.hasGameFiles, "The launch lifecycle fixture requires prepared resources")
+    }
+
+    override func tearDown() async throws {
+        try preparedGameFiles?.cleanUp()
+        preparedGameFiles = nil
+    }
+
     @MainActor
     private final class Engine {
         var phase = "waiting"

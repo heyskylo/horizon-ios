@@ -29,6 +29,11 @@ horizon-mcp = { path = "../horizon-mcp" }
 # The server thread ahead of the workers (MinecraftServer.spin's Thread.setPriority).
 horizon-optifine = { path = "../horizon-optifine" }
 horizon-threads = { path = "../horizon-threads" }
+# The .hzperf capture format and writer (docs/perf-platform.md).
+horizon-perf-format = { path = "../horizon-perf-format" }
+# One pool of helper threads for the server tick's parallel phases (`parallel.rs`): threads made
+# once, not for every phase of every tick.
+rayon = "1.10"
 horizon-hdr = { path = "../horizon-hdr" }
 horizon-world = { path = "../horizon-world" }
 horizon-protocol = { path = "../horizon-protocol" }
@@ -38,8 +43,6 @@ horizon-server-files = { path = "../horizon-server-files" }
 getrandom = "0.3"
 # The dedicated server's anticheat, off unless server.toml's [anticheat] turns it on (docs/anticheat.md).
 horizon-anticheat = { path = "../horizon-anticheat" }
-# The dedicated server's chat filter: [chat_filter], the slur list, mutes (docs/chat-filter.md).
-horizon-chat-filter = { path = "../horizon-chat-filter" }
 # Shader packs: reading them and turning their GLSL into naga modules.
 horizon-shaders = { path = "../horizon-shaders" }
 # Horizon's own shader packs: the format, the stages and the check (docs/shaders.md).
@@ -139,6 +142,8 @@ workspace = true
 horizon-theme = { path = "../horizon-theme" }
 horizon-client-render = { path = "../horizon-client-render", features = ["test-support"] }
 horizon-items = { path = "../horizon-items", features = ["test-support"] }
+# Reads back the captures the server_perf tests write.
+horizon-perf = { path = "../horizon-perf" }
 # Every WGSL shader translated as wgpu's DirectX 12 backend does (gfx.rs tests).
 naga = { version = "30.0.1", features = ["wgsl-in", "hlsl-out", "msl-out", "spv-out"] }
 

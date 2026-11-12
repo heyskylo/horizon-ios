@@ -17,8 +17,6 @@ horizon-mcp = { path = "../horizon-mcp" }
 horizon-anticheat = { path = "../horizon-anticheat" }
 # server.toml's [chat_filter], which the game reads too: checked here before every start.
 horizon-chat-filter = { path = "../horizon-chat-filter" }
-# The game process's RAM and CPU (the same probes the benchmark reports use).
-horizon-bench = { path = "../horizon-bench" }
 # The log's local times, as the game prints them.
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
 # The control API's token and the panel's login codes and sessions: the OS's random generator (already in the

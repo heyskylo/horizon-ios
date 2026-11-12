@@ -228,6 +228,8 @@ pub fn attacking_speed(m: &Mob) -> f64 {
 /// Enderman.customServerAiStep: in daylight, flee by teleporting. The End has a
 /// fixed time, so `Level.isBrightOutside` is never true there.
 pub fn custom_server_ai_step(m: &mut Mob, cx: &mut Cx) {
+    // The goals just ran: what `setTarget` did there.
+    set_target_effects(m, cx.events);
     if cx.w.daylight && !cx.w.dimension_type.has_fixed_time && m.age as i32 >= m.extra.counter + 600
     {
         let br = super::hostile::mob_brightness(m, cx.w);
@@ -242,8 +244,49 @@ pub fn custom_server_ai_step(m: &mut Mob, cx: &mut Cx) {
             teleport_random(m, cx.w, cx.events);
         }
     }
-    // Being angry (target set) makes the head "creepy" (render).
-    m.extra.flag = m.ai.target.is_some();
+    set_target_effects(m, cx.events);
+}
+/// `Enderman.setTarget`'s side effects, once the target differs from the
+/// last call's: a target stamps `targetChangeTime` (`extra.counter`, which the
+/// daylight flee reads) and sets `DATA_CREEPY` (`extra.flag`, the open mouth);
+/// none zeroes the time and clears `DATA_CREEPY` and `DATA_STARED_AT`
+/// (`extra.flag2`). A client runs `onSyncedDataUpdated` value by value in id
+/// order, so it sees `DATA_CREEPY` change while `DATA_STARED_AT` still holds:
+/// an anger a stare started plays the stare sound, and so does its end.
+fn set_target_effects(m: &mut Mob, events: &mut Vec<MobEvent>) {
+    let creepy = m.ai.target.is_some();
+    if creepy == m.extra.flag {
+        return;
+    }
+    m.extra.flag = creepy;
+    if m.extra.flag2 {
+        play_stare_sound(m, events);
+    }
+    if creepy {
+        m.extra.counter = m.age as i32;
+    } else {
+        m.extra.counter = 0;
+        m.extra.flag2 = false;
+    }
+}
+/// `Enderman.playStareSound`: at most once in 400 ticks (`lastStareSound`,
+/// kept in `scratch[0]` as its tick + 1, 0 for never), stamped even when the
+/// enderman is silent, which plays nothing; at the eyes.
+fn play_stare_sound(m: &mut Mob, events: &mut Vec<MobEvent>) {
+    let now = m.age as i32;
+    let last = m.extra.scratch[0];
+    if last != 0 && now < last - 1 + 400 {
+        return;
+    }
+    m.extra.scratch[0] = now + 1;
+    if !m.silent {
+        events.push(MobEvent::Sound(
+            "entity.enderman.stare",
+            [m.position.x, m.eye_y(), m.position.z],
+            2.5,
+            1.0,
+        ));
+    }
 }
 /// Whether a hit teleports the enderman away instead of hurting it: any
 /// projectile, unless it rides something (`!isPassenger()`).
@@ -380,11 +423,16 @@ impl Goal for LookForPlayer {
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         self.aggro = reduced(5);
         self.teleport = 0;
-        // setBeingStaredAt: play the stare sound.
-        m.extra.counter = m.age as i32;
+        // setBeingStaredAt: DATA_STARED_AT.
+        m.extra.flag2 = true;
     }
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         self.pending = false;
+        // setTarget(null) clears DATA_STARED_AT; with a target to drop,
+        // `set_target_effects` does it after the sound.
+        if !m.extra.flag {
+            m.extra.flag2 = false;
+        }
         m.ai.target = None;
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
@@ -409,12 +457,6 @@ impl Goal for LookForPlayer {
             if self.aggro <= 0 {
                 self.pending = false;
                 m.ai.target = Some(Who::Player);
-                cx.events.push(MobEvent::Sound(
-                    "entity.enderman.stare",
-                    m.center(),
-                    2.5,
-                    1.0,
-                ));
             }
         } else if m.ai.target == Some(Who::Player) && !m.extra.passenger {
             if stared_at(m, cx.w) {
@@ -461,24 +503,19 @@ impl Goal for TakeBlock {
         if !cx.w.has_tag("minecraft:enderman_holdable", &name) {
             return;
         }
-        // Reachable: the clip from the mob's column hits this block first.
+        // Reachable: the OUTLINE clip from the mob's column, at the block's
+        // height, hits this block first; a miss reports the end's block, as
+        // does a clip that starts where it ends.
         let from = Vec3::new(
             m.position.x.floor() + 0.5,
             f64::from(y) + 0.5,
             m.position.z.floor() + 0.5,
         );
         let to = Vec3::new(f64::from(x) + 0.5, f64::from(y) + 0.5, f64::from(z) + 0.5);
-        let dx = (x - m.position.x.floor() as i32).abs() + (z - m.position.z.floor() as i32).abs();
-        if dx > 0
-            && !cx.w.clear_between(
-                from,
-                Vec3::new(
-                    to.x - (to.x - from.x) * 0.3,
-                    to.y,
-                    to.z - (to.z - from.z) * 0.3,
-                ),
-                false,
-            )
+        if cx
+            .w
+            .outline_hit(from, to)
+            .is_some_and(|hit| hit != [x, y, z])
         {
             return;
         }
@@ -522,6 +559,8 @@ impl Goal for LeaveBlock {
             Vec3::new(f64::from(x + 1), f64::from(y + 1), f64::from(z + 1)),
         );
         // Keep the per-mob occupancy view: later mobs have not moved yet.
+        // `getEntities(this.enderman, ..)` leaves the enderman out; the game
+        // adds the entities that are not mobs.
         let occupants =
             cx.w.others_near(area)
                 .filter(|s| s.id != m.id && !s.removed)
@@ -838,3 +877,6 @@ mod tests {
         );
     }
 }
+#[cfg(test)]
+#[path = "enderman_block_stare_tests.rs"]
+mod block_stare_tests;

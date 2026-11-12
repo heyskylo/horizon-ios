@@ -84,7 +84,10 @@ fn slime_at(world: &World, facts: &BlockFacts, position: BlockPos) -> bool {
 mod fluids;
 mod item_fall;
 mod item_no_physics;
+pub mod nameplate;
+mod obstacles;
 pub use fluids::{fall_reset_hit, fluid_flow, update_entity_fluids, water_clip};
+pub use obstacles::ObstacleGrid;
 
 #[cfg(test)]
 mod drop_motion_tests {
@@ -259,9 +262,28 @@ pub enum ItemSplash {
         velocity: [f64; 3],
     },
 }
-/// `Entity.doWaterSplashEffect` for a dropped item.
+/// `Entity.doWaterSplashEffect` of an entity with no rider, `width` wide, at
+/// `position` moving at `velocity` (a dropped item, a firework rocket).
+pub fn water_splash_effect(
+    position: Vec3,
+    velocity: Vec3,
+    width: f32,
+    random: &mut horizon_core::random::LegacyRandom,
+    splash: &mut impl FnMut(ItemSplash),
+) {
+    let mut water = ItemWater {
+        position,
+        velocity,
+        width,
+        random,
+        splash,
+    };
+    let _ = horizon_world::water_splash::water_splash(&mut water, 1_000_000);
+}
 struct ItemWater<'a, F> {
-    item: &'a mut ItemEntity,
+    position: Vec3,
+    velocity: Vec3,
+    width: f32,
     random: &'a mut horizon_core::random::LegacyRandom,
     splash: &'a mut F,
 }
@@ -274,7 +296,7 @@ impl<F: FnMut(ItemSplash)> horizon_world::water_splash::WaterSplashWorld for Ite
         Ok(None)
     }
     fn velocity(&mut self, _: ()) -> Result<Vec3, Self::Error> {
-        Ok(self.item.velocity)
+        Ok(self.velocity)
     }
     fn splash_sound(&mut self, _: bool) -> Result<(), Self::Error> {
         Ok(())
@@ -286,19 +308,15 @@ impl<F: FnMut(ItemSplash)> horizon_world::water_splash::WaterSplashWorld for Ite
         Ok(self.random.next_double())
     }
     fn play_sound(&mut self, _: (), volume: f32, pitch: f32) -> Result<(), Self::Error> {
-        let at = [
-            self.item.position.x,
-            self.item.position.y,
-            self.item.position.z,
-        ];
+        let at = [self.position.x, self.position.y, self.position.z];
         (self.splash)(ItemSplash::Sound { at, volume, pitch });
         Ok(())
     }
     fn position(&self) -> Vec3 {
-        self.item.position
+        self.position
     }
     fn width(&self) -> f32 {
-        ItemEntity::WIDTH as f32
+        self.width
     }
     fn particle(
         &mut self,
@@ -393,8 +411,9 @@ impl ItemEntity {
         border: Option<&BorderGeometry>,
         blocks: Option<&BoundMovementProperties>,
     ) -> bool {
+        let before = self.velocity;
         let (water, lava) = self.update_fluids(world, fluids);
-        self.water_entry(water > 0.0, self.ticks == 0, &mut |_| {});
+        self.water_entry(water > 0.0, self.ticks == 0, before, &mut |_| {});
         self.lava_fall(lava > 0.0);
         let step = self.tick_move(
             world,
@@ -415,8 +434,9 @@ impl ItemEntity {
             &mut self.velocity,
         );
         let alive = self.tick_settle(world, facts, no_physics, step);
+        let before = self.velocity;
         let (water, _) = self.update_fluids(world, fluids);
-        self.water_entry(water > 0.0, false, &mut |_| {});
+        self.water_entry(water > 0.0, false, before, &mut |_| {});
         alive
     }
 }
@@ -560,11 +580,13 @@ impl ItemEntity {
         )
     }
     /// `Entity.updateFluidInteraction`: water resets the fall, and entering
-    /// it after the first tick runs `doWaterSplashEffect`.
+    /// it after the first tick runs `doWaterSplashEffect` at `velocity`, the
+    /// motion before the fluids' currents push it.
     pub fn water_entry<F: FnMut(ItemSplash)>(
         &mut self,
         in_water: bool,
         first_tick: bool,
+        velocity: Vec3,
         splash: &mut F,
     ) {
         if in_water {
@@ -576,14 +598,8 @@ impl ItemEntity {
                     .wrapping_mul(0x5DEECE66D)
                     .wrapping_add(self.ticks as i64),
             );
-            let _ = horizon_world::water_splash::water_splash(
-                &mut ItemWater {
-                    item: self,
-                    random: &mut random,
-                    splash,
-                },
-                1_000_000,
-            );
+            let width = Self::WIDTH as f32;
+            water_splash_effect(self.position, velocity, width, &mut random, splash);
         }
         self.was_touching_water = in_water;
     }
@@ -933,7 +949,7 @@ impl ItemEntity {
         if self.age != i16::MIN as i32 {
             self.age += 1;
         }
-        self.age < 6000 && self.position.y > -128.0
+        self.age < 6000 && self.position.y >= f64::from(world.shape.min_y - 64)
     }
     /// `Entity.makeStuckInBlock` as `WebBlock.entityInside` and
     /// `PowderSnowBlock.entityInside` call it for an item (which, unlike a
@@ -1111,110 +1127,6 @@ fn lava_cauldron_contacts(
     }
     contacts
 }
-/// The boxes that stop a dropped item (boats, minecarts, shulkers, a held-still happy ghast),
-/// binned by 8-block cell, so an item looks only at the ones near it: a farm with many drops and
-/// many vehicles checks a handful of boxes per item, not every box in the level.
-#[derive(Default)]
-pub struct ObstacleGrid {
-    cells: crate::fast_hash::FxHashMap<(i32, i32, i32), Vec<u32>>,
-    boxes: Vec<Aabb>,
-    /// Each box's entity's `getRootVehicle` when it rides something; empty
-    /// when none was given.
-    roots: Vec<Option<u32>>,
-    found: Vec<u32>,
-}
-impl ObstacleGrid {
-    const CELL: f64 = 8.0;
-    pub fn new(boxes: Vec<Aabb>) -> Self {
-        Self::with_roots(boxes, Vec::new())
-    }
-    /// [`Self::new`] with the vehicle at the bottom of what each box's entity
-    /// rides (`roots[i]` for `boxes[i]`), so [`Self::near_except`] can leave a
-    /// mover's own riders out.
-    pub fn with_roots(boxes: Vec<Aabb>, roots: Vec<Option<u32>>) -> Self {
-        let mut cells: crate::fast_hash::FxHashMap<(i32, i32, i32), Vec<u32>> = Default::default();
-        for (i, b) in boxes.iter().enumerate() {
-            let (lo, hi) = Self::span(*b);
-            for x in lo.0..=hi.0 {
-                for y in lo.1..=hi.1 {
-                    for z in lo.2..=hi.2 {
-                        cells.entry((x, y, z)).or_default().push(i as u32);
-                    }
-                }
-            }
-        }
-        Self {
-            cells,
-            boxes,
-            roots,
-            found: Vec::new(),
-        }
-    }
-    fn span(b: Aabb) -> ((i32, i32, i32), (i32, i32, i32)) {
-        let cell = |v: Vec3| {
-            (
-                (v.x / Self::CELL).floor() as i32,
-                (v.y / Self::CELL).floor() as i32,
-                (v.z / Self::CELL).floor() as i32,
-            )
-        };
-        (cell(b.min_position()), cell(b.max_position()))
-    }
-    pub fn is_empty(&self) -> bool {
-        self.boxes.is_empty()
-    }
-    /// The boxes meeting `area` (`getEntityCollisions`'s query box), in the order they were given.
-    pub fn near(&mut self, area: Aabb, out: &mut Vec<Aabb>) {
-        self.near_except(area, None, out);
-    }
-    /// [`Self::near`] without the boxes of what rides `vehicle` (given with
-    /// [`Self::with_roots`]): `Entity.canCollideWith` leaves out
-    /// `isPassengerOfSameVehicle`, so a stand's riders do not stop it.
-    pub fn near_except(&mut self, area: Aabb, vehicle: Option<u32>, out: &mut Vec<Aabb>) {
-        out.clear();
-        if self.boxes.is_empty() {
-            return;
-        }
-        let kept = |i: usize| vehicle.is_none() || self.roots.get(i).copied().flatten() != vehicle;
-        let (lo, hi) = Self::span(area);
-        let side = |lo: i32, hi: i32| (i64::from(hi) - i64::from(lo) + 1).max(0);
-        let cells = side(lo.0, hi.0)
-            .saturating_mul(side(lo.1, hi.1))
-            .saturating_mul(side(lo.2, hi.2));
-        // An area over more cells than there are boxes (a stand loaded with a
-        // huge Motion asks for one millions of blocks long): test each box
-        // once rather than walk the cells.
-        if cells > self.boxes.len() as i64 {
-            out.extend(
-                self.boxes
-                    .iter()
-                    .enumerate()
-                    .filter(|&(i, b)| kept(i) && b.intersects(area))
-                    .map(|(_, b)| *b),
-            );
-            return;
-        }
-        self.found.clear();
-        for x in lo.0..=hi.0 {
-            for y in lo.1..=hi.1 {
-                for z in lo.2..=hi.2 {
-                    if let Some(list) = self.cells.get(&(x, y, z)) {
-                        self.found.extend(list);
-                    }
-                }
-            }
-        }
-        self.found.sort_unstable();
-        self.found.dedup();
-        for &i in &self.found {
-            let b = self.boxes[i as usize];
-            if kept(i as usize) && b.intersects(area) {
-                out.push(b);
-            }
-        }
-    }
-}
-
 /// Dropped items by block cell, for `ItemEntity.mergeWithNeighbours`'s
 /// search around an item. Holds indexes into the tick's item list.
 #[derive(Default)]
@@ -1371,13 +1283,48 @@ pub struct ExperienceOrb {
     pub ticks: u32,
     /// `ExperienceOrb.health`: damage wears it down from 5 (`hurtServer`).
     pub health: i32,
+    /// `Entity.airSupply`: loaded and saved as is; an orb never breathes.
+    pub air: i32,
     /// `Entity.noGravity`: `ExperienceOrb.tick`'s `applyGravity` does nothing.
     pub no_gravity: bool,
     /// `ExperienceOrb.followingPlayer`: the followed player's entity id, kept
     /// until they are gone or further than 8 blocks. Never saved.
     pub following: Option<u32>,
+    /// `Entity.fallDistance` (`fall_distance` in its save).
+    pub fall_distance: f64,
+}
+/// An orb's `Entity.move` this tick, for the fall bookkeeping its caller
+/// finishes (the long-move cast, `checkFallDamage`'s HIT_GROUND).
+#[derive(Clone, Copy, Debug)]
+pub struct OrbMove {
+    pub from: Vec3,
+    pub moved: Vec3,
+    /// `Entity.isInWater` from this tick's fluid step.
+    pub in_water: bool,
 }
 impl ExperienceOrb {
+    /// A fresh orb (`new ExperienceOrb(level, pos, motion, value)`): full
+    /// health, no age, fall or followed player, not yet ticked.
+    pub fn new(id: u32, position: Vec3, velocity: Vec3, value: i32) -> Self {
+        Self {
+            rotation: [0.0, 0.0],
+            join: Default::default(),
+            id,
+            position,
+            previous: position,
+            velocity,
+            value,
+            age: 0,
+            on_ground: false,
+            count: 1,
+            ticks: 0,
+            health: 5,
+            air: 300,
+            no_gravity: false,
+            following: None,
+            fall_distance: 0.0,
+        }
+    }
     /// `ExperienceOrb.hurtServer`: the damage comes off the health as an
     /// `int`; an orb at 0 or below is discarded. True when it is gone.
     pub fn hurt(&mut self, damage: f32) -> bool {
@@ -1501,7 +1448,7 @@ impl ExperienceOrb {
         fluids: &crate::motion::FluidResources,
         on_sound: &mut dyn FnMut([f64; 3], f32),
     ) -> bool {
-        self.tick_among(
+        let (stays, _) = self.tick_among(
             world,
             facts,
             collision,
@@ -1512,10 +1459,12 @@ impl ExperienceOrb {
             fluids,
             on_sound,
             &[],
-        )
+        );
+        stays
     }
     /// [`Self::tick`], its move also stopped by `entities`: the boxes of the
     /// entities that `canBeCollidedWith` it (`EntityGetter.getEntityCollisions`).
+    /// Also gives the move it made, whose fall bookkeeping the caller finishes.
     #[allow(clippy::too_many_arguments)]
     pub fn tick_among(
         &mut self,
@@ -1529,12 +1478,12 @@ impl ExperienceOrb {
         fluids: &crate::motion::FluidResources,
         on_sound: &mut dyn FnMut([f64; 3], f32),
         entities: &[Aabb],
-    ) -> bool {
+    ) -> (bool, OrbMove) {
         self.ticks += 1;
         self.previous = self.position;
         // `Entity.baseTick`'s fluid step, whose `updateFluidOnEyes` answer the
         // water branch below reads: the orb's eye, not its feet, decides.
-        let eye_in_water = self.update_fluids(world, fluids);
+        let (eye_in_water, in_water) = self.update_fluids(world, fluids);
         let block = world.block(
             self.position.x.floor() as i32,
             self.position.y.floor() as i32,
@@ -1601,6 +1550,7 @@ impl ExperienceOrb {
         let moved = scene
             .resolve_in_border_with(bounds, wanted, 0.0, self.on_ground, border, entities)
             .unwrap_or(Vec3::ZERO);
+        let from = self.position;
         self.position = Vec3::new(
             self.position.x + moved.x,
             self.position.y + moved.y,
@@ -1648,7 +1598,12 @@ impl ExperienceOrb {
             self.velocity.y = -wanted.y * 0.4;
         }
         self.age += 1;
-        !discarded && self.age < 6000
+        let step = OrbMove {
+            from,
+            moved,
+            in_water,
+        };
+        (!discarded && self.age < 6000, step)
     }
     /// `LavaFluid.entityInside` -> `Entity.lavaHurt`: four damage on the
     /// server, through the orb's existing hurt/discard policy, playing the generic
@@ -1995,8 +1950,8 @@ pub struct ItemFrame {
     pub facing: u8,
     pub glow: bool,
     pub item: Option<crate::items::ItemStack>,
-    /// 0..8, in 45 degree steps.
-    pub rotation: u8,
+    /// Java `%` remainder of ItemRotation, so -7..=7 in 45 degree steps.
+    pub rotation: i8,
     pub drop_chance: f32,
     pub fixed: bool,
     pub invisible: bool,
@@ -2107,6 +2062,8 @@ pub struct ArmorStand {
     /// (`getAttribute`) on the stand's first server tick, and a save that lists
     /// it loads it back, so a stand summoned this tick has none yet.
     pub speed_instance: bool,
+    /// `NAME_TAG_DISTANCE` and `BELOW_NAME_DISTANCE` from server attribute updates.
+    pub nameplate: crate::entities::nameplate::NameplateDistances,
 }
 /// The fluid a stand travels in (`LivingEntity.travelInFluid`: water first,
 /// then lava), from the heights `Entity::push_by_fluid` measured.
@@ -2190,20 +2147,6 @@ impl ArmorStand {
     }
 }
 impl ArmorStand {
-    /// `NameTagItem.interactLivingEntity`: a custom name handles the use;
-    /// only a living target changes. Stack consumption belongs to the caller.
-    pub fn name_with_tag(&mut self, stack: &ItemStack) -> bool {
-        if &*stack.item != "minecraft:name_tag" {
-            return false;
-        }
-        let Some(name) = stack.data().and_then(|data| data.custom_name.as_ref()) else {
-            return false;
-        };
-        if self.health > 0.0 {
-            self.custom_name = Some(crate::component::name_text(name));
-        }
-        true
-    }
     pub const SLOTS: [&'static str; 6] = ["mainhand", "offhand", "feet", "legs", "chest", "head"];
     /// The `Pose` compound's keys.
     pub const POSE_KEYS: [&'static str; 6] =
@@ -2360,6 +2303,7 @@ impl ArmorStand {
             enchantment_equipment: Default::default(),
             support: Default::default(),
             speed_instance: false,
+            nameplate: Default::default(),
         }
     }
     /// `Entity.getOnPos(0.2)` (`getOnPosLegacy`): the supporting block's
@@ -3433,6 +3377,7 @@ mod world_border_tests {
                 None,
             );
             let mut orb = ExperienceOrb {
+                fall_distance: 0.0,
                 rotation: [0.0, 0.0],
                 join: Default::default(),
                 no_gravity: false,
@@ -3446,6 +3391,7 @@ mod world_border_tests {
                 count: 1,
                 ticks: 0,
                 health: 5,
+                air: 300,
                 following: None,
             };
             orb.tick(
@@ -4848,6 +4794,7 @@ mod orb_underwater_tests {
             .iter()
             .map(|(v, _)| {
                 let mut orb = ExperienceOrb {
+                    fall_distance: 0.0,
                     rotation: [0.0, 0.0],
                     join: Default::default(),
                     no_gravity: false,
@@ -4861,6 +4808,7 @@ mod orb_underwater_tests {
                     count: 1,
                     ticks: 0,
                     health: 5,
+                    air: 300,
                     following: None,
                 };
                 orb.set_underwater_movement();
@@ -4882,6 +4830,7 @@ mod render_light_tests {
 
     fn orb(y: f64) -> ExperienceOrb {
         ExperienceOrb {
+            fall_distance: 0.0,
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -4895,6 +4844,7 @@ mod render_light_tests {
             count: 1,
             ticks: 0,
             health: 5,
+            air: 300,
             following: None,
         }
     }
@@ -5083,6 +5033,7 @@ mod orb_lava_tests {
 
     fn sample_orb(at: Vec3, health: i32) -> ExperienceOrb {
         ExperienceOrb {
+            fall_distance: 0.0,
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -5096,6 +5047,7 @@ mod orb_lava_tests {
             count: 1,
             ticks: 0,
             health,
+            air: 300,
             following: None,
         }
     }

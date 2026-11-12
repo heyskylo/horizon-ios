@@ -63,7 +63,7 @@ glibc. An absent musl archive is not a reason to install the glibc archive on a 
 
 ## Run from a checkout
 
-Use current stable Rust (1.90+) and JDK 25 (Python 3.10+ only for the development
+Use current stable Rust (1.90+) and JDK 25 (Python 3.11+ only for the development
 harnesses). A checkout never
 downloads the game: resource preparation imports **your own copy** (the 26.3
 client from your official launcher install, and the 26.3 server jar you

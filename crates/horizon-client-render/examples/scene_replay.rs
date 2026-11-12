@@ -6,13 +6,14 @@
 //! [--mipmaps N] [--lod-distance CHUNKS] [--render-distance CHUNKS] [--size WxH]
 //! [--section-draws flat|indirect] [--section-cull on|off] [--section-sides on|off]
 //! [--gpu-culling on|off] [--root RESOURCES] [--screenshot PNG]
-//! [--world SAVE --leaf-culling MODE] [--memory on]`
+//! [--world SAVE --leaf-culling MODE] [--memory on] [--gpu-detail on|off]`
 //! `--screenshot` saves the first view's last frame, after the timed frames.
 //! `--world` meshes the captured sections again from that save's region files
 //! (blocks, biomes and saved light; `ao`, `biomeBlendRadius` and `cutoutLeaves`
 //! from `./options.txt`) with `--leaf-culling` (default `off`), so a mesher
 //! change can be measured on the captured view. A section whose 3x3 columns are
 //! not all saved keeps its captured mesh.
+//! `--gpu-detail on` adds GPU culling's dispatch times and, on Vulkan, the world passes' counters.
 //! `--memory on` adds the renderer's largest GPU resources and, on macOS, the process's
 //! physical footprint by category (`footprint`), taken after the timed frames.
 use horizon_client_render::{
@@ -24,6 +25,7 @@ use horizon_client_render::{
     gfx::{
         PreparedTextures, Renderer, ScreenshotRequest,
         capture::{self, AtlasCheck, Scene},
+        pack_timing,
         panorama::Faces,
     },
     graphics::LeafCullingMode,
@@ -61,7 +63,10 @@ use winit::{
 // The game's allocator, so that `--memory`'s footprint is the game's: the system heap kept
 // gigabytes of the meshes `--world` frees dirty.
 #[global_allocator]
-static ALLOCATOR: horizon_threads::Allocator = horizon_threads::ALLOCATOR;
+static ALLOCATOR: horizon_threads::GameAllocator = horizon_threads::GAME_ALLOCATOR;
+
+/// Frames drawn with detail on, enough for a few timed frames of each kind.
+const DETAIL_FRAMES: usize = 60;
 
 #[derive(Default)]
 struct Options {
@@ -84,6 +89,7 @@ struct Options {
     world: Option<PathBuf>,
     leaf_culling: LeafCullingMode,
     memory: bool,
+    gpu_detail: bool,
 }
 
 fn on_off(value: &str) -> Result<bool, String> {
@@ -136,6 +142,7 @@ fn options() -> Result<Options, String> {
             "--screenshot" => o.screenshot = Some(value.into()),
             "--world" => o.world = Some(value.into()),
             "--memory" => o.memory = on_off(&value)?,
+            "--gpu-detail" => o.gpu_detail = on_off(&value)?,
             "--leaf-culling" => {
                 o.leaf_culling = LeafCullingMode::ALL
                     .into_iter()
@@ -400,6 +407,23 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
                 None => notes.push("screenshot: not saved".into()),
             }
         }
+        let mut detail = serde_json::Map::new();
+        if o.gpu_detail {
+            renderer.set_pass_detail(true);
+            for _ in 0..DETAIL_FRAMES {
+                draw(&mut renderer)?;
+            }
+            detail.insert(
+                "gpu_pass_parts_median_ms".into(),
+                pack_timing::parts_json(&renderer.own_pass_parts()),
+            );
+            let unit = renderer.pass_detail_support().and_then(|s| s.fragment_unit);
+            detail.insert(
+                "gpu_counters_median".into(),
+                pack_timing::counters_by_pass_json(&renderer.own_pass_counters(), unit),
+            );
+            renderer.set_pass_detail(false);
+        }
         views.push(json!({
             "yaw_offset": offset,
             "gpu_ms": summary(&gpu),
@@ -417,6 +441,9 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
             // indices hidden.
             "culled": renderer.culled_sections(),
         }));
+        if let Some(Value::Object(view)) = views.last_mut() {
+            view.extend(detail);
+        }
     }
     let section_draws = if renderer.flat_draws() {
         "flat"
@@ -424,6 +451,11 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         "indirect"
     };
     let memory = o.memory.then(|| memory_report(&renderer));
+    let gpu_detail = o
+        .gpu_detail
+        .then(|| renderer.pass_detail_support())
+        .flatten()
+        .map(pack_timing::support_json);
     let report = json!({
         "capture": o.dir.display().to_string(),
         "adapter": renderer.info.name,
@@ -454,6 +486,7 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         "notes": notes,
         "views": views,
         "memory": memory,
+        "gpu_detail": gpu_detail,
     });
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())

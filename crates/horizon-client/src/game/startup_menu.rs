@@ -608,6 +608,14 @@ impl Loading {
                     let _ = std::fs::create_dir_all(&dir);
                     packs::open_folder(&dir);
                 }
+                Event::ImportPacks(paths) => {
+                    packs::import_resource_packs(
+                        &mut self.menu.options,
+                        &self.vanilla_root,
+                        &[],
+                        &paths,
+                    );
+                }
                 Event::DownloadPack(i) => {
                     let dir = packs::packs_dir();
                     if let Some(screen) = &mut self.menu.options.pack_screen
@@ -1089,7 +1097,16 @@ impl Loading {
             // `PackSelectionScreen.onFilesDrop`: a pack dropped on the window
             // joins the Create New World screen's data packs.
             WindowEvent::DroppedFile(path) => {
-                if let Some(title) = &mut self.menu.title {
+                let batch = HudBatch::new(self.menu_size());
+                let handled = self.menu.options_open
+                    && self.gui.as_ref().is_some_and(|gui| {
+                        self.menu.options.drop_resource_pack(
+                            path.clone(),
+                            &gui.atlas,
+                            (batch.width, batch.height),
+                        )
+                    });
+                if !handled && let Some(title) = &mut self.menu.title {
                     title.drop_file(path);
                 }
             }
@@ -1440,6 +1457,274 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn resource_pack_drops_import_from_startup_and_game_options() {
+        struct Loop;
+        impl super::super::event_loop::EventLoopCtl for Loop {
+            fn exit(&self) {}
+            fn set_control_flow(&self, _: winit::event_loop::ControlFlow) {}
+        }
+        let root =
+            PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources"));
+        let game_dir = std::env::current_dir().unwrap();
+        assert!(
+            std::fs::read_dir(&game_dir).unwrap().next().is_none(),
+            "run the built test executable directly from an empty scratch game directory"
+        );
+        let source = game_dir.join("drop-fixtures");
+        std::fs::create_dir(&source).unwrap();
+        for name in ["Startup pack", "Game pack"] {
+            let path = source.join(name);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(
+                path.join("pack.mcmeta"),
+                br#"{"pack":{"pack_format":1,"description":"Drop test"}}"#,
+            )
+            .unwrap();
+        }
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let mut loading = loading(receiver);
+        loading.gui = Some(gui(&root));
+        loading.vanilla_root = root.clone();
+        loading.open_menu_options(Page::Packs);
+        loading
+            .menu_event(&Loop, WindowEvent::DroppedFile(source.join("Startup pack")))
+            .unwrap();
+        assert!(
+            loading
+                .menu
+                .options
+                .pack_screen
+                .as_ref()
+                .unwrap()
+                .confirming()
+        );
+        assert!(!packs::packs_dir().join("Startup pack").exists());
+        let batch = HudBatch::new(loading.menu_size());
+        let events = loading.menu.options.click(
+            &mut loading.settings,
+            &loading.gui.as_ref().unwrap().atlas,
+            batch.width / 2.0 - 150.0,
+            batch.height / 2.0 + 20.0,
+            (batch.width, batch.height),
+            [1280, 720],
+            false,
+            false,
+        );
+        assert!(events.iter().any(|e| matches!(e, Event::ImportPacks(_))));
+        loading.menu_option_events(events);
+        assert!(
+            packs::packs_dir()
+                .join("Startup pack/pack.mcmeta")
+                .is_file()
+        );
+        assert!(
+            loading
+                .menu
+                .options
+                .pack_infos
+                .iter()
+                .any(|p| p.id == "file/Startup pack")
+        );
+        assert!(loading.settings.resource_packs.is_empty());
+
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = execution_role::ExecutionRole::IntegratedServer;
+        let resources = Box::leak(Box::new(loaded.resources));
+        let mut game = Game::new(
+            resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.title = Some(Title::new(PathBuf::from("saves"), &root));
+        game.open_options_at(true, Page::Packs);
+        game.handle_window_event_inner(&Loop, WindowEvent::DroppedFile(source.join("Game pack")));
+        assert!(game.ui.options.pack_screen.as_ref().unwrap().confirming());
+        assert!(!packs::packs_dir().join("Game pack").exists());
+        let size = game.gui_size();
+        let events = game.ui.options.click(
+            &mut game.settings,
+            &game.gui.atlas,
+            size.0 / 2.0 - 150.0,
+            size.1 / 2.0 + 20.0,
+            size,
+            [1280, 720],
+            false,
+            false,
+        );
+        assert!(events.iter().any(|e| matches!(e, Event::ImportPacks(_))));
+        game.handle_option_events(events).unwrap();
+        assert!(packs::packs_dir().join("Game pack/pack.mcmeta").is_file());
+        assert!(
+            game.ui
+                .options
+                .pack_infos
+                .iter()
+                .any(|p| p.id == "file/Game pack")
+        );
+        assert!(game.settings.resource_packs.is_empty());
+    }
+
+    #[test]
+    fn the_world_renderer_waits_for_the_first_title_frame() {
+        let (_send, receiver) = std::sync::mpsc::channel();
+        let mut loading = loading(receiver);
+        // No menu bundle yet: nothing to wait for.
+        assert!(loading.ready_for_handoff());
+        // The title artwork is up but no frame of it was presented.
+        loading.ui_at = Some(Instant::now());
+        assert!(!loading.ready_for_handoff());
+        loading.title_drawn = true;
+        assert!(loading.ready_for_handoff());
+        // A window never asked to redraw doesn't hold the start for long.
+        loading.title_drawn = false;
+        loading.ui_at = Instant::now().checked_sub(Duration::from_secs(2));
+        assert!(loading.ready_for_handoff());
+    }
+
+    #[test]
+    fn menu_is_usable_while_the_core_worker_is_blocked() {
+        let root = std::env::temp_dir().join("horizon-startup-menu-no-world-resources");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let (published, published_rx) = std::sync::mpsc::channel();
+        let worker_root = root.clone();
+        let worker = std::thread::spawn(move || {
+            sender
+                .send(LoaderMsg::Ui(gui(&worker_root), worker_root))
+                .unwrap();
+            published.send(()).unwrap();
+            wait.recv().unwrap();
+            sender
+                .send(LoaderMsg::Done(Err("core failure".into())))
+                .unwrap();
+        });
+        published_rx.recv().unwrap();
+        let mut loading = loading(receiver);
+        loading.poll_menu_resources().unwrap();
+        assert!(loading.gui.is_some());
+        assert!(loading.loaded.is_none());
+        assert!(!worker.is_finished());
+        // Navigate and enter a world name without a registry, biomes, pack
+        // tables or a Game. Replacing fallback artwork preserves this state.
+        let title = loading.menu.title.as_mut().unwrap();
+        title.mode = horizon_client::title::Mode::Create {
+            name: String::new(),
+            seed: "42".into(),
+            creative: true,
+            focus: 0,
+            options: Default::default(),
+        };
+        title.type_text("My world");
+        loading.set_ui(gui(&root), root);
+        let action = loading.menu.title.as_ref().unwrap().create_action();
+        loading.menu.queue_entry(action, "Player".into());
+        assert!(
+            matches!(&loading.menu.pending, Some(PendingWorldEntry::Local {
+            name: Some(name), seed: Some(42), creative: true, create: Some(_), ..
+        }) if name == "My world")
+        );
+        let mut batch = HudBatch::new([1280, 720]);
+        loading.draw_menu(&mut batch);
+        assert!(
+            !batch.vertices.is_empty(),
+            "queued entry draws loading progress"
+        );
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        loading.poll_menu_resources().unwrap();
+        assert!(matches!(loading.loaded, Some(Err(ref error)) if error == "core failure"));
+    }
+
+    #[test]
+    fn queued_server_keeps_address_player_identity_and_lan_kind() {
+        let mut menu = StartupMenu::default();
+        menu.queue_entry(
+            Action::Connect {
+                address: "localhost:25565".into(),
+                lan: true,
+                realm: false,
+            },
+            "Guest".into(),
+        );
+        assert!(
+            matches!(menu.pending.take(), Some(PendingWorldEntry::Server { address, name, lan: true, .. })
+            if address == "localhost:25565" && name == "Guest")
+        );
+        assert!(menu.pending.take().is_none(), "an entry is consumed once");
+    }
+
+    #[test]
+    fn a_failed_generation_keeps_its_error_after_the_loader_ends() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            sender
+                .send(LoaderMsg::Done(Err("missing facts.json".into())))
+                .unwrap();
+        });
+        let mut loading = loading(receiver);
+        loading.handle = Some(worker);
+        while loading.loaded.is_none() {
+            loading.poll_menu_resources().unwrap();
+        }
+        // App::about_to_wait takes the result to report it; the loop may poll
+        // once more before it exits, with the loader gone.
+        assert!(matches!(loading.loaded.take(), Some(Err(e)) if e == "missing facts.json"));
+        while !loading.handle.as_ref().is_none_or(JoinHandle::is_finished) {
+            std::thread::yield_now();
+        }
+        loading.poll_menu_resources().unwrap();
+        assert!(loading.loaded.is_none());
+    }
+
+    #[test]
+    fn a_panicking_loader_reports_its_panic() {
+        let (sender, receiver) = std::sync::mpsc::channel::<LoaderMsg>();
+        let worker = std::thread::spawn(move || {
+            let _sender = sender;
+            panic!("atlas has no fonts");
+        });
+        while !worker.is_finished() {
+            std::thread::yield_now();
+        }
+        let mut loading = loading(receiver);
+        loading.handle = Some(worker);
+        assert_eq!(
+            loading.poll_menu_resources().unwrap_err().to_string(),
+            "resource loader stopped before finishing: atlas has no fonts"
+        );
+    }
+
+    #[test]
+    fn disconnected_core_worker_is_reported_instead_of_waiting_forever() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        drop(sender);
+        let mut loading = loading(receiver);
+        assert_eq!(
+            loading.poll_menu_resources().unwrap_err().to_string(),
+            "resource loader stopped before finishing: no loader thread was running"
+        );
+    }
+    #[test]
     fn startup_options_handoff_moves_the_mod_install_and_its_busy_screen_together() {
         let (jobs, release) = super::super::mod_browser::Jobs::blocked_test_install();
         let mut menu = StartupMenu {
@@ -1609,146 +1894,5 @@ mod tests {
         assert!(error.to_string().contains("missing menu bundle"));
         assert_eq!(loading.options.as_ref().unwrap().resources, root);
         assert!(!loading.completed_without_game);
-    }
-
-    #[test]
-    fn the_world_renderer_waits_for_the_first_title_frame() {
-        let (_send, receiver) = std::sync::mpsc::channel();
-        let mut loading = loading(receiver);
-        // No menu bundle yet: nothing to wait for.
-        assert!(loading.ready_for_handoff());
-        // The title artwork is up but no frame of it was presented.
-        loading.ui_at = Some(Instant::now());
-        assert!(!loading.ready_for_handoff());
-        loading.title_drawn = true;
-        assert!(loading.ready_for_handoff());
-        // A window never asked to redraw doesn't hold the start for long.
-        loading.title_drawn = false;
-        loading.ui_at = Instant::now().checked_sub(Duration::from_secs(2));
-        assert!(loading.ready_for_handoff());
-    }
-
-    #[test]
-    fn menu_is_usable_while_the_core_worker_is_blocked() {
-        let root = std::env::temp_dir().join("horizon-startup-menu-no-world-resources");
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let (release, wait) = std::sync::mpsc::channel();
-        let (published, published_rx) = std::sync::mpsc::channel();
-        let worker_root = root.clone();
-        let worker = std::thread::spawn(move || {
-            sender
-                .send(LoaderMsg::Ui(gui(&worker_root), worker_root))
-                .unwrap();
-            published.send(()).unwrap();
-            wait.recv().unwrap();
-            sender
-                .send(LoaderMsg::Done(Err("core failure".into())))
-                .unwrap();
-        });
-        published_rx.recv().unwrap();
-        let mut loading = loading(receiver);
-        loading.poll_menu_resources().unwrap();
-        assert!(loading.gui.is_some());
-        assert!(loading.loaded.is_none());
-        assert!(!worker.is_finished());
-        // Navigate and enter a world name without a registry, biomes, pack
-        // tables or a Game. Replacing fallback artwork preserves this state.
-        let title = loading.menu.title.as_mut().unwrap();
-        title.mode = horizon_client::title::Mode::Create {
-            name: String::new(),
-            seed: "42".into(),
-            creative: true,
-            focus: 0,
-            options: Default::default(),
-        };
-        title.type_text("My world");
-        loading.set_ui(gui(&root), root);
-        let action = loading.menu.title.as_ref().unwrap().create_action();
-        loading.menu.queue_entry(action, "Player".into());
-        assert!(
-            matches!(&loading.menu.pending, Some(PendingWorldEntry::Local {
-            name: Some(name), seed: Some(42), creative: true, create: Some(_), ..
-        }) if name == "My world")
-        );
-        let mut batch = HudBatch::new([1280, 720]);
-        loading.draw_menu(&mut batch);
-        assert!(
-            !batch.vertices.is_empty(),
-            "queued entry draws loading progress"
-        );
-        release.send(()).unwrap();
-        worker.join().unwrap();
-        loading.poll_menu_resources().unwrap();
-        assert!(matches!(loading.loaded, Some(Err(ref error)) if error == "core failure"));
-    }
-
-    #[test]
-    fn queued_server_keeps_address_player_identity_and_lan_kind() {
-        let mut menu = StartupMenu::default();
-        menu.queue_entry(
-            Action::Connect {
-                address: "localhost:25565".into(),
-                lan: true,
-                realm: false,
-            },
-            "Guest".into(),
-        );
-        assert!(
-            matches!(menu.pending.take(), Some(PendingWorldEntry::Server { address, name, lan: true, .. })
-            if address == "localhost:25565" && name == "Guest")
-        );
-        assert!(menu.pending.take().is_none(), "an entry is consumed once");
-    }
-
-    #[test]
-    fn a_failed_generation_keeps_its_error_after_the_loader_ends() {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            sender
-                .send(LoaderMsg::Done(Err("missing facts.json".into())))
-                .unwrap();
-        });
-        let mut loading = loading(receiver);
-        loading.handle = Some(worker);
-        while loading.loaded.is_none() {
-            loading.poll_menu_resources().unwrap();
-        }
-        // App::about_to_wait takes the result to report it; the loop may poll
-        // once more before it exits, with the loader gone.
-        assert!(matches!(loading.loaded.take(), Some(Err(e)) if e == "missing facts.json"));
-        while !loading.handle.as_ref().is_none_or(JoinHandle::is_finished) {
-            std::thread::yield_now();
-        }
-        loading.poll_menu_resources().unwrap();
-        assert!(loading.loaded.is_none());
-    }
-
-    #[test]
-    fn a_panicking_loader_reports_its_panic() {
-        let (sender, receiver) = std::sync::mpsc::channel::<LoaderMsg>();
-        let worker = std::thread::spawn(move || {
-            let _sender = sender;
-            panic!("atlas has no fonts");
-        });
-        while !worker.is_finished() {
-            std::thread::yield_now();
-        }
-        let mut loading = loading(receiver);
-        loading.handle = Some(worker);
-        assert_eq!(
-            loading.poll_menu_resources().unwrap_err().to_string(),
-            "resource loader stopped before finishing: atlas has no fonts"
-        );
-    }
-
-    #[test]
-    fn disconnected_core_worker_is_reported_instead_of_waiting_forever() {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        drop(sender);
-        let mut loading = loading(receiver);
-        assert_eq!(
-            loading.poll_menu_resources().unwrap_err().to_string(),
-            "resource loader stopped before finishing: no loader thread was running"
-        );
     }
 }

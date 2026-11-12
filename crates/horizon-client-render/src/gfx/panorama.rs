@@ -405,6 +405,20 @@ impl Rotation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CubeMap's cube: its corners' indices, six faces of two triangles.
+    #[test]
+    fn the_packed_cube_corners_are_cubemaps_indices() {
+        let indices = [
+            4, 7, 6, 4, 6, 5, 5, 6, 2, 5, 2, 1, 1, 2, 3, 1, 3, 0, 0, 3, 7, 0, 7, 4, 7, 3, 2, 7, 2,
+            6, 0, 4, 5, 0, 5, 1,
+        ];
+        let source = include_str!("panorama.wgsl");
+        assert_eq!(
+            super::super::cull::packed_lookup(source, "cube_corner", 36),
+            indices
+        );
+    }
     use std::{
         fs,
         sync::atomic::{AtomicU32, Ordering},

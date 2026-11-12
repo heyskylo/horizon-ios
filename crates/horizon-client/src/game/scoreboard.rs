@@ -582,7 +582,7 @@ impl Game<'_> {
         self.team_with_owner(m.id, || tame_owner(m))
     }
     /// A mob's own team, else its tamed owner's (`owner` is asked only then).
-    fn team_with_owner(
+    pub(super) fn team_with_owner(
         &self,
         id: u32,
         owner: impl FnOnce() -> Option<[i32; 4]>,
@@ -651,6 +651,31 @@ impl Game<'_> {
                 })
                 .collect(),
         }
+    }
+    /// The carts (indices into `carts`, as `near` holds them) that cart `i`
+    /// pushes this tick, as `OldMinecartBehavior.pushAndPickupEntities` asks
+    /// `EntitySelector.pushableBy(cart)`: a moving rideable cart keeps only
+    /// what its own team's and the target's collision rules allow; a still or
+    /// unrideable cart pushes every minecart in its box (no team filter).
+    pub(super) fn cart_push_allowed(
+        &self,
+        carts: &[super::minecarts::Minecart],
+        i: usize,
+        near: &[u32],
+    ) -> Vec<bool> {
+        let v = carts[i].velocity;
+        let moving =
+            carts[i].kind == super::minecarts::CartKind::Rideable && v.x * v.x + v.z * v.z >= 0.01;
+        if !moving {
+            return vec![true; near.len()];
+        }
+        let own = self.team_with_owner(carts[i].id, || None);
+        near.iter()
+            .map(|&j| {
+                let target = &carts[j as usize];
+                sb::pushable_by(own, self.team_with_owner(target.id, || None), true)
+            })
+            .collect()
     }
     /// The mobs on the player's team (`isAlliedTo`).
     pub(super) fn player_allies(&self) -> HashSet<u32> {

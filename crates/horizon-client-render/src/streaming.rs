@@ -28,37 +28,7 @@ pub const IDLE_RELEASE: std::time::Duration = std::time::Duration::from_secs(5);
 /// Worker CPU time and job counts by kind, for benchmarks
 /// (`examples/gen_light_bench.rs`). Off unless enabled: a relaxed load per
 /// job then.
-pub mod job_stats {
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    pub const KINDS: [&str; 7] = [
-        "load", "generate", "decorate", "finish", "light", "mesh", "other",
-    ];
-    static ENABLED: AtomicBool = AtomicBool::new(false);
-    static NANOS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
-    static COUNT: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
-    pub fn enable(on: bool) {
-        ENABLED.store(on, Ordering::Relaxed);
-    }
-    pub(super) fn enabled() -> bool {
-        ENABLED.load(Ordering::Relaxed)
-    }
-    pub(super) fn add(kind: usize, nanos: u64) {
-        NANOS[kind].fetch_add(nanos, Ordering::Relaxed);
-        COUNT[kind].fetch_add(1, Ordering::Relaxed);
-    }
-    /// (kind, nanoseconds, count) since the last call; resets them.
-    pub fn take() -> Vec<(&'static str, u64, u64)> {
-        (0..KINDS.len())
-            .map(|i| {
-                (
-                    KINDS[i],
-                    NANOS[i].swap(0, Ordering::Relaxed),
-                    COUNT[i].swap(0, Ordering::Relaxed),
-                )
-            })
-            .collect()
-    }
-}
+pub mod job_stats;
 /// A chunk under generation, opaque to the streamer.
 pub type Proto = Box<dyn std::any::Any + Send>;
 /// Chunk generation in vanilla's stages: a neighbour-independent proto chunk
@@ -529,8 +499,8 @@ pub struct Streaming {
     decoration_order: DecorationOrder,
     order_area: Option<((i32, i32), i32)>,
     /// What the queued jobs' priorities were computed from (`requeue`): the
-    /// centre, the band, and the extra areas.
-    queue_basis: (((i32, i32), Option<Band>), Vec<((i32, i32), i32)>),
+    /// centre, the band, the extra areas, and the forced chunks.
+    queue_basis: forced_ring::Basis,
     finishing: FxHashSet<(i32, i32)>,
     decorates: bool,
     /// `ChunkGenerator::decorates_beside_final`.
@@ -1090,7 +1060,10 @@ pub struct WorkerContext {
     pub light: Arc<LightTables>,
 }
 mod bounded;
+mod queue_census;
+pub use queue_census::QueueCensus;
 mod forced_cover;
+mod forced_ring;
 mod relight_now;
 use bounded::nearest_first;
 use forced_cover::ForcedCover;
@@ -1375,11 +1348,9 @@ impl Streaming {
     /// render distance 32 nothing was decorated until every proto chunk had
     /// been generated.
     fn requeue(&mut self) {
-        let basis = (self.center, self.band);
-        if self.queue_basis.0 == basis && self.queue_basis.1 == self.extra {
+        if !forced_ring::basis_changed(self) {
             return;
         }
-        self.queue_basis = (basis, self.extra.clone());
         let mut queue = self.shared.queue.lock().unwrap();
         rank_again(&mut queue, |x, z| self.distance(x, z));
     }
@@ -1746,6 +1717,7 @@ impl Streaming {
         &mut self,
         world: &mut World,
     ) -> (Vec<((i32, i32, i32), SectionMesh)>, Vec<Arc<Chunk>>) {
+        let mut hz_laps = crate::spans::laps();
         let mut uploads = Vec::new();
         if self.paused {
             return (uploads, Vec::new());
@@ -1771,6 +1743,7 @@ impl Streaming {
         self.scan_age = if sweep { 0 } else { self.scan_age + 1 };
         self.requeue();
         self.relight_edits(world);
+        hz_laps.lap("st_relight_edits");
         let deferred = std::mem::take(&mut self.deferred);
         let received = self.shared.done.take();
         // Meshes made stale meanwhile, freed with the uploaded ones (`free`).
@@ -1822,6 +1795,7 @@ impl Streaming {
                 }
             }
         }
+        hz_laps.lap("st_results");
         self.free(stale);
         let mut removed = Vec::new();
         if sweep {
@@ -1892,6 +1866,7 @@ impl Streaming {
             }
             self.save_checked_out(written);
         }
+        hz_laps.lap("st_sweep");
         let (protos, finishing) = (&self.protos, &self.finishing);
         self.decorated.retain(|k| {
             protos.contains_key(k) || finishing.contains(k) || world.chunks.contains_key(k)
@@ -1923,6 +1898,7 @@ impl Streaming {
                 self.submit(Some((x, z)), 0, Job::Finish(proto));
             }
         }
+        hz_laps.lap("st_finalize");
         // Decorate chunks whose 3x3 proto neighbourhood is available, in
         // vanilla's order: decoration is order dependent where write regions
         // overlap (see `DecorationOrder`).
@@ -2048,7 +2024,9 @@ impl Streaming {
                 self.submit(Some((x, z)), 1, Job::Decorate(x, z, region, finals));
             }
         }
+        hz_laps.lap("st_decorate");
         self.schedule_generation(world, workers);
+        hz_laps.lap("st_generate");
         // Lighting once all neighbours exist, nearest first and only as
         // much of it as the workers can chew. Vanilla's light engine also
         // hands a bounded queue to its workers and reschedules what did
@@ -2084,6 +2062,7 @@ impl Streaming {
                 Job::Light(x, z, region, self.sequence, self.sky_light),
             );
         }
+        hz_laps.lap("st_light");
         // A server draws nothing: its sections are never meshed.
         if !self.mesh {
             world.dirty_sections.clear();
@@ -2124,6 +2103,7 @@ impl Streaming {
                 !back
             });
         }
+        hz_laps.lap("st_waiting");
         // Column by column: the checks below hold for all of a column's
         // sections, and columns waiting for light cost one look per frame.
         columns.extend(world.dirty_sections.columns());
@@ -2156,6 +2136,7 @@ impl Streaming {
             }
             candidates.push((self.distance(x, z), x, z, sections));
         }
+        hz_laps.lap("st_candidates");
         // Nearest first, and only as many sections as the workers can chew.
         // Every ready column used to be submitted at once, so at a wide
         // render distance the queue — and `meshing`, and each job's 3x3
@@ -2943,7 +2924,7 @@ impl Ranges<'_> {
             _ => own,
         }
     }
-    fn distance(&self, x: i32, z: i32) -> i64 {
+    fn player_distance(&self, x: i32, z: i32) -> i64 {
         let d = |c: (i32, i32)| {
             let (dx, dz) = (i64::from(x - c.0), i64::from(z - c.1));
             dx * dx + dz * dz

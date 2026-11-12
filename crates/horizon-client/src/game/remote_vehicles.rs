@@ -632,6 +632,9 @@ impl Game<'_> {
             ..last
         });
         let mut mob = self.mobs.remove(i);
+        // #15294: the fall, lava or a wall it runs into hurt the server's
+        // horse, not this copy (`Entity.hurt` on a client level).
+        mob.extra.client_side = true;
         let mut random = self.world.random.clone();
         let mut events = Vec::new();
         {

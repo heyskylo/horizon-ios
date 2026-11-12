@@ -26,6 +26,14 @@ impl Resources {
     pub(super) fn environment(&self) -> &Environment {
         &self.core.environment
     }
+    /// The environment of a dimension type id; a type with no table of its own gets the overworld's.
+    pub(super) fn environment_of(&self, dimension_type: &str) -> &Environment {
+        match dimension_type {
+            "minecraft:the_nether" => self.nether_environment(),
+            "minecraft:the_end" => self.end_environment(),
+            _ => self.environment(),
+        }
+    }
     pub(super) fn mob_types(&self) -> &HashMap<String, Arc<MobType>> {
         &self.rest().mob_types
     }

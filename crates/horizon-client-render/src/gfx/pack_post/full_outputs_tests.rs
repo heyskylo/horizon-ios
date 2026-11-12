@@ -48,6 +48,7 @@ fn pack(outputs: u32) -> Post {
     let (properties, _) = horizon_shaders::read_properties(&pack, &mut macros);
     let inputs = horizon_shaders::GameInputs {
         terrain: Some(horizon_shaders::GbuffersInputs {
+            parts: None,
             item_id_declared: false,
             terrain_lighting: None,
             far_depth: false,

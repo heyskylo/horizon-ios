@@ -1,0 +1,1 @@
+Equippable.dispensable	port	crates/horizon-client/src/item_sync.rs::dispensable	dispensable from the stack's equippable component

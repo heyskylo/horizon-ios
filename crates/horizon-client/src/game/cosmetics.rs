@@ -10,6 +10,7 @@
 pub(super) mod emote_wheel;
 pub(super) mod emotes;
 mod fx;
+mod settings;
 
 use super::Game;
 use horizon_client::fast_hash::FxHashMap;
@@ -67,7 +68,7 @@ fn send_emote(
         service,
         &session.name,
         |id| {
-            horizon_client::auth::join_server_managed(&session, id, cancellation.clone())
+            join_server_managed(&session, id, cancellation.clone())
                 .map_err(|e| format!("{e:?}"))
         },
         emote,
@@ -95,7 +96,7 @@ fn load_owned_emotes(
         service,
         &session.name,
         |id| {
-            horizon_client::auth::join_server_managed(session, id, cancellation.clone())
+            join_server_managed(session, id, cancellation.clone())
                 .map_err(|e| format!("{e:?}"))
         },
         |path| horizon_cosmetics::Transport::get(service, path),
@@ -144,7 +145,7 @@ fn check_owner(
         return Ok(false);
     };
     let owns = horizon_cosmetics::account::owns(service, &session.name, |id| {
-        horizon_client::auth::join_server_managed(&session, id, cancellation.clone())
+        join_server_managed(&session, id, cancellation.clone())
             .map_err(|e| format!("{e:?}"))
     })?;
     if let Err(e) = prefs::set_owned(&home, &uuid, owns) {
@@ -155,6 +156,19 @@ fn check_owner(
 
 fn http() -> horizon_cosmetics::Http {
     managed_http(Arc::default())
+}
+
+fn join_server_managed(
+    session: &horizon_client::auth::AuthSession,
+    server_hash: &str,
+    cancellation: Arc<horizon_cosmetics::transport::Cancellation>,
+) -> Result<(), horizon_client::auth::JoinError> {
+    horizon_client::auth::join_server_managed(
+        session,
+        server_hash,
+        Arc::new(horizon_cosmetics::transport::Connector::new(cancellation.clone())),
+        || cancellation.cancelled(),
+    )
 }
 
 fn managed_http(
@@ -239,7 +253,7 @@ fn send_listed(
         service,
         &session.name,
         |id| {
-            horizon_client::auth::join_server_managed(&session, id, cancellation.clone())
+            join_server_managed(&session, id, cancellation.clone())
                 .map_err(|e| format!("{e:?}"))
         },
         listed,
@@ -264,7 +278,7 @@ fn send_mine(
         service,
         &session.name,
         |id| {
-            horizon_client::auth::join_server_managed(&session, id, cancellation.clone())
+            join_server_managed(&session, id, cancellation.clone())
                 .map_err(|e| format!("{e:?}"))
         },
         wish,
@@ -311,16 +325,13 @@ impl Cosmetics {
     }
 }
 
-/// What the player whose UUID `uuid` gives wears, if the game shows it: the player's own model
-/// (`own`) while Show my cosmetics is on, another player unless others' cosmetics are hidden (by
-/// choice, or by owning none). Hidden, the service is never asked about them.
+/// What the player whose UUID `uuid` gives wears, if the game shows it (`shown`:
+/// [`Seat::shows`]). Hidden, the service is never asked about them.
 fn worn_of(
     client: &horizon_cosmetics::Cosmetics,
-    said: &Said,
-    own: bool,
+    shown: bool,
     uuid: impl FnOnce() -> Option<u128>,
 ) -> Option<horizon_cosmetics::Worn> {
-    let shown = if own { said.mine } else { !said.others_hidden };
     if !shown {
         return None;
     }
@@ -434,6 +445,8 @@ struct Seat {
     wanted: Vec<u64>,
     /// Companions, trails and auras (`cosmetics/fx.rs`).
     fx: fx::Fx,
+    /// The player's settings (`cosmetics/settings.rs`).
+    settings: settings::Settings,
 }
 
 /// An item the hooks show: its sprite's id (never reused) and a mesh per bone it rides, held
@@ -468,41 +481,16 @@ fn bone(b: horizon_cosmetics::Bone) -> Bone {
     }
 }
 
-/// What the game tells the hooks before each call, until the settings move here (spec #14091
-/// step 5a) and the player's emote with them (step 4).
+/// What the game tells the hooks before each call: the player's emote, until it moves here
+/// (spec #14091 step 4).
 #[derive(Default)]
 struct Said {
-    mine: bool,
-    listed: bool,
-    /// Other players' cosmetics are shown (not "name tags only", not hidden).
-    others_shown: bool,
-    /// Other players' cosmetics are hidden (not even name tag styles).
-    others_hidden: bool,
-    /// Horizon's mark by Horizon players' names.
-    marks: bool,
-    /// Other players' trails and auras are hidden.
-    hide_fx: bool,
-    /// Cosmetics in single player: the signed-in account's on the player's own model.
-    solo: bool,
     /// My emote pulled the camera back: when it started (the own model's age).
     pull: Option<f32>,
     /// My emote while it plays: its id and whether it loops.
     playing: Option<(String, bool)>,
     /// A folder's first emote, which mannequins play.
     first: Option<Arc<Item>>,
-}
-
-impl Said {
-    /// What the game's settings say.
-    fn settings(&mut self, extras: &horizon_client::extras::Extras) {
-        self.mine = extras.cosmetics_mine;
-        self.listed = extras.horizon_listed;
-        self.others_shown = extras.effective_others() == Others::Shown;
-        self.others_hidden = extras.effective_others() == Others::Hidden;
-        self.marks = extras.horizon_marks;
-        self.hide_fx = extras.cosmetics_hide_fx;
-        self.solo = extras.cosmetics_solo;
-    }
 }
 
 /// One [`Seat`] per splitscreen player.
@@ -521,8 +509,19 @@ fn service_at<R>(seat: usize, f: impl FnOnce(&mut Seat) -> R) -> R {
 }
 
 /// The cosmetics' hooks, registered when [`enabled`].
-pub(super) struct Hooks;
-pub(super) static HOOKS: Hooks = Hooks;
+struct Hooks;
+static HOOKS: Hooks = Hooks;
+
+/// Registers the cosmetics' settings lines, and while they are [`enabled`] their hooks and their
+/// rows on the Extras page. The lines always: a game without cosmetics keeps the Wardrobe's.
+pub(super) fn register() -> Result<(), horizon_hooks::TooLate> {
+    horizon_hooks::settings::register(&settings::STORE)?;
+    if enabled() {
+        horizon_hooks::register(&HOOKS)?;
+        horizon_hooks::pages::register(&settings::SECTION)?;
+    }
+    Ok(())
+}
 
 impl horizon_hooks::Hooks for Hooks {
     fn frame(&self, frame: &Frame, sprites: &mut dyn SpriteStore) {
@@ -548,7 +547,7 @@ impl horizon_hooks::Hooks for Hooks {
 
     fn player_mark(&self, uuid: u128) -> Option<Mark> {
         service(|s| {
-            let client = s.client.as_ref().filter(|_| s.said.marks)?;
+            let client = s.client.as_ref().filter(|_| s.settings.marks)?;
             client.frame().horizon(uuid).then_some(MARK)
         })
     }
@@ -571,6 +570,22 @@ impl horizon_hooks::Hooks for Hooks {
 }
 
 impl Seat {
+    /// How much of other players' cosmetics shows: the player's choice, else all of it for an
+    /// account that owns a cosmetic and none for any other (a vanilla game).
+    fn others(&self) -> Others {
+        Others::effective(self.settings.others, self.owner.owns)
+    }
+
+    /// Whether the cosmetics of the player's own model (`own`) or of another player show at all:
+    /// mine with Show my cosmetics on, others' unless hidden.
+    fn shows(&self, own: bool) -> bool {
+        if own {
+            self.settings.mine
+        } else {
+            self.others() != Others::Hidden
+        }
+    }
+
     /// Once a frame: starts the service's client on first use, asks whether the account owns a
     /// cosmetic, and tells the service what the account shows.
     fn frame(&mut self) {
@@ -643,7 +658,9 @@ impl Seat {
         // My emote: only while I show myself as a Horizon player (playing one says so).
         let playing = said.playing.as_ref();
         let looping = playing.is_some_and(|(_, looping)| *looping);
-        let wish = playing.map(|(id, _)| id.as_str()).filter(|_| said.listed);
+        let wish = playing
+            .map(|(id, _)| id.as_str())
+            .filter(|_| self.settings.listed);
         let o = &mut self.emote_out;
         let changed = o.sent.as_ref().map(Option::as_deref) != Some(wish);
         let again = looping && o.again.is_some_and(|at| Instant::now() >= at);
@@ -668,10 +685,12 @@ impl Seat {
                     &cancel,
                 )
             }));
-        } else if self.mine.due(said.mine) {
-            self.mine.start(said.mine, &self.workers, send_mine);
-        } else if self.listed.due(said.listed) {
-            self.listed.start(said.listed, &self.workers, send_listed);
+        } else if self.mine.due(self.settings.mine) {
+            self.mine
+                .start(self.settings.mine, &self.workers, send_mine);
+        } else if self.listed.due(self.settings.listed) {
+            self.listed
+                .start(self.settings.listed, &self.workers, send_listed);
         }
     }
 
@@ -683,18 +702,17 @@ impl Seat {
         m: &PlayerModel,
         sprites: &dyn Sprites,
     ) -> Option<NameDecoration> {
-        let said = &self.said;
         let own = m.kind == Kind::Own;
-        let styles = if own { said.mine } else { !said.others_hidden };
-        if !(styles || said.marks) {
+        let (styles, marks) = (self.shows(own), self.settings.marks);
+        if !(styles || marks) {
             return None;
         }
         let uuid = self.uuid_of(m)?;
         let mut frame = self.client.as_ref()?.frame();
-        let mark = (said.marks && frame.horizon(uuid)).then_some(MARK);
+        let mark = (marks && frame.horizon(uuid)).then_some(MARK);
         let worn = if styles { frame.worn(uuid) } else { None };
         drop(frame);
-        let others = if said.others_shown {
+        let others = if self.others() == Others::Shown {
             Others::Shown
         } else {
             Others::NameTags
@@ -708,7 +726,7 @@ impl Seat {
     /// The UUID the service knows `m` by: a player's, or a mannequin's id with local items.
     fn uuid_of(&self, m: &PlayerModel) -> Option<u128> {
         match m.kind {
-            Kind::Own => own_uuid(m.uuid, self.solo, self.said.solo, || {
+            Kind::Own => own_uuid(m.uuid, self.solo, self.settings.solo, || {
                 horizon_client::auth::current().map(|s| s.uuid)
             }),
             Kind::Mannequin if self.local => Some(u128::from(m.id)),
@@ -778,10 +796,9 @@ impl Seat {
         if m.invisible {
             return;
         }
-        let said = &self.said;
         let own = m.kind == Kind::Own;
         // "Name tags only": other players' styles beside their names, nothing on their bodies.
-        let bodies = own || said.others_shown;
+        let bodies = own || self.others() == Others::Shown;
         let ticks = draw.ticks();
         // An emote's props: its time and weight while it plays.
         let emote = emotes::pose_playing(draw.body_pose()).and_then(|p| {
@@ -789,7 +806,7 @@ impl Seat {
             (p.item.vertices > 0).then(|| (p.item.clone(), t, w))
         });
         let client = self.client.as_ref().filter(|_| bodies);
-        let worn = client.and_then(|c| worn_of(c, &self.said, own, || self.uuid_of(m)));
+        let worn = client.and_then(|c| worn_of(c, self.shows(own), || self.uuid_of(m)));
         // Items on one bone (a back item, a shoulder pet and a shirt ride the body) share its
         // matrix: the head, the body and the two arms at most.
         let mut bones: [Option<(Bone, [[f32; 4]; 4])>; 4] = [None; 4];
@@ -845,7 +862,7 @@ impl Seat {
         let Some(client) = self.client.as_ref().filter(|_| !m.invisible) else {
             return;
         };
-        let Some(worn) = worn_of(client, &self.said, true, || self.uuid_of(m)) else {
+        let Some(worn) = worn_of(client, self.shows(true), || self.uuid_of(m)) else {
             return;
         };
         if let Some(item) = worn.iter().find(|i| i.slot == Slot::Companion) {
@@ -869,7 +886,7 @@ impl Seat {
     }
 
     fn play_others(&self, models: &mut dyn PlayerModels, view: &mut Vec<PlayerModel>) {
-        let shown = self.said.others_shown;
+        let shown = self.others() == Others::Shown;
         // Items from a folder (the art, the bench): every mannequin plays its first emote, again
         // and again.
         if self.local && shown {
@@ -934,8 +951,7 @@ impl Seat {
 }
 
 impl Game<'_> {
-    /// Hands the hooks what the game's settings and the player's emote say (allocating only when
-    /// the emote changes).
+    /// Hands the hooks what the player's emote says (allocating only when it changes).
     pub(super) fn cosmetics_say(&mut self) {
         self.cosmetics.seat = Some(horizon_hooks::seat());
         if !enabled() {
@@ -948,12 +964,10 @@ impl Game<'_> {
         } else {
             None
         };
-        let extras = &self.settings.extras;
         let playing = self.cosmetics.emotes.sending();
         let pull = self.cosmetics.emotes.pull();
         service(|s| {
             let said = &mut s.said;
-            said.settings(extras);
             said.pull = pull;
             if said.playing.as_ref().map(|(id, l)| (id.as_str(), *l)) != playing {
                 said.playing = playing.map(|(id, l)| (id.to_owned(), l));
@@ -964,8 +978,8 @@ impl Game<'_> {
         });
     }
 
-    /// Once a frame, after the hooks: what the game reads of them (the settings' owner flag,
-    /// whether items come from a folder).
+    /// Once a frame, after the hooks: what the game reads of them (whether items come from a
+    /// folder).
     pub(super) fn cosmetics_frame(&mut self) {
         self.cosmetics.seat = Some(horizon_hooks::seat());
         self.settle_owned_emotes();
@@ -973,10 +987,7 @@ impl Game<'_> {
         if !enabled() {
             return;
         }
-        let (owns, local) = service(|s| (s.owner.owns, s.local));
-        // Read every frame: the settings button shows it, and it is never saved.
-        self.settings.extras.cosmetics_owner = owns;
-        self.cosmetics.local = local;
+        self.cosmetics.local = service(|s| s.local);
     }
 
     /// Asks the service which emotes the account owns, for the wheel: when it opens, at most
@@ -1046,7 +1057,6 @@ mod tests {
         assert_eq!(fx.budget.alive, 0);
     }
     use super::*;
-    use horizon_client::extras::Extras;
     use horizon_client::mobs::anim::BodyPose;
 
     /// A name tag style with a 1×1 mark.
@@ -1107,31 +1117,32 @@ mod tests {
 
     const OTHER: u128 = 0x1234;
 
-    /// What `extras` tell the hooks.
-    fn said_of(extras: &Extras) -> Said {
-        let mut said = Said::default();
-        said.settings(extras);
-        said
+    /// A seat whose player chose `others` (None: no choice) and whose account `owns` a cosmetic.
+    fn seat_of(others: Option<Others>, owns: bool) -> Seat {
+        let mut seat = Seat::default();
+        seat.settings.others = others;
+        seat.owner.owns = owns;
+        seat
     }
 
-    /// What another player wears as `extras` shows it, drawn frame after frame for up to
+    /// What another player wears as `seat` shows it, drawn frame after frame for up to
     /// `patience` (the service answers on its own thread), and what was asked of the service.
     fn other_player(
-        extras: &Extras,
+        seat: &Seat,
         patience: Duration,
     ) -> (Option<horizon_cosmetics::Worn>, Vec<String>) {
-        other_player_from(Service::default(), extras, patience)
+        other_player_from(Service::default(), seat, patience)
     }
 
     fn other_player_from(
         service: Service,
-        extras: &Extras,
+        seat: &Seat,
         patience: Duration,
     ) -> (Option<horizon_cosmetics::Worn>, Vec<String>) {
         let client = horizon_cosmetics::Cosmetics::new(service.clone(), None);
         let deadline = Instant::now() + patience;
         let worn = loop {
-            let worn = worn_of(&client, &said_of(extras), false, || Some(OTHER));
+            let worn = worn_of(&client, seat.shows(false), || Some(OTHER));
             if worn.is_some() || Instant::now() >= deadline {
                 break worn;
             }
@@ -1143,18 +1154,13 @@ mod tests {
 
     #[test]
     fn a_player_who_owns_none_sees_and_asks_nothing_until_they_choose() {
-        use horizon_cosmetics::prefs::Others;
         // No line, owns nothing: a vanilla game, and no request about the other player.
         let (short, long) = (Duration::from_millis(300), Duration::from_secs(10));
-        let (worn, asked) = other_player(&Extras::default(), short);
+        let (worn, asked) = other_player(&seat_of(None, false), short);
         assert!(worn.is_none());
         assert_eq!(asked, Vec::<String>::new());
         // The service says this account owns a cosmetic: the other player's style shows.
-        let owner = Extras {
-            cosmetics_owner: true,
-            ..Extras::default()
-        };
-        let (worn, asked) = other_player(&owner, long);
+        let (worn, asked) = other_player(&seat_of(None, true), long);
         assert_eq!(
             worn.map(|w| w.iter().map(|i| i.id.clone()).collect::<Vec<_>>()),
             Some(vec!["tag".to_owned()])
@@ -1164,16 +1170,12 @@ mod tests {
             format!("POST /v1/worn {{\"players\":[\"{OTHER:032x}\"]}}")
         );
         // A choice wins over ownership both ways.
-        let chose = Extras {
-            cosmetics_others: Some(Others::Shown),
-            ..Extras::default()
-        };
-        assert!(other_player(&chose, long).0.is_some());
-        let hid = Extras {
-            cosmetics_others: Some(Others::Hidden),
-            ..owner
-        };
-        let (worn, asked) = other_player(&hid, short);
+        assert!(
+            other_player(&seat_of(Some(Others::Shown), false), long)
+                .0
+                .is_some()
+        );
+        let (worn, asked) = other_player(&seat_of(Some(Others::Hidden), true), short);
         assert!(worn.is_none() && asked.is_empty());
     }
 
@@ -1216,14 +1218,12 @@ mod tests {
         let mine = |solo: bool, shown: bool, patience: Duration| {
             let service = Service::default();
             let client = horizon_cosmetics::Cosmetics::new(service.clone(), None);
-            let extras = Extras {
-                cosmetics_solo: shown,
-                ..Extras::default()
-            };
-            let uuid = || own_uuid(Some(OFFLINE), solo, extras.cosmetics_solo, || Some(ACCOUNT));
+            let mut seat = Seat::default();
+            seat.settings.solo = shown;
+            let uuid = || own_uuid(Some(OFFLINE), solo, seat.settings.solo, || Some(ACCOUNT));
             let deadline = Instant::now() + patience;
             let worn = loop {
-                let worn = worn_of(&client, &said_of(&extras), true, uuid);
+                let worn = worn_of(&client, seat.shows(true), uuid);
                 if worn.is_some() || Instant::now() >= deadline {
                     break worn;
                 }
@@ -1256,7 +1256,6 @@ mod tests {
     #[test]
     fn a_tall_cosmetic_lifts_the_name_tag_only_while_it_is_drawn() {
         use super::super::names::{NAME_TAG_UNIT, cosmetic_lift};
-        use horizon_cosmetics::prefs::Others;
         // Vanilla: EntityAttachment.NAME_TAG of a standing player, 1.8 + 0.5 above the feet;
         // the tag's lowest pixel 10 text pixels under it.
         const VANILLA: f64 = 2.3;
@@ -1266,25 +1265,17 @@ mod tests {
         // by the avatar's 0.9375.
         let star = 0.9375 * (1.501 + 20.0 / 16.0);
         let both: &'static [(&str, &str)] = &[("tag", TAG), ("crown", CROWN)];
-        let shown = Extras {
-            cosmetics_others: Some(Others::Shown),
-            ..Extras::default()
-        };
+        let shown = seat_of(Some(Others::Shown), false);
         let (short, long) = (Duration::from_millis(300), Duration::from_secs(10));
-        let top_of = |extras: &Extras, patience| {
-            let (worn, _) = other_player_from(Service(Arc::default(), both), extras, patience);
-            body_top(extras.effective_others(), false, worn.as_ref(), |_| false)
+        let top_of = |seat: &Seat, patience| {
+            let (worn, _) = other_player_from(Service(Arc::default(), both), seat, patience);
+            body_top(seat.others(), false, worn.as_ref(), |_| false)
         };
         // No cosmetics drawn on the body (a name tag style only): vanilla's height exactly.
         let (worn, _) = other_player(&shown, long);
         assert!(worn.is_some());
         assert_eq!(
-            tag(body_top(
-                shown.effective_others(),
-                false,
-                worn.as_ref(),
-                |_| false
-            )),
+            tag(body_top(shown.others(), false, worn.as_ref(), |_| false)),
             VANILLA
         );
         // A small hat under the tag: vanilla's height too.
@@ -1298,22 +1289,19 @@ mod tests {
         );
         // A helmet over it: vanilla's height.
         let (worn, _) = other_player_from(Service(Arc::default(), both), &shown, long);
-        let helmet = body_top(shown.effective_others(), false, worn.as_ref(), |slot| {
+        let helmet = body_top(shown.others(), false, worn.as_ref(), |slot| {
             slot == Slot::Head
         });
         assert_eq!(tag(helmet), VANILLA);
         // Others' cosmetics on name tags only, or hidden: nothing on the body, vanilla's height.
         for others in [Others::NameTags, Others::Hidden] {
-            let extras = Extras {
-                cosmetics_others: Some(others),
-                ..Extras::default()
-            };
+            let seat = seat_of(Some(others), false);
             let patience = if others == Others::Hidden {
                 short
             } else {
                 long
             };
-            assert_eq!(tag(top_of(&extras, patience)), VANILLA, "{others:?}");
+            assert_eq!(tag(top_of(&seat, patience)), VANILLA, "{others:?}");
         }
     }
 
@@ -1350,11 +1338,10 @@ mod tests {
         let mut service = Seat {
             local: true,
             said: Said {
-                others_shown: true,
                 first: Some(item.clone()),
                 ..Said::default()
             },
-            ..Seat::default()
+            ..seat_of(Some(Others::Shown), false)
         };
         let model = |id, kind, uuid| (PlayerModel::new(id, kind, uuid, 50, false), None);
         let mut view = View(vec![
@@ -1373,7 +1360,7 @@ mod tests {
         service.tick(&mut view);
         assert!(Arc::ptr_eq(&first, view.0[1].1.as_ref().unwrap()));
         // Others' cosmetics not shown: a new mannequin plays nothing.
-        service.said.others_shown = false;
+        service.settings.others = Some(Others::NameTags);
         view.0.push(model(3, Kind::Mannequin, None));
         service.tick(&mut view);
         assert!(view.0[3].1.is_none());
@@ -1482,13 +1469,7 @@ mod tests {
             ..Canvas::default()
         };
         // Others' cosmetics hidden, no service: the player's own emote still shows.
-        let mut seat = Seat {
-            said: Said {
-                others_hidden: true,
-                ..Said::default()
-            },
-            ..Seat::default()
-        };
+        let mut seat = seat_of(Some(Others::Hidden), false);
         // Its texture not in the atlas yet: nothing drawn, the sprite asked for.
         seat.player_layers(&player, &mut canvas);
         assert!(canvas.drawn.is_empty());
@@ -1541,7 +1522,7 @@ mod tests {
         assert_eq!(canvas.looks.len(), 1);
         // Others' trails and auras hidden: theirs go, the player's own stays.
         canvas.base = Some(glam::Mat4::from_translation(at));
-        seat.said.hide_fx = true;
+        seat.settings.hide_fx = true;
         seat.fx(&other, &ring, &mut canvas);
         assert_eq!(canvas.looks.len(), 1);
         seat.fx(&own, &ring, &mut canvas);

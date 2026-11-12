@@ -1,0 +1,9 @@
+syntax = "proto3";
+package lint.bad;
+
+enum Color {
+  COLOR_RED = 0;
+  COLOR_BLUE = 1;
+}
+
+message Paint { Color color = 1; }

@@ -1,3 +1,7 @@
+#[path = "hub/tests/cave_air_tests.rs"]
+mod cave_air_tests;
+#[path = "hub/far_tests.rs"]
+mod far_tests;
 #[path = "hub/tests/sound_tests.rs"]
 mod sound_tests;
 use super::*;
@@ -1375,4 +1379,93 @@ fn memory_connection_first_view_sends_every_ready_column() {
         hub.next_batch(0, &world, None).is_none(),
         "an empty queue sends nothing"
     );
+}
+
+/// The equipment as it was before the cache: every equipped slot converted in turn.
+fn equipment_converted_every_time(
+    hub: &mut Hub,
+) -> Vec<(u8, Option<horizon_protocol::item::Stack>)> {
+    let g = &hub.guests[0];
+    let sources = [
+        (0u8, g.inventory.get(g.selected).cloned().flatten()),
+        (1, g.offhand.clone()),
+        (5, g.armor[0].clone()),
+        (4, g.armor[1].clone()),
+        (3, g.armor[2].clone()),
+        (2, g.armor[3].clone()),
+    ];
+    let mut out = Vec::new();
+    for (slot, item) in sources {
+        if item.is_some() {
+            out.push((slot, hub.stack(&item)));
+        }
+    }
+    out
+}
+
+#[test]
+fn equipment_is_converted_again_only_when_a_stack_changes() {
+    use crate::items::ItemStack;
+    let stack = |item: &str, count: u32| ItemStack {
+        item: item.into(),
+        count,
+        damage: 0,
+        extra: None,
+    };
+    let (mut hub, _rx) = hub_with_a_guest();
+    hub.guests[0].inventory[0] = Some(stack("minecraft:stone", 1));
+    hub.guests[0].offhand = Some(stack("minecraft:shield", 1));
+    hub.guests[0].armor[0] = Some(stack("minecraft:iron_helmet", 1));
+    let first = equipment_converted_every_time(&mut hub);
+    for _ in 0..3 {
+        assert_eq!(hub.guest_equipment(0), first);
+    }
+
+    hub.guests[0].inventory[0] = Some(stack("minecraft:stone", 3));
+    let changed = equipment_converted_every_time(&mut hub);
+    assert_ne!(changed, first);
+    assert_eq!(hub.guest_equipment(0), changed);
+
+    hub.guests[0].offhand = None;
+    let cleared = equipment_converted_every_time(&mut hub);
+    assert_eq!(cleared.len(), changed.len() - 1);
+    assert_eq!(hub.guest_equipment(0), cleared);
+}
+
+/// `ServerGamePacketListenerImpl.handleAcceptTeleportPacket`: an accept whose id is
+/// the last teleport's (`awaitingTeleport`) while none is awaited any more
+/// (`awaitingPositionFromClient` is null) disconnects with
+/// `multiplayer.disconnect.invalid_player_movement`; an accept of any other id is
+/// ignored, and the first accept of the awaited one moves the player as before.
+#[test]
+fn a_second_accept_of_the_same_teleport_disconnects() {
+    let (mut hub, _rx) = hub_with_a_guest();
+    let mut world = floor_at(0);
+    let accept = |id: i32| {
+        S::AcceptTeleportation(play::AcceptTeleportation {
+            id,
+            x: 5.0,
+            y: 70.0,
+            z: 5.0,
+            yaw: 0.0,
+            pitch: 0.0,
+        })
+    };
+    hub.teleport(0, Some([5.0, 70.0, 5.0]));
+    let id = hub.guests[0].teleport_counter;
+    assert!(hub.guests[0].awaiting_teleport.is_some());
+    // An id nobody sent is ignored while one is awaited.
+    tick_packet(&mut hub, &mut world, accept(id + 1));
+    assert!(hub.guests[0].awaiting_teleport.is_some());
+    assert!(hub.guests[0].left_reason.is_empty());
+    // The awaited one is accepted once.
+    tick_packet(&mut hub, &mut world, accept(id));
+    assert!(hub.guests[0].awaiting_teleport.is_none());
+    assert!(hub.guests[0].left_reason.is_empty());
+    // Another id with nothing awaited is ignored.
+    tick_packet(&mut hub, &mut world, accept(id + 1));
+    assert!(hub.guests[0].left_reason.is_empty());
+    // The same id again, with nothing awaited: disconnected.
+    tick_packet(&mut hub, &mut world, accept(id));
+    assert!(!hub.guests[0].left_reason.is_empty());
 }

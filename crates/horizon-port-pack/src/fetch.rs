@@ -168,8 +168,14 @@ pub fn fetch(
         match made
             .unwrap_or(Ok(()))
             .map_err(|e| e.to_string())
-            .and_then(|()| download(&url, sha1.as_deref(), &dest, true))
-        {
+            .and_then(|()| {
+                // Maven's `.sha1` or nothing: a jar whose checksum couldn't be read isn't taken.
+                let sha1 = sha1
+                    .as_deref()
+                    .filter(|s| s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+                    .ok_or_else(|| format!("{checksum}: no SHA-1"))?;
+                download(&url, Some(sha1), &dest, true)
+            }) {
             Ok(()) => log(format!("loader: {}", dest.display())),
             Err(e) => log(format!(
                 "loader: {e} (structures keep only vanilla biome tags)"

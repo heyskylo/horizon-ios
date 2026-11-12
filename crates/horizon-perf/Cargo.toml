@@ -1,0 +1,40 @@
+[package]
+name = "horizon-perf"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Dev tool that reads .hzperf captures (docs/perf-platform.md §2.2): readers, summary, list and follow"
+
+[dependencies]
+horizon-perf-format = { path = "../horizon-perf-format" }
+prost = "0.14"
+flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip", "raw_value"] }
+horizon-bench = { path = "../horizon-bench" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+horizon-perf-share = { path = "../horizon-perf-share" }
+
+[lib]
+# `cdylib` is what `cargo xtask perf-wasm` builds for the browser; the rlib is everything else.
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# The C ABI of `wasm` and its JS wrapper (docs/perf-platform.md §7.1). Inert natively.
+wasm = []
+
+[[bin]]
+name = "horizon-perf"
+path = "src/main.rs"
+
+[[test]]
+name = "wasm"
+path = "tests/wasm.rs"
+required-features = ["wasm"]
+
+[lints]
+workspace = true

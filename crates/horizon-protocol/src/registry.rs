@@ -124,25 +124,23 @@ impl Builtin {
 #[derive(Clone, Debug, Default)]
 pub struct Dynamic {
     pub registries: HashMap<String, Vec<(String, Option<Tag>)>>,
-    /// The `minecraft:dialog` tags the server sent: each tag's entries by id.
-    pub dialog_tags: HashMap<String, Vec<i32>>,
+    /// The tags the server sent, by registry: each tag's entries by id.
+    pub tags: HashMap<String, HashMap<String, Vec<i32>>>,
     /// The peer confirmed the native component registry identity.
     pub custom_components: bool,
 }
 impl Dynamic {
-    /// The dialog tags of a `ClientboundUpdateTagsPacket`.
+    /// The tags of a `ClientboundUpdateTagsPacket`, every registry's: a
+    /// registry it names replaces that registry's tags.
     pub fn add_tags(&mut self, packet: &UpdateTags) {
-        for r in packet
-            .registries
-            .iter()
-            .filter(|r| r.registry == "minecraft:dialog")
-        {
-            self.dialog_tags = r
-                .tags
-                .iter()
-                .map(|t| (t.name.clone(), t.ids.clone()))
-                .collect();
+        for r in &packet.registries {
+            let tags = r.tags.iter().map(|t| (t.name.clone(), t.ids.clone()));
+            self.tags.insert(r.registry.clone(), tags.collect());
         }
+    }
+    /// The entries of `registry`'s tag `name` the server sent, by id.
+    pub fn tag(&self, registry: &str, name: &str) -> Option<&[i32]> {
+        self.tags.get(registry)?.get(name).map(Vec::as_slice)
     }
     pub fn add(&mut self, packet: RegistryData) {
         let entries = packet.entries.into_iter().map(|e| (e.id, e.data)).collect();

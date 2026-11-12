@@ -9,7 +9,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 class ShaderInputTests(unittest.TestCase):
     def test_production_terrain_and_shadow_inputs_compile(self):
         source = (ROOT/'crates/horizon-client-render/src/gfx/pack_atlas.rs').read_text()
-        constants = source[source.index('const CORNER_FN:'):source.index('/// `terrain`')]
+        constants = source[source.index('const CORNER_FN:'):source.index('/// GLSL: whether a terrain vertex')]
         state_words = re.search(r'TERRAIN_STATE_WORDS: usize = (\d+)', (ROOT/'crates/horizon-client-render/src/gfx.rs').read_text())[1]
         quad_words = re.search(r'WORDS: usize = (\d+)', (ROOT/'crates/horizon-client-render/src/gfx/terrain_metadata.rs').read_text())[1]
         body = method(source, 'terrain_inputs').replace('super::TERRAIN_STATE_WORDS',state_words).replace('super::terrain_metadata::WORDS',quad_words)

@@ -26,6 +26,7 @@ horizon-hooks = { path = "../horizon-hooks" }
 horizon-optifine = { path = "../horizon-optifine" }
 # The server thread ahead of the workers (MinecraftServer.spin's Thread.setPriority).
 horizon-threads = { path = "../horizon-threads" }
+horizon-perf-format = { path = "../horizon-perf-format" }
 horizon-hdr = { path = "../horizon-hdr" }
 horizon-world = { path = "../horizon-world" }
 horizon-protocol = { path = "../horizon-protocol" }
@@ -33,7 +34,8 @@ horizon-protocol = { path = "../horizon-protocol" }
 horizon-server-files = { path = "../horizon-server-files" }
 # The dedicated server's anticheat, off unless server.toml's [anticheat] turns it on (docs/anticheat.md).
 horizon-anticheat = { path = "../horizon-anticheat" }
-# The dedicated server's chat filter: [chat_filter], the slur list, mutes (docs/chat-filter.md).
+# The dedicated server's chat filter: [chat_filter], the slur list, mutes (docs/chat-filter.md);
+# `entry` installs it into the engine's hook (`horizon_server_files::chat_guard`).
 horizon-chat-filter = { path = "../horizon-chat-filter" }
 # Shader packs: reading them and turning their GLSL into naga modules.
 horizon-shaders = { path = "../horizon-shaders" }
@@ -79,6 +81,8 @@ horizon-theme = { path = "../horizon-theme" }
 # anonymous "I'm playing" ping is the Horizon layer's (`horizon-heartbeat`, in the official executable).
 horizon-telemetry = { path = "../horizon-telemetry", default-features = false }
 horizon-bench = { path = "../horizon-bench" }
+# The machine and process probes (the dedicated server's performance report).
+horizon-system = { path = "../horizon-system" }
 crc32fast = "1"
 zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 # Controllers (evdev + libudev on Linux, IOKit on macOS, Windows.Gaming.Input); the `controllers` feature.
@@ -156,7 +160,9 @@ friends = ["dep:horizon-friends"]
 rng-trace = ["horizon-core/rng-trace", "horizon-client-lib/rng-trace"]
 # Rust's allocations go to the system heap instead of mimalloc, where heap profilers that replace
 # malloc (heaptrack, valgrind's massif) see them. For profiling only: mimalloc is faster.
-system-allocator = []
+system-allocator = ["horizon-threads/system-allocator"]
+# mimalloc that counts each thread's allocations and frees (`stats` replies with `alloc`).
+alloc-count = ["horizon-threads/alloc-count"]
 # mimalloc with a tag on each block: `horizon-ctl memory` lists the live heap by startup step and
 # thread (`heap_by_tag_mb`). For measuring only: each block costs 16 bytes more.
 alloc-census = ["horizon-threads/alloc-census"]
@@ -200,6 +206,7 @@ workspace = true
 [dev-dependencies]
 horizon-client-render = { path = "../horizon-client-render", features = ["test-support"] }
 horizon-items = { path = "../horizon-items", features = ["test-support"] }
+horizon-perf = { path = "../horizon-perf" }
 # Every WGSL shader translated as wgpu's DirectX 12 backend does (gfx.rs tests).
 naga = { version = "30.0.1", features = ["wgsl-in", "hlsl-out", "msl-out", "spv-out"] }
 

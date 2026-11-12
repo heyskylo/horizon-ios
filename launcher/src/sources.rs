@@ -284,10 +284,11 @@ pub fn find(dir: &Path, pins: &Pins) -> Result<Found, String> {
     }
     let v = &pins.version;
     let mut other = None;
-    let bases = [dir.to_path_buf()]
+    let bases: Vec<PathBuf> = [dir.to_path_buf()]
         .into_iter()
-        .chain(["meta", "data", "datastore", "cache/minecraft"].map(|sub| dir.join(sub)));
-    for base in bases {
+        .chain(["meta", "data", "datastore", "cache/minecraft"].map(|sub| dir.join(sub)))
+        .collect();
+    for base in bases.iter().cloned() {
         for jar in client_jars(&base, v) {
             let client = base.join(&jar);
             if !client.is_file() {
@@ -306,12 +307,26 @@ pub fn find(dir: &Path, pins: &Pins) -> Result<Found, String> {
             });
         }
     }
-    Err(match other {
-        Some(jar) => format!(
+    // The official launcher writes a version's file before its game: a version picked but never
+    // played, or whose download stopped, has only that, and playing it once is the fix (#14286).
+    let listed = bases
+        .iter()
+        .map(|base| base.join(format!("versions/{v}/{v}.json")))
+        .find(|file| file.is_file());
+    Err(match (other, listed) {
+        (Some(jar), _) => format!(
             "{} is not the {v} release Horizon was made for",
             jar.strip_prefix(dir).unwrap_or(&jar).display()
         ),
-        None => format!("no Minecraft {v} client jar"),
+        (None, Some(file)) => format!(
+            "{} is here but not the game itself: play {v} once in that launcher to download it",
+            // `meta\versions/…` on Windows otherwise: one separator, as the jar paths above.
+            file.strip_prefix(dir)
+                .unwrap_or(&file)
+                .to_string_lossy()
+                .replace('\\', "/")
+        ),
+        (None, None) => format!("no Minecraft {v} client jar"),
     })
 }
 

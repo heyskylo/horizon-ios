@@ -97,17 +97,9 @@ fn strips_of_expected(
             .into(),
         ..Default::default()
     };
-    let inputs = horizon_shaders::GameInputs {
-        terrain_parts: Some(super::super::pack_atlas::terrain_parts(
-            &terrain,
-            &[LAVA, LAVA + 1],
-        )),
-        terrain: Some(terrain),
-        // gbuffers_block may fall back to gbuffers_terrain. As in Renderer,
-        // supply the entity inputs even though this fixture draws no entities.
-        entities: Some(super::super::pack_entities::inputs()),
-        ..Default::default()
-    };
+    let mut inputs = super::super::pack_atlas::game_terrain(Some(terrain), &[LAVA, LAVA + 1]);
+    // The fallback block program needs entity inputs even with no entities in this fixture.
+    inputs.entities = Some(super::super::pack_entities::inputs());
     const ATTRS: [wgpu::VertexAttribute; 3] =
         wgpu::vertex_attr_array![0=>Float32x3,2=>Uint32,3=>Unorm8x4];
     let layouts = [Some(wgpu::VertexBufferLayout {
@@ -429,4 +421,65 @@ fn alpha_test_ref_is_0_for_solid_terrain_and_0_5_for_cutout() {
         };
         assert_eq!(got, [Some(RED), Some(YELLOW), Some(RED)], "{names:?}");
     }
+}
+
+/// `alphaTest.gbuffers_terrain` replaces both parts' tests when one program draws them, as it
+/// did when they drew in two passes: over `GREATER 0.25`, alpha 0.3 keeps cutout terrain too
+/// and 0.2 loses solid terrain too, and `alphaTestRef` reads 0.25 in both.
+#[test]
+fn a_packs_terrain_alpha_test_applies_to_both_parts() {
+    let properties = || {
+        (
+            "shaders.properties".to_owned(),
+            "alphaTest.gbuffers_terrain=GREATER 0.25\n".to_owned(),
+        )
+    };
+    for (alpha, kept) in [(0.3, true), (0.2, false)] {
+        let mut files = program("gbuffers_terrain", RED, alpha).to_vec();
+        files.push(properties());
+        let Some((got, _)) = strips_of(files, [255; 4]) else {
+            return;
+        };
+        assert_eq!(got, [kept.then_some(RED); 3], "alpha {alpha}");
+    }
+    let files = vec![
+        (
+            "gbuffers_terrain.vsh".to_owned(),
+            "#version 120\nvoid main(){gl_Position=vec4(gl_Vertex.xy,0.0,1.0);}".to_owned(),
+        ),
+        (
+            "gbuffers_terrain.fsh".to_owned(),
+            "#version 120\nuniform float alphaTestRef;\n/* DRAWBUFFERS:0 */\n\
+             void main(){gl_FragData[0]=vec4(1.0,alphaTestRef*4.0,0.0,1.0);}"
+                .to_owned(),
+        ),
+        properties(),
+    ];
+    let Some((got, _)) = strips_of(files, [255; 4]) else {
+        return;
+    };
+    assert_eq!(got, [Some([255, 255, 0]); 3]);
+}
+
+/// The vertex stage reads its own quad's `alphaTestRef` too: 0 for solid, 0.5 for cutout.
+#[test]
+fn the_vertex_stage_reads_its_parts_alpha_test_ref() {
+    let files = vec![
+        (
+            "gbuffers_terrain.vsh".to_owned(),
+            "#version 120\nuniform float alphaTestRef;\nvarying float ref;\n\
+             void main(){ref=alphaTestRef;gl_Position=vec4(gl_Vertex.xy,0.0,1.0);}"
+                .to_owned(),
+        ),
+        (
+            "gbuffers_terrain.fsh".to_owned(),
+            "#version 120\nvarying float ref;\n/* DRAWBUFFERS:0 */\n\
+             void main(){gl_FragData[0]=vec4(1.0,ref*2.0,0.0,1.0);}"
+                .to_owned(),
+        ),
+    ];
+    let Some((got, _)) = strips_of(files, [255; 4]) else {
+        return;
+    };
+    assert_eq!(got, [Some(RED), Some([255, 255, 0]), Some(RED)]);
 }

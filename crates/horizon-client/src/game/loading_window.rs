@@ -32,6 +32,7 @@ pub(super) fn build_renderer(
     prepared: Option<horizon_client::gfx::PreparedTextures>,
     api: horizon_client::graphics::GraphicsApi,
     translucent_batching: bool,
+    vsync: bool,
     // HDR and Smooth Gradients pick the frame, with what the window's display reported to the
     // renderer before (`display`, `Renderer::new`).
     settings: &horizon_client::graphics::Graphics,
@@ -79,6 +80,10 @@ pub(super) fn build_renderer(
         shader_pack.frame(),
         display,
     ))?;
+    // The loading renderer may have been built before the saved graphics settings were
+    // adopted. Configure the world swapchain before its first gameplay frame instead of
+    // waiting for `Game::apply_settings` after the handoff.
+    renderer.set_present_mode(vsync, settings.present_mode);
     renderer.hud.sprite_animations = atlas
         .sprite_animations
         .iter()
@@ -86,10 +91,11 @@ pub(super) fn build_renderer(
         .collect();
     renderer
         .hud
-        .set_text_shader(&renderer.device, atlas.text_shader.as_deref());
+        .set_text_shader(&renderer.device, atlas.text_shaders.gui.as_deref());
     pack.item_renderer
         .prepare_glint_atlas(renderer.device.limits().max_texture_dimension_2d, filtering)?;
     renderer.set_lines_shader(atlas.lines_shader.as_deref());
+    renderer.set_world_text_shaders(&atlas.text_shaders);
     renderer.set_sky_shaders(atlas.sky_shader.as_deref(), atlas.stars_shader.as_deref());
     renderer.set_custom_sky(&*pack.custom_sky);
     renderer.set_shared_material_maps(&atlas.material_maps);
@@ -333,6 +339,8 @@ pub(super) fn start_game<'a>(
                 fps_cap: None,
                 offscreen: game.options.offscreen,
                 game_dir: std::env::current_dir()?,
+                set: game.options.benchmark_set.clone(),
+                profile: game.options.benchmark_profile,
             },
         );
     }

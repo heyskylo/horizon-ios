@@ -116,15 +116,18 @@ pub fn unpack(value: &str, signature: Signature, valid_uris: &[impl AsRef<str>])
         signed: signature == Signature::Signed,
         ..empty.clone()
     };
+    // Each texture is loaded independently: an invalid or disallowed URL for one
+    // texture (cape, elytra) must not drop another (the skin). Vanilla's
+    // SkinManager works the same way.
     for (kind, texture) in textures {
         let Some(url) = texture.get("url").and_then(|u| u.as_str()) else {
-            return empty;
+            continue;
         };
         let allowed = valid_uris
             .iter()
             .any(|u| url.starts_with(&u.as_ref().replace("{textureId}", "")));
         if !allowed {
-            return empty;
+            continue;
         }
         if kind == "SKIN" {
             out.slim = texture
@@ -2650,7 +2653,10 @@ mod tests {
                     &super::TEXTURE_URIS,
                 );
                 assert_eq!(textures.slim, slim && !url.contains("evil"));
-                assert_eq!(textures.cape.is_some(), !url.contains("evil"));
+                // Textures are judged per URL (vanilla's SkinManager): the
+                // cape's URL is always allowed here, so it is kept even when
+                // the skin's URL is not.
+                assert!(textures.cape.is_some());
                 assert_eq!(parsed.skin.is_some(), !url.contains("evil"));
                 assert!(std::sync::Arc::ptr_eq(&parsed, &cache.get(&profile)));
             }
@@ -2852,6 +2858,19 @@ mod tests {
         );
         assert!(t.slim);
         assert!(!unpack(wide, Signature::Signed, &TEXTURE_URIS).slim);
+    }
+    /// `unpack` keeps each texture independently: a cape from another origin
+    /// must not drop the skin.
+    #[test]
+    fn unpack_keeps_the_skin_when_another_texture_is_rejected() {
+        use super::{Signature, TEXTURE_URIS, unpack};
+        let mixed = "eyJ0ZXh0dXJlcyI6IHsiU0tJTiI6IHsidXJsIjogImh0dHBzOi8vdGV4dHVyZXMubWluZWNyYWZ0Lm5ldC90ZXh0dXJlL3NraW4xIn0sICJDQVBFIjogeyJ1cmwiOiAiaHR0cHM6Ly9ldmlsLmV4YW1wbGUvdGV4dHVyZS9jYXBlMSJ9fX0=";
+        let t = unpack(mixed, Signature::Unsigned, &TEXTURE_URIS);
+        assert_eq!(
+            t.skin.as_deref(),
+            Some("https://textures.minecraft.net/texture/skin1")
+        );
+        assert_eq!(t.cape, None);
     }
     #[test]
     fn profiles_parse_like_resolvable_profiles() {

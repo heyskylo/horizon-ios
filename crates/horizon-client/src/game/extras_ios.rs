@@ -2,6 +2,9 @@
 //! clicks for the keystroke overlay, frame times for the FPS counter, the
 //! minimap's tiles and image, and their HUD. Each hook does nothing while its
 //! extra is off.
+#[path = "extras/pvp.rs"]
+pub(in crate::game) mod pvp;
+
 use super::{Dim, Game, Screen, native_hooks::NativeMinimap};
 use horizon_client::{
     actions::Action,

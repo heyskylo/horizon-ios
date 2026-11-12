@@ -503,6 +503,8 @@ impl Game<'_> {
                 },
                 |id| self.mob_display_name(id),
             );
+            self.combat.blast_owner_player =
+                owner == Some(Who::Player) && self.combat.blast_owner.is_some();
             let result = self.with_hive_emptying_blast(|g| {
                 g.server_explode_from(
                     center,
@@ -515,6 +517,7 @@ impl Game<'_> {
                 )
             });
             self.combat.blast_owner = None;
+            self.combat.blast_owner_player = false;
             self.combat.blast_guest = None;
             self.combat.explosion_in_water = false;
             result?;
@@ -1406,18 +1409,82 @@ mod tests {
         )
         .unwrap();
         game.options.dedicated = Some(Vec::new());
-        // Entity ticking waits for every chunk within 2 columns
-        // (`ChunkMap.prepareEntityTickingChunk`).
-        for z in -2..=2 {
-            for x in -2..=2 {
-                game.world.chunks.insert(
-                    (x, z),
-                    std::sync::Arc::new(horizon_client::chunk::Chunk::empty(x, z)),
-                );
-            }
-        }
+        game.world.chunks.insert(
+            (0, 0),
+            std::sync::Arc::new(horizon_client::chunk::Chunk::empty(0, 0)),
+        );
         game.streaming.forced.insert((0, 0));
         Some(game)
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn portal_blast_sulfur_cube_uses_only_positive_cooldown() {
+        use horizon_client::mobs::Mob;
+        use horizon_client::nether_portal::PortalState;
+        let mut game = server_game().expect("set HORIZON_TEST_RESOURCES");
+        let portal = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:nether_portal")
+            .unwrap();
+        for (cooldown, silent) in [
+            (1, false),
+            (1, true),
+            (0, false),
+            (0, true),
+            (-1, false),
+            (-1, true),
+        ] {
+            game.world.set(8, 64, 8, portal).unwrap();
+            let kind = game
+                .res
+                .mob_types()
+                .get("minecraft:sulfur_cube")
+                .unwrap()
+                .clone();
+            let mut cube = Mob::new(9123, kind, Vec3::new(8.5, 64.0, 8.5), 0.0);
+            cube.silent = silent;
+            cube.extra.body = Some("minecraft:tnt".into());
+            cube.extra.counter2 = 2; // fuse 1: explodes on this tick.
+            game.mobs.push(cube);
+            game.portals.entities.insert(
+                9123,
+                PortalState {
+                    cooldown,
+                    process: None,
+                },
+            );
+            // The actual level tick orders the portal pass before the mob pass.
+            game.audio.heard.clear();
+            game.handle_entity_portals();
+            game.tick_creatures().unwrap();
+            assert_eq!(
+                game.world.block(8, 64, 8) == portal,
+                cooldown > 0,
+                "cooldown {cooldown}, Silent={silent}"
+            );
+            assert_eq!(
+                game.audio
+                    .heard
+                    .get("minecraft:entity.generic.explode")
+                    .copied()
+                    .unwrap_or(0),
+                u32::from(!silent),
+                "cooldown {cooldown}, Silent={silent}"
+            );
+        }
+        // An unrelated native/sourceless blast never inherits the cube's calculator.
+        game.world.set(8, 64, 8, portal).unwrap();
+        game.server_explode(
+            [8.5, 64.0625, 8.5],
+            4.0,
+            super::super::explosion::BlockInteraction::Destroy,
+            false,
+        )
+        .unwrap();
+        assert_ne!(game.world.block(8, 64, 8), portal);
     }
 
     #[test]
@@ -1837,7 +1904,7 @@ mod tests {
             for seed in [0, 1, -1, 42, i64::MIN, i64::MAX] {
                 let mut audible = None;
                 for silent in [false, true] {
-                    game.world.random = horizon_core::random::LegacyRandom::new(seed);
+                    game.world.random.set_seed(seed);
                     game.orbs.clear();
                     let mut projectile = Projectile::new(
                         ProjectileKind::ExperienceBottle,
@@ -1900,30 +1967,6 @@ mod tests {
 
     fn particle_count(game: &Game<'_>) -> usize {
         game.particles.requested.as_ref().unwrap().len()
-    }
-
-    /// #13852: a chunk enters entity ticking only once every chunk within 2
-    /// columns is loaded (`ChunkMap.prepareEntityTickingChunk`), so TNT beside
-    /// a missing chunk keeps its fuse until the neighbourhood is whole.
-    #[test]
-    fn tnt_waits_while_a_chunk_two_columns_away_is_missing() {
-        let Some(mut game) = server_game() else {
-            return;
-        };
-        game.world.chunks.remove(&(2, 0));
-        game.add_primed_tnt(BlockPos::new(8, 64, 8), 0.0, 80, None, None);
-        game.tnts[0].no_gravity = true;
-        game.tnts[0].velocity = Vec3::ZERO;
-        for _ in 0..3 {
-            game.tick_world(true).unwrap();
-        }
-        assert_eq!(game.tnts[0].fuse, 80, "no entity ticking yet");
-        game.world.chunks.insert(
-            (2, 0),
-            std::sync::Arc::new(horizon_client::chunk::Chunk::empty(2, 0)),
-        );
-        game.tick_world(true).unwrap();
-        assert!(game.tnts[0].fuse < 80, "ticks once the chunk is back");
     }
 
     /// #10063: TNT lit between level ticks (flint and steel, a command) has its

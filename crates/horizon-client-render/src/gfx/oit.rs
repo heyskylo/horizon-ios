@@ -696,13 +696,16 @@ impl Oit {
             ),
         ] {
             {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some(label),
                     timestamp_writes: timing.as_deref_mut().and_then(|t| t.writes(label)),
                     color_attachments: &first,
                     depth_stencil_attachment: read_only(terrain_depth),
                     ..Default::default()
                 });
+                let pixels = super::pixel_count(terrain_depth);
+                let mut pass =
+                    super::pack_timing::counted(timing.as_deref_mut(), pass, pixels, label);
                 pass.set_bind_group(GROUP, group, &[]);
                 draw(&mut pass, stage);
             }
@@ -972,7 +975,7 @@ mod tests {
         );
         let border = stages("border");
         validate(
-            &(include_str!("../border.wgsl").to_owned()
+            &(super::super::border_shader()
                 + include_str!("../oit.wgsl")
                 + include_str!("../oit_border.wgsl")),
             &border.iter().map(String::as_str).collect::<Vec<_>>(),

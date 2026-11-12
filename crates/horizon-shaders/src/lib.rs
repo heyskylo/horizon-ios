@@ -66,7 +66,7 @@ pub use textures::{
 };
 pub use translate::{
     AlphaTest, ComputeProgram, DRAW_UNIFORMS, Error, GbuffersInputs, GeometryInputs, Image,
-    Interface, Program, Sampler, Target, TerrainLighting, Uniform, WATER_MASK, WATER_PATCHES,
-    translate_composite, translate_compute, translate_gbuffers, translate_geometry,
+    Interface, Parts, Program, Sampler, Target, TerrainLighting, Uniform, WATER_MASK,
+    WATER_PATCHES, translate_composite, translate_compute, translate_gbuffers, translate_geometry,
     translate_shadow,
 };

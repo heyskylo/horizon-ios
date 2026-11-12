@@ -4,6 +4,39 @@
 use super::*;
 
 impl Game<'_> {
+    /// `Consumable.startConsuming` for a held consumable: food needs
+    /// `Player.canEat` (`Consumable.canConsume`), anything else is always
+    /// consumed. The right click is held for `consume_seconds`.
+    pub(super) fn start_eating(&mut self, info: &horizon_client::items::ItemInfo) -> bool {
+        let Some(stack) = self.held().cloned() else {
+            return false;
+        };
+        // Consumable.canConsume asks the stack's own `food`.
+        let consumable = self.consumable(&stack);
+        if consumable.is_none()
+            || (horizon_client::item_sync::food(&stack, info.food).is_some()
+                && (self.player.is_none()
+                    || !self.can_eat(
+                        &stack,
+                        horizon_client::item_sync::can_always_eat(&stack, info.can_always_eat),
+                    )))
+        {
+            return false;
+        }
+        // as Consumable.startConsuming does, no time is eaten at once, without a use
+        // (the server's eating reaches a client through the inventory).
+        if let Some(consumable) = consumable.as_ref()
+            && item_use::consumes_at_once(consumable.ticks())
+        {
+            if self.remote.is_none() {
+                // the cooldown of ItemStack.use's applyAfterUseComponentSideEffects.
+                self.complete_consuming(info, consumable, &stack);
+            }
+            return true;
+        }
+        self.start_using_item();
+        true
+    }
     /// `InstrumentItem.use` for a goat horn: the player holds it up for the
     /// instrument's `use_duration`, its sound plays at the player
     /// (`SoundSource.RECORDS`, volume `range / 16`), `INSTRUMENT_PLAY` is
@@ -143,7 +176,7 @@ impl Game<'_> {
             self.tick_mod_use(slot, ticks, &stack);
             return;
         }
-        let Some(consumable) = info.consumable.as_ref() else {
+        let Some(consumable) = self.consumable(&stack) else {
             self.using = None;
             return;
         };
@@ -153,7 +186,7 @@ impl Game<'_> {
         // Start and Tick left it.
         let remaining = self.use_duration - ticks as i32;
         if consumable.should_emit(remaining) {
-            self.emit_consume(consumable, &stack, 5);
+            self.emit_consume(&consumable, &stack, 5);
         }
         self.item_on_use_tick(&stack, ticks);
         match item_use::count_down(ticks, self.use_duration) {

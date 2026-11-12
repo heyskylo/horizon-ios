@@ -71,7 +71,11 @@ impl Game<'_> {
             "minecraft:brush" => 200,
             _ if info.is_some_and(|i| i.bundle) => 200,
             _ if let Some(i) = self.res.items().instrument(stack) => i.use_ticks(),
+            _ if let Some(consumable) = self.consumable(stack) => consumable.ticks(),
             _ if let Some(ticks) = patched_ticks => ticks,
+            _ if let Some(seconds) = horizon_client::item_sync::consumable_seconds(stack) => {
+                (seconds * 20.0) as i32
+            }
             _ => match info {
                 Some(i) if let Some(c) = &i.consumable => c.ticks(),
                 _ if patched_blocks => 72_000,
@@ -130,8 +134,8 @@ impl Game<'_> {
         }
         self.using = None;
         self.send_use_item_complete();
-        if let Some(consumable) = &info.consumable {
-            self.finish_consuming(info, consumable, stack);
+        if let Some(consumable) = self.consumable(stack) {
+            self.finish_consuming(info, &consumable, stack);
         } else if &*stack.item == "minecraft:spyglass" {
             self.stop_spyglass();
         }

@@ -20,7 +20,7 @@ use horizon_client::{
 };
 use horizon_core::{
     geometry::{Aabb, Vec3},
-    random::{LegacyRandom, RandomSource, WorldgenRandom, XoroshiroRandom},
+    random::{LegacyRandom, LevelRandom, RandomSource, WorldgenRandom, XoroshiroRandom},
 };
 use horizon_world::{
     dimension_type::DimensionFacts,
@@ -800,6 +800,26 @@ impl<'a> Game<'a> {
             levels.loaded_ticking(cx, cz) && super::ticking_chunk(&self.world, cx, cz)
         })
     }
+    /// The tick's spawning phases in `ServerLevel.tick`'s order: the raids
+    /// tick first (`this.raids.tick`), then the chunk source's
+    /// (`getChunkSource().tick`): natural spawning, then the custom spawners
+    /// of `ServerChunkCache.tickChunks`. A wave that lands this tick therefore
+    /// joins before that tick's spawns, with the lower entity ids.
+    pub(super) fn tick_spawners(&mut self) {
+        let from = self.lan_synced_from();
+        horizon_client::spans::time("spawn_raids", || self.tick_raids());
+        horizon_client::spans::time("spawn_natural", || self.spawn_natural());
+        // ServerChunkCache.tickChunks: the custom spawners tick only with spawn_mobs.
+        if self.ui.rules.bool("spawn_mobs") {
+            horizon_client::spans::time("spawn_custom", || {
+                self.tick_wandering_trader();
+                self.tick_patrol_spawner();
+                self.tick_cat_spawner();
+                self.tick_village_siege();
+            });
+        }
+        self.lan_synced_since(from);
+    }
     /// `ServerChunkCache.tickChunks`: the spawn state over the loaded mobs,
     /// the categories under their global caps (creatures every 400 ticks),
     /// then `tickSpawningChunk` in the shuffled spawning chunks of every
@@ -836,7 +856,10 @@ impl<'a> Game<'a> {
         laps.lap("sn_inhabited");
         let spawn_mobs = self.ui.rules.bool("spawn_mobs");
         let spawn_enemies = self.ui.rules.bool("spawn_monsters");
-        let mut random = std::mem::replace(&mut self.world.random, LegacyRandom::new(0));
+        let mut random = std::mem::replace(
+            &mut self.world.random,
+            LevelRandom::for_level(LegacyRandom::new(0)),
+        );
         let mut pending = Vec::new();
         let last_state;
         {
@@ -895,6 +918,7 @@ impl<'a> Game<'a> {
                         }
                         spawned
                     };
+                    horizon_threads::work::set_chunk(chunk.0, chunk.1);
                     spawn_selection::spawn_for_chunk(
                         &level,
                         &mut random,
@@ -908,6 +932,7 @@ impl<'a> Game<'a> {
             }
             scratch.spawn_players = state.into_players();
         }
+        horizon_threads::work::clear_work();
         spawn_selection::attempt_counters(true);
         laps.lap("sn_attempts");
         self.world.random = random;
@@ -1142,7 +1167,7 @@ mod tests {
         // A contained chunk must actually reach the spawning pass, so an
         // empty category list cannot satisfy the rejected-chunk assertion.
         game.border.set_size(64.0);
-        game.world.random = LegacyRandom::new(12345);
+        game.world.random.set_seed(12345);
         game.spawn_natural();
         assert_ne!(
             game.world.random.next_long(),
@@ -1150,7 +1175,7 @@ mod tests {
         );
         game.world.inhabited.clear();
         game.border.set_size(2.0);
-        game.world.random = LegacyRandom::new(12345);
+        game.world.random.set_seed(12345);
         game.spawn_natural();
         // No shuffle draw for one candidate, and no attempt draws for a
         // rejected chunk. Inhabited time still advances before the gate.
@@ -1338,6 +1363,31 @@ mod tests {
             NearestPlayers::new(&spectators)
                 .nearest(0.0, 0.0, 0.0)
                 .is_none()
+        );
+    }
+
+    /// `ServerLevel.tick` ticks the raids before the chunk source spawns
+    /// (`raids.tick`, then `getChunkSource().tick`): a wave that lands in a
+    /// tick joins before that tick's natural and custom spawns, with the
+    /// lower entity ids. The phases name themselves in the spans they run in.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn raids_tick_before_natural_and_custom_spawning() {
+        let mut game = crate::game::native_machines::tests::server_game();
+        horizon_client::spans::record_here(true);
+        let _ = horizon_client::spans::take_raw();
+        game.tick_spawners();
+        let raw = horizon_client::spans::take_raw();
+        horizon_client::spans::record_here(false);
+        let phases: Vec<&str> = raw
+            .iter()
+            .map(|s| s.name)
+            .filter(|name| name.starts_with("spawn_"))
+            .collect();
+        assert_eq!(
+            phases,
+            ["spawn_raids", "spawn_natural", "spawn_custom"],
+            "ServerLevel.tick ticks the raids before the chunk source's spawns"
         );
     }
 }

@@ -27,7 +27,7 @@ def method(source, name):
 def program(pad_source=None, command_source=None):
     pad_source = pad_source or (ROOT / 'crates/horizon-client/src/game/pad_menu.rs').read_text()
     ime = (ROOT / 'crates/horizon-client/src/game/ime.rs').read_text()
-    names = ['pad_typing', 'field_focused', 'sync_system_keyboard', 'show_system_keyboard',
+    names = ['pad_osk_done_lines', 'pad_typing', 'field_focused', 'sync_system_keyboard', 'show_system_keyboard',
              'hide_system_keyboard', 'toggle_system_keyboard', 'system_keyboard_up', 'pad_osk_output', 'key_focus_blocked', 'pad_has_typing_screen', 'pad_enter_keeps_typing']
     methods = '\n'.join(method(pad_source, n) for n in names)
     methods += '\n' + method((ROOT / 'crates/horizon-client/src/game/play_input.rs').read_text(), 'reload_blocks_input')
@@ -59,7 +59,7 @@ def program(pad_source=None, command_source=None):
     types = '#[derive(Clone, Copy, PartialEq)] enum KeyCode {' + ','.join(codes) + '}\n'
     types += '#[derive(Clone, Copy, PartialEq)] enum NamedKey {' + ','.join(named) + '}\n'
     helper += 'mod uikit { use super::*; ' + callbacks + ' }\n'
-    stubs = STUBS.replace('#[derive(Clone, Copy, PartialEq)] enum KeyCode { Backspace, Enter }', types)
+    stubs = STUBS.replace('#[derive(Clone, Copy, PartialEq)] enum KeyCode { Backspace, Enter, Tab, ArrowUp, ArrowDown }', types)
     return stubs + helper + '\nmod production { use super::*; use books::BookScreen; impl Game {\n' + methods + '\n}\n' + CASES + '\n}\n'
 
 
@@ -71,9 +71,9 @@ mod log { pub(crate) use crate::warn; }
 mod key_focus { pub struct Context{pub slider_edit:bool,pub typing:bool,pub rows_take_enter:bool,pub gui:(f32,f32)} }
 mod preedit { pub fn set_preedit(_: Option<()>) {} pub fn mark_committed() {} }
 mod books { pub enum BookScreen { Edit { signing:bool }, View } }
-mod osk { pub enum Output { Text(String), Backspace, Enter, Close } }
+mod osk { pub enum Output { Text(String), Backspace, Enter, Done, Complete, Previous, Next, Close } }
 #[derive(Default, PartialEq)] enum Screen { #[default] Playing, Chat, CommandBlock, WorldOptions, Creative, Inventory, Options, Social, DebugOptions, BlockEditor, Win }
-#[derive(Clone, Copy, PartialEq)] enum KeyCode { Backspace, Enter }
+#[derive(Clone, Copy, PartialEq)] enum KeyCode { Backspace, Enter, Tab, ArrowUp, ArrowDown }
 mod smol_str { pub type SmolStr = String; }
 #[derive(Clone, Copy, PartialEq)] enum ElementState { Pressed, Released }
 #[derive(Clone, Copy, PartialEq)] enum NativeKeyCode { Unidentified }
@@ -108,6 +108,8 @@ struct Renderer{current:bool} impl Renderer{fn presentation_current(&self)->bool
  dialog: bool, dialog_text: bool, dialog_lines: bool, recipe: bool, station: bool, command: String, submitted: bool, block_typing: bool, key_code_calls: usize, title_text: String,
 }
 impl Game {
+ fn close_sign_editor(&mut self){self.sign_edit=None;}
+ fn book_control(&mut self,_:Option<&str>)->Result<(),String>{self.book=None;Ok(())}
  fn prompt_open(&self)->bool{self.dialog_open()}
  // No native mod text-field extension is installed in this fixture.
  fn type_text_field_input(&mut self,_:&str)->Option<Result<(),String>>{None}

@@ -21,7 +21,7 @@ BrushableBlockEntity.getUpdateTag	port	crates/horizon-client/src/lan/chunks.rs::
 BrushableBlockEntity.loadAdditional	skip:other		no own code: the raw saved tag (spill::saved_entity) keeps item and LootTable
 BrushableBlockEntity.saveAdditional	skip:other		no own code: the raw saved tag (spill::saved_entity) keeps item and LootTable
 CalibratedSculkSensorBlockEntity.VibrationUser.canReceiveVibration	port	crates/horizon-client/src/game/sculk.rs::Game::sculk_listen	calibrated back-signal frequency filter
-CampfireBlockEntity.markUpdated	port	crates/horizon-client/src/game/campfire.rs::Game::tick_campfire	gap: minor: placing food (use_on_campfire) sends no block update
+CampfireBlockEntity.markUpdated	port	crates/horizon-client/src/game/campfire.rs::Game::tick_campfire	`use_on_campfire` marks the block entity updated (chunk modified, clients synced) and `tick_campfire` marks a moved timer, as `setChanged` + `sendBlockUpdated` do
 CampfireBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::place	container components applied when the item's data is placed
 CampfireBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::collect	container component collected from Items
 ChestBlockEntity.loadAdditional	port	crates/horizon-client/src/save.rs::decode_block_entity	Items (or loot table, via the chunk)
@@ -32,10 +32,11 @@ ChestBlockEntity.recheckOpen	port	crates/horizon-world/src/level/tick.rs::Sim::t
 ChestLidController.tickLid	port	crates/horizon-client-render/src/block_entity_anim.rs::ChestLid::tick	lid openness step of 0.1 per tick
 ChiseledBookShelfBlockEntity.removeItem	port	crates/horizon-client/src/game/machines.rs::Game::take_one	removes one item from the slot
 ChiseledBookShelfBlockEntity.setItem	port	crates/horizon-client/src/game/chiseled_bookshelf.rs::Game::use_chiseled_bookshelf	player insert path; slot update via chiseled_bookshelf_update_state
-ChiseledBookShelfBlockEntity.canTakeItem	port	crates/horizon-client/src/game/machines.rs::Containers::can_take	gap: minor: the target-has-room check is left to take_one and put_back
+ChiseledBookShelfBlockEntity.canTakeItem	port	crates/horizon-client/src/game/machines.rs::Containers::can_take	the target's room: a free slot or a matching stack with room (`hasAnyMatching`); the hopper asks `can_take_into`, which applies it before `can_take`
 ChiseledBookShelfBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::place	Items as container component
 ChiseledBookShelfBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::collect	Items as container component
 CommandBlockEntity.onModeSwitch	port	crates/horizon-client/src/game/command_blocks.rs::Game::apply_command_block	mode switch; the AUTO schedule follows the setAutomatic step
+CommandBlockEntity.onUpdated	port	crates/horizon-client/src/game/command_blocks.rs::Game::apply_command_block	sends the edited block entity to clients and marks the chunk dirty
 CommandBlockEntity.isConditional	port	crates/horizon-client/src/game/command_blocks.rs::conditional	
 CommandBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::place	custom name component
 CommandBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::collect	custom name component
@@ -47,6 +48,7 @@ ContainerOpenersCounter.incrementOpeners	port	crates/horizon-client/src/game/blo
 ContainerOpenersCounter.recheckOpeners	port	crates/horizon-client/src/game.rs::GameLevel::recheck_container_openers	the level asks, from ChestBlock.tick, EnderChestBlock.tick and BarrelBlock.tick
 CrafterBlockEntity.isSlotDisabled	port	crates/horizon-client-render/src/containers.rs::Crafter::can_place	disabled check (disabled[slot]) inside can_place
 CrafterBlockEntity.canPlaceItem	port	crates/horizon-client/src/game/machines.rs::Containers::can_place	calls Crafter::can_place
+CrafterBlockEntity.setSlotState	port	crates/horizon-client/src/game/menu_clicks.rs::Game::menu_click	only an empty slot toggles; the menu's write-back (`apply_crafter_slot_states`) lands on the block entity and marks the chunk (`setChanged`)
 CrafterBlockEntity.smallerStackExist	port	crates/horizon-client-render/src/containers.rs::Crafter::can_place	the smaller-stack check later in the slots
 CrafterBlockEntity.saveAdditional	port	crates/horizon-client/src/save.rs::encode_block_entity	crafter arm: items, disabled slots, triggered, ticks
 CrafterBlockEntity.isEmpty	port	crates/horizon-client/src/game/machines.rs::Containers::is_empty	

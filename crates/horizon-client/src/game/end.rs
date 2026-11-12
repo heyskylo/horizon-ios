@@ -384,11 +384,7 @@ impl Game<'_> {
 
     /// The environment attributes of the current dimension.
     pub(super) fn dim_environment(&self) -> &Environment {
-        match self.dim {
-            Dim::Overworld => self.res.environment(),
-            Dim::Nether => self.res.nether_environment(),
-            Dim::End => self.res.end_environment(),
-        }
+        self.res.environment_of(&self.dimension_type().id)
     }
 
     /// SkyRenderer.renderEndFlash, drawn after the renderer's resident sky mesh.
@@ -629,6 +625,7 @@ impl Game<'_> {
         // a mod that cancels one keeps its fire out too.
         self.native_joins_flush(false, 0);
         self.tick_crystals();
+        self.clear_crystal_fire();
         self.tick_eyes();
         if self.dimension_type().has_ender_dragon_fight {
             self.ensure_exit_portal()?;
@@ -1537,8 +1534,15 @@ impl Game<'_> {
             if self.restart_portal_cooldown(id) {
                 continue;
             }
-            self.end.gateways.entry(id).or_default().enter(pos);
+            let delay = self.entity_portal_delay(id);
+            self.end
+                .gateways
+                .entry(id)
+                .or_default()
+                .enter_with_delay(pos, delay);
         }
+        // ThrowableProjectile applies the gateway's block effect before Entity.tick.
+        self.handle_end_gateway_portals_phase(true);
     }
 
     /// `ThrownEnderpearl.onInsideBlock` in an End gateway: its owner's
@@ -1560,7 +1564,11 @@ impl Game<'_> {
     /// `Entity.handlePortal` for the entities in an End gateway: they go
     /// through to the gateway's exit, where they wait for its chunks.
     pub(super) fn handle_end_gateway_portals(&mut self) {
-        // Nobody in a gateway (nearly always): nothing to look up.
+        self.handle_end_gateway_portals_phase(false);
+    }
+
+    fn handle_end_gateway_portals_phase(&mut self, after_move: bool) {
+        // Nobody in a gateway: nothing to look up.
         if self.remote.is_some() || self.dim != Dim::End || self.end.gateways.is_empty() {
             return;
         }
@@ -1608,11 +1616,25 @@ impl Game<'_> {
             if !ticking {
                 continue;
             }
+            // Only an entity in a gateway has a state: skip the others before
+            // the per-id lookups below, which walk the entity lists.
+            if !self.end.gateways.contains_key(&id) {
+                continue;
+            }
+            let is_pearl = self
+                .creatures
+                .projectiles
+                .iter()
+                .any(|p| p.id == id && matches!(p.kind, ProjectileKind::EnderPearl));
+            if is_pearl != after_move {
+                continue;
+            }
+            let delay = self.entity_portal_delay(id);
             let Some(state) = self.end.gateways.get_mut(&id) else {
                 continue;
             };
             // The End gateway has no transition time (Portal.getPortalTransitionTime).
-            if let Some(entry) = state.travel(allowed) {
+            if let Some(entry) = state.travel_with_delay(allowed, delay) {
                 leaving.push((id, entry));
             }
             if state.is_done() {
@@ -2001,3 +2023,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "gateway_cooldown_tests.rs"]
+mod cooldown_tests;

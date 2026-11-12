@@ -515,7 +515,7 @@ fn apply_frame_metadata(frame: &mut ItemFrame, index: u8, value: &Value) {
     match (index, value) {
         (0, Value::Byte(flags)) => frame.invisible = flags & 0x20 != 0,
         (8, Value::Id(direction)) => frame.facing = (*direction).clamp(0, 5) as u8,
-        (10, Value::Int(rotation)) => frame.rotation = rotation.rem_euclid(8) as u8,
+        (10, Value::Int(rotation)) => frame.rotation = rotation.rem_euclid(8) as i8,
         _ => {}
     }
 }

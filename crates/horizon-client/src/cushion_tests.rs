@@ -1,6 +1,32 @@
 use super::*;
 
 #[test]
+fn a_cleared_cushion_name_is_not_resurrected_from_preserved_raw_data() {
+    let cushion = Cushion {
+        id: 7,
+        position: Vec3::new(0.5, 64.0, 0.5),
+        pos: [0, 64, 0],
+        yaw: 0.0,
+        color: 1,
+        check_interval: 0,
+        custom_name: None,
+    };
+    let raw = Tag::compound([
+        ("CustomName", string("Old Seat")),
+        ("UnmodeledCushionData", Tag::Int(7)),
+    ]);
+    let saved = cushion_to_nbt(&cushion, [1, 2, 3, 4], Some(&raw));
+    assert!(
+        saved.get("CustomName").is_none(),
+        "a removed live name must stay removed"
+    );
+    assert_eq!(saved.get("UnmodeledCushionData"), Some(&Tag::Int(7)));
+    let reloaded = cushion_from_nbt(&saved, 8).unwrap();
+    assert!(reloaded.custom_name.is_none());
+    assert!(reloaded.item_stack_with_data().data().is_none());
+}
+
+#[test]
 fn flags_take_any_number_and_fall_back_when_absent() {
     let tag = Tag::compound([
         ("byte", Tag::Byte(2)),
@@ -27,11 +53,15 @@ fn cushion_save_preserves_color_anchor_rotation_and_unknown_data() {
         yaw: 270.0,
         color: 14,
         check_interval: 55,
-        custom_name: None,
+        custom_name: Some(string("Seat")),
     };
-    let raw = Tag::compound([("CustomName", string("Seat"))]);
+    let raw = Tag::compound([
+        ("CustomName", string("Seat")),
+        ("UnmodeledCushionData", Tag::Int(9)),
+    ]);
     let tag = cushion_to_nbt(&cushion, [1, 2, 3, 4], Some(&raw));
     assert_eq!(text(tag.get("CustomName")).as_deref(), Some("Seat"));
+    assert_eq!(tag.get("UnmodeledCushionData"), Some(&Tag::Int(9)));
     let loaded = cushion_from_nbt(&tag, 8).unwrap();
     assert_eq!(loaded.id, 8);
     assert_eq!(loaded.position, cushion.position);

@@ -68,7 +68,8 @@ Options: `--version vX.Y.Z`, `--dir FOLDER`, `--bin FOLDER` (Windows: `-Version`
 such as Linux on ARM, build from source: `cargo build --release -p horizon-client --bin horizon-client -p
 horizon-server` and keep both programs in one folder.
 
-On Nix and NixOS, the repository's flake builds `horizon-server` from source: [nix.md](nix.md).
+On Nix and NixOS, the repository's flake builds `horizon-server` from source and has a
+`services.horizon-server` module: [nix.md](nix.md).
 
 The Horizon launcher also installs releases. Every release folder holds `horizon-server`, so you can run it
 from there too.
@@ -182,6 +183,7 @@ path = ""                    # the game program; empty: the one beside horizon-s
 resources = ""               # the prepared game files; empty: resources/ here, else the usual places
 restart_on_crash = true
 low_memory = false           # true: less memory, slightly slower ticks (see below)
+parallel_tick = false        # true: the tick shares its work among helper threads (see below)
 
 [backups]
 every = "6h"                 # 30m, 6h, 1d...; "0" turns automatic backups off
@@ -359,25 +361,46 @@ samples them for everyone in turn, behind the ticks, so far terrain never slows 
 distance or over a player's limits is refused, and a client that keeps breaking the limits is disconnected.
 Tiles are sampled again for each player who asks (there is no cache yet). Vanilla clients never hear of it.
 
-`horizon-server report` records the running server for 60 seconds (`report 300` for five minutes, up to 600),
-then prints a short summary and saves it in `reports/`: `perf-<time>.txt` and `perf-<time>.json`. They say where
-the ticks' time went, phase by phase (mobs, block ticks, block entities, the network and the chunks it
-sends, saving...), the slowest ticks, how many entities of each type, chunks, players, memory, CPU, and the
-settings that matter (view and simulation distance, max players). Since format 2 they also give each dimension's
-share of the tick (`level_*`), what each mob type costs per dimension (one tick in four times every mob: ms a
-tick, mobs, µs a mob), the chunk workers' CPU by job (load, generate, decorate, finish, light), the network bytes
-a player sends and receives, and what recording cost the tick (measured, usually well under 1 % of MSPT). They
-hold no names, UUIDs or addresses, so you can attach them to an issue as they are. On the console it is
-`horizon-report [SECONDS]`; `horizon-report stop` writes the report now and `horizon-report status` says how far
-it is. Nothing restarts: the report runs beside the game.
+`horizon-server report` records the running server for 60 seconds (`report 300` for five minutes, up to 600) into
+`reports/profile-<time>Z.hzperf`, a capture the performance tools read ([perf-platform.md](perf-platform.md)), and
+prints a short summary (TPS, MSPT, CPU, memory, players and the heaviest tick phases) and where it went. On the console it is `horizon-report [SECONDS]`; `horizon-report stop` ends it now and
+`horizon-report status` says how far it is. Nothing restarts: the report runs beside the game.
 
-To see a slow stretch tick by tick, `horizon-trace [SECONDS]` (30 by default, up to 300) writes every thread's timed
-steps to `reports/trace-<time>.json`; [ui.perfetto.dev](https://ui.perfetto.dev) opens it as a timeline, one row per
-thread. `horizon-trace stop` ends it early. It holds step names and times only.
+The capture holds the settings, the machine, the Horizon switches and the few game rules that change what a tick
+costs, the health history from before it (TPS and MSPT over the last 10 minutes to 7 days), a sample each second,
+the counters and the slow ticks with their steps. It says where the ticks' time went, phase by phase (mobs, block
+ticks, block entities, the network and the chunks it sends, saving...), in blocks of five seconds and as totals,
+with each dimension's share of the tick (`level_*`) and the 16 slowest ticks with their whole step tree. It counts
+the chunks, entities and block entities of each dimension at the start and at the end, and gives what each mob type
+costs per dimension (one tick in four times every mob: ms a tick, mobs, µs a mob), the chunk workers' CPU by job
+(load, generate, decorate, finish, light), the bytes each player sends and receives in each block, and what recording
+cost the tick (measured, usually well under 1 % of MSPT). It holds no names, UUIDs or addresses (players are
+numbered in the order they joined), no seed and no world name, so you can attach it to an issue as it is. Past 30
+files or 1 GiB the oldest `profile-*.hzperf` is deleted; a file you renamed is never touched. On Linux the tick thread is also sampled 250 times a second (about 0.05 % of the tick thread), and the capture
+holds where the CPU time went, by function and by what the server was doing (step, entity type, block, dimension,
+chunk); `--no-samples` leaves that out. Finishing the file after the window can take a few seconds and does not stall
+ticks. The old `perf-<time>.json` and `.txt` files are no
+longer written; the ones already in `reports/` stay.
 
-Between reports, the log keeps the spikes: a tick slower than 250 ms writes a `Horizon: slow tick` line with
-its phases (`HORIZON_SPIKES=MS` in the engine's environment sets another threshold), and a server more than
-two seconds behind says `Can't keep up!` as vanilla's does, at most every 15 seconds.
+`python3 tools/server_bench.py --profile` records each Horizon run's measure window this way (`--profile=--no-samples`
+passes flags to `horizon-report`) and adds the run's record, MSPT, RSS, CPU and chunk figures, to the capture with
+`horizon-perf attach FILE --name NAME --body JSONFILE`, which keeps whatever else the file holds. Build
+`-p horizon-perf` beside the server first; the capture's path is the run's `profile` in the report.
+
+To see a slow stretch tick by tick, `horizon-trace [SECONDS]` (30 by default, up to 600) writes a capture with every
+thread's timed steps to `reports/profile-<time>Z.hzperf`, one row per thread. `horizon-trace stop` ends it early, and
+`horizon-report --timeline` adds the same steps to a report. The steps are recorded for the first 60 seconds of a
+capture, or until they pass 256 MiB; the capture then says when they stopped. `HORIZON_TRACE=FILE` in the server's
+environment writes such a capture to FILE from the first tick. It holds step names and times only.
+
+To profile your server from a game, join it as an operator of level 4 and run `horizon-ctl profile server start` (or `profile start`, which captures your game and the server in one file). Another operator level is refused and nothing is written. One server capture runs at a time. The server writes its copy to its own `reports/`, logs who started it and when, and sends the file to your game in the background, at most 256 KiB a second and after gameplay packets; the game says where it saved it. Open a capture with `horizon-perf` ([perf-platform.md](perf-platform.md)), which you build from this repository (`cargo build --release -p horizon-perf`).
+
+Between reports, the server keeps its last 256 slow ticks in memory, each with its eight largest steps. A tick
+counts as slow from 250 ms (`HORIZON_SPIKES=MS` in the engine's environment sets another threshold), and every
+capture carries the ring as it stood at its start and adds the slow ticks of its own window. The log no longer has a
+line for them: `horizon-perf query spans --slow` says which steps they spent their time in, and `query ticks --worst 5`
+lists the five worst with their step trees (the newest capture, or name a file last). When a slow tick spent 10 ms or more on one player's packets or one event, the log says so in a `Horizon: … ms tick was busy with:` line with the player's name; the capture never holds names. A server more than two seconds behind still says `Can't keep up!` as
+vanilla's does, at most every 15 seconds.
 
 `config set` changes `server.toml` without opening it: `horizon-server config set world.difficulty=hard
 server.max_players=10`. Each key is a section and a name from the file (`properties.spawn-protection=0` for any
@@ -622,7 +645,8 @@ Players join with any vanilla 26.3 client: only the server decides the damage.
 horizon-server service install
 ```
 
-- **Linux:** a systemd user unit (`--system` for a system unit, with sudo). To keep a user unit running while
+- **Linux:** a systemd user unit (`--system` for a system unit, with sudo from your own account: the unit runs
+  the server as that account, never as root). To keep a user unit running while
   you're logged out: `loginctl enable-linger $USER`.
 - **macOS:** a launchd agent in `~/Library/LaunchAgents`.
 - **Windows:** a task that starts at logon (a real Windows service comes later).
@@ -719,6 +743,15 @@ the game with huge pages off. Measured on a 4-core EPYC VPS with 20 bots playing
 Turn it on when memory is what you're short of, for example on a small VPS. It applies at the next start.
 A game started without `horizon-server` (`horizon-client --dedicated`, a container of your own) gets the same
 effect from the environment variable `MIMALLOC_ALLOW_THP=0`. On macOS and Windows it changes nothing.
+
+### Parallel tick: `parallel_tick`
+
+Off by default. Under `[engine]`, `parallel_tick = true` starts the game with its parallel tick on: the
+phases of the server tick that give the same result in any order share their work among helper threads (at
+most 8, as many as the machine has cores). It applies at the next start. It is the same switch as the
+environment variable `HORIZON_PARALLEL_TICK=1`, for a host that gives you no way to set one (a game panel
+with a fixed startup command). With the setting off, a `HORIZON_PARALLEL_TICK` already in the server's
+environment still applies.
 
 ## When something goes wrong
 

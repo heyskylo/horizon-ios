@@ -19,6 +19,7 @@ use horizon_core::{
     random::RandomSource,
 };
 use horizon_world::{
+    dimension_type::DimensionFacts,
     level::portal_travel::{
         BorderBounds, FoundRectangle, closest_portal, collision_free_position, exit_position,
         largest_rectangle_around, relative_position,
@@ -26,6 +27,8 @@ use horizon_world::{
     nbt::Tag,
 };
 use std::collections::HashMap;
+
+mod respawn_attributes;
 
 /// `Player.getDimensionChangingDelay`.
 pub(super) const PLAYER_DELAY: i32 = 10;
@@ -105,6 +108,8 @@ pub(super) struct Portals {
     dirty: bool,
     /// Per-chunk portal palette masks, kept across ticks (portal_sections).
     pub(super) sections: horizon_client::portal_sections::PortalSections,
+    /// The attributes a respawn hands from the old player to the new one.
+    pub(super) respawn_attributes: respawn_attributes::RespawnAttributes,
 }
 
 fn rotate_y(v: Vec3, degrees: f32) -> Vec3 {
@@ -340,12 +345,10 @@ impl Game<'_> {
             }
             None => (true, Vec3::new(0.5, 0.0, 0.0)),
         };
-        // DimensionType.getTeleportationScale: 8 out of the Nether, 1/8 into it.
-        let scale = if self.dim == Dim::Nether {
-            8.0
-        } else {
-            1.0 / 8.0
-        };
+        let scale = DimensionFacts::teleportation_scale(
+            self.dimension_type(),
+            self.dimension_type_of(target),
+        );
         Plan {
             dim: target,
             // getPortalDestination clamps to the border of the level it leads to.
@@ -699,7 +702,19 @@ impl Game<'_> {
         });
         self.portals.before = before;
         self.portals.entities.retain(|id, _| present.contains(id));
+        // SulfurCube.tickFuse runs before Entity.handlePortal. A cube removed
+        // there must neither decrement its cooldown nor travel before its blast.
+        let removed_before_portal: std::collections::HashSet<u32> = self
+            .mobs
+            .iter()
+            .filter(|_| !vehicles)
+            .filter(|m| horizon_client::mobs::sulfur_cube::removes_before_portal_tick(m))
+            .map(|m| m.id)
+            .collect();
         for (id, allowed, delay) in ids {
+            if removed_before_portal.contains(&id) {
+                continue;
+            }
             let Some(state) = self.portals.entities.get_mut(&id) else {
                 continue;
             };
@@ -754,6 +769,17 @@ impl Game<'_> {
                 })
             })
             .unwrap_or(ENTITY_DELAY)
+    }
+    /// `Entity.saveWithoutId` writes the live `PortalCooldown`: the countdown
+    /// `Entity.processPortalCooldown` ticks down, not the value the entity was
+    /// loaded with. Every entity that can stand in a portal takes it from the
+    /// portal state, as the projectile writer does. An entity the portal
+    /// state does not know is not on a cooldown, and writes 0.
+    pub(super) fn save_portal_cooldown(&self, id: u32, tag: &mut Tag) {
+        horizon_client::nether_portal::put_portal_cooldown(
+            tag,
+            horizon_client::nether_portal::portal_cooldown(&self.portals.entities, id),
+        );
     }
     /// `Entity.saveWithoutId`: the modeled non-arrow projectile codecs
     /// share the live cooldown between command reads and chunk writes.
