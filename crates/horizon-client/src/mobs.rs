@@ -5,6 +5,10 @@
 //! fly and amphibious node evaluators (`path`, `nav`), move/look/jump/body
 //! controls (`control`), `LivingEntity` physics (`living`) and per-species
 //! behaviour, models, animations and sounds.
+mod mob_slot;
+mod pending_pushes;
+pub use mob_slot::MobSlot;
+pub use pending_pushes::{PendingPushes, apply_mob_pushes};
 pub mod ai;
 pub mod allay;
 pub mod ambient;
@@ -1076,10 +1080,10 @@ pub struct Attrs {
 }
 /// `minecraft:wolf_armor`'s maximum damage.
 pub const WOLF_ARMOR_DURABILITY: i32 = 64;
-
 /// Species-specific persistent state (variants, colours, taming, ageing...).
 #[derive(Clone, Debug, Default)]
 pub struct Extra {
+    pub client_side: bool, // `Level.isClientSide`: a client copy, which `Entity.hurt` leaves alone.
     /// Saved fish/axolotl bucket flag; tadpoles save a constant true value.
     pub from_bucket: bool,
     /// Command-created armor instances, shared by commands and runtime damage.
@@ -1435,7 +1439,6 @@ impl Extra {
         self.main_hand.take()
     }
 }
-
 /// How far the boxes of a set of mobs reach from their positions: the widest reach sideways, below
 /// and above among them, worked out from each mob's real box ([`Mob::bounds`]: a shulker's grows
 /// toward its open lid, sideways or below its position). A box query over many mobs (a vehicle's,
@@ -2897,28 +2900,6 @@ pub fn take_mob_pushes(events: &mut Vec<MobEvent>, from: usize, pending: &mut Pe
     }
     events.truncate(kept);
 }
-/// Pushes waiting for their mob's tick, in push order. A list while short;
-/// past [`PendingPushes::LIST_MAX`] (a crowd pushing each other) one list
-/// per mob, as scanning the whole list for each mob grows with its square.
-#[derive(Default)]
-pub struct PendingPushes {
-    list: Vec<(u32, Vec3)>,
-    by_mob: crate::fast_hash::FxHashMap<u32, Vec<Vec3>>,
-}
-impl PendingPushes {
-    const LIST_MAX: usize = 64;
-    pub fn push(&mut self, id: u32, v: Vec3) {
-        if self.by_mob.is_empty() && self.list.len() < Self::LIST_MAX {
-            self.list.push((id, v));
-            return;
-        }
-        // Older pushes first, so each mob's stay in order.
-        for (id, v) in self.list.drain(..) {
-            self.by_mob.entry(id).or_default().push(v);
-        }
-        self.by_mob.entry(id).or_default().push(v);
-    }
-}
 /// `ServerLevel.sendBlockUpdated`: for each write that changed a block's collision
 /// shape, a mob whose path runs near it re-paths (`PathNavigation.shouldRecomputePath`).
 /// The writes whose shape changed are found once per tick ([`collision_changes`]).
@@ -2946,50 +2927,28 @@ pub fn collision_changes(w: &MobWorld, writes: &[((i32, i32, i32), u32, u32)]) -
         })
         .collect()
 }
-/// Adds the pending pushes aimed at `m` to its velocity, in push order.
-pub fn apply_mob_pushes(m: &mut Mob, pending: &mut PendingPushes) {
-    // Entity.push(x, y, z) sets needsSync.
-    let mut add = |v: Vec3| {
-        m.velocity = Vec3::new(m.velocity.x + v.x, m.velocity.y + v.y, m.velocity.z + v.z);
-        m.needs_sync = true;
-    };
-    if !pending.list.is_empty() {
-        pending.list.retain(|(id, v)| {
-            if *id != m.id {
-                return true;
-            }
-            add(*v);
-            false
-        });
-    }
-    if !pending.by_mob.is_empty()
-        && let Some(pushes) = pending.by_mob.remove(&m.id)
-    {
-        pushes.into_iter().for_each(add);
-    }
-}
 /// Applies the brain memories a mob's tick set on other mobs (from event
 /// index `from` on), at once: vanilla sets them on the other entity during
 /// the tick, before the mobs after it tick.
-pub fn apply_brain_events(mobs: &mut [Mob], events: &mut Vec<MobEvent>, from: usize) {
+pub fn apply_brain_events<M: MobSlot>(mobs: &mut [M], events: &mut Vec<MobEvent>, from: usize) {
     let mut i = from;
     while i < events.len() {
         match events[i] {
             MobEvent::BreedTarget { mob, partner } => {
-                if let Some(m) = mobs.iter_mut().find(|m| m.id == mob) {
+                if let Some(m) = mobs.iter_mut().map(MobSlot::mob_mut).find(|m| m.id == mob) {
                     animal_brain::set_breed_partner(m, partner);
                 }
                 events.remove(i);
             }
             MobEvent::LockGaze { mob, partner } => {
-                if let Some(m) = mobs.iter_mut().find(|m| m.id == mob) {
+                if let Some(m) = mobs.iter_mut().map(MobSlot::mob_mut).find(|m| m.id == mob) {
                     animal_brain::lock_gaze(m, partner);
                     villager_brain::lock_gaze_half(m, Who::Mob(partner));
                 }
                 events.remove(i);
             }
             MobEvent::Retreat { mob, from, at } => {
-                if let Some(m) = mobs.iter_mut().find(|m| m.id == mob) {
+                if let Some(m) = mobs.iter_mut().map(MobSlot::mob_mut).find(|m| m.id == mob) {
                     piglin::receive_retreat(m, from, at);
                 }
                 events.remove(i);
@@ -3003,7 +2962,11 @@ pub fn apply_brain_events(mobs: &mut [Mob], events: &mut Vec<MobEvent>, from: us
                 events.remove(i);
             }
             MobEvent::SchoolSize { leader, by } => {
-                if let Some(m) = mobs.iter_mut().find(|m| m.id == leader) {
+                if let Some(m) = mobs
+                    .iter_mut()
+                    .map(MobSlot::mob_mut)
+                    .find(|m| m.id == leader)
+                {
                     m.extra.followers += by;
                 }
                 events.remove(i);
@@ -3013,7 +2976,11 @@ pub fn apply_brain_events(mobs: &mut [Mob], events: &mut Vec<MobEvent>, from: us
             MobEvent::Breed {
                 parent, partner, ..
             } => {
-                if let Some(m) = mobs.iter_mut().find(|m| m.id == partner) {
+                if let Some(m) = mobs
+                    .iter_mut()
+                    .map(MobSlot::mob_mut)
+                    .find(|m| m.id == partner)
+                {
                     m.extra.age = 6000;
                     m.extra.in_love = 0;
                     animal_brain::forget_breed_target(m, parent);
@@ -3035,6 +3002,7 @@ pub fn apply_brain_events(mobs: &mut [Mob], events: &mut Vec<MobEvent>, from: us
                 let mut raised = Vec::new();
                 let (aim, fish_pos, fish_silent) = mobs
                     .iter()
+                    .map(MobSlot::mob)
                     .find(|m| m.id == mob)
                     .map(|m| {
                         (
@@ -3049,7 +3017,10 @@ pub fn apply_brain_events(mobs: &mut [Mob], events: &mut Vec<MobEvent>, from: us
                     })
                     .map(|(aim, pos, silent)| (Some(aim), Some(pos), silent))
                     .unwrap_or((None, None, true));
-                if let Some(t) = mobs.iter_mut().find(|m| m.id == target)
+                if let Some(t) = mobs
+                    .iter_mut()
+                    .map(MobSlot::mob_mut)
+                    .find(|m| m.id == target)
                     && t.damage_aimed(amount, source, aim)
                 {
                     t.add_effect("minecraft:poison", poison_ticks, 0);
@@ -3264,6 +3235,9 @@ pub struct MobWorld<'a> {
     /// not in the level (a warden's anger, `AngerManagement.angerByUuid`).
     /// None: this world keeps no entity UUIDs, so nothing is resolved.
     pub who_lookup: Option<&'a dyn WhoLookup>,
+    /// Another thread's mobs, for a lookup by id that misses `others`: a group of the server's
+    /// parallel mob loop (`game/mob_islands.rs`) answers as the serial loop would.
+    pub foreign: Option<&'a dyn ForeignSeen>,
     /// The level's world border, whose walls stop a mob's moves
     /// (`Entity.collectColliders`); None: nothing stops them there.
     pub border: Option<&'a horizon_core::geometry::border::BorderGeometry>,
@@ -3278,6 +3252,10 @@ pub trait ModEffectTicks {
 /// names while it is in the level, never some other entity as a stand-in. Only
 /// the game layer keeps entity UUIDs, so it answers this (`Game::who_by_uuid`)
 /// and the mob layer reaches it through `MobWorld`.
+/// A mob outside this thread's part of the mob loop, as the serial loop would see it now.
+pub trait ForeignSeen {
+    fn seen(&self, id: u32) -> Option<&Seen>;
+}
 pub trait WhoLookup {
     fn who_by_uuid(&self, uuid: [i32; 4]) -> Option<Who>;
 }
@@ -3651,7 +3629,8 @@ impl Mob {
     /// `LivingEntity.isInvulnerableTo` and dead or removed: only #bypasses_invulnerability gets
     /// past the flag. The guard every damage hook runs after (`LivingIncomingDamageEvent`).
     pub fn refuses_damage(&self, source: &Damage) -> bool {
-        !self.alive()
+        self.extra.client_side
+            || !self.alive()
             || self.removed
             || (self.is_invulnerable() && !source.kind.bypasses_invulnerability())
     }
@@ -5835,6 +5814,26 @@ mod armor_hurt_tests {
         k.id = id.into();
         k.species = species;
         Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// `Entity.hurt` on a client level does nothing: the horse a rider's
+    /// client drives takes no fall of its own, and the server's health stays
+    /// (#15294: the client's copy died and lay on the ground, still ridable).
+    #[test]
+    fn a_client_copy_takes_no_fall_damage() {
+        let mut m = horse();
+        m.extra.client_side = true;
+        let health = m.health;
+        let mut events = Vec::new();
+        assert!(!m.damage(20.0, Damage::of(DamageKind::Fall)));
+        m.cause_fall_damage_at(30.0, 1.0, &mut events, None, DamageKind::Fall);
+        assert_eq!(m.health, health);
+        assert_eq!(m.hurt_time, 0);
+        assert!(m.alive());
+        // The server's copy of the same fall is hurt.
+        let mut server = horse();
+        server.cause_fall_damage_at(30.0, 1.0, &mut events, None, DamageKind::Fall);
+        assert!(server.health < health);
     }
 
     /// `LivingEntity.hurtArmor` (`doHurtEquipment`): a hit that lands on a mob

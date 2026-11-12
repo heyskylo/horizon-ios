@@ -644,13 +644,14 @@ impl MobWorld<'_> {
         }
     }
     pub fn seen(&self, id: u32) -> Option<&Seen> {
-        match self.others_index {
+        let own = match self.others_index {
             Some(index) => index
                 .get(&id)
                 .and_then(|&i| self.others.get(i as usize))
                 .filter(|s| s.id == id),
             None => self.others.iter().find(|s| s.id == id),
-        }
+        };
+        own.or_else(|| self.foreign?.seen(id))
     }
     /// Living mobs of the given species within `range` of `from`, nearest first.
     pub fn nearby<'s>(
@@ -813,6 +814,7 @@ pub(crate) fn with_resource_test_world(
         dragon: None,
         leash_boats: &[],
         who_lookup: None,
+        foreign: None,
         others_grid: None,
         others_index: None,
         others_villagers: None,
