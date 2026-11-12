@@ -1080,10 +1080,10 @@ pub struct Attrs {
 }
 /// `minecraft:wolf_armor`'s maximum damage.
 pub const WOLF_ARMOR_DURABILITY: i32 = 64;
-
 /// Species-specific persistent state (variants, colours, taming, ageing...).
 #[derive(Clone, Debug, Default)]
 pub struct Extra {
+    pub client_side: bool, // `Level.isClientSide`: a client copy, which `Entity.hurt` leaves alone.
     /// Saved fish/axolotl bucket flag; tadpoles save a constant true value.
     pub from_bucket: bool,
     /// Command-created armor instances, shared by commands and runtime damage.
@@ -1439,7 +1439,6 @@ impl Extra {
         self.main_hand.take()
     }
 }
-
 /// How far the boxes of a set of mobs reach from their positions: the widest reach sideways, below
 /// and above among them, worked out from each mob's real box ([`Mob::bounds`]: a shulker's grows
 /// toward its open lid, sideways or below its position). A box query over many mobs (a vehicle's,
@@ -3630,7 +3629,8 @@ impl Mob {
     /// `LivingEntity.isInvulnerableTo` and dead or removed: only #bypasses_invulnerability gets
     /// past the flag. The guard every damage hook runs after (`LivingIncomingDamageEvent`).
     pub fn refuses_damage(&self, source: &Damage) -> bool {
-        !self.alive()
+        self.extra.client_side
+            || !self.alive()
             || self.removed
             || (self.is_invulnerable() && !source.kind.bypasses_invulnerability())
     }
@@ -5814,6 +5814,26 @@ mod armor_hurt_tests {
         k.id = id.into();
         k.species = species;
         Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// `Entity.hurt` on a client level does nothing: the horse a rider's
+    /// client drives takes no fall of its own, and the server's health stays
+    /// (#15294: the client's copy died and lay on the ground, still ridable).
+    #[test]
+    fn a_client_copy_takes_no_fall_damage() {
+        let mut m = horse();
+        m.extra.client_side = true;
+        let health = m.health;
+        let mut events = Vec::new();
+        assert!(!m.damage(20.0, Damage::of(DamageKind::Fall)));
+        m.cause_fall_damage_at(30.0, 1.0, &mut events, None, DamageKind::Fall);
+        assert_eq!(m.health, health);
+        assert_eq!(m.hurt_time, 0);
+        assert!(m.alive());
+        // The server's copy of the same fall is hurt.
+        let mut server = horse();
+        server.cause_fall_damage_at(30.0, 1.0, &mut events, None, DamageKind::Fall);
+        assert!(server.health < health);
     }
 
     /// `LivingEntity.hurtArmor` (`doHurtEquipment`): a hit that lands on a mob

@@ -145,7 +145,8 @@ impl Game<'_> {
         burst
     }
     /// A projectile's hurt of `amount` on the boat or minecart `id`
-    /// (`VehicleEntity.hurtServer`): even 0 shakes it (`Snowball`, `ThrownEgg`,
+    /// (`VehicleEntity.hurtServer`), or the item frame (`ItemFrame.hurtServer`,
+    /// which any non-explosion hit makes give up its item): even 0 shakes it (`Snowball`, `ThrownEgg`,
     /// `ThrownEnderpearl` `.onHitEntity`), 5 from a small fireball destroys it.
     pub(super) fn hurt_vehicle(&mut self, p: &Projectile, id: u32, amount: f32) {
         let creative = p.owner == Some(Who::Player) && self.creative;
@@ -153,6 +154,8 @@ impl Game<'_> {
             self.hurt_boat(i, amount, creative);
         } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
             self.hurt_cart(i, amount, creative, false);
+        } else {
+            self.projectile_hurts_frame(id, p.owner == Some(Who::Player), creative);
         }
     }
     /// The boats and minecarts of this tick's projectile pass.

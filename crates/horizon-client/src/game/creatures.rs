@@ -7,6 +7,7 @@ mod mob_geometry;
 mod mob_group;
 mod mob_islands;
 mod prep;
+mod projectile_targets;
 mod projectile_world;
 mod pufferfish_player;
 mod spawn_eggs;
@@ -4919,38 +4920,7 @@ impl Game<'_> {
             ArrowEvent::ShootEvent | ArrowEvent::Drop => {}
         }
     }
-    /// The boats, minecarts and primed TNT a projectile can strike
-    /// (`VehicleEntity.isPickable`, `PrimedTnt.isPickable`).
-    pub(super) fn pickable_object_targets(&self) -> Vec<(Who, Aabb)> {
-        let boats = self.boats.iter().map(|b| (Who::Mob(b.id), b.bounds()));
-        let carts = self.carts.iter().map(|c| (Who::Mob(c.id), c.bounds()));
-        let tnts = self.tnts.iter().map(|t| (Who::Mob(t.id), t.bounds()));
-        boats.chain(carts).chain(tnts).collect()
-    }
-    /// What a projectile can hit: the mobs, the player, the dragon's parts and
-    /// the End crystals (under reserved ids, game/dragon.rs).
-    pub(super) fn projectile_targets(&self) -> Vec<(Who, Aabb)> {
-        let mut targets: Vec<(Who, Aabb)> = self
-            .mobs
-            .iter()
-            .filter(|m| m.alive())
-            .map(|m| (Who::Mob(m.id), m.bounds()))
-            .collect();
-        if let Some(p) = self.player_view()
-            && p.alive
-        {
-            targets.push((Who::Player, p.bounds));
-        }
-        targets.extend(
-            self.special_targets()
-                .into_iter()
-                .map(|(id, b)| (Who::Mob(id), b)),
-        );
-        // Boats, minecarts and primed TNT are pickable for every projectile,
-        // so every kind shares this one list.
-        targets.extend(self.pickable_object_targets());
-        targets
-    }
+    /// `Level.isRainingAt` for arrows.
     pub(super) fn arrow_rain(&self) -> impl Fn(BlockPos) -> bool + '_ {
         move |p: BlockPos| self.raining_at(p)
     }
@@ -5200,6 +5170,24 @@ impl Game<'_> {
             ) {
                 return Ok(());
             }
+        }
+        if p.arrow.is_some()
+            && let Hit::Entity {
+                who: Who::Mob(id), ..
+            } = hit
+            && self.item_frames.iter().any(|f| f.id == id)
+        {
+            // AbstractArrow.onHitEntity on an item frame: spent when the
+            // frame took the hit, turned back when a fixed one refused it.
+            let by_player = p.owner == Some(Who::Player);
+            let hurt = self.projectile_hurts_frame(id, by_player, by_player && self.creative);
+            let outcome = if hurt {
+                EntityHit::Hurt
+            } else {
+                EntityHit::Refused
+            };
+            self.finish_arrow_hit(p.clone(), outcome);
+            return Ok(());
         }
         if p.arrow.is_some()
             && let Hit::Entity {
@@ -8832,6 +8820,9 @@ mod chorus_projectile_drop_tests {
     }
 }
 
+#[cfg(test)]
+#[path = "frame_projectile_tests.rs"]
+mod frame_projectile_tests;
 #[cfg(test)]
 #[path = "loaded_arrow_shot_tests.rs"]
 mod loaded_arrow_shot_tests;

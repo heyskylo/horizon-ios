@@ -242,10 +242,8 @@ impl Game<'_> {
         {
             stack.damage += amount;
             if stack.damage >= max {
-                let broken = stack.item.clone();
                 let gone = stack.clone();
                 *cell = None;
-                self.award_stat("broken", &broken, 1);
                 // LivingEntity.onEquippedItemBroken: the sound and the crumbs.
                 self.player_equipment_broke(break_slot, &gone);
             }

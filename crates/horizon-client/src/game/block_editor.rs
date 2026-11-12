@@ -243,6 +243,11 @@ impl Game<'_> {
         match outcome {
             Outcome::Stay => {}
             Outcome::Send(packet) => {
+                // The integrated server is this game: vanilla's packet handler
+                // applies the edit there, so a local game applies it here.
+                if self.remote.is_none() {
+                    self.apply_local_editor_packet(&packet);
+                }
                 self.send(packet);
                 self.close_block_editor();
             }
@@ -253,6 +258,14 @@ impl Game<'_> {
                 self.close_block_editor();
             }
             Outcome::Cancel => self.close_block_editor(),
+        }
+    }
+
+    /// The server side of an editor's packet, for the game that is its own
+    /// server: `handleSetJigsawBlock` and its siblings run on the server.
+    fn apply_local_editor_packet(&mut self, packet: &S) {
+        if let S::SetJigsawBlock(p) = packet {
+            self.apply_set_jigsaw_block(p);
         }
     }
 
@@ -666,5 +679,47 @@ mod tests {
         assert_eq!(cycle(&[1, 2, 3], 1, -1), 3);
         assert_eq!(cycle(&[1, 2, 3], 9, 1), 1);
         assert_eq!(cycle(&[1, 2, 3], 9, -1), 2);
+    }
+
+    /// A single-player jigsaw edit is applied by the game that is its own
+    /// server, as `handleSetJigsawBlock` does there, and marks the chunk.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_local_jigsaw_edit_applies_and_marks_the_chunk() {
+        let mut game = crate::game::native_machines::tests::server_game();
+        let pos = (2, 4, 3);
+        let state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:jigsaw")
+            .unwrap();
+        game.world.set(pos.0, pos.1, pos.2, state).unwrap();
+        game.world
+            .block_entities
+            .insert(pos, BlockEntity::JigsawBlock(Box::default()));
+        game.world.modified.clear();
+        let packet = S::SetJigsawBlock(horizon_protocol::packets::play::SetJigsawBlock {
+            pos: [2, 4, 3],
+            name: "minecraft:test".into(),
+            target: "minecraft:test".into(),
+            pool: "minecraft:empty".into(),
+            final_state: "minecraft:air".into(),
+            joint: "aligned".into(),
+            selection_priority: 1,
+            placement_priority: 2,
+        });
+
+        game.block_editor_outcome(Outcome::Send(packet));
+
+        let Some(BlockEntity::JigsawBlock(b)) = game.world.block_entities.get(&pos) else {
+            panic!("no jigsaw");
+        };
+        assert_eq!(&*b.name, "minecraft:test", "the edit landed");
+        assert_eq!((b.selection_priority, b.placement_priority), (1, 2));
+        assert!(
+            game.world.modified.contains(&(0, 0)),
+            "the edit left the chunk unmarked"
+        );
     }
 }
