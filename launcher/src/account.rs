@@ -1775,7 +1775,14 @@ impl Accounts {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
         let text = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        std::fs::write(path, text + "\n").map_err(|e| e.to_string())?;
+        // A new file renamed over the old one: a crash or a full disk mid-write leaves the old list,
+        // not an empty file that reads as no accounts at all.
+        let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+        if let Err(e) = std::fs::write(&tmp, text + "\n").and_then(|()| std::fs::rename(&tmp, path))
+        {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.to_string());
+        }
         // An older launcher's offline names: their skins and capes go too, missing files are fine.
         if let Some(skins) = path.parent().map(|dir| dir.join("skins")) {
             for name in &self.old_offline {
@@ -1787,6 +1794,30 @@ impl Accounts {
             let _ = std::fs::remove_dir(&skins);
         }
         Ok(())
+    }
+    /// Saves what a launch renewed (names, skins) into `accounts.json` as it is now, under the
+    /// accounts' lock: an account signed in or out while the services were asked stays so, where
+    /// saving this copy, loaded before, would undo it.
+    pub fn save_renewed(&self) -> Result<(), String> {
+        self.save_renewed_to(store(), &Self::path())
+    }
+    pub(crate) fn save_renewed_to(
+        &self,
+        store: &dyn SecretStore,
+        path: &Path,
+    ) -> Result<(), String> {
+        let _operation = session::lock(store)?;
+        let mut saved = Self::load_from(path);
+        for account in &self.accounts {
+            saved.update(account.clone());
+        }
+        if saved.selected().is_none() {
+            saved.selected = self
+                .selected
+                .clone()
+                .filter(|u| saved.accounts.iter().any(|a| &a.uuid == u));
+        }
+        saved.save_to(path)
     }
     pub fn selected(&self) -> Option<&Account> {
         let uuid = self.selected.as_ref()?;
@@ -2293,7 +2324,7 @@ pub fn session_for_game(game_home: &Path) -> Result<GameSession, NoOwner> {
         &mut accounts,
         pass.session.as_ref().map(|(a, _)| a.uuid.as_str()),
     );
-    if let Err(e) = accounts.save() {
+    if let Err(e) = accounts.save_renewed() {
         eprintln!("Horizon: the accounts are not saved: {e}");
     }
     Ok(session_file(game_home, pass, env))
@@ -2312,7 +2343,7 @@ pub fn session_for_game_as(game_home: &Path, who: &str) -> Result<GameSession, S
         &mut accounts,
         who,
     );
-    if let Err(e) = accounts.save() {
+    if let Err(e) = accounts.save_renewed() {
         eprintln!("Horizon: the accounts are not saved: {e}");
     }
     let pass = pass?;
@@ -2321,7 +2352,7 @@ pub fn session_for_game_as(game_home: &Path, who: &str) -> Result<GameSession, S
         &mut accounts,
         pass.session.as_ref().map(|(a, _)| a.uuid.as_str()),
     );
-    if let Err(e) = accounts.save() {
+    if let Err(e) = accounts.save_renewed() {
         eprintln!("Horizon: the accounts are not saved: {e}");
     }
     Ok(session_file(game_home, pass, env))
@@ -2512,7 +2543,7 @@ pub fn java_player() -> Result<crate::java_launch::Player, String> {
         store(),
         &mut accounts,
     );
-    if let Err(e) = accounts.save() {
+    if let Err(e) = accounts.save_renewed() {
         eprintln!("Horizon: the accounts are not saved: {e}");
     }
     player

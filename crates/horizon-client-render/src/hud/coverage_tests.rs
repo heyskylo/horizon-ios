@@ -396,6 +396,7 @@ fn coverage_uses_pack_texts_final_alpha_and_discard() {
     let program = crate::core_shader::CoreProgram {
         vertex: naga::front::wgsl::parse_str("@vertex fn main(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4(p.x / 2.0 - 1.0, 1.0 - p.y, 0.0, 1.0); }").unwrap(),
         fragment: naga::front::wgsl::parse_str("struct Result { @location(0) color: vec4<f32> } @fragment fn main(@builtin(position) p: vec4<f32>) -> Result { if p.x > 2.0 { discard; } return Result(vec4(0.4, 0.2, 0.1, 0.5)); }").unwrap(),
+        other: Vec::new(),
     };
     gpu.hud.set_text_shader(&gpu.device, Some(&program));
     assert!(gpu.hud.pack_text.is_some());
@@ -417,6 +418,7 @@ fn a_pack_text_shader_without_a_colour_output_is_dropped_not_wrapped() {
     let program = crate::core_shader::CoreProgram {
         vertex: naga::front::wgsl::parse_str("@vertex fn main(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4(p, 0.0, 1.0); }").unwrap(),
         fragment: naga::front::wgsl::parse_str("@fragment fn main() -> @location(1) vec4<f32> { return vec4(1.0); }").unwrap(),
+        other: Vec::new(),
     };
     gpu.hud.set_text_shader(&gpu.device, Some(&program));
     assert!(gpu.hud.pack_text.is_none());

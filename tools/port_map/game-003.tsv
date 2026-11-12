@@ -139,8 +139,8 @@ ServerClockManager.commandTimeMarkersForClock	inline	crates/horizon-client/src/g
 ServerClockManager.ServerClockInstance.loadFrom	port	crates/horizon-client/src/game/chat.rs::Game::load_world_state	total ticks come from level data; rate, partial tick and paused are read from world_clocks.dat
 ServerClockManager.ServerClockInstance.packState	port	crates/horizon-client/src/game/chat.rs::Game::save_world_state	
 WorldClocks.bootstrap	skip:data		clock registration
-CombatTracker.getMessageForAssistedFall	port	crates/horizon-client/src/game/combat.rs::Game::combat_death_message_for	gap: minor: the .item variants of the fell assist and finish messages are never used, a named weapon is not shown
+CombatTracker.getMessageForAssistedFall	port	crates/horizon-client/src/game/combat.rs::Game::combat_death_message_for	the assist and finish messages take the .item form with the killer's custom-named main-hand item (death_message_args)
 CombatTracker.getCombatDuration	skip:other		only feeds ClientboundPlayerCombatEndPacket, which the client ignores
-DamageSource.getLocalizedDeathMessage	port	crates/horizon-client/src/game/combat.rs::Game::combat_death_message_for	gap: minor: no .item variant when the killer holds a custom-named item
+DamageSource.getLocalizedDeathMessage	port	crates/horizon-client/src/game/combat.rs::Game::combat_death_message_for	the cause's custom-named main-hand item gives the <id>.item message with its name as the third argument (death_message_args)
 DamageSource.isCreativePlayer	port	crates/horizon-world/src/damage_source.rs::DamageSource::creative_player	
 DamageSource.is	port	crates/horizon-world/src/damage_source.rs::DamageSource::in_tag	tag form; the key form is is_type

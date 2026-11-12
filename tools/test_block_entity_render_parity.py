@@ -184,6 +184,10 @@ L0, L1 = lights()
 FLAT = items_flat_lights()
 
 
+# mesher::SHADED_CULL_W: Vertex::normal w of a quad shaded by its normal whose back faces are culled.
+SHADED_CULL_W = -126
+
+
 def mix(normal, lit=(L0, L1)):
     d = lambda l: max(0.0, sum(a * b for a, b in zip(l, normal)))
     return min(1.0, (d(lit[0]) + d(lit[1])) * 0.6 + 0.4)
@@ -287,7 +291,11 @@ def compare_case(v, r, tol):
             break
         if a['normal'] is not None and area(a['v']) > 1e-9:
             normal = [c / 127.0 for c in b['normal'][:3]]
-            if any(abs(x - y) > 0.02 for x, y in zip(a['normal'], normal)) or b['normal'][3] <= 0:
+            # w > 0 shades by the normal; SHADED_CULL_W (-126) shades and culls back faces,
+            # which only the decorated pot's `entitySolid` parts do (mesher::cull_back).
+            culled = a['texture'].startswith('entity/decorated_pot/')
+            shaded = b['normal'][3] > 0 or (culled and b['normal'][3] == SHADED_CULL_W)
+            if any(abs(x - y) > 0.02 for x, y in zip(a['normal'], normal)) or not shaded:
                 problems.append(f'{a["texture"]} normal {a["normal"]} != {normal}/{b["normal"][3]} at {a["v"]}')
                 break
         if a['light'] != light_coords(b['light']):

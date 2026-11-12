@@ -8,7 +8,7 @@
 //! player in view gets `native_mob_layer` after its vanilla model
 //! (`EntityRenderersEvent.AddLayers`), in the same frame.
 
-use super::{Dim, Game, native_block_entity_draw::BlockEntityDraw};
+use super::{Game, native_block_entity_draw::BlockEntityDraw};
 use glam::{DVec3, Mat4};
 use horizon_client::{
     block_entity_render::diffuse_lights,
@@ -184,7 +184,7 @@ impl Game<'_> {
             light,
             [feet.x, feet.y, feet.z].map(|c| c.floor() as i32),
             mob_pose(feet - camera, render.body_yaw),
-            diffuse_lights(self.dim == Dim::Nether),
+            diffuse_lights(self.nether_lighting()),
             std::mem::take(out),
         );
         let keep = hook(&render, &mut draw);
