@@ -2745,12 +2745,7 @@ impl Menu {
         if after_take || matches!(self.kind, Kind::Inventory | Kind::Crafting) {
             // A merchant result reports the stack it moved, a crafting result the copy it
             // takes (which Item.onCraftedBy may still change).
-            let taken = if self.slots[index].role == Role::MerchantResult {
-                &mut stack
-            } else {
-                &mut clicked
-            };
-            self.on_take(env, index, taken);
+            self.take_after_quick_move(env, index, &mut clicked, &mut stack);
         }
         // What the result slot's move left over is dropped.
         if (index == 0 && matches!(self.kind, Kind::Inventory | Kind::Crafting))

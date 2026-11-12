@@ -1,0 +1,1 @@
+Consumable.sound	port	crates/horizon-client/src/item_sync.rs::consumable_sound	sound from the stack's consumable component

@@ -72,7 +72,7 @@ impl<'p> MobsNearest<'p> {
 /// `base` without its hooks into the game, which can't leave the server thread, as a recipe a
 /// helper thread builds its own world from: native mod effects (the phases on helpers don't run
 /// them) and the UUID lookup.
-fn hookless<'w>(base: &MobWorld<'w>) -> impl Fn() -> MobWorld<'w> + Sync + use<'w> {
+pub(super) fn hookless<'w>(base: &MobWorld<'w>) -> impl Fn() -> MobWorld<'w> + Sync + use<'w> {
     // Every field but the two hooks, named, so that a field added to `MobWorld` is decided here.
     let MobWorld {
         world,

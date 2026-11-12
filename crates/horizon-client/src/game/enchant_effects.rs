@@ -68,17 +68,13 @@ fn block_break_speed_factor(value: Option<f64>) -> f32 {
 }
 
 impl Game<'_> {
-    /// `Player.getDestroySpeed` after the tool speed: mining efficiency, haste
-    /// and mining fatigue.
-    pub(super) fn modify_destroy_speed(&mut self, mut speed: f32) -> f32 {
-        if speed > 1.0 {
-            speed += self
-                .player
-                .as_mut()
-                .and_then(|player| player.attribute("minecraft:mining_efficiency").ok())
-                .unwrap_or(0.0) as f32;
-        }
-        speed * self.potions.effects.mining_speed_factor()
+    /// `Attributes.MINING_EFFICIENCY` (efficiency), which `Player.getDestroySpeed`
+    /// adds to a tool speed above 1: 0 without a player or attribute.
+    pub(super) fn mining_efficiency(&mut self) -> f32 {
+        self.player
+            .as_mut()
+            .and_then(|player| player.attribute("minecraft:mining_efficiency").ok())
+            .unwrap_or(0.0) as f32
     }
     /// `Player.getDestroySpeed`'s final `Attributes.BLOCK_BREAK_SPEED` factor:
     /// 1.0 by default, so a missing player or attribute changes nothing.

@@ -55,5 +55,22 @@ class FetchDxcTests(MissingArgumentTests):
         self.assert_asked_for_arguments("ci/fetch_dxc.py", "--help")
 
 
+class CommandFixtureTests(MissingArgumentTests):
+    """The command fixtures write into the directory they are told to, and ask for it when nobody said."""
+
+    TOOLS = ["named_random_chance_fixture.py",
+             "adventure_saved_forms_fixture.py",
+             "bell_block_entity_fixture.py",
+             "enderman_anger_saved_fixture.py",
+             "live_dungeon_spawner_fixture.py",
+             "mob_hidden_speed_fixture.py",
+             "piston_mob_ground_fixture.py"]
+
+    def test_no_work_dir_asks_for_one(self):
+        for name in self.TOOLS:
+            with self.subTest(fixture=name):
+                self.assert_asked_for_arguments(name)
+
+
 if __name__ == "__main__":
     unittest.main()

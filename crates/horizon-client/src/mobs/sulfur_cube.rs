@@ -626,6 +626,16 @@ pub fn fuse(m: &Mob) -> i32 {
 pub fn primed(m: &Mob) -> bool {
     fuse(m) >= 0
 }
+/// `SulfurCube.tick`: tickFuse removes the cube before super.tick can handle
+/// its portal. This happens even when the TNT explosion gamerule is off.
+pub fn removes_before_portal_tick(m: &Mob) -> bool {
+    if m.species() != super::Species::SulfurCube {
+        return false;
+    }
+    let fuse = fuse(m);
+    let next_fuse = if fuse > 0 { fuse - 1 } else { fuse };
+    next_fuse == 0 && archetype(m).is_some_and(|a| a.explosion.is_some())
+}
 /// `hurtServer`'s priming by a hit whose direct entity is a burning
 /// `AbstractArrow` (an arrow or a trident): a cube with a block that can
 /// explode lights its fuse, the long one.
@@ -902,6 +912,10 @@ thread_local! {
     /// `primeTime` and `tickFuse` read (shared by the game each tick and on
     /// a rule change).
     static TNT_EXPLODES: Cell<bool> = const { Cell::new(true) };
+}
+/// The `tnt_explodes` rule this thread's sulfur cubes read.
+pub fn tnt_explodes() -> bool {
+    TNT_EXPLODES.get()
 }
 /// Share the `tnt_explodes` rule with this thread's sulfur cubes.
 pub fn set_tnt_explodes(on: bool) {
