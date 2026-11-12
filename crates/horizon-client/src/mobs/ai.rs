@@ -1,7 +1,9 @@
 //! The per-tick mob update in vanilla order (`Entity.baseTick`,
 //! `LivingEntity.baseTick/tick/aiStep`, `Mob.serverAiStep`) and the
 //! dispatch to each species family's goals and special behaviour.
+pub(crate) use freezing::{can_freeze, in_powder_snow};
 mod feeding;
+mod freezing;
 
 pub use feeding::takes_food;
 
@@ -1394,43 +1396,6 @@ fn touches_lava(m: &Mob, w: &MobWorld) -> bool {
         }
     }
     false
-}
-pub(super) fn in_powder_snow(m: &Mob, w: &MobWorld) -> bool {
-    let b = m.bounds().deflate(Vec3::new(1e-5, 1e-5, 1e-5));
-    let (min, max) = (b.min_position(), b.max_position());
-    for x in min.x.floor() as i32..=max.x.floor() as i32 {
-        for y in min.y.floor() as i32..=max.y.floor() as i32 {
-            for z in min.z.floor() as i32..=max.z.floor() as i32 {
-                if &*w.facts.get(w.world.block(x, y, z)).name == "minecraft:powder_snow" {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-/// `LivingEntity.canFreeze`: not a `#freeze_immune_entity_types` mob and no
-/// worn piece in `#freeze_immune_wearables`.
-fn can_freeze(m: &Mob, w: &MobWorld) -> bool {
-    if w.data
-        .entity_has("minecraft:freeze_immune_entity_types", &m.kind.id)
-    {
-        return false;
-    }
-    let immune = w
-        .items
-        .and_then(|i| i.item_tags.get("minecraft:freeze_immune_wearables"));
-    // A wolf's armor (its body slot) is `#freeze_immune_wearables`.
-    ![
-        &m.extra.body,
-        &m.extra.head,
-        &m.extra.chest,
-        &m.extra.legs,
-        &m.extra.feet,
-    ]
-    .into_iter()
-    .flatten()
-    .any(|item| immune.is_some_and(|t| t.contains(&**item)))
 }
 /// `Mob.playAmbientSound` on demand: a spawn egg or a mob bucket just placed `m`.
 pub fn ambient_sound(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
@@ -5742,6 +5707,87 @@ mod nautilus_noai_air_tests {
     }
 }
 
+#[cfg(test)]
+mod freeze_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// `LivingEntity.aiStep`'s freezing, through `freeze_tick`: powder snow
+    /// builds a mob's frozen ticks towards the 140 that freeze it, and at 140 a
+    /// tick that falls on the 40-tick damage interval hurts it by 1. A skeleton
+    /// answers `canFreeze` false, so it takes neither, and so does the stray (by
+    /// tag), while the bogged, parched, wither skeleton and a zombie freeze.
+    #[test]
+    fn a_skeleton_never_freezes() {
+        crate::mobs::world::with_built_test_world(
+            &[],
+            |world, registry| {
+                let stone = registry.default_state("minecraft:stone").unwrap();
+                let snow = registry.default_state("minecraft:powder_snow").unwrap();
+                for cx in -1..1 {
+                    for cz in -1..1 {
+                        world
+                            .chunks
+                            .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
+                    }
+                }
+                for x in -4..4 {
+                    for z in -4..4 {
+                        world.set(x, 63, z, stone).unwrap();
+                    }
+                }
+                // The mob stands in this block.
+                world.set(0, 64, 0, snow).unwrap();
+            },
+            |w, types| {
+                let frozen_with = |id: &str, ticks_frozen: i32, body: Option<&str>| {
+                    let kind = Arc::new(types.types[id].clone());
+                    let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+                    m.ticks_frozen = ticks_frozen;
+                    m.extra.body = body.map(Into::into);
+                    // The freeze damage falls on a tick that is a multiple of 40.
+                    m.age = 40;
+                    let start = m.health;
+                    let mut events = Vec::new();
+                    freeze_tick(&mut m, w, &mut events);
+                    (m.ticks_frozen, start - m.health)
+                };
+                let frozen = |id: &str, ticks_frozen: i32| frozen_with(id, ticks_frozen, None);
+                // Powder snow builds no frozen ticks on a skeleton, and one
+                // already frozen melts two ticks a tick instead of taking the
+                // damage a fully frozen mob takes at 140.
+                for skeleton in ["minecraft:skeleton", "minecraft:stray"] {
+                    assert_eq!(frozen(skeleton, 0), (0, 0.0), "{skeleton}");
+                    assert_eq!(frozen(skeleton, 140), (138, 0.0), "{skeleton} frozen");
+                }
+                // The bogged, parched and wither skeleton extend AbstractSkeleton,
+                // not Skeleton, and freeze like a zombie.
+                for sibling in [
+                    "minecraft:bogged",
+                    "minecraft:parched",
+                    "minecraft:wither_skeleton",
+                ] {
+                    assert_eq!(frozen(sibling, 0), (1, 0.0), "{sibling}");
+                    assert_eq!(frozen(sibling, 139), (140, 1.0), "{sibling} frozen");
+                }
+                // A zombie in the same block freezes, and at 140 takes the 1.
+                assert_eq!(frozen("minecraft:zombie", 139), (140, 1.0));
+                // SulfurCube.canFreeze: a cube carrying a block in its body does
+                // not freeze; without one it freezes and takes the 1 like a zombie.
+                assert_eq!(
+                    frozen_with("minecraft:sulfur_cube", 0, Some("minecraft:stone")),
+                    (0, 0.0)
+                );
+                assert_eq!(
+                    frozen_with("minecraft:sulfur_cube", 140, Some("minecraft:stone")),
+                    (138, 0.0)
+                );
+                assert_eq!(frozen("minecraft:sulfur_cube", 0), (1, 0.0));
+                assert_eq!(frozen("minecraft:sulfur_cube", 139), (140, 1.0));
+            },
+        );
+    }
+}
 #[cfg(test)]
 mod happy_ghast_ambient_tests {
     use super::*;
