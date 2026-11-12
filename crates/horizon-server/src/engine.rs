@@ -238,9 +238,18 @@ pub fn spawn(
     resources: &Path,
     dir: &Path,
     low_memory: bool,
+    parallel_tick: bool,
     transfers: Option<&str>,
 ) -> std::io::Result<Child> {
-    command(program, resources, dir, low_memory, transfers)?.spawn()
+    command(
+        program,
+        resources,
+        dir,
+        low_memory,
+        parallel_tick,
+        transfers,
+    )?
+    .spawn()
 }
 
 /// The command `spawn` runs.
@@ -249,6 +258,7 @@ fn command(
     resources: &Path,
     dir: &Path,
     low_memory: bool,
+    parallel_tick: bool,
     transfers: Option<&str>,
 ) -> std::io::Result<Command> {
     // The game runs in the server folder, so a folder given relative to ours (`--dir srv`) would put its
@@ -285,6 +295,11 @@ fn command(
     // 60 MB idle and 190 MB at 20 players, and save ~1 % of tick time (docs/hosting.md).
     if low_memory {
         command.env("MIMALLOC_ALLOW_THP", "0");
+    }
+    // `[engine] parallel_tick`: the game's switch, for a host that cannot set its environment. Off leaves
+    // the variable alone, so one the operator set still works.
+    if parallel_tick {
+        command.env("HORIZON_PARALLEL_TICK", "1");
     }
     Ok(command)
 }
@@ -335,6 +350,14 @@ impl Control {
     }
 
     pub fn ask(&mut self, line: &str) -> std::io::Result<serde_json::Value> {
+        // One request: the endpoint reads a line per request, so a line break would make the
+        // rest a request of its own. Refused before anything is sent.
+        if line.contains(['\n', '\r']) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "a request is one line",
+            ));
+        }
         writeln!(self.writer, "{line}")?;
         self.writer.flush()?;
         let mut reply = String::new();
@@ -351,11 +374,61 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_request_with_a_line_break_is_refused_unsent() {
+        let dir = std::env::temp_dir().join(format!("horizon-control-line-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".horizon")).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::fs::write(
+            control_path(&dir),
+            format!("{{\"port\": {port}, \"token\": \"t\"}}"),
+        )
+        .unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut writer = stream;
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap_or(0) > 0 {
+                tx.send(line.trim().to_owned()).unwrap();
+                line.clear();
+                let _ = writer.write_all(b"{\"ok\":true}\n");
+            }
+        });
+        let mut control = Control::connect(&dir).unwrap();
+        for request in [
+            "console kick Kim0 x\nconsole op Mallory",
+            "console say a\rb",
+        ] {
+            let refused = control.ask(request).unwrap_err();
+            assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput);
+        }
+        control.ask("console list").unwrap();
+        drop(control);
+        let heard: Vec<String> = rx.iter().collect();
+        assert_eq!(
+            heard,
+            ["auth t", "console list"],
+            "nothing of the refused requests was sent"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn low_memory_turns_huge_pages_off_for_the_game() {
         let thp = |low_memory| {
             let dir = std::env::temp_dir();
-            let command =
-                command(Path::new("horizon-client"), &dir, &dir, low_memory, None).unwrap();
+            let command = command(
+                Path::new("horizon-client"),
+                &dir,
+                &dir,
+                low_memory,
+                false,
+                None,
+            )
+            .unwrap();
             command
                 .get_envs()
                 .find(|(k, _)| *k == "MIMALLOC_ALLOW_THP")
@@ -366,11 +439,40 @@ mod tests {
     }
 
     #[test]
+    fn parallel_tick_reaches_the_game_only_when_it_is_on() {
+        let switch = |parallel_tick| {
+            let dir = std::env::temp_dir();
+            let command = command(
+                Path::new("horizon-client"),
+                &dir,
+                &dir,
+                false,
+                parallel_tick,
+                None,
+            )
+            .unwrap();
+            command
+                .get_envs()
+                .find(|(k, _)| *k == "HORIZON_PARALLEL_TICK")
+                .and_then(|(_, v)| v.map(|v| v.to_owned()))
+        };
+        assert_eq!(switch(true).as_deref(), Some(std::ffi::OsStr::new("1")));
+        assert_eq!(switch(false), None);
+    }
+
+    #[test]
     fn transfers_reach_the_game_only_when_they_are_on() {
         let args = |transfers: Option<&str>| {
             let dir = std::env::temp_dir();
-            let command =
-                command(Path::new("horizon-client"), &dir, &dir, false, transfers).unwrap();
+            let command = command(
+                Path::new("horizon-client"),
+                &dir,
+                &dir,
+                false,
+                false,
+                transfers,
+            )
+            .unwrap();
             command
                 .get_args()
                 .map(|a| a.to_string_lossy().into_owned())
@@ -549,6 +651,7 @@ mod tests {
                 &std::path::absolute(&game).unwrap(),
                 &root.join("res"),
                 &server,
+                false,
                 false,
                 None,
             ) {

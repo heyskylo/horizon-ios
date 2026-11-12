@@ -202,34 +202,70 @@ pub fn is_adreno_dx12(info: &wgpu::AdapterInfo) -> bool {
     info.backend == wgpu::Backend::Dx12 && matches!(info.vendor, 0x4d4f_4351 | 0x5143)
 }
 
+/// A released Mesa version from its driver info, allowing distribution suffixes.
+/// Development and release-candidate builds do not establish a stable release's safety.
+fn parse_mesa_version(driver_info: &str) -> Option<(u32, u32, u32)> {
+    let version = driver_info
+        .strip_prefix("Mesa ")?
+        .split_whitespace()
+        .next()?;
+    let (version, suffix) = version.split_once('-').unwrap_or((version, ""));
+    if suffix.starts_with("devel") || suffix.starts_with("rc") {
+        return None;
+    }
+    let mut parts = version.split('.');
+    let version = (
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+    );
+    parts.next().is_none().then_some(version)
+}
+
 /// Intel Gen11 (Ice Lake) and Gen12 (Tiger Lake, Rocket Lake, Alder Lake,
-/// Raptor Lake) ANV Vulkan drivers have broken `first_instance` for
+/// Raptor Lake) ANV Vulkan drivers had broken `first_instance` for
 /// instance-step vertex attributes (#3529, #4599), causing terrain sections to
 /// be drawn with another section's origin and flicker.
+///
+/// PR #15007 tested Raptor Lake (RPL-U, 0xa7a1) on Mesa 26.0.8 without terrain
+/// flicker. Allow indirect multi-draw and GPU culling for Raptor Lake from that
+/// release; earlier or unidentified drivers keep the workaround.
 pub fn is_broken_intel_vulkan(info: &wgpu::AdapterInfo) -> bool {
-    info.backend == wgpu::Backend::Vulkan
-        && info.vendor == 0x8086
-        && (matches!(
-            info.device,
-            0x8a50..=0x8a71 // Gen11: Ice Lake
-                | 0x9a40..=0x9a7f // Gen12: Tiger Lake
-                | 0x4c80..=0x4c9a // Gen12: Rocket Lake
-                | 0x4600..=0x46ff // Gen12: Alder Lake (incl. 0x46a8 in #4599)
-                | 0xa700..=0xa7ff // Gen12: Raptor Lake
-        ) || [
-            "ICL",
-            "Ice Lake",
-            "TGL",
-            "Tiger Lake",
-            "RKL",
-            "Rocket Lake",
-            "ADL",
-            "Alder Lake",
-            "RPL",
-            "Raptor Lake",
-        ]
-        .iter()
-        .any(|tag| info.name.contains(tag)))
+    if info.backend != wgpu::Backend::Vulkan || info.vendor != 0x8086 {
+        return false;
+    }
+
+    let is_raptor_lake = matches!(info.device, 0xa700..=0xa7ff)
+        || info.name.contains("RPL")
+        || info.name.contains("Raptor Lake");
+
+    if is_raptor_lake
+        && parse_mesa_version(&info.driver_info).is_some_and(|version| version >= (26, 0, 8))
+    {
+        return false;
+    }
+
+    matches!(
+        info.device,
+        0x8a50..=0x8a71 // Gen11: Ice Lake
+            | 0x9a40..=0x9a7f // Gen12: Tiger Lake
+            | 0x4c80..=0x4c9a // Gen12: Rocket Lake
+            | 0x4600..=0x46ff // Gen12: Alder Lake (incl. 0x46a8 in #4599)
+            | 0xa700..=0xa7ff // Gen12: Raptor Lake
+    ) || [
+        "ICL",
+        "Ice Lake",
+        "TGL",
+        "Tiger Lake",
+        "RKL",
+        "Rocket Lake",
+        "ADL",
+        "Alder Lake",
+        "RPL",
+        "Raptor Lake",
+    ]
+    .iter()
+    .any(|tag| info.name.contains(tag))
 }
 
 fn supported(adapter: &wgpu::Adapter, device: &wgpu::Device) -> bool {
@@ -1132,6 +1168,70 @@ mod tests {
         info.backend = wgpu::Backend::Dx12;
         info.vendor = 0x10de;
         assert!(!is_adreno_dx12(&info));
+    }
+
+    #[test]
+    fn intel_vulkan_detection_preserves_workaround_on_older_mesa_and_allows_modern_raptor_lake() {
+        let mut info = wgpu::AdapterInfo {
+            name: "Intel(R) Iris(R) Xe Graphics (RPL-U)".into(),
+            vendor: 0x8086,
+            device: 0xa7a1,
+            device_type: wgpu::DeviceType::IntegratedGpu,
+            device_pci_bus_id: String::new(),
+            driver: "Intel open-source Mesa driver".into(),
+            driver_info: "Mesa 26.0.8-1ubuntu0.3".into(),
+            backend: wgpu::Backend::Vulkan,
+            subgroup_min_size: 0,
+            subgroup_max_size: 0,
+            transient_saves_memory: None,
+            limit_bucket: None,
+        };
+        for (driver_info, broken) in [
+            ("Mesa 26.0.8-1ubuntu0.3", false),
+            ("Mesa 26.0.8", false),
+            ("Mesa 26.1.0", false),
+            ("Mesa 27.0.0", false),
+            ("Mesa 25.2.0", true),
+            ("Mesa 26.0.0", true),
+            ("Mesa 26.0.7", true),
+            ("Mesa 26.0.8-devel", true),
+            ("Mesa 27.0.0-rc1", true),
+            ("Mesa 27.0.0-devel (git-abcdef)", true),
+            ("Mesa 26", true),
+            ("Mesa 26.0.8.1", true),
+            ("Mesa unknown", true),
+            ("26.0.8", true),
+            ("", true),
+        ] {
+            info.driver_info = driver_info.into();
+            assert_eq!(is_broken_intel_vulkan(&info), broken, "{driver_info}");
+        }
+
+        // PCI identification and the name fallback both allow the tested family.
+        info.driver_info = "Mesa 26.0.8".into();
+        info.device = 0;
+        assert!(!is_broken_intel_vulkan(&info));
+        info.name = "Intel Graphics".into();
+        info.device = 0xa7a1;
+        assert!(!is_broken_intel_vulkan(&info));
+
+        // Earlier families keep their workaround even with a modern Mesa release.
+        for (device, name) in [
+            (0x8a52, "Intel Ice Lake"),
+            (0x9a49, "Intel Tiger Lake"),
+            (0x4c8a, "Intel Rocket Lake"),
+            (0x46a8, "Intel Alder Lake"),
+        ] {
+            info.device = device;
+            info.name = name.into();
+            assert!(is_broken_intel_vulkan(&info), "{name}");
+        }
+        // A Mesa-looking version cannot turn on this workaround for other backends/vendors.
+        info.backend = wgpu::Backend::Dx12;
+        assert!(!is_broken_intel_vulkan(&info));
+        info.backend = wgpu::Backend::Vulkan;
+        info.vendor = 0x10de;
+        assert!(!is_broken_intel_vulkan(&info));
     }
 
     /// Draws as `render` writes them: solid (page, quads at a base vertex)
