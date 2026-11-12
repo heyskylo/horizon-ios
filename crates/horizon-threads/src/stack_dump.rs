@@ -67,6 +67,10 @@ impl Watched {
 /// signal trampoline's, the one frame the system puts between the handler and the interrupted
 /// code (named `__restore_rt`, `_sigtramp`, or after whatever symbol precedes it). Unchanged when
 /// the handler's frame isn't found.
+#[cfg_attr(
+    not(any(target_vendor = "apple", target_os = "linux", target_os = "android")),
+    allow(dead_code)
+)]
 fn after_handler(text: &str) -> String {
     fn frame_name(line: &str) -> Option<&str> {
         let (n, name) = line.trim().split_once(": ")?;
@@ -157,12 +161,16 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The busy thread below serves the test that reads another thread's stack, which only the
+    // systems with a signal path run.
+    #[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
         mpsc,
     };
 
+    #[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
     #[inline(never)]
     fn spin(mut n: u64) -> u64 {
         for _ in 0..1_000_000 {
@@ -173,6 +181,7 @@ mod tests {
 
     /// Its time goes to a call: Apple's arm64 unwinder loses the frame the signal interrupted
     /// (it resumes from the return address), while every caller's frame stays.
+    #[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
     #[inline(never)]
     fn busy_in_a_named_frame(stop: &AtomicBool) {
         let mut n = 0u64;

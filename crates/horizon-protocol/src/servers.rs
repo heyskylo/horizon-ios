@@ -215,7 +215,8 @@ fn insert(
 }
 fn write(path: &Path, root: &NamedTag) -> std::io::Result<()> {
     let bytes = nbt::write_named(root, nbt::Limits::default()).map_err(std::io::Error::other)?;
-    let tmp = path.with_extension("dat_tmp");
+    // Its own temporary file: another game on the same folder writes at the same time.
+    let tmp = path.with_extension(format!("dat_tmp.{}", std::process::id()));
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(tmp, path)
 }

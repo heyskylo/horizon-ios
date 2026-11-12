@@ -33,7 +33,7 @@ InventoryScreen.extractBackground	inline	crates/horizon-client/src/game.rs::Game
 InventoryScreen.extractEntityInInventoryFollowsMouse	port	crates/horizon-client/src/game/perspective.rs::Game::draw_player_preview	gap: minor: player only; mounts use mount_menu.rs::draw_mob_preview. Head and body turn toward the cursor as vanilla
 InventoryScreen.mouseReleased	inline	crates/horizon-client/src/game/inventory_input.rs::Game::inventory_mouse_release	release goes through the slot path; a recipe-book press is handled first and has no separate release flag
 ItemCombinerScreen.extractBackground	inline	crates/horizon-client/src/game/stations.rs::Game::draw_station	anvil and smithing backgrounds, with the error sprite
-JigsawBlockEditScreen	home	crates/horizon-client/src/game/block_editor.rs	
+JigsawBlockEditScreen	home	crates/horizon-client/src/game/block_editor.rs	boxes, priority tooltips (`edit_tooltip`, in `jigsaw_edit.rs`), joint/levels/generate; the screen shell is `block_editor.rs`
 LecternScreen.createMenuControls	port	crates/horizon-client/src/game/books.rs::Game::book_click	Done is always drawn; Take Book only when the lectern allows building (`Game::may_build`)
 LoomScreen.init	skip:ui		bakes the banner flag model for the preview; the loom is drawn by screen_layout::loom
 LoomScreen.isScrollBarActive	port	crates/horizon-client/src/game/loom.rs::LoomState::offscreen_rows	gap: minor: more than 16 patterns (four rows of four); the displayPatterns check is at the call sites
@@ -74,6 +74,6 @@ StonecutterScreen.getOffscreenRows	inline	crates/horizon-client/src/game/station
 StructureBlockEditScreen	home	crates/horizon-client/src/game/block_editor.rs	
 TestBlockEditScreen	home	crates/horizon-client/src/game/block_editor.rs	
 TestInstanceBlockEditScreen	home	crates/horizon-client/src/game/block_editor.rs	
-BelowOrAboveWidgetTooltipPositioner.positionTooltip	port	crates/horizon-client-render/src/ui.rs::menu_tooltip_position	the tooltip under the widget, over it when it does not fit, with vanilla's margins and overlaps
+BelowOrAboveWidgetTooltipPositioner.positionTooltip	port	crates/horizon-client-render/src/ui.rs::focused_tooltip_position	the keyboard-focused tooltip below the widget, above it when it does not fit, with vanilla's margins
 ClientActivePlayersTooltip.getWidth	port	crates/horizon-client/src/multiplayer.rs::player_list	the sample's names are the tooltip's lines; its width comes from them (the status tooltip's own sizing)
 ClientActivePlayersTooltip.extractImage	inline	crates/horizon-client/src/multiplayer.rs::player_list	the sample names, styled by their § codes, become the tooltip's text lines, then and_more for the players the sample leaves out; gap: player: no player face is drawn beside each name (vanilla draws a 10x10 face per entry through PlayerFaceExtractor), so the tooltip is text only

@@ -5,10 +5,10 @@ use super::{Mob, Species, can_age_up};
 /// that `canFallInLove` (not in love yet) or a baby that `canAgeUp` (not age
 /// locked). Tamed wolves and cats only sit or stand when it does not.
 pub fn takes_food(m: &Mob) -> bool {
-    // `Turtle.canFallInLove` is `super.canFallInLove() && !this.hasEgg()`: a
-    // turtle that already carries an egg refuses its food instead of breeding.
+    // `canFallInLove`: a turtle carrying an egg and a pacified hoglin refuse their food.
     let breedable = m.extra.in_love <= 0
-        && !(m.species() == Species::Turtle && crate::mobs::turtle::has_egg(m));
+        && !(m.species() == Species::Turtle && crate::mobs::turtle::has_egg(m))
+        && !crate::mobs::piglin::refuses_love(m);
     // The growing branch is `canAgeUp()`, which asks `isBaby()`, not the raw
     // age: a frog or a camel husk that `canBeABaby` says is never a baby keeps
     // the food in the player's hand however negative its `Age` is.

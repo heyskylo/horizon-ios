@@ -338,6 +338,7 @@ impl Game<'_> {
             window.set_cursor(match effective {
                 Cursor::Arrow => winit::window::CursorIcon::Default,
                 Cursor::PointingHand => winit::window::CursorIcon::Pointer,
+                Cursor::Ibeam => winit::window::CursorIcon::Text,
                 Cursor::NotAllowed => winit::window::CursorIcon::NotAllowed,
                 Cursor::ResizeNs => winit::window::CursorIcon::NsResize,
                 Cursor::ResizeEw => winit::window::CursorIcon::EwResize,
