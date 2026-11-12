@@ -1764,7 +1764,8 @@ mod tests {
             let mut pet = game.mobs.pop().unwrap();
             horizon_client::mobs::tame::set_tame(&mut pet, true);
             pet.extra.owner = Some(game.level.player_uuid.unwrap_or_default());
-            pet.random = horizon_core::random::LegacyRandom::new(7);
+            pet.random =
+                horizon_core::random::EntityRandom::own(horizon_core::random::LegacyRandom::new(7));
             // Its destination neighbors come later, so they must see its moved snapshot.
             game.mobs.insert(0, pet);
             let initial = game.mobs.clone();
@@ -1942,7 +1943,8 @@ mod tests {
         fox.ai.targets = Default::default();
         fox.extra
             .set_main_hand(Some("minecraft:chorus_fruit".into()));
-        fox.random = horizon_core::random::LegacyRandom::new(7);
+        fox.random =
+            horizon_core::random::EntityRandom::own(horizon_core::random::LegacyRandom::new(7));
         // The herd's mobs come later, so the serial loop shows them the landed fox.
         game.mobs.insert(0, fox);
         // One tick settles it on the pillar (the first tick of a mob does not run its step);
