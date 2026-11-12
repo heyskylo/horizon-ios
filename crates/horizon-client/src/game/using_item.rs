@@ -11,10 +11,15 @@ impl Game<'_> {
         let Some(stack) = self.held().cloned() else {
             return false;
         };
+        // Consumable.canConsume asks the stack's own `food`.
         let consumable = self.consumable(&stack);
         if consumable.is_none()
-            || (info.food.is_some()
-                && (self.player.is_none() || !self.can_eat(&stack, info.can_always_eat)))
+            || (horizon_client::item_sync::food(&stack, info.food).is_some()
+                && (self.player.is_none()
+                    || !self.can_eat(
+                        &stack,
+                        horizon_client::item_sync::can_always_eat(&stack, info.can_always_eat),
+                    )))
         {
             return false;
         }

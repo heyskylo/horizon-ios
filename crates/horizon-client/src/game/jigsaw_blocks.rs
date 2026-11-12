@@ -77,7 +77,7 @@ impl Game<'_> {
         });
     }
 
-    fn apply_set_jigsaw_block(&mut self, p: &play::SetJigsawBlock) {
+    pub(super) fn apply_set_jigsaw_block(&mut self, p: &play::SetJigsawBlock) {
         let pos = (p.pos[0], p.pos[1], p.pos[2]);
         let Some(b) = self.jigsaw_block_mut(pos) else {
             return;

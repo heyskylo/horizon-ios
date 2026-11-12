@@ -565,7 +565,10 @@ impl Game<'_> {
         if f.fluid == Fluid::None || fluid.is_some_and(|want| f.fluid != want) {
             return None;
         }
-        let above = self.res.facts().get(self.world.block(x, y + 1, z));
+        let above = self
+            .res
+            .facts()
+            .get(self.world.block(x, y.wrapping_add(1), z));
         // FluidState.getHeight: 1 under the same fluid, else amount / 9.
         let height = if above.fluid == f.fluid {
             1.0
@@ -597,7 +600,7 @@ impl Game<'_> {
                 return y as f32 + height;
             }
         }
-        (y1 + 1) as f32
+        (i64::from(y1) + 1) as f32
     }
     fn boat_status(&self, b: &mut Boat) -> Status {
         let bb = b.bounds();
@@ -660,12 +663,12 @@ impl Game<'_> {
         );
         let (g_lo, g_hi) = (ground.min_position(), ground.max_position());
         let (x0, x1, y0, y1, z0, z1) = (
-            g_lo.x.floor() as i32 - 1,
-            g_hi.x.ceil() as i32 + 1,
-            g_lo.y.floor() as i32 - 1,
-            g_hi.y.ceil() as i32 + 1,
-            g_lo.z.floor() as i32 - 1,
-            g_hi.z.ceil() as i32 + 1,
+            (g_lo.x.floor() - 1.0) as i32,
+            (g_hi.x.ceil() + 1.0) as i32,
+            (g_lo.y.floor() - 1.0) as i32,
+            (g_hi.y.ceil() + 1.0) as i32,
+            (g_lo.z.floor() - 1.0) as i32,
+            (g_hi.z.ceil() + 1.0) as i32,
         );
         let slab = VoxelShape::from_box(ground).unwrap_or_else(|_| VoxelShape::empty());
         let mut scene = SceneCollisions {
@@ -720,19 +723,14 @@ impl Game<'_> {
     /// of it (`ClipContext.Block.FALLDAMAGE_RESETTING`, `ClipContext.Fluid.WATER`)
     /// and a hit resets the fall, before the move's own drop counts.
     pub(super) fn vehicle_fall_reset(&self, fall: f64, from: Vec3, moved: Vec3) -> f64 {
-        let length = moved.length_squared();
-        if fall == 0.0 || length < 1.0 {
-            return fall;
-        }
-        let reset = &self.res.motion().fall_reset;
-        let hit = horizon_client::entities::fall_reset_hit(
+        fall_reset(
             &self.world,
-            &self.res.motion().fluids,
-            |p| reset.contains(&*self.res.facts().get(self.world.block(p.x, p.y, p.z)).name),
+            self.res.motion(),
+            self.res.facts(),
+            fall,
             from,
             moved,
-        );
-        if hit { 0.0 } else { fall }
+        )
     }
     /// `AbstractBoat.checkFallDamage` after a move that went `moved_y` (with
     /// `b` already where it landed): on the ground the fall resets; a move
@@ -745,7 +743,7 @@ impl Game<'_> {
         if moved_y < 0.0 {
             let below = self.res.facts().get(self.world.block(
                 b.position.x.floor() as i32,
-                b.position.y.floor() as i32 - 1,
+                (b.position.y.floor() as i32).wrapping_sub(1),
                 b.position.z.floor() as i32,
             ));
             if below.fluid != Fluid::Water {
@@ -985,7 +983,7 @@ impl Game<'_> {
                         if driven.contains(&id) {
                             self.boats[i].wear_off_hurt();
                         }
-                        if self.boat_fire_tick(i) {
+                        if self.boat_fire_tick(i) || self.boat_below_world(i) {
                             break 'boat;
                         }
                     }
@@ -1104,9 +1102,12 @@ impl Game<'_> {
         ));
         let (lo, hi) = (b.min_position(), b.max_position());
         let mut columns = Vec::new();
-        for x in lo.x.floor() as i32..=(hi.x.ceil() as i32 - 1) {
-            for y in lo.y.floor() as i32..=(hi.y.ceil() as i32 - 1) {
-                for z in lo.z.floor() as i32..=(hi.z.ceil() as i32 - 1) {
+        // Entity.checkInsideBlocks floors both ends of the deflated box.
+        // Narrowing ceil(max) before subtracting one wraps at i32::MIN,
+        // turning a tiny box into a scan of the entire integer Y domain.
+        for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
+            for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
+                for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
                     if let Some(column) = bubble_column_at(
                         &self.world,
                         self.pack.assets.registry,
@@ -2162,3 +2163,26 @@ mod tests {
     }
 }
 horizon_client::impl_joined!(Boat);
+
+/// [`Game::vehicle_fall_reset`] from the tables it reads.
+pub(super) fn fall_reset(
+    world: &horizon_client::world::World,
+    motion: &horizon_client::motion::MotionResources,
+    facts: &horizon_client::blocks::BlockFacts,
+    fall: f64,
+    from: Vec3,
+    moved: Vec3,
+) -> f64 {
+    if fall == 0.0 || moved.length_squared() < 1.0 {
+        return fall;
+    }
+    let reset = &motion.fall_reset;
+    let hit = horizon_client::entities::fall_reset_hit(
+        world,
+        &motion.fluids,
+        |p| reset.contains(&*facts.get(world.block(p.x, p.y, p.z)).name),
+        from,
+        moved,
+    );
+    if hit { 0.0 } else { fall }
+}

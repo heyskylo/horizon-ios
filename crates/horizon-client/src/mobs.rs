@@ -5,6 +5,10 @@
 //! fly and amphibious node evaluators (`path`, `nav`), move/look/jump/body
 //! controls (`control`), `LivingEntity` physics (`living`) and per-species
 //! behaviour, models, animations and sounds.
+mod mob_slot;
+mod pending_pushes;
+pub use mob_slot::MobSlot;
+pub use pending_pushes::{PendingPushes, apply_mob_pushes};
 pub mod ai;
 pub mod allay;
 pub mod ambient;
@@ -78,6 +82,7 @@ pub mod random_textures;
 pub mod ravager;
 pub mod render;
 pub mod riders;
+mod seen;
 pub mod seen_grid;
 pub mod sheep_dye;
 pub mod shulker;
@@ -108,6 +113,9 @@ pub mod warden;
 pub mod warden_brain;
 pub mod witch;
 pub mod wither;
+
+#[cfg(test)]
+mod invisible_follow_tests;
 mod world;
 pub use world::{TargetInfo, single_player_pos, visual_clip};
 pub mod dragon_contacts;
@@ -123,221 +131,10 @@ use horizon_world::block_collision::BlockCollisionRegistry;
 use serde_json::Value;
 use std::{collections::HashMap, fs, path::Path, sync::Arc};
 
-#[derive(Clone, Debug)]
-pub struct Polygon {
-    pub normal: [f32; 3],
-    pub vertices: [[f32; 5]; 4],
-    /// The model's render type culls back faces (`entityCutoutCull`: the bat,
-    /// the baby turtle).
-    pub cull_back: bool,
-}
-impl Polygon {
-    fn vertex_normal(&self, pose: ModelNormals) -> [i8; 4] {
-        let n = pose.matrix * glam::Vec3::from_array(self.normal);
-        let n = if pose.trusted {
-            n
-        } else {
-            n.normalize_or_zero()
-        };
-        let packed = n.to_array().map(|v| (v.clamp(-1.0, 1.0) * 127.0) as i8);
-        let w = if self.cull_back {
-            crate::mesher::SHADED_CULL_W
-        } else {
-            -127
-        };
-        [packed[0], packed[1], packed[2], w]
-    }
-}
+mod model;
+use model::ModelNormals;
+pub use model::{Part, Polygon};
 
-/// ModelPart uses a separate normal stack: uniform scaling keeps normal lengths,
-/// while nonuniform scaling requires normalization after the complete part transform.
-#[derive(Clone, Copy)]
-struct ModelNormals {
-    matrix: glam::Mat3,
-    trusted: bool,
-}
-impl ModelNormals {
-    // shortcut: infer the root normal pose from its geometry matrix; pass an explicit
-    // root normal stack when root-transform rounding is ported as well.
-    fn new(base: glam::Mat4) -> Self {
-        let m = glam::Mat3::from_mat4(base);
-        let lengths = glam::Vec3::new(m.x_axis.length(), m.y_axis.length(), m.z_axis.length());
-        let uniform =
-            lengths.min_element() > 0.0 && lengths.max_element() - lengths.min_element() < 1.0e-6;
-        Self {
-            matrix: if uniform {
-                m / lengths.x
-            } else {
-                m.inverse().transpose()
-            },
-            trusted: uniform,
-        }
-    }
-    fn rotation(x: f32, y: f32, z: f32) -> glam::Mat3 {
-        // JOML derives cosine from the rounded sine, then retains quaternion length.
-        // Assuming an exactly unit quaternion changes a packed normal by one byte.
-        let sin_cos = |angle: f32| {
-            let angle = angle * 0.5;
-            let sin = f64::from(angle).sin() as f32;
-            let cos = (1.0 - sin * sin).sqrt();
-            let a = angle + std::f32::consts::FRAC_PI_2;
-            let tau = std::f32::consts::TAU;
-            let mut quadrant = a - (a / tau) as i32 as f32 * tau;
-            if quadrant < 0.0 {
-                quadrant += tau;
-            }
-            (
-                sin,
-                if quadrant >= std::f32::consts::PI {
-                    -cos
-                } else {
-                    cos
-                },
-            )
-        };
-        let (sx, cx) = sin_cos(x);
-        let (sy, cy) = sin_cos(y);
-        let (sz, cz) = sin_cos(z);
-        let (cycz, sysz, sycz, cysz) = (cy * cz, sy * sz, sy * cz, cy * sz);
-        let (w, x, y, z) = (
-            cx * cycz + sx * sysz,
-            sx * cycz - cx * sysz,
-            cx * sycz + sx * cysz,
-            cx * cysz - sx * sycz,
-        );
-        let (ww, xx, yy, zz) = (w * w, x * x, y * y, z * z);
-        let (xy, xz, xw, yz, yw, zw) = (x * y, x * z, x * w, y * z, y * w, z * w);
-        glam::Mat3::from_cols_array(&[
-            ww + xx - zz - yy,
-            (xy + xy) + (zw + zw),
-            (xz + xz) - (yw + yw),
-            (xy + xy) - (zw + zw),
-            yy - zz + ww - xx,
-            (yz + yz) + (xw + xw),
-            (yw + yw) + (xz + xz),
-            (yz + yz) - (xw + xw),
-            zz - yy - xx + ww,
-        ])
-    }
-    fn part(mut self, pose: [f32; 9]) -> Self {
-        self.matrix *= Self::rotation(pose[3], pose[4], pose[5]);
-        let scale = glam::Vec3::new(pose[6], pose[7], pose[8]);
-        if scale.x.abs() == scale.y.abs() && scale.x.abs() == scale.z.abs() {
-            if scale.min_element() < 0.0 {
-                self.matrix *= glam::Mat3::from_diagonal(scale.signum());
-            }
-        } else {
-            self.matrix *= glam::Mat3::from_diagonal(scale.recip());
-            self.trusted = false;
-        }
-        self
-    }
-    fn part_rotated(mut self, pose: [f32; 9], rotation: glam::Mat3) -> Self {
-        self.matrix *= rotation;
-        let scale = glam::Vec3::new(pose[6], pose[7], pose[8]);
-        if scale.x.abs() == scale.y.abs() && scale.x.abs() == scale.z.abs() {
-            if scale.min_element() < 0.0 {
-                self.matrix *= glam::Mat3::from_diagonal(scale.signum());
-            }
-        } else {
-            self.matrix *= glam::Mat3::from_diagonal(scale.recip());
-            self.trusted = false;
-        }
-        self
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Part {
-    pub name: String,
-    /// x, y, z, xRot, yRot, zRot, xScale, yScale, zScale
-    pub pose: [f32; 9],
-    pub polygons: Vec<Polygon>,
-    pub children: Vec<Part>,
-}
-impl Part {
-    /// Marks every polygon as drawn by a back-face-culling render type.
-    fn set_cull_back(&mut self) {
-        for poly in &mut self.polygons {
-            poly.cull_back = true;
-        }
-        for child in &mut self.children {
-            child.set_cull_back();
-        }
-    }
-    fn parse(name: &str, v: &Value) -> Self {
-        let pose: Vec<f32> = v["pose"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(|x| x.as_f64().unwrap_or(0.0) as f32)
-            .collect();
-        let mut p = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
-        for (i, x) in pose.iter().enumerate().take(9) {
-            p[i] = *x;
-        }
-        let polygons: Vec<Polygon> = v["polygons"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .enumerate()
-            .filter_map(|(index, poly)| {
-                let verts: Vec<[f32; 5]> = poly
-                    .as_array()?
-                    .iter()
-                    .map(|vx| {
-                        let a: Vec<f32> = vx
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .map(|x| x.as_f64().unwrap_or(0.0) as f32)
-                            .collect();
-                        [a[0], a[1], a[2], a[3], a[4]]
-                    })
-                    .collect();
-                (verts.len() == 4).then(|| Polygon {
-                    normal: v["normals"][index].as_array().map_or_else(
-                        || {
-                            // shortcut: collapsed legacy faces have no recoverable normal; re-prepare resources.
-                            let p = verts
-                                .iter()
-                                .map(|v| glam::Vec3::new(v[0], v[1], v[2]))
-                                .collect::<Vec<_>>();
-                            (p[1] - p[0])
-                                .cross(p[2] - p[0])
-                                .normalize_or_zero()
-                                .to_array()
-                        },
-                        |n| std::array::from_fn(|i| n[i].as_f64().unwrap_or(0.0) as f32),
-                    ),
-                    vertices: [verts[0], verts[1], verts[2], verts[3]],
-                    cull_back: false,
-                })
-            })
-            .collect();
-        let mut children: Vec<Part> = v["children"]
-            .as_object()
-            .into_iter()
-            .flatten()
-            .map(|(k, c)| Part::parse(k, c))
-            .collect();
-        children.sort_by(|a, b| a.name.cmp(&b.name));
-        // A model whose root holds a part also named "root" (allay, vex,
-        // frog...): that inner part is what `root.getChild("root")` and the
-        // keyframe bones mean, so the outer one gives up the name.
-        let name = if name == "root" && children.iter().any(|c| c.name == "root") {
-            ""
-        } else {
-            name
-        };
-        Self {
-            name: name.to_owned(),
-            pose: p,
-            polygons,
-            children,
-        }
-    }
-}
 /// Kept for callers of the earlier simple AI; species now select behaviour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Brain {
@@ -1076,10 +873,10 @@ pub struct Attrs {
 }
 /// `minecraft:wolf_armor`'s maximum damage.
 pub const WOLF_ARMOR_DURABILITY: i32 = 64;
-
 /// Species-specific persistent state (variants, colours, taming, ageing...).
 #[derive(Clone, Debug, Default)]
 pub struct Extra {
+    pub client_side: bool, // `Level.isClientSide`: a client copy, which `Entity.hurt` leaves alone.
     /// Saved fish/axolotl bucket flag; tadpoles save a constant true value.
     pub from_bucket: bool,
     /// Command-created armor instances, shared by commands and runtime damage.
@@ -1435,7 +1232,6 @@ impl Extra {
         self.main_hand.take()
     }
 }
-
 /// How far the boxes of a set of mobs reach from their positions: the widest reach sideways, below
 /// and above among them, worked out from each mob's real box ([`Mob::bounds`]: a shulker's grows
 /// toward its open lid, sideways or below its position). A box query over many mobs (a vehicle's,
@@ -2574,6 +2370,8 @@ pub struct Seen {
     pub delay: i32,
     /// `getLastHurtByMob` and its timestamp.
     pub hurt_by: Option<(Who, i32)>,
+    /// `Entity.isInvisible`: the flag, or the invisibility effect.
+    pub invisible: bool,
     /// `PathfinderMob.isPanicking`: a running panic goal or the brain's
     /// `IS_PANICKING` memory.
     pub panicking: bool,
@@ -2769,90 +2567,6 @@ impl Mob {
         self.ticks_frozen >= crate::motion::PlayerMotion::TICKS_REQUIRED_TO_FREEZE
     }
 
-    /// What other mobs see of this one this tick (`_player` is unused: it keyed the villager
-    /// reputation that nothing read). Inline: the game's snapshot of every mob writes each one in
-    /// its slot, not through a copy.
-    #[inline]
-    pub fn seen(&self, _player: Option<[i32; 4]>) -> Seen {
-        let m = self;
-        let villager = m.species() == Species::Villager;
-        Seen {
-            in_water: self.fluids.in_water,
-            playing_dead: axolotl::is_playing_dead(self),
-            last_damage: self.last_damage.map(|(d, _)| d),
-            id: m.id,
-            species: m.species(),
-            position: m.position,
-            bounds: m.bounds(),
-            hitbox: m.hitbox(),
-            eye_y: m.eye_y(),
-            alive: m.alive(),
-            baby: m.is_baby(),
-            // A villager is "in love" when it is willing to breed (`canBreed`).
-            in_love: if villager {
-                villager::can_breed(m)
-            } else {
-                m.extra.in_love > 0
-            },
-            tame: m.extra.tame,
-            bred: m.extra.bred,
-            owner: m.extra.owner,
-            hostile: m.is_enemy(),
-            target: m.ai.target,
-            health: m.health,
-            variant: m.extra.variant,
-            size: m.extra.size,
-            color: m.extra.color,
-            job: villager.then_some(m.extra.home).flatten(),
-            bed: villager.then_some(m.extra.bed).flatten(),
-            yaw: m.yaw,
-            velocity: m.velocity,
-            known_speed: m.position.subtract(m.previous),
-            leash: m.extra.leash,
-            caravan: caravan::head_of(m),
-            school: (m.extra.leader, m.extra.followers),
-            section: (m.extra.section, m.extra.section_seq),
-            delay: m.extra.ints[5],
-            hurt_by: m.ai.last_hurt_by.map(|w| (w, m.ai.last_hurt_by_time)),
-            panicking: m.ai.panicking,
-            active_raid: raider::has_active_raid(m),
-            opened_chest: m.extra.opened_chest,
-            passenger: m.extra.mount.is_some(),
-            vehicle: m.extra.mount,
-            pushable: m.pushable(),
-            sleeping: villager::sleeping(m)
-                || (m.species() == Species::Fox && fox::flag(m, fox::SLEEPING)),
-            cold_strider: strider::suffocating(m),
-            category: m.category(),
-            potential_job: villager_brain::potential_job_site(m),
-            meeting: villager.then_some(m.extra.meeting).flatten(),
-            profession: m.extra.variant2,
-            xp: villager::xp(m),
-            villager: villager.then(|| Arc::new(villager::seen(m))),
-            stats: [
-                f64::from(m.attrs.max_health),
-                m.extra.vector[0],
-                m.attrs.speed,
-            ],
-            sitting: m.extra.sitting_pose,
-            silent: m.silent,
-            lying: m.species() == Species::Cat && (m.extra.flag || m.extra.relax_one),
-            ridden: m.rider.is_some() || m.extra.rider.is_some() || m.extra.mount.is_some(),
-            is_vehicle: equine::is_vehicle(m),
-            still: m.species() == Species::HappyGhast && happy_ghast::on_still_timeout(m),
-            carrying: m.rider.is_some() || m.extra.rider.is_some(),
-            knockback_resistance: m.attrs.knockback_resistance,
-            effects: m
-                .extra
-                .effects
-                .iter()
-                .map(|e| e.0.trim_start_matches("minecraft:"))
-                .collect(),
-            hunted_recently: m.species() == Species::Piglin && m.extra.ints[0] > 0,
-            hurt_recently: m.species() == Species::Piglin && m.extra.piglin.hurt,
-            huntable: m.species() == Species::Hoglin && !m.is_baby() && !m.extra.cannot_be_hunted,
-        }
-    }
     /// `EntityType.getCategory`'s name.
     pub fn category(&self) -> &'static str {
         match self.kind.category.as_str() {
@@ -2897,28 +2611,6 @@ pub fn take_mob_pushes(events: &mut Vec<MobEvent>, from: usize, pending: &mut Pe
     }
     events.truncate(kept);
 }
-/// Pushes waiting for their mob's tick, in push order. A list while short;
-/// past [`PendingPushes::LIST_MAX`] (a crowd pushing each other) one list
-/// per mob, as scanning the whole list for each mob grows with its square.
-#[derive(Default)]
-pub struct PendingPushes {
-    list: Vec<(u32, Vec3)>,
-    by_mob: crate::fast_hash::FxHashMap<u32, Vec<Vec3>>,
-}
-impl PendingPushes {
-    const LIST_MAX: usize = 64;
-    pub fn push(&mut self, id: u32, v: Vec3) {
-        if self.by_mob.is_empty() && self.list.len() < Self::LIST_MAX {
-            self.list.push((id, v));
-            return;
-        }
-        // Older pushes first, so each mob's stay in order.
-        for (id, v) in self.list.drain(..) {
-            self.by_mob.entry(id).or_default().push(v);
-        }
-        self.by_mob.entry(id).or_default().push(v);
-    }
-}
 /// `ServerLevel.sendBlockUpdated`: for each write that changed a block's collision
 /// shape, a mob whose path runs near it re-paths (`PathNavigation.shouldRecomputePath`).
 /// The writes whose shape changed are found once per tick ([`collision_changes`]).
@@ -2946,50 +2638,28 @@ pub fn collision_changes(w: &MobWorld, writes: &[((i32, i32, i32), u32, u32)]) -
         })
         .collect()
 }
-/// Adds the pending pushes aimed at `m` to its velocity, in push order.
-pub fn apply_mob_pushes(m: &mut Mob, pending: &mut PendingPushes) {
-    // Entity.push(x, y, z) sets needsSync.
-    let mut add = |v: Vec3| {
-        m.velocity = Vec3::new(m.velocity.x + v.x, m.velocity.y + v.y, m.velocity.z + v.z);
-        m.needs_sync = true;
-    };
-    if !pending.list.is_empty() {
-        pending.list.retain(|(id, v)| {
-            if *id != m.id {
-                return true;
-            }
-            add(*v);
-            false
-        });
-    }
-    if !pending.by_mob.is_empty()
-        && let Some(pushes) = pending.by_mob.remove(&m.id)
-    {
-        pushes.into_iter().for_each(add);
-    }
-}
 /// Applies the brain memories a mob's tick set on other mobs (from event
 /// index `from` on), at once: vanilla sets them on the other entity during
 /// the tick, before the mobs after it tick.
-pub fn apply_brain_events(mobs: &mut [Mob], events: &mut Vec<MobEvent>, from: usize) {
+pub fn apply_brain_events<M: MobSlot>(mobs: &mut [M], events: &mut Vec<MobEvent>, from: usize) {
     let mut i = from;
     while i < events.len() {
         match events[i] {
             MobEvent::BreedTarget { mob, partner } => {
-                if let Some(m) = mobs.iter_mut().find(|m| m.id == mob) {
+                if let Some(m) = mobs.iter_mut().map(MobSlot::mob_mut).find(|m| m.id == mob) {
                     animal_brain::set_breed_partner(m, partner);
                 }
                 events.remove(i);
             }
             MobEvent::LockGaze { mob, partner } => {
-                if let Some(m) = mobs.iter_mut().find(|m| m.id == mob) {
+                if let Some(m) = mobs.iter_mut().map(MobSlot::mob_mut).find(|m| m.id == mob) {
                     animal_brain::lock_gaze(m, partner);
                     villager_brain::lock_gaze_half(m, Who::Mob(partner));
                 }
                 events.remove(i);
             }
             MobEvent::Retreat { mob, from, at } => {
-                if let Some(m) = mobs.iter_mut().find(|m| m.id == mob) {
+                if let Some(m) = mobs.iter_mut().map(MobSlot::mob_mut).find(|m| m.id == mob) {
                     piglin::receive_retreat(m, from, at);
                 }
                 events.remove(i);
@@ -3003,7 +2673,11 @@ pub fn apply_brain_events(mobs: &mut [Mob], events: &mut Vec<MobEvent>, from: us
                 events.remove(i);
             }
             MobEvent::SchoolSize { leader, by } => {
-                if let Some(m) = mobs.iter_mut().find(|m| m.id == leader) {
+                if let Some(m) = mobs
+                    .iter_mut()
+                    .map(MobSlot::mob_mut)
+                    .find(|m| m.id == leader)
+                {
                     m.extra.followers += by;
                 }
                 events.remove(i);
@@ -3013,7 +2687,11 @@ pub fn apply_brain_events(mobs: &mut [Mob], events: &mut Vec<MobEvent>, from: us
             MobEvent::Breed {
                 parent, partner, ..
             } => {
-                if let Some(m) = mobs.iter_mut().find(|m| m.id == partner) {
+                if let Some(m) = mobs
+                    .iter_mut()
+                    .map(MobSlot::mob_mut)
+                    .find(|m| m.id == partner)
+                {
                     m.extra.age = 6000;
                     m.extra.in_love = 0;
                     animal_brain::forget_breed_target(m, parent);
@@ -3035,6 +2713,7 @@ pub fn apply_brain_events(mobs: &mut [Mob], events: &mut Vec<MobEvent>, from: us
                 let mut raised = Vec::new();
                 let (aim, fish_pos, fish_silent) = mobs
                     .iter()
+                    .map(MobSlot::mob)
                     .find(|m| m.id == mob)
                     .map(|m| {
                         (
@@ -3049,7 +2728,10 @@ pub fn apply_brain_events(mobs: &mut [Mob], events: &mut Vec<MobEvent>, from: us
                     })
                     .map(|(aim, pos, silent)| (Some(aim), Some(pos), silent))
                     .unwrap_or((None, None, true));
-                if let Some(t) = mobs.iter_mut().find(|m| m.id == target)
+                if let Some(t) = mobs
+                    .iter_mut()
+                    .map(MobSlot::mob_mut)
+                    .find(|m| m.id == target)
                     && t.damage_aimed(amount, source, aim)
                 {
                     t.add_effect("minecraft:poison", poison_ticks, 0);
@@ -3264,6 +2946,9 @@ pub struct MobWorld<'a> {
     /// not in the level (a warden's anger, `AngerManagement.angerByUuid`).
     /// None: this world keeps no entity UUIDs, so nothing is resolved.
     pub who_lookup: Option<&'a dyn WhoLookup>,
+    /// Another thread's mobs, for a lookup by id that misses `others`: a group of the server's
+    /// parallel mob loop (`game/mob_islands.rs`) answers as the serial loop would.
+    pub foreign: Option<&'a dyn ForeignSeen>,
     /// The level's world border, whose walls stop a mob's moves
     /// (`Entity.collectColliders`); None: nothing stops them there.
     pub border: Option<&'a horizon_core::geometry::border::BorderGeometry>,
@@ -3278,6 +2963,10 @@ pub trait ModEffectTicks {
 /// names while it is in the level, never some other entity as a stand-in. Only
 /// the game layer keeps entity UUIDs, so it answers this (`Game::who_by_uuid`)
 /// and the mob layer reaches it through `MobWorld`.
+/// A mob outside this thread's part of the mob loop, as the serial loop would see it now.
+pub trait ForeignSeen {
+    fn seen(&self, id: u32) -> Option<&Seen>;
+}
 pub trait WhoLookup {
     fn who_by_uuid(&self, uuid: [i32; 4]) -> Option<Who>;
 }
@@ -3651,7 +3340,8 @@ impl Mob {
     /// `LivingEntity.isInvulnerableTo` and dead or removed: only #bypasses_invulnerability gets
     /// past the flag. The guard every damage hook runs after (`LivingIncomingDamageEvent`).
     pub fn refuses_damage(&self, source: &Damage) -> bool {
-        !self.alive()
+        self.extra.client_side
+            || !self.alive()
             || self.removed
             || (self.is_invulnerable() && !source.kind.bypasses_invulnerability())
     }
@@ -4363,7 +4053,7 @@ impl Mob {
         // `setHealth(1.0F)`, then `DeathProtection.applyEffects`.
         self.health = 1.0;
         for effect in &effects {
-            self.apply_death_effect(effect);
+            self.apply_consume_effect(effect);
         }
         let at = [self.position.x, self.position.y, self.position.z];
         self.outbox.push(MobEvent::EntityEvent {
@@ -4373,9 +4063,9 @@ impl Mob {
         });
         true
     }
-    /// One `ConsumeEffect` of a `death_protection` component on the mob.
-    /// Teleporting, sounds and a mod's own kinds are not applied to mobs.
-    fn apply_death_effect(&mut self, effect: &crate::items::ConsumeEffect) {
+    /// One `ConsumeEffect` of a totem or a fox's food on the mob. Teleporting,
+    /// sounds and a mod's own kinds are not applied here.
+    pub(crate) fn apply_consume_effect(&mut self, effect: &crate::items::ConsumeEffect) {
         use crate::items::ConsumeEffect;
         match effect {
             // `LivingEntity.removeAllEffects` -> `onEffectsRemoved` ->
@@ -5837,6 +5527,26 @@ mod armor_hurt_tests {
         Mob::new(1, kind, Vec3::ZERO, 0.0)
     }
 
+    /// `Entity.hurt` on a client level does nothing: the horse a rider's
+    /// client drives takes no fall of its own, and the server's health stays
+    /// (#15294: the client's copy died and lay on the ground, still ridable).
+    #[test]
+    fn a_client_copy_takes_no_fall_damage() {
+        let mut m = horse();
+        m.extra.client_side = true;
+        let health = m.health;
+        let mut events = Vec::new();
+        assert!(!m.damage(20.0, Damage::of(DamageKind::Fall)));
+        m.cause_fall_damage_at(30.0, 1.0, &mut events, None, DamageKind::Fall);
+        assert_eq!(m.health, health);
+        assert_eq!(m.hurt_time, 0);
+        assert!(m.alive());
+        // The server's copy of the same fall is hurt.
+        let mut server = horse();
+        server.cause_fall_damage_at(30.0, 1.0, &mut events, None, DamageKind::Fall);
+        assert!(server.health < health);
+    }
+
     /// `LivingEntity.hurtArmor` (`doHurtEquipment`): a hit that lands on a mob
     /// wearing body armour leaves the piece owing a wear, which the host
     /// applies with the item's own maximum and fire rules.
@@ -6706,7 +6416,7 @@ mod hidden_speed_mob_tick_tests {
         assert_eq!(to.extra.effect_fallbacks, m.extra.effect_fallbacks);
         to.extra.effect_fallbacks[0].duration = 222;
         assert_eq!(m.extra.effect_fallbacks[0].duration, 300);
-        m.apply_death_effect(&crate::items::ConsumeEffect::RemoveEffects(vec![
+        m.apply_consume_effect(&crate::items::ConsumeEffect::RemoveEffects(vec![
             "minecraft:speed".into(),
         ]));
         assert_eq!(m.extra.effects, [("minecraft:night_vision", 400, 0)]);
@@ -6715,7 +6425,7 @@ mod hidden_speed_mob_tick_tests {
         assert!(m.extra.effect_fallbacks.is_empty());
         m.add_effect("speed", 5, 1);
         assert_eq!(m.extra.effect_fallbacks[0].duration, 20);
-        m.apply_death_effect(&crate::items::ConsumeEffect::ClearAllEffects);
+        m.apply_consume_effect(&crate::items::ConsumeEffect::ClearAllEffects);
         assert!(m.extra.effects.is_empty() && m.extra.effect_fallbacks.is_empty());
         // The basic add has default incoming flags, while preserving its
         // existing active flag policy; a newly retained weaker node gets them.
@@ -6738,7 +6448,7 @@ mod hidden_speed_mob_tick_tests {
         m.add_effect("health_boost", 200, 1);
         assert_eq!(m.attrs.max_health, 18.0);
         m.health = 18.0;
-        m.apply_death_effect(&crate::items::ConsumeEffect::ClearAllEffects);
+        m.apply_consume_effect(&crate::items::ConsumeEffect::ClearAllEffects);
         assert_eq!(m.attrs.max_health, 10.0);
         assert_eq!(m.health, 10.0);
     }
@@ -6770,7 +6480,7 @@ mod hidden_speed_mob_tick_tests {
         m0.add_effect("absorption", 600, 0);
         assert_eq!(armor::max_absorption(&m0), 4.0);
         assert_eq!(m0.absorption, 4.0);
-        m0.apply_death_effect(&crate::items::ConsumeEffect::ClearAllEffects);
+        m0.apply_consume_effect(&crate::items::ConsumeEffect::ClearAllEffects);
         assert_eq!(
             m0.absorption, 0.0,
             "base 0 mob loses absorption on ClearAllEffects"
@@ -6787,7 +6497,7 @@ mod hidden_speed_mob_tick_tests {
         m20.add_effect("absorption", 600, 0);
         assert_eq!(armor::max_absorption(&m20), 24.0);
         assert_eq!(m20.absorption, 4.0);
-        m20.apply_death_effect(&crate::items::ConsumeEffect::ClearAllEffects);
+        m20.apply_consume_effect(&crate::items::ConsumeEffect::ClearAllEffects);
         assert_eq!(
             m20.absorption, 4.0,
             "base 20 mob keeps absorption on ClearAllEffects"
@@ -6804,7 +6514,7 @@ mod hidden_speed_mob_tick_tests {
         m20_clamp.extra.armor_attributes = Some(Box::new(attrs3));
         m20_clamp.add_effect("absorption", 600, 0);
         m20_clamp.absorption = 24.0;
-        m20_clamp.apply_death_effect(&crate::items::ConsumeEffect::RemoveEffects(vec![
+        m20_clamp.apply_consume_effect(&crate::items::ConsumeEffect::RemoveEffects(vec![
             "minecraft:absorption".into(),
         ]));
         assert_eq!(
@@ -6818,7 +6528,7 @@ mod hidden_speed_mob_tick_tests {
         let mut m0_remove = Mob::new(4, kind, Vec3::ZERO, 0.0);
         m0_remove.add_effect("absorption", 600, 0);
         assert_eq!(m0_remove.absorption, 4.0);
-        m0_remove.apply_death_effect(&crate::items::ConsumeEffect::RemoveEffects(vec![
+        m0_remove.apply_consume_effect(&crate::items::ConsumeEffect::RemoveEffects(vec![
             "minecraft:absorption".into(),
         ]));
         assert_eq!(

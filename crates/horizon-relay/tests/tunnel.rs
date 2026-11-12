@@ -323,6 +323,56 @@ fn wrong_secrets_fail() {
     assert_eq!(long(&code2).secret, long(&code).secret);
 }
 
+/// Forwards every connection to `to`, `delay` after it arrives.
+fn slow_door(to: SocketAddr, delay: Duration) -> SocketAddr {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let a = l.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(mut inbound) = s else { continue };
+            std::thread::spawn(move || {
+                std::thread::sleep(delay);
+                let Ok(mut outbound) = TcpStream::connect(to) else {
+                    return;
+                };
+                let (mut i2, mut o2) =
+                    (inbound.try_clone().unwrap(), outbound.try_clone().unwrap());
+                std::thread::spawn(move || {
+                    let _ = std::io::copy(&mut o2, &mut i2);
+                    let _ = i2.shutdown(std::net::Shutdown::Write);
+                });
+                let _ = std::io::copy(&mut inbound, &mut outbound);
+                let _ = outbound.shutdown(std::net::Shutdown::Write);
+            });
+        }
+    });
+    a
+}
+
+#[test]
+fn another_host_answering_first_does_not_end_the_join() {
+    // A housemate's game answers first at one endpoint; the invite's own host, behind a slower
+    // door, at the other.
+    let (other, ours) = (
+        start(None, PathMode::DirectOnly),
+        start(None, PathMode::DirectOnly),
+    );
+    let first = long(&invite_of(&other, false).0).endpoints[0];
+    let mut invite = long(&invite_of(&ours, false).0);
+    let door = slow_door(invite.endpoints[0], Duration::from_millis(300));
+    invite.endpoints = vec![first, door];
+    round_trip(
+        join(&invite.encode(), None, PathMode::DirectOnly).unwrap(),
+        b"ours",
+    );
+    // With no endpoint that takes the code, the wrong code is still what the guest hears.
+    invite.endpoints = vec![first];
+    assert!(matches!(
+        join(&invite.encode(), None, PathMode::DirectOnly),
+        Err(JoinError::WrongCode)
+    ));
+}
+
 #[test]
 fn bad_codes_unknown_codes_versions_and_ended_invites() {
     assert!(matches!(

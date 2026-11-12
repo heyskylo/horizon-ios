@@ -3,6 +3,9 @@
 use super::*;
 
 impl ProjectileWorld for ProjWorld<'_, '_> {
+    fn below_world_y(&self) -> f64 {
+        self.w.world.below_world_y()
+    }
     fn block_contacts(&self, entity: i32, kind: &str, from: Vec3, to: Vec3, bounds: Aabb) {
         horizon_client::block_contact::swept_inside(entity, kind, from, to, bounds, |p| {
             let state = self.w.world.block(p.x, p.y, p.z);

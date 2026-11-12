@@ -119,7 +119,10 @@ pub fn join(config: &GuestConfig) -> Result<Tunnel, JoinError> {
         Parsed::Long(invite) => {
             if config.path != PathMode::RelayOnly
                 && !invite.endpoints.is_empty()
-                && let Some(t) = join_direct(&invite)?
+                && let Some(t) = join_direct(
+                    &invite,
+                    invite.relay.is_some() && config.path != PathMode::DirectOnly,
+                )?
             {
                 return Ok(t);
             }
@@ -133,9 +136,12 @@ pub fn join(config: &GuestConfig) -> Result<Tunnel, JoinError> {
     }
 }
 
-/// Dial every endpoint of the code; the first that answers as a Horizon
-/// host gets the handshake, the others are dropped before it.
-fn join_direct(invite: &Invite) -> Result<Option<Tunnel>, JoinError> {
+/// Dial every endpoint of the code; each that answers as a Horizon host gets the handshake in
+/// turn until one takes the code. Another host can answer first (a housemate's game at the same
+/// private address on the default port), so a failed handshake moves on rather than ending the
+/// join. None when no endpoint took it and `fallback` (the relay) is still to be tried; else the
+/// last failure.
+fn join_direct(invite: &Invite, fallback: bool) -> Result<Option<Tunnel>, JoinError> {
     let (tx, rx) = channel();
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut session = [0u8; 8];
@@ -154,23 +160,33 @@ fn join_direct(invite: &Invite) -> Result<Option<Tunnel>, JoinError> {
             });
     }
     drop(tx);
-    let left = deadline.saturating_duration_since(Instant::now());
-    let Ok(mut stream) = rx.recv_timeout(left) else {
-        return Ok(None);
-    };
-    let key = crypto::exchange(&mut stream, &invite.secret_text(), "direct", session)
-        .map_err(|e| JoinError::Failed(e.to_string()))?;
-    let secure = session::secure(stream, &key, Role::Guest).map_err(|e| {
-        if crypto::is_wrong_code(&e) {
-            JoinError::WrongCode
-        } else {
-            JoinError::Failed(e.to_string())
+    let mut failure = None;
+    while let Ok(mut stream) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        let key = match crypto::exchange(&mut stream, &invite.secret_text(), "direct", session) {
+            Ok(key) => key,
+            Err(e) => {
+                failure.get_or_insert(JoinError::Failed(e.to_string()));
+                continue;
+            }
+        };
+        match session::secure(stream, &key, Role::Guest) {
+            Ok(secure) => {
+                return Ok(Some(Tunnel {
+                    secure,
+                    direct: true,
+                }));
+            }
+            // A wrong code says more than any other failure: it is the one kept.
+            Err(e) if crypto::is_wrong_code(&e) => failure = Some(JoinError::WrongCode),
+            Err(e) => {
+                failure.get_or_insert(JoinError::Failed(e.to_string()));
+            }
         }
-    })?;
-    Ok(Some(Tunnel {
-        secure,
-        direct: true,
-    }))
+    }
+    match failure {
+        Some(failure) if !fallback => Err(failure),
+        _ => Ok(None),
+    }
 }
 
 /// Through a relay with its short code (its own direct race, then the

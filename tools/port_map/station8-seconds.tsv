@@ -1,0 +1,1 @@
+Consumable.consumeSeconds	port	crates/horizon-client/src/item_sync.rs::consumable_seconds	consume_seconds from the stack's consumable component
