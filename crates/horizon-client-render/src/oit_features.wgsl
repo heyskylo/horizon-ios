@@ -62,7 +62,7 @@
 @fragment fn fs_oit_lightning_accumulate(in: Out) -> @location(0) vec4<f32> {
     var color = celestial_color(in);
     if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
-        color = vec4(hdr_written(color.rgb, hdr_entity_mark(in), globals.hdr_settings, globals.hdr_shares), color.a);
+        color = vec4(hdr_written(color.rgb, hdr_entity_mark(in), globals.hdr_settings, globals.hdr_gains), color.a);
     }
     return oit_accumulate_additive(vec4(color.rgb, min(0.99, color.a)), 0.0, in.clip);
 }

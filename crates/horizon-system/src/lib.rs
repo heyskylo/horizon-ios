@@ -5,9 +5,12 @@
 //! Horizon layer (docs/layers.md#engine).
 //!
 //! Only what explains performance: no serial number, host name, user name or path is read. The
-//! slower probes (a command to run) are read once per process.
+//! slower probes (a command to run) are read once per process. [`scrub`] reads the user name only
+//! to take it out of text that leaves the machine (a telemetry item, a bug report's bundle).
 use std::path::Path;
 use std::sync::OnceLock;
+
+pub mod scrub;
 
 /// What `program args` prints, trimmed, when it succeeds and prints something. On Windows the
 /// program opens no console window: a GUI launcher or a game started without one would flash a
@@ -229,7 +232,8 @@ fn os_version() -> Option<String> {
     }
 }
 
-fn cpu() -> Option<String> {
+/// The CPU's name (`Apple M4 Pro`, `AMD Ryzen 7 7700X 8-Core Processor`).
+pub fn cpu() -> Option<String> {
     if cfg!(target_os = "linux") {
         read("/proc/cpuinfo").and_then(|t| linux_cpu_name(&t))
     } else if cfg!(target_os = "macos") {
@@ -281,7 +285,8 @@ fn processor_name_from_reg_query(query: &str) -> Option<String> {
     })
 }
 
-fn ram_bytes() -> Option<u64> {
+/// Installed memory, in bytes.
+pub fn ram_bytes() -> Option<u64> {
     if cfg!(target_os = "linux") {
         let kib = read("/proc/meminfo").and_then(|t| field(&t, "MemTotal"))?;
         kib.split_whitespace()
@@ -740,6 +745,64 @@ impl Machine {
     }
 }
 
+/// The one-minute load average: above about the number of threads the machine was busy.
+pub fn load_average() -> Option<f64> {
+    if cfg!(target_os = "macos") {
+        // "{ 1.23 1.10 1.00 }"
+        command_output("sysctl", &["-n", "vm.loadavg"])?
+            .trim_start_matches('{')
+            .split_whitespace()
+            .next()?
+            .parse()
+            .ok()
+    } else {
+        std::fs::read_to_string("/proc/loadavg")
+            .ok()?
+            .split_whitespace()
+            .next()?
+            .parse()
+            .ok()
+    }
+}
+
+/// Resident memory of a process, in bytes (macOS, Linux).
+pub fn rss_bytes(pid: u32) -> Option<u64> {
+    if cfg!(target_os = "macos") {
+        return command_output("ps", &["-o", "rss=", "-p", &pid.to_string()])?
+            .parse::<u64>()
+            .ok()
+            .map(|kb| kb * 1024);
+    }
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
+    line.split_whitespace()
+        .nth(1)?
+        .parse::<u64>()
+        .ok()
+        .map(|kb| kb * 1024)
+}
+
+/// CPU time a process has used, user and system, in seconds (macOS, Linux).
+pub fn cpu_seconds(pid: u32) -> Option<f64> {
+    if cfg!(target_os = "macos") {
+        // "[[dd-]hh:]mm:ss.cc"
+        let time = command_output("ps", &["-o", "time=", "-p", &pid.to_string()])?;
+        let (rest, days) = match time.split_once('-') {
+            Some((d, rest)) => (rest.to_owned(), d.parse::<f64>().ok()?),
+            None => (time, 0.0),
+        };
+        let seconds = rest.split(':').try_fold(0.0, |acc, part| {
+            part.parse::<f64>().ok().map(|v| acc * 60.0 + v)
+        })?;
+        return Some(days * 86_400.0 + seconds);
+    }
+    // utime and stime, fields 14 and 15, in clock ticks (100 per second on Linux).
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let fields: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
+    let ticks: f64 = fields.get(11)?.parse::<f64>().ok()? + fields.get(12)?.parse::<f64>().ok()?;
+    Some(ticks / 100.0)
+}
+
 /// The GPU's maker from its name and the vendor ID wgpu reports (0: none, as on Metal).
 pub fn gpu_vendor(name: &str, vendor_id: u32) -> &'static str {
     match vendor_id {
@@ -1004,5 +1067,14 @@ mod tests {
         assert!(["", "laptop", "desktop"].contains(&machine.form));
         let dir = std::env::temp_dir();
         assert!(["", "nvme", "ssd", "hdd"].contains(&Machine::detect_in(Some(&dir)).storage));
+    }
+
+    #[test]
+    fn this_process_is_measured() {
+        if cfg!(any(target_os = "macos", target_os = "linux")) {
+            assert!(load_average().is_some());
+            assert!(rss_bytes(std::process::id()).unwrap() > 1 << 20);
+            assert!(cpu_seconds(std::process::id()).unwrap() >= 0.0);
+        }
     }
 }

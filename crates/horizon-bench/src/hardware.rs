@@ -1,7 +1,7 @@
 //! The machine a report was measured on. CPU, RAM and OS are detected here; the GPU and the display
 //! come from the program that rendered (the game knows its adapter, the launcher its window).
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use horizon_system::command_output as output;
 use serde::{Deserialize, Serialize};
 
@@ -70,12 +70,12 @@ impl Hardware {
             os: std::env::consts::OS.to_owned(),
             os_version: os_version(),
             arch: std::env::consts::ARCH.to_owned(),
-            cpu: cpu(),
+            cpu: horizon_system::cpu(),
             cpu_threads: std::thread::available_parallelism().ok().map(|n| n.get()),
             cpu_cores: probes.cores,
             cpu_base_mhz: probes.base,
             cpu_boost_mhz: probes.boost,
-            ram_mb: ram_bytes().map(|b| b >> 20),
+            ram_mb: horizon_system::ram_bytes().map(|b| b >> 20),
             storage: None,
             form: probes.form,
             gpu: None,
@@ -92,8 +92,8 @@ impl Hardware {
     }
 }
 
-/// What `horizon_system::Machine` reads.
 #[cfg(not(target_arch = "wasm32"))]
+/// What `horizon_system::Machine` reads.
 struct Probes {
     cores: Option<u16>,
     base: Option<u32>,
@@ -113,89 +113,16 @@ fn probes() -> Probes {
     }
 }
 
-/// The one-minute load average: above about the number of threads the machine was busy.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn load_average() -> Option<f64> {
-    if cfg!(target_os = "macos") {
-        // "{ 1.23 1.10 1.00 }"
-        output("sysctl", &["-n", "vm.loadavg"])?
-            .trim_start_matches('{')
-            .split_whitespace()
-            .next()?
-            .parse()
-            .ok()
-    } else {
-        std::fs::read_to_string("/proc/loadavg")
-            .ok()?
-            .split_whitespace()
-            .next()?
-            .parse()
-            .ok()
-    }
-}
-
 /// `ac` or `battery`; `None` where it can't be read (and on machines without a battery on Linux).
-#[cfg(not(target_arch = "wasm32"))]
 pub fn power_source() -> Option<&'static str> {
     horizon_system::power()
-}
-
-/// Resident memory of a process, in bytes (macOS, Linux).
-#[cfg(not(target_arch = "wasm32"))]
-pub fn rss_bytes(pid: u32) -> Option<u64> {
-    if cfg!(target_os = "macos") {
-        return output("ps", &["-o", "rss=", "-p", &pid.to_string()])?
-            .parse::<u64>()
-            .ok()
-            .map(|kb| kb * 1024);
-    }
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
-    line.split_whitespace()
-        .nth(1)?
-        .parse::<u64>()
-        .ok()
-        .map(|kb| kb * 1024)
-}
-
-/// CPU time a process has used, user and system, in seconds (macOS, Linux).
-#[cfg(not(target_arch = "wasm32"))]
-pub fn cpu_seconds(pid: u32) -> Option<f64> {
-    if cfg!(target_os = "macos") {
-        // "[[dd-]hh:]mm:ss.cc"
-        let time = output("ps", &["-o", "time=", "-p", &pid.to_string()])?;
-        let (rest, days) = match time.split_once('-') {
-            Some((d, rest)) => (rest.to_owned(), d.parse::<f64>().ok()?),
-            None => (time, 0.0),
-        };
-        let seconds = rest.split(':').try_fold(0.0, |acc, part| {
-            part.parse::<f64>().ok().map(|v| acc * 60.0 + v)
-        })?;
-        return Some(days * 86_400.0 + seconds);
-    }
-    // utime and stime, fields 14 and 15, in clock ticks (100 per second on Linux).
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let fields: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
-    let ticks: f64 = fields.get(11)?.parse::<f64>().ok()? + fields.get(12)?.parse::<f64>().ok()?;
-    Some(ticks / 100.0)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(target_os = "macos")]
 fn os_version() -> Option<String> {
     output("sw_vers", &["-productVersion"])
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(target_os = "macos")]
-fn cpu() -> Option<String> {
-    output("sysctl", &["-n", "machdep.cpu.brand_string"])
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(target_os = "macos")]
-fn ram_bytes() -> Option<u64> {
-    output("sysctl", &["-n", "hw.memsize"])?.parse().ok()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -209,24 +136,6 @@ fn os_version() -> Option<String> {
         Some(kernel) => format!("{name} (kernel {kernel})"),
         None => name,
     })
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(target_os = "linux")]
-fn cpu() -> Option<String> {
-    let info = std::fs::read_to_string("/proc/cpuinfo").ok()?;
-    // x86 names the CPU per core; arm64 only gives the core's implementer and part.
-    horizon_system::linux_cpu_name(&info)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(target_os = "linux")]
-fn ram_bytes() -> Option<u64> {
-    let info = std::fs::read_to_string("/proc/meminfo").ok()?;
-    let kb = key_value(&info, "MemTotal", ':')?
-        .trim_end_matches("kB")
-        .trim();
-    kb.parse::<u64>().ok().map(|kb| kb * 1024)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -245,40 +154,8 @@ fn os_version() -> Option<String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(target_os = "windows")]
-fn cpu() -> Option<String> {
-    horizon_system::windows_cpu()
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(target_os = "windows")]
-fn ram_bytes() -> Option<u64> {
-    let out = output(
-        "powershell",
-        &[
-            "-NoProfile",
-            "-Command",
-            "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory",
-        ],
-    )?;
-    out.parse().ok()
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn os_version() -> Option<String> {
-    None
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-fn cpu() -> Option<String> {
-    None
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-fn ram_bytes() -> Option<u64> {
     None
 }
 
@@ -295,9 +172,6 @@ mod tests {
             assert!(hw.cpu.is_some(), "{hw:?}");
             assert!(hw.ram_mb.unwrap() > 256, "{hw:?}");
             assert!(hw.os_version.is_some(), "{hw:?}");
-            assert!(load_average().is_some());
-            assert!(rss_bytes(std::process::id()).unwrap() > 1 << 20);
-            assert!(cpu_seconds(std::process::id()).unwrap() >= 0.0);
         }
     }
 

@@ -1127,6 +1127,36 @@ def minecart_numeric_fields():
                        '/tick unfreeze', '/forceload remove 0 0 15 15')
 
 
+def tnt_minecart_explosion_power():
+    """MinecartTNT reads explosion_power / explosion_speed_factor with getFloatOr (4 and 1), clamped
+    to 0..128, and writes each only when it is not the default. explode() blows with
+    explosionPowerBase + explosionSpeedFactor * nextDouble() * 1.5 * min(speed, 5): a cart standing
+    still blows with its base power exactly."""
+    ops = setup('/forceload add 0 0 31 31', '/tick freeze')
+    ops += [{'op': 'settle'}]
+    cases = ('{explosion_power:2.5f}', '{explosion_power:500f}', '{explosion_power:-1f}',
+             '{explosion_power:7}', '{explosion_speed_factor:3.5f}', '{explosion_power:4f}', '{}')
+    for i, nbt in enumerate(cases):
+        tag = f'cart_pow_{i}'
+        extra = ',' + nbt[1:-1] if nbt != '{}' else ''
+        ops += setup(f'/summon tnt_minecart {2 + i * 2}.5 200 2.5 {{Tags:["{tag}"],NoGravity:1b{extra}}}')
+        for field in ('explosion_power', 'explosion_speed_factor'):
+            ops += [cmd(f'/data get entity @e[tag={tag},limit=1] {field} 100')]
+    ops += setup(*[f'/kill @e[tag=cart_pow_{i}]' for i in range(len(cases))], '/tick unfreeze')
+    # The blast itself: a NoAI husk (no sunburn) two blocks from a cart that blows at its base power.
+    for i, power in enumerate(('0f', '1.5f')):
+        x = 8 + i * 12
+        ops += setup(f'/summon husk {x + 2}.5 200 16.5 {{Tags:["pow_target"],NoAI:1b,NoGravity:1b,'
+                     'PersistenceRequired:1b}',
+                     f'/summon tnt_minecart {x}.5 200 16.5 {{Tags:["pow_blast"],NoGravity:1b,fuse:1,'
+                     f'explosion_power:{power}}}')
+        ops += [{'op': 'tick', 'n': 5}]
+        ops += [cmd('/execute if entity @e[tag=pow_blast]'),
+                cmd('/data get entity @e[tag=pow_target,limit=1] Health 100')]
+        ops += setup('/kill @e[tag=pow_target]', '/kill @e[tag=pow_blast]')
+    return ops + setup('/forceload remove 0 0 31 31')
+
+
 def rocket_data_merge():
     """#13083: /data merge and /data modify on a firework rocket run Entity.load over it
     (FireworkRocketEntity.readAdditionalSaveData: Life, LifeTime, FireworksItem, ShotAtAngle;
@@ -7706,6 +7736,56 @@ def mob_fall_clip():
                        f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 30} {z0 + 15} air',
                        f'/forceload remove {x0} {z0}')
 
+def orb_fall_distance():
+    """#14440: an experience orb's fall (`Entity.fallDistance`). `Entity.move` casts a move of a block or
+    more over fall-resetting blocks and water, then `checkFallDamage` adds the drop outside water and on
+    the ground calls `fallOn`, posts HIT_GROUND and resets it; `Entity.updateFluidInteraction` resets it
+    in water and `Entity.baseTick` halves it in lava. `saveWithoutId` and `load` keep it. Orbs of other
+    values sit apart, far from any player; frozen, then read tick by tick.
+    """
+    x0, y0, z0 = 4672, 250, 4672
+    # Entities tick once every chunk within 2 columns is loaded (ChunkMap.prepareEntityTickingChunk).
+    chunk = [[(x0 >> 4) + dx, (z0 >> 4) + dz] for dx in range(-2, 3) for dz in range(-2, 3)]
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
+           cmd('/tick freeze', False),
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', expect_result=256)]
+    # (name, x, z, start y, NBT); each in its own column.
+    cases = [('drop', 1, 8, y0 + 4, 'Value:1,Motion:[0d,-0.5d,0d],fall_distance:1d'),
+             ('water', 3, 4, y0 + 5, 'Value:2,Motion:[0d,-0.25d,0d],fall_distance:3d'),
+             ('lava', 7, 4, y0 + 5, 'Value:3,Motion:[0d,-0.25d,0d],fall_distance:6d'),
+             ('vine', 8, 8, y0 + 14, 'Value:4,Motion:[0d,-1.5d,0d],fall_distance:5d'),
+             ('novine', 11, 8, y0 + 14, 'Value:5,Motion:[0d,-1.5d,0d],fall_distance:5d'),
+             ('still', 14, 8, y0 + 4, 'Value:6,NoGravity:1b,fall_distance:4d'),
+             # Summoned inside lava: Entity.isInLava is false on its first tick, so no halving yet.
+             ('inlava', 7, 4, y0 + 1, 'Value:7,fall_distance:4d')]
+    # Water and lava stand in a stone well, so they have no flow to push with.
+    for x, fluid in ((3, 'water'), (7, 'lava')):
+        ops.append(cmd(f'/fill {x0 + x - 1} {y0} {z0 + 3} {x0 + x + 1} {y0 + 2} {z0 + 5} stone', expect_result=27))
+        ops.append(cmd(f'/fill {x0 + x} {y0} {z0 + 4} {x0 + x} {y0 + 2} {z0 + 4} {fluid}', expect_result=3))
+    for x in (8, 11):
+        ops.append(cmd(f'/fill {x0 + x - 1} {y0} {z0 + 8} {x0 + x - 1} {y0 + 14} {z0 + 8} stone', expect_result=15))
+    ops.append(cmd(f'/setblock {x0 + 8} {y0 + 7} {z0 + 8} vine[west=true]', expect_result=1))
+    for n, (name, x, z, y, nbt) in enumerate(cases, 1):
+        ops.append(cmd(f'/summon experience_orb {x0 + x}.5 {y} {z0 + z}.5 {{UUID:[I;18000,0,{n},1],{nbt}}}',
+                       expect_result=1))
+
+    def reads():
+        for n, _ in enumerate(cases, 1):
+            for key in ('fall_distance', 'OnGround', 'Pos[1]'):
+                ops.append(cmd(f'/data get entity 00004650-0000-0000-0000-{n:04x}00000001 {key}'))
+
+    reads()
+    for _ in range(12):
+        ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 1}, cmd('/tick freeze', False)]
+        reads()
+    # A loaded fall_distance replaces the one it had.
+    ops.append(cmd('/data merge entity 00004650-0000-0000-0000-000600000001 {fall_distance:9d}', expect_result=1))
+    ops.append(cmd('/data get entity 00004650-0000-0000-0000-000600000001 fall_distance'))
+    return ops + setup('/tick unfreeze', f'/kill @e[type=experience_orb,x={x0},y={y0 - 8},z={z0},dx=16,dy=48,dz=16]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 20} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
 def rocket_fall_distance():
     """#14318: a firework rocket's fall (`Entity.fallDistance`). `Entity.move` casts a move of a block or
     more over fall-resetting blocks and water, then `checkFallDamage` adds the drop outside water and on
@@ -7866,6 +7946,43 @@ def explosion_player_experience():
                        f'/forceload remove {x0} {z0}')
 
 
+def explosion_creaking_heart_experience():
+    """#11330: `CreakingHeartBlock.onExplosionHit` awards a natural heart's experience (`tryAwardExperience`)
+    when the blast's indirect source is a player (a primed TNT's `owner`); an ownerless blast awards none. The
+    amount is random (20 to 24), so only whether orbs came out is compared. A creative owner gets none
+    (`preventsBlockDrops`), so the player is in survival for the owned blasts, then back in creative. A TNT
+    whose `owner` is a zombie's UUID is no player's (none), and with `block_drops` off `popExperience` drops
+    nothing."""
+    # Entities tick once the forced chunk's 2-column neighbourhood is loaded (ChunkMap.prepareEntityTickingChunk).
+    x0, y0, z0 = 4096 - 416, 260, 3584
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks',
+            'chunks': [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]},
+           cmd('/tick freeze', False)]
+    near = f'x={x0},y={y0 - 4},z={z0},dx=16,dy=16,dz=16'
+    for owner, mode, drops in ((None, 'survival', True), ('@p', 'creative', True), ('@p', 'survival', True),
+                               ('zombie', 'survival', True), ('@p', 'survival', False)):
+        ops += [cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 6} {z0 + 15} air', False),
+                cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} bedrock', False),
+                cmd(f'/setblock {x0 + 8} {y0} {z0 + 8} creaking_heart[natural=true]', expect_result=1),
+                cmd(f'/summon tnt {x0 + 8}.5 {y0 + 1} {z0 + 8}.5 {{fuse:1,Tags:["heart_tnt"]}}', expect_result=1)]
+        if owner == 'zombie':
+            ops.append(cmd(f'/summon zombie {x0 + 1}.5 {y0} {z0 + 1}.5 '
+                           f'{{NoAI:1b,Silent:1b,PersistenceRequired:1b,Tags:["heart_owner"]}}',
+                           expect_result=1))
+            owner = f'@e[type=zombie,tag=heart_owner,{near},limit=1]'
+        if owner:
+            ops.append(cmd(f'/data modify entity @e[type=tnt,tag=heart_tnt,limit=1] owner set from entity {owner} UUID'))
+        ops.append(cmd(f'/gamemode {mode} @p', False))
+        ops.append(cmd(f'/gamerule block_drops {str(drops).lower()}', False))
+        ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 2}, cmd('/tick freeze', False),
+                cmd(f'/execute if block {x0 + 8} {y0} {z0 + 8} air', expect_result=1),
+                cmd(f'/execute if entity @e[type=experience_orb,{near}]', comparison='positive_result'),
+                cmd(f'/kill @e[type=!player,{near}]', False), cmd(f'/kill @e[type=item,{near}]', False)]
+    return ops + setup('/gamemode creative @p', '/gamerule block_drops true', '/tick unfreeze',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 6} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
 def groups():
     try:
         from .spectral_duration_corpus import cases as spectral_saved_duration
@@ -7881,8 +7998,10 @@ def groups():
         from vehicle_kill_corpus import vehicle_kill_contents
     try:
         from .vehicle_container_corpus import vehicle_containers
+        from .boat_loot_corpus import boat_loot
     except ImportError:
         from vehicle_container_corpus import vehicle_containers
+        from boat_loot_corpus import boat_loot
     try:
         from .vehicle_boolean_corpus import other_entity_boolean_flags, vehicle_boolean_flags
     except ImportError:
@@ -7969,6 +8088,7 @@ def groups():
         ('spectral saved duration', spectral_saved_duration(cmd, setup)),
         ('item Health short load', item_health_load(cmd, setup)),
         ('vehicle container saved fields', vehicle_containers(cmd)),
+        ('chest boat pending loot', boat_loot(cmd)),
         ('vehicle boolean save flags', vehicle_boolean_flags(cmd)),
         ('other entity boolean save flags', other_entity_boolean_flags(cmd)),
         ('hopper pot saved slot', pot_hopper_cases(cmd)),
@@ -8064,6 +8184,7 @@ def groups():
         ('dispensed item escape', dispensed_item_escape()),
         ('command block last output', command_block_last_output()),
         ('explosion player experience', explosion_player_experience()),
+        ('explosion creaking heart experience', explosion_creaking_heart_experience()),
         ('comparator setblock output', comparator_setblock_output()),
         ('glide fall accumulation', glide_fall_accumulation()),
         ('living short timers', living_short_timers()),
@@ -8100,6 +8221,7 @@ def groups():
         ('dragon command damage', dragon_command_damage()),
         ('vehicle item stack config', vehicle_item_stack_config()),
         ('minecart numeric fields', minecart_numeric_fields()),
+        ('tnt minecart explosion power', tnt_minecart_explosion_power()),
         ('enderman command damage', enderman_command_damage()),
         ('shulker command damage', shulker_command_damage()),
         ('SNBT trailing commas', snbt_trailing_commas()),
@@ -8176,6 +8298,7 @@ def groups():
         ('teleport lands', teleport_lands()),
         ('rocket data merge', rocket_data_merge()),
         ('mob fall clip', mob_fall_clip()),
+        ('orb fall distance', orb_fall_distance()),
         ('rocket fall distance', rocket_fall_distance()),
         ('vehicle ground and fall', vehicle_ground_and_fall()),
         ('vehicle saved ground and fall', vehicle_saved_ground_and_fall()),

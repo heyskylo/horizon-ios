@@ -381,7 +381,7 @@ pub(super) struct Dragon {
     pub id: u32,
     pub position: Vec3,
     pub previous: Vec3,
-    velocity: Vec3,
+    pub(super) velocity: Vec3,
     pub yaw: f32,
     pub previous_yaw: f32,
     yaw_accel: f32,
@@ -869,14 +869,14 @@ impl Dragon {
     /// `ServerExplosion.hurtEntities` knockback on the dragon itself:
     /// `pushFromExplosion` adds `(1 - dist) * exposure` along the blast to
     /// its eye to the motion (`Entity.push`); the parts are not pushed.
-    fn whole_box(&self) -> Aabb {
+    pub(super) fn whole_box(&self) -> Aabb {
         let p = self.position;
         Aabb::new(
             Vec3::new(p.x - 8.0, p.y, p.z - 8.0),
             Vec3::new(p.x + 8.0, p.y + 8.0, p.z + 8.0),
         )
     }
-    fn explosion_knockback(
+    pub(super) fn explosion_knockback(
         &self,
         center: [f64; 3],
         radius: f32,
@@ -5831,7 +5831,6 @@ mod dragon_fireball_spawn_tests {
         );
     }
 }
-
 #[cfg(test)]
 #[path = "thorns_tests.rs"]
 mod thorns_tests;

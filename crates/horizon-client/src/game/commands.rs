@@ -2487,17 +2487,7 @@ impl Game<'_> {
                 self.item_frames.retain(|f| f.id != id);
             }
             Target::Painting(id) => self.paintings.retain(|p| p.id != id),
-            Target::Boat(id) => {
-                // AbstractBoat.remove: a killed boat drops its lead.
-                if let Some(i) = self.boats.iter().position(|b| b.id == id) {
-                    self.release_vehicle_container(id);
-                    let b = self.boats.remove(i);
-                    // AbstractChestBoat.remove, after the live menu writes
-                    // back its slots.
-                    self.drop_vehicle_contents(b.position.components(), &b.items);
-                    self.boat_removed(&b);
-                }
-            }
+            Target::Boat(id) => self.kill_boat(id),
             Target::Cart(id) => {
                 self.release_vehicle_container(id);
                 if let Some(i) = self.carts.iter().position(|c| c.id == id) {
@@ -2613,23 +2603,14 @@ impl Game<'_> {
                     // `new ExperienceOrb(level, pos, Vec3.ZERO, 0)`, unstuck like any orb spawn.
                     let at = self.unstuck_orb(pos);
                     self.next_entity += 1;
-                    self.orbs.push(horizon_client::entities::ExperienceOrb {
-                        rotation: [0.0, 0.0],
-                        join: Default::default(),
-                        no_gravity: false,
-                        id: self.next_entity,
-                        position: Vec3::new(at[0], at[1], at[2]),
-                        previous: Vec3::new(at[0], at[1], at[2]),
-                        velocity: Vec3::new(0.0, 0.0, 0.0),
-                        value: 0,
-                        age: 0,
-                        on_ground: false,
-                        count: 1,
-                        ticks: 0,
-                        health: 5,
-                        air: 300,
-                        following: None,
-                    });
+                    let at = Vec3::new(at[0], at[1], at[2]);
+                    let orb = horizon_client::entities::ExperienceOrb::new(
+                        self.next_entity,
+                        at,
+                        Vec3::ZERO,
+                        0,
+                    );
+                    self.orbs.push(orb);
                     // tryAddFreshEntityWithPassengers refused: ERROR_DUPLICATE_UUID.
                     if !self.native_joins_flush(false, self.next_entity) {
                         return Err(err("commands.summon.failed.uuid", &[]));

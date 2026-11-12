@@ -763,6 +763,12 @@ impl Mob {
     /// nautiluses keep their own course.
     fn pushed_by_fluid(&self) -> bool {
         use super::Species as S;
+        // Drowned.isPushedByFluid: a drowned swimming after its target is not
+        // pushed by the current, one walking the bottom is (`extra.flag` holds
+        // the `isSwimming` that `Drowned.updateSwimming` sets).
+        if self.species() == S::Drowned && self.extra.flag {
+            return false;
+        }
         !matches!(
             self.species(),
             S::Tadpole

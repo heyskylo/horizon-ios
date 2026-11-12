@@ -360,13 +360,13 @@ impl Post {
         &mut self,
         gain: bool,
         settings: [f32; 4],
-        shares: [f32; 4],
+        gains: [f32; 4],
         windows: [[f32; 4]; 2],
     ) {
         // These uniforms do not change baked colour without gain. Keep compatibility
         // history stable when only its final display settings change.
         let key = Some(if gain {
-            (true, settings, shares, windows)
+            (true, settings, gains, windows)
         } else {
             (false, [0.0; 4], [0.0; 4], [[0.0; 4]; 2])
         });
@@ -887,7 +887,7 @@ mod tests {
         post.jitter([32, 32], true, Mat4::IDENTITY, DVec3::ZERO);
         assert_eq!(post.taa_this_frame.jitter[2], 0.0);
         eprintln!(
-            "TAA baked-light GPU checked gain, all settings/shares/windows and the first frame after a pack"
+            "TAA baked-light GPU checked gain, all settings/gains/windows and the first frame after a pack"
         );
     }
 

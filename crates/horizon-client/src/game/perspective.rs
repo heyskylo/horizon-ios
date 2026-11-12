@@ -9,6 +9,7 @@ use horizon_client::{
     collisions::SceneCollisions,
 };
 use horizon_client::{
+    entities::nameplate::NameplateDistances,
     hud::HudBatch,
     mobs::{Anim, Brain, Mob, MobType},
     mouse::Rotation,
@@ -289,9 +290,9 @@ impl Game<'_> {
         }
         // Minecraft.cameraEntity: a server's spectator camera on a mob or
         // another player.
-        let (entity, descending, entity_kind) = match self.camera_mob() {
-            Some(m) => (
-                super::remote_camera::mob_camera_entity(m),
+        let (entity, descending, entity_kind) = match self.camera_entity() {
+            Some(e) => (
+                e,
                 false,
                 horizon_world::collision_context::EntityContextKind::Living,
             ),
@@ -460,11 +461,17 @@ impl Game<'_> {
     /// Keep the player's model in step with the player (`LivingEntity.tick`
     /// body turning, `WalkAnimationState`, the swing and the pose).
     pub(super) fn tick_player_model(&mut self) {
-        let scale = self
-            .player
-            .as_mut()
-            .and_then(|p| p.attribute("minecraft:scale").ok())
-            .unwrap_or(1.0) as f32;
+        let (scale, nameplate) = self.player.as_mut().map_or_else(
+            || (1.0, NameplateDistances::default()),
+            |p| {
+                let scale = p.attribute("minecraft:scale").unwrap_or(1.0) as f32;
+                let nameplate = NameplateDistances {
+                    name_tag: p.attribute("minecraft:name_tag_distance").ok(),
+                    below_name: p.attribute("minecraft:below_name_distance").ok(),
+                };
+                (scale, nameplate)
+            },
+        );
         let Some(p) = self.player.as_ref() else {
             self.player_model = None;
             return;
@@ -527,6 +534,7 @@ impl Game<'_> {
         };
         m.extra.ints[1] = bed;
         m.extra.model_scale = scale;
+        m.set_nameplate(nameplate);
         // The crouch flag is still last tick's here.
         let (from, at) =
             player_model_positions(previous_position, position, m.extra.crouching, crouching);

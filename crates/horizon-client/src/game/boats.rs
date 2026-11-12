@@ -565,7 +565,10 @@ impl Game<'_> {
         if f.fluid == Fluid::None || fluid.is_some_and(|want| f.fluid != want) {
             return None;
         }
-        let above = self.res.facts().get(self.world.block(x, y + 1, z));
+        let above = self
+            .res
+            .facts()
+            .get(self.world.block(x, y.wrapping_add(1), z));
         // FluidState.getHeight: 1 under the same fluid, else amount / 9.
         let height = if above.fluid == f.fluid {
             1.0
@@ -597,7 +600,7 @@ impl Game<'_> {
                 return y as f32 + height;
             }
         }
-        (y1 + 1) as f32
+        (i64::from(y1) + 1) as f32
     }
     fn boat_status(&self, b: &mut Boat) -> Status {
         let bb = b.bounds();
@@ -660,12 +663,12 @@ impl Game<'_> {
         );
         let (g_lo, g_hi) = (ground.min_position(), ground.max_position());
         let (x0, x1, y0, y1, z0, z1) = (
-            g_lo.x.floor() as i32 - 1,
-            g_hi.x.ceil() as i32 + 1,
-            g_lo.y.floor() as i32 - 1,
-            g_hi.y.ceil() as i32 + 1,
-            g_lo.z.floor() as i32 - 1,
-            g_hi.z.ceil() as i32 + 1,
+            (g_lo.x.floor() - 1.0) as i32,
+            (g_hi.x.ceil() + 1.0) as i32,
+            (g_lo.y.floor() - 1.0) as i32,
+            (g_hi.y.ceil() + 1.0) as i32,
+            (g_lo.z.floor() - 1.0) as i32,
+            (g_hi.z.ceil() + 1.0) as i32,
         );
         let slab = VoxelShape::from_box(ground).unwrap_or_else(|_| VoxelShape::empty());
         let mut scene = SceneCollisions {
@@ -740,7 +743,7 @@ impl Game<'_> {
         if moved_y < 0.0 {
             let below = self.res.facts().get(self.world.block(
                 b.position.x.floor() as i32,
-                b.position.y.floor() as i32 - 1,
+                (b.position.y.floor() as i32).wrapping_sub(1),
                 b.position.z.floor() as i32,
             ));
             if below.fluid != Fluid::Water {
@@ -980,7 +983,7 @@ impl Game<'_> {
                         if driven.contains(&id) {
                             self.boats[i].wear_off_hurt();
                         }
-                        if self.boat_fire_tick(i) {
+                        if self.boat_fire_tick(i) || self.boat_below_world(i) {
                             break 'boat;
                         }
                     }
@@ -1099,9 +1102,12 @@ impl Game<'_> {
         ));
         let (lo, hi) = (b.min_position(), b.max_position());
         let mut columns = Vec::new();
-        for x in lo.x.floor() as i32..=(hi.x.ceil() as i32 - 1) {
-            for y in lo.y.floor() as i32..=(hi.y.ceil() as i32 - 1) {
-                for z in lo.z.floor() as i32..=(hi.z.ceil() as i32 - 1) {
+        // Entity.checkInsideBlocks floors both ends of the deflated box.
+        // Narrowing ceil(max) before subtracting one wraps at i32::MIN,
+        // turning a tiny box into a scan of the entire integer Y domain.
+        for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
+            for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
+                for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
                     if let Some(column) = bubble_column_at(
                         &self.world,
                         self.pack.assets.registry,
@@ -1759,6 +1765,82 @@ impl Game<'_> {
     pub(super) fn hurt_boat(&mut self, i: usize, damage: f32, creative: bool) -> bool {
         self.hurt_boat_result(i, damage, creative).unwrap_or(false)
     }
+    /// Whether a spectator must be refused this boat's menu.
+    pub(super) fn boat_loot_pending(&self, id: u32) -> bool {
+        matches!(
+            self.persist.raw.get(&id),
+            Some(horizon_world::nbt::Tag::Compound(map)) if map.contains_key(&"LootTable".into())
+        )
+    }
+
+    /// `ContainerEntity.unpackChestVehicleLootTable`: slot access rolls once;
+    /// only a player opening the menu fires `CriteriaTriggers.GENERATE_LOOT`, before filling.
+    pub(super) fn unpack_boat_loot(&mut self, i: usize, player: bool) {
+        use horizon_world::nbt::Tag;
+        let id = self.boats[i].id;
+        let (table, seed) = {
+            let Some(Tag::Compound(map)) = self.persist.raw.get(&id) else {
+                return;
+            };
+            let Some(table) = crate::save::text(map.get(&"LootTable".into()))
+                .and_then(|id| horizon_client_core::identifier::normalize_id(&id))
+            else {
+                return;
+            };
+            let seed = match map.get(&"LootTableSeed".into()) {
+                Some(Tag::Long(seed)) => Some(*seed),
+                _ => None,
+            };
+            (table, seed)
+        };
+        if player {
+            self.trigger_loot_table(&table);
+        }
+        // Advancement rewards can remove the boat or shift its index.
+        let Some(i) = self.boats.iter().position(|b| b.id == id) else {
+            return;
+        };
+        if let Some(Tag::Compound(map)) = self.persist.raw.get_mut(&id) {
+            map.remove(&"LootTable".into());
+            map.remove(&"LootTableSeed".into());
+        }
+        let key = (i32::MAX - 15, super::minecarts::CART_KEY_Y, id as i32);
+        self.store_cart_items(key);
+        let loot = crate::structure_blocks::loot_data(&self.options.resources, &self.pack_files());
+        let b = &self.boats[i];
+        let at = Vec3::new(b.position.x, b.position.y, b.position.z);
+        let biome = self.biome_name_at(at).unwrap_or_default();
+        let pos = (
+            b.position.x.floor() as i32,
+            b.position.y.floor() as i32,
+            b.position.z.floor() as i32,
+        );
+        crate::structure_blocks::roll_container(
+            &mut self.boats[i].items,
+            loot.as_deref(),
+            table,
+            seed,
+            pos,
+            &biome,
+        );
+        if let Some(horizon_client::containers::BlockEntity::Chest(items)) =
+            self.world.block_entities.get_mut(&key)
+        {
+            items.clone_from(&self.boats[i].items);
+        }
+    }
+
+    /// `AbstractChestBoat.remove`: destroying removals spill the live inventory.
+    pub(super) fn kill_boat(&mut self, id: u32) {
+        if let Some(i) = self.boats.iter().position(|b| b.id == id) {
+            self.release_vehicle_container(id);
+            self.unpack_boat_loot(i, false);
+            let b = self.boats.remove(i);
+            self.drop_vehicle_contents(b.position.components(), &b.items);
+            self.boat_removed(&b);
+        }
+    }
+
     /// None means a canceled hit; Some records whether an accepted hit destroyed it.
     pub(super) fn hurt_boat_result(
         &mut self,
@@ -1782,6 +1864,7 @@ impl Game<'_> {
             self.eject_boat_mobs(i, true);
             let id = self.boats[i].id;
             self.release_vehicle_container(id);
+            self.unpack_boat_loot(i, false);
             let b = self.boats.remove(i);
             // `AbstractChestBoat.remove` spills the chest through
             // `Containers.dropContents` for every destroying removal reason

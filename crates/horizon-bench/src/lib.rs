@@ -15,8 +15,11 @@ pub mod compare;
 mod hardware;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use hardware::{cpu_seconds, load_average, power_source, rss_bytes};
+pub use hardware::power_source;
 pub use hardware::{Display, Gpu, Hardware};
+/// The process probes, from the platform (`horizon-system`).
+#[cfg(not(target_arch = "wasm32"))]
+pub use horizon_system::{cpu_seconds, load_average, rss_bytes};
 
 pub const FORMAT: &str = "horizon-benchmark-report";
 pub const VERSION: u32 = 1;

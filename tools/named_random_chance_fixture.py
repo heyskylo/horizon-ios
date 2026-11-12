@@ -2,6 +2,7 @@ import json,sys,hashlib,tempfile,uuid
 from pathlib import Path
 sys.path.insert(0,str(Path.cwd()/'tools'))
 import test_command_exec_parity as driver
+import harness_args
 Z={'type':'minecraft:random_chance','chance':0.0};O={'type':'minecraft:random_chance','chance':1.0}
 P={'h122:zero':Z,'h122:one':O,'h122:not_zero':{'type':'minecraft:inverted','term':Z},'h122:not_one':{'type':'minecraft:inverted','term':O},'h122:all_true':{'type':'minecraft:all_of','terms':[O,O]},'h122:all_false':{'type':'minecraft:all_of','terms':[Z,O]},'h122:any_true':{'type':'minecraft:any_of','terms':[O,Z]},'h122:any_false':{'type':'minecraft:any_of','terms':[Z,Z]},'h122:pig':{'type':'minecraft:entity_properties','entity':'this','predicate':{'minecraft:entity_type':'minecraft:pig'}}}
 UID=str(uuid.UUID(int=(122<<96)|1))
@@ -31,10 +32,11 @@ def program():
  c('/execute store result score end h122 run time query gametime','clock-end',trace=True);c('/scoreboard players operation end h122 -= start h122','clock-delta-operation',0);c('/scoreboard players get end h122','clock-delta',0)
  return ops
 if __name__=='__main__':
+ build=harness_args.require_work_dir().resolve()
  reference=None
  if '--reference' in sys.argv:
   i=sys.argv.index('--reference');reference=Path(sys.argv[i+1]).read_bytes();del sys.argv[i:i+2]
- build=Path(sys.argv[sys.argv.index('--work-dir')+1]).resolve();assert not build.exists();build.mkdir(parents=True)
+ assert not build.exists();build.mkdir(parents=True)
  ops=program();rows=[o for o in ops if o['op']=='cmd' and o.get('record',True)]
  (build/'declaration.json').write_text(json.dumps({'script_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'records':len(rows),'labels':[o['label'] for o in rows],'predicates':P,'scope':'direct top-level named literal0/1 plus inline logical forms, no nested reference or provider claim'},indent=2)+'\n')
  driver.corpus_module.predicate_selector_fixtures=lambda names:P
