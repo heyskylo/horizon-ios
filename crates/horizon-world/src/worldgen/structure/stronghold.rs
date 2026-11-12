@@ -4,7 +4,7 @@ use super::{
     BoundingBox,
     legacy::{LegacyPiece, PieceContext, PieceFrame, Result, make_bounding_box, random_horizontal},
 };
-use crate::{registry::BlockStateId, worldgen::biome::BiomeId};
+use crate::{nbt::Tag, registry::BlockStateId, worldgen::biome::BiomeId};
 use horizon_core::{
     geometry::Direction,
     position::ChunkPos,
@@ -245,7 +245,7 @@ impl Builder {
             frame: PieceFrame::new(b, Some(d)),
             depth,
             door: Door::Opening,
-            flags: [false; 4],
+            flags: [kind == Kind::Start, false, false, false],
             value: 0,
             placed: Mutex::new(false),
         }
@@ -1090,7 +1090,133 @@ impl StrongholdPiece {
         }
         Ok(())
     }
+
+    /// `StrongholdPieces.StrongholdPiece(StructurePieceType, CompoundTag)` and
+    /// the subclasses' tag constructors. `EntryDoor` is required there
+    /// (`orElseThrow`), so a piece without a known one does not load, and
+    /// `Source` is read by both stairs tag constructors and preserved on save.
+    pub(crate) fn from_saved(id: &str, tag: &Tag, frame: PieceFrame, depth: i32) -> Option<Self> {
+        let door = match tag.get("EntryDoor")? {
+            Tag::String(door) => match door.to_string_lossy().as_str() {
+                "OPENING" => Door::Opening,
+                "WOOD_DOOR" => Door::Wood,
+                "GRATES" => Door::Grates,
+                "IRON_DOOR" => Door::Iron,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let kind = match id {
+            "shs" => Kind::Straight,
+            "shph" => Kind::PrisonHall,
+            "shlt" => Kind::LeftTurn,
+            "shrt" => Kind::RightTurn,
+            "shrc" => Kind::RoomCrossing,
+            "shssd" => Kind::StraightStairsDown,
+            "shsd" => Kind::StairsDown,
+            "sh5c" => Kind::FiveCrossing,
+            "shcc" => Kind::ChestCorridor,
+            "shli" => Kind::Library,
+            "shpr" => Kind::PortalRoom,
+            "shfc" => Kind::Filler,
+            "shstart" => Kind::Start,
+            _ => return None,
+        };
+        let int = |key| super::saved_legacy::int(tag, key);
+        let flag = |key| super::saved_legacy::flag(tag, key);
+        let mut flags = [false; 4];
+        let mut value = 0;
+        let mut placed = false;
+        match kind {
+            Kind::Straight => flags = [flag("Left"), flag("Right"), false, false],
+            Kind::FiveCrossing => {
+                flags = [
+                    flag("leftLow"),
+                    flag("leftHigh"),
+                    flag("rightLow"),
+                    flag("rightHigh"),
+                ]
+            }
+            Kind::Library => flags[0] = flag("Tall"),
+            Kind::Start | Kind::StairsDown => flags[0] = flag("Source"),
+            Kind::ChestCorridor => placed = flag("Chest"),
+            Kind::PortalRoom => placed = flag("Mob"),
+            Kind::RoomCrossing => value = int("Type"),
+            Kind::Filler => value = int("Steps"),
+            _ => {}
+        }
+        Some(StrongholdPiece {
+            kind,
+            frame,
+            depth,
+            door,
+            flags,
+            value,
+            placed: Mutex::new(placed),
+        })
+    }
+
+    /// One piece of each kind, with distinct field values, for the saved-piece
+    /// round trip.
+    #[cfg(test)]
+    pub(crate) fn saved_test_pieces() -> Vec<Box<dyn LegacyPiece>> {
+        const KINDS: [Kind; 13] = [
+            Kind::Straight,
+            Kind::PrisonHall,
+            Kind::LeftTurn,
+            Kind::RightTurn,
+            Kind::RoomCrossing,
+            Kind::StraightStairsDown,
+            Kind::StairsDown,
+            Kind::FiveCrossing,
+            Kind::ChestCorridor,
+            Kind::Library,
+            Kind::PortalRoom,
+            Kind::Filler,
+            Kind::Start,
+        ];
+        KINDS
+            .into_iter()
+            .enumerate()
+            .map(|(i, kind)| {
+                let i = i as i32;
+                let door = [Door::Opening, Door::Wood, Door::Grates, Door::Iron][i as usize % 4];
+                let flags = match kind {
+                    Kind::Straight => [i % 2 == 0, i % 3 == 0, false, false],
+                    Kind::FiveCrossing => [true, false, i % 2 == 0, true],
+                    Kind::Library | Kind::Start => [true, false, false, false],
+                    _ => [false; 4],
+                };
+                // Only the chest corridor's and portal room's flags are saved.
+                let placed = matches!(kind, Kind::ChestCorridor | Kind::PortalRoom);
+                let piece: Box<dyn LegacyPiece> = Box::new(StrongholdPiece {
+                    kind,
+                    frame: PieceFrame::new(
+                        BoundingBox::new([20, 30 + i, -7 * i], [30, 40 + i, 5]),
+                        Some(
+                            [
+                                Direction::East,
+                                Direction::North,
+                                Direction::South,
+                                Direction::West,
+                            ][i as usize % 4],
+                        ),
+                    ),
+                    depth: i,
+                    door,
+                    flags,
+                    value: match kind {
+                        Kind::RoomCrossing | Kind::Filler => i * 3 - 8,
+                        _ => 0,
+                    },
+                    placed: Mutex::new(placed),
+                });
+                piece
+            })
+            .collect()
+    }
 }
+
 impl LegacyPiece for StrongholdPiece {
     fn bounding_box(&self) -> BoundingBox {
         self.frame.bounding_box
@@ -1127,8 +1253,7 @@ impl LegacyPiece for StrongholdPiece {
             Kind::PortalRoom => entries.push(("Mob", flag(placed))),
             Kind::RoomCrossing => entries.push(("Type", Tag::Int(self.value))),
             // StartPiece is a StairsDown that is the source.
-            Kind::StairsDown => entries.push(("Source", flag(false))),
-            Kind::Start => entries.push(("Source", flag(true))),
+            Kind::StairsDown | Kind::Start => entries.push(("Source", flag(a))),
             Kind::Straight => entries.extend([("Left", flag(a)), ("Right", flag(b))]),
             _ => {}
         }

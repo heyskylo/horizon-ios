@@ -3,14 +3,17 @@
 mod admin;
 pub(super) mod compute;
 mod data;
+mod display_names;
 pub(super) use data::place_summoned;
 mod effects;
 pub(super) mod execute;
 pub(super) mod extra;
+mod item_count;
 pub(in crate::game) mod items;
 mod misc;
 mod place;
 mod players;
+mod position_args;
 pub(super) mod pregen;
 mod profiles;
 mod raid;
@@ -515,22 +518,6 @@ impl Game<'_> {
     pub(super) fn position_arg(&self, ctx: &Context, name: &str) -> Option<[f64; 3]> {
         self.coords(ctx, name).map(|c| self.resolve_coords(&c))
     }
-    /// BlockPosArgument.getLoadedBlockPos.
-    pub(super) fn block_pos_arg(&self, ctx: &Context, name: &str) -> R<[i32; 3]> {
-        let c = self
-            .coords(ctx, name)
-            .ok_or_else(|| err("argument.pos.missing.int", &[]))?;
-        // BlockPos.containing(getPosition)
-        let p = self.resolve_coords(&c).map(|v| v.floor() as i32);
-        let dimension = self.command_source.map_or(self.dim, |s| s.dimension);
-        if dimension != self.dim || !self.world.chunks.contains_key(&(p[0] >> 4, p[2] >> 4)) {
-            return Err(err("argument.pos.unloaded", &[]));
-        }
-        if p[1] < self.world.bottom_y() || p[1] >= self.world.top_y() {
-            return Err(err("argument.pos.outofworld", &[]));
-        }
-        Ok(p)
-    }
     fn int(ctx: &Context, name: &str) -> Option<i32> {
         match ctx.get(name) {
             Some(Arg::Int(v)) => Some(*v),
@@ -782,13 +769,7 @@ impl Game<'_> {
                 let block = Text::translate(&format!("block.{block}"), &[]);
                 Text::translate("entity.minecraft.falling_block_type", &[block])
             }
-            Target::Mob(id) => self.mobs.iter().find(|m| m.id == id).map_or_else(
-                || Text::translate("entity.", &[]),
-                |m| match self.mob_team_of(m) {
-                    Some(team) => team.formatted_name(m.command_name()),
-                    None => m.command_name(),
-                },
-            ),
+            Target::Mob(id) => self.mob_command_name(id),
             other => {
                 // Entity.getDisplayName: the CustomName component, else the type.
                 let custom = super::native_entities::target_id(other)
@@ -2618,9 +2599,10 @@ impl Game<'_> {
         if self.res.mob_types().contains_key(&kind) {
             // SummonCommand.createEntity loads the mob from `{id:..}`: its yaw
             // is the compound's (none, so 0), with no level-random draw.
-            self.spawn_mob_spawned(&short, pos, super::creatures::SpawnYaw::Fixed(0.0))
+            let id = self
+                .spawn_mob_spawned(&short, pos, super::creatures::SpawnYaw::Fixed(0.0))
                 .ok_or_else(|| err("commands.summon.failed.uuid", &[]))?;
-            name = Text::translate(&entity_name_key(&kind), &[]);
+            name = self.target_name(Target::Mob(id));
         } else {
             match short.as_str() {
                 "item" => {
@@ -2628,8 +2610,7 @@ impl Game<'_> {
                     return Err(err("commands.summon.failed", &[]));
                 }
                 "experience_orb" => {
-                    // `new ExperienceOrb(level, pos, Vec3.ZERO, 0)`, unstuck
-                    // like any other orb spawn.
+                    // `new ExperienceOrb(level, pos, Vec3.ZERO, 0)`, unstuck like any orb spawn.
                     let at = self.unstuck_orb(pos);
                     self.next_entity += 1;
                     self.orbs.push(horizon_client::entities::ExperienceOrb {
@@ -2646,6 +2627,7 @@ impl Game<'_> {
                         count: 1,
                         ticks: 0,
                         health: 5,
+                        air: 300,
                         following: None,
                     });
                     // tryAddFreshEntityWithPassengers refused: ERROR_DUPLICATE_UUID.
@@ -3797,7 +3779,7 @@ impl Game<'_> {
             vec![Target::Player]
         };
         let pos = if ctx.get("pos").is_some() {
-            self.block_pos_arg(ctx, "pos")?
+            self.spawnable_pos_arg(ctx, "pos")?
         } else {
             let p = self.source_position();
             [
@@ -3831,12 +3813,9 @@ impl Game<'_> {
                     return;
                 }
                 g.spawn = None;
-                g.respawn_config = Some(super::respawn_anchor::RespawnConfig {
-                    dim: level,
-                    pos,
-                    yaw,
-                    forced: true,
-                });
+                g.respawn_config = Some(super::respawn_anchor::RespawnConfig::forced(
+                    level, pos, yaw, pitch,
+                ));
             });
         }
         let dim = Text::literal(self.dim.id());
@@ -3861,7 +3840,7 @@ impl Game<'_> {
     }
     fn cmd_setworldspawn(&mut self, ctx: &Context) -> R<i32> {
         let pos = if ctx.get("pos").is_some() {
-            self.block_pos_arg(ctx, "pos")?
+            self.spawnable_pos_arg(ctx, "pos")?
         } else {
             let p = self.source_position();
             [
@@ -3958,6 +3937,12 @@ impl Game<'_> {
             };
             let present = components.get(&id.as_str().into());
             let result = match term[split..].chars().next() {
+                // Both count wrappers in `ItemPredicateArgument` use the live
+                // stack count and the same integer bounds matcher.
+                Some('=' | '~') if id == "minecraft:count" => {
+                    let value = horizon_world::nbt::parse_snbt(term[split + 1..].trim());
+                    value.is_ok_and(|(v, _)| item_count::matches(stack.count, &v))
+                }
                 Some('=') => {
                     let value = horizon_world::nbt::parse_snbt(term[split + 1..].trim())
                         .ok()
@@ -3971,28 +3956,11 @@ impl Game<'_> {
                     }
                 }
                 Some('~') => {
-                    // Sub-predicates: `count` and component predicates.
+                    // Component sub-predicates.
                     let value = horizon_world::nbt::parse_snbt(term[split + 1..].trim())
                         .ok()
                         .map(|(t, _)| t);
                     match (id.as_str(), value) {
-                        ("minecraft:count", Some(v)) => {
-                            let n = i64::from(stack.count);
-                            match &v {
-                                horizon_world::nbt::Tag::Compound(_) => {
-                                    let get = |k: &str| match v.get(k) {
-                                        Some(horizon_world::nbt::Tag::Int(i)) => {
-                                            Some(i64::from(*i))
-                                        }
-                                        _ => None,
-                                    };
-                                    get("min").is_none_or(|m| n >= m)
-                                        && get("max").is_none_or(|m| n <= m)
-                                }
-                                horizon_world::nbt::Tag::Int(i) => n == i64::from(*i),
-                                _ => false,
-                            }
-                        }
                         // `MinMaxBounds.Ints.matches`: DamagePredicate's damage-only
                         // Int bounds shape; effective DAMAGE presence is required.
                         // Other fields keep the entire existing predicate path.
@@ -6051,3 +6019,7 @@ mod global_selector_order_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "item_count_predicate_tests.rs"]
+mod item_count_predicate_tests;

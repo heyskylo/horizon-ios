@@ -9,6 +9,11 @@ so a run tests every merge since the last green one (`tools/parity.py --changed 
 the previous run went on. `bisect` reads the harnesses that failed (.local/parity-runner/last-run.json), checks out
 the first-parent merges between BASE and HEAD by halves and runs only those harnesses, then names, for each of them that
 fails again at HEAD and passes at BASE, the first merge it fails on (written to $GITHUB_STEP_SUMMARY and, with --comment, on its pull request). HEAD is checked out again at the end.
+
+The search has --budget minutes: the job's limit otherwise cuts it off with nothing said (seven runs between
+2026-11-09 and 11-11, searching up to 1,500 merges). When they are spent it says between which merges each harness
+broke and stops. What it learnt stays in .local/parity-runner/bisect.json while the base is the same, so the next
+run goes on from there, and a merge it already named is not commented on again.
 """
 
 import argparse
@@ -18,10 +23,13 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = os.environ.get("GITHUB_REPOSITORY", "horizon-rust/horizon")
 LAST_RUN = ROOT / ".local" / "parity-runner" / "last-run.json"
+# {"since": the base, "results": {commit: {harness: it failed there}}, "named": {harness: the merge commented on}}
+BISECT = ROOT / ".local" / "parity-runner" / "bisect.json"
 
 
 def git(*arguments, check=True):
@@ -79,7 +87,22 @@ def run_harnesses(names, timeout):
     return [name for name in present if name in failed] or present
 
 
-def bisect(since, timeout, comment):
+class OutOfTime(Exception):
+    pass
+
+
+def earlier_search(since):
+    """What earlier runs' searches from this base learnt, or a new record: another base has other merges to search."""
+    try:
+        state = json.loads(BISECT.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        state = {}
+    if state.get("since") != since:
+        state = {"since": since, "results": {}, "named": {}}
+    return state
+
+
+def bisect(since, timeout, comment, budget=90):
     failed = []
     if LAST_RUN.exists():
         failed = json.loads(LAST_RUN.read_text(encoding="utf-8")).get("failed") or []
@@ -92,10 +115,24 @@ def bisect(since, timeout, comment):
         print("No merge since the base.")
         return 1
 
+    state = earlier_search(since)
+    results = state["results"]
+    deadline = None  # set once HEAD and the base ran: the budget is for the search between them
+
     def fails(commit, names):
-        print(f"--- {commit[:9]} {git('log', '-1', '--format=%s', commit).stdout.strip()}", flush=True)
-        git("checkout", "-q", "--detach", commit)
-        return run_harnesses(names, timeout)
+        """Those of names that fail at commit: from an earlier run of them there, else by running them now."""
+        known = results.setdefault(commit, {})
+        missing = [name for name in names if name not in known]
+        if missing:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise OutOfTime
+            print(f"--- {commit[:9]} {git('log', '-1', '--format=%s', commit).stdout.strip()}", flush=True)
+            git("checkout", "-q", "--detach", commit)
+            failed_here = run_harnesses(missing, timeout)
+            known.update({name: name in failed_here for name in missing})
+            BISECT.parent.mkdir(parents=True, exist_ok=True)
+            BISECT.write_text(json.dumps(state), encoding="utf-8")
+        return [name for name in names if known[name]]
 
     def report(line):
         print(line)
@@ -110,7 +147,10 @@ def bisect(since, timeout, comment):
     # verdict: 0 only when every failed harness passes when run again at HEAD (the commit is good, so releases may
     # follow it), 1 otherwise.
     blames = []
+    remaining = []
     try:
+        # HEAD is run again whatever an earlier run saw there: it is the run's verdict.
+        results.pop(head, None)
         at_head = fails(head, failed)
         flakes = [name for name in failed if name not in at_head]
         if flakes:
@@ -118,26 +158,41 @@ def bisect(since, timeout, comment):
         if not at_head:
             return 0
         at_base = fails(since, at_head)
+        deadline = time.monotonic() + budget * 60
         if at_base:
             report(f"parity-main: {', '.join(at_base)} fail at the base {since[:9]} too: the runner or a flake: "
                    "no merge is named.")
         remaining = [name for name in at_head if name not in at_base]
-        # What failed where; a run of more harnesses also answers for fewer of them.
-        tried = {head: set(at_head)}
 
         def failing(commit):
-            if commit not in tried:
-                tried[commit] = set(fails(commit, remaining))
-            return tried[commit] & set(remaining)
+            return fails(commit, remaining)
+
+        def known(commit):
+            """Whether a remaining harness fails at commit, or None where not all of them ran yet."""
+            ran = results.get(commit, {})
+            return any(ran[name] for name in remaining) if all(name in ran for name in remaining) else None
 
         low = 0
         while remaining:
-            span = commits[low:]
+            # Between the last merge known to pass and the first known to fail: every merge in a first search, fewer
+            # once an earlier run, or this run for another harness, tried merges in between.
+            high = next(index for index in range(low, len(commits)) if known(commits[index]))
+            low = max([index + 1 for index in range(low, high) if known(commits[index]) is False], default=low)
+            span = commits[low:high + 1]
             culprit = first_bad(span, failing) if len(span) > 1 else span[0]
-            hit = [name for name in remaining if name in failing(culprit)]
+            hit = failing(culprit)
             blames.append((culprit, hit))
             remaining = [name for name in remaining if name not in hit]
             low = commits.index(culprit) + 1
+    except OutOfTime:
+        for name in remaining:
+            ran = [(index, results[commit][name]) for index, commit in enumerate(commits)
+                   if name in results.get(commit, {})]
+            bad = next(index for index, failed_there in ran if failed_there and index >= low)
+            good = max([index for index, failed_there in ran if not failed_there and low <= index < bad], default=low - 1)
+            report(f"parity-main: {name} passes at {(commits[good] if good >= 0 else since)[:9]} and fails at "
+                   f"{commits[bad][:9]}: the search's {budget} minutes ended with {bad - good} merges left. "
+                   "The next run goes on from there.")
     finally:
         git("checkout", "-q", "--detach", head)
     for culprit, hit in blames:
@@ -145,11 +200,14 @@ def bisect(since, timeout, comment):
         number = re.search(r"Merge pull request #(\d+)", subject)
         report(f"parity-main: {', '.join(hit)} first fail at {culprit[:9]} ({subject}), "
                f"of {len(commits)} merges since {since[:9]}.")
-        if comment and number:
+        hit = [name for name in hit if state["named"].get(name) != culprit]
+        if comment and number and hit:
             url = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{REPO}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
             body = (f"🤖 Agent: parity-main found that this merge breaks {', '.join(f'`{name}`' for name in hit)} on main "
                     f"(bisected over {len(commits)} merges: {url}). Releases wait until parity-main passes again.")
-            subprocess.run(["gh", "pr", "comment", number.group(1), "--repo", REPO, "--body", body])
+            if subprocess.run(["gh", "pr", "comment", number.group(1), "--repo", REPO, "--body", body]).returncode == 0:
+                state["named"].update({name: culprit for name in hit})
+                BISECT.write_text(json.dumps(state), encoding="utf-8")
     return 1
 
 
@@ -161,11 +219,12 @@ def main():
     bisecting.add_argument("since", help="the last commit known to pass (the run's base)")
     bisecting.add_argument("--timeout", type=int, default=2400, help="seconds per harness")
     bisecting.add_argument("--comment", action="store_true", help="comment on the breaking merge's pull request")
+    bisecting.add_argument("--budget", type=int, default=90, help="minutes for the search; then it says how far it got")
     args = parser.parse_args()
     if args.command == "base":
         print(base())
         return 0
-    return bisect(args.since, args.timeout, args.comment)
+    return bisect(args.since, args.timeout, args.comment, args.budget)
 
 
 if __name__ == "__main__":

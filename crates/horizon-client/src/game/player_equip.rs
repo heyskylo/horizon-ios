@@ -65,12 +65,13 @@ impl Game<'_> {
             return;
         };
         let at = [at.x, at.y, at.z];
-        let equippable = new
-            .and_then(|s| self.items().get(&s.item))
-            .and_then(|info| {
-                let own = info.equip_slot.as_deref()?;
-                Some((own == slot, info.equip_sound.clone()))
-            });
+        let equippable = new.and_then(|stack| {
+            let equippable = horizon_client::item_sync::equippable(stack, self.items())?;
+            Some((
+                equippable.slot == slot,
+                horizon_client::item_sync::equip_sound(stack, self.items()),
+            ))
+        });
         if let Some((true, sound)) = &equippable {
             let sound = sound
                 .as_deref()
@@ -111,12 +112,11 @@ impl Game<'_> {
         equipped.push((self.inventory[self.selected].as_ref(), "mainhand"));
         equipped.push((self.offhand.as_ref(), "offhand"));
         for (stack, slot) in equipped {
-            let Some(info) = stack.and_then(|s| world_items!(self).get(&s.item)) else {
+            let Some(stack) = stack else {
                 continue;
             };
-            for (attribute, id, amount, op, group) in &info.modifiers {
-                // The attack code still reads the held item's attack damage and
-                // speed directly; the map copy is what `/attribute` reports.
+            let modifiers = world_items!(self).attribute_modifiers(stack);
+            for (attribute, id, amount, op, group) in &modifiers {
                 if !equipment_modifier_applies(group, slot) {
                     continue;
                 }

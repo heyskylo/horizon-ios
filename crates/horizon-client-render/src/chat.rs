@@ -568,6 +568,8 @@ impl Chat {
     pub fn set_qol(&mut self, atlas: &HudAtlas, qol: ChatQol) {
         if self.qol != qol {
             self.qol = qol;
+            self.scroll = 0;
+            self.new_since_scroll = false;
             self.rewrap(&atlas.font);
         }
     }
@@ -593,20 +595,25 @@ impl Chat {
             .filter(|q| !q.trim().is_empty());
         if self.search != query {
             self.search = query;
+            self.scroll = 0;
+            self.new_since_scroll = false;
             self.rewrap(font);
         }
     }
     pub fn searching(&self) -> bool {
         self.search.is_some()
     }
-    /// Re-wrap after a width or scale change (ChatComponent.rescaleChat),
-    /// keeping only the messages the Chat option shows.
+    /// Re-wrap after a width or scale change (`ChatComponent.rescaleChat`):
+    /// `resetChatScroll`, then the messages the Chat option shows.
     pub fn rescale(&mut self, atlas: &HudAtlas) {
-        self.rewrap(&atlas.font);
-    }
-    fn rewrap(&mut self, font: &crate::font::Font) {
         self.scroll = 0;
         self.new_since_scroll = false;
+        self.rewrap(&atlas.font);
+    }
+    /// `ChatComponent.refreshTrimmedMessages`: the lines are laid out again
+    /// where the reader was (`chatScrollbarPos` survives a filter change);
+    /// `rescale` resets the scroll itself, as `rescaleChat` does.
+    fn rewrap(&mut self, font: &crate::font::Font) {
         self.lines.clear();
         let mut messages = std::mem::take(&mut self.messages);
         for m in messages.iter_mut().rev() {
@@ -1974,7 +1981,11 @@ impl ChatScreen {
             return false;
         }
         let max = l.list.len().saturating_sub(self.layout.line_limit) as i32;
-        l.offset = ((l.offset as f64 - amount.clamp(-1.0, 1.0)) as i32).clamp(0, max) as usize;
+        // Round instead of truncating: touchpad/PixelDelta produces fractional
+        // amounts and truncation drops movement in one direction (#14338).
+        l.offset = (l.offset as f64 - amount.clamp(-1.0, 1.0))
+            .round()
+            .clamp(0.0, max as f64) as usize;
         true
     }
     /// `CommandSuggestions.formatText`: argument colours over the input. The
@@ -2086,6 +2097,11 @@ impl ChatScreen {
     ) {
         let limit = l.list.len().min(self.layout.line_limit);
         let [rx, ry, rw, rh] = l.rect;
+        // SuggestionsList.extractRenderState: the whole list asks for the
+        // pointing hand while the pointer is inside its rectangle.
+        if mouse.0 >= rx && mouse.0 < rx + rw && mouse.1 >= ry && mouse.1 < ry + rh {
+            crate::widgets::request_cursor(crate::widgets::Cursor::PointingHand);
+        }
         let has_prev = l.offset > 0;
         let has_next = l.list.len() > l.offset + limit;
         let moved = l.last_mouse != mouse;

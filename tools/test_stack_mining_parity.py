@@ -26,9 +26,12 @@ def corpus():
         for tool in tools:
             for block in ['stone', 'dirt', 'cobweb']:
                 yield dict(item='minecraft:' + item + tool, block='minecraft:' + block)
-    # MAX_DAMAGE alone does not add DAMAGE. Non-durable prototypes with an
-    # explicit zero DAMAGE need a separate item-aware component-codec fix.
+    # MAX_DAMAGE alone does not add DAMAGE. A non-durable prototype with both
+    # components is damageable, and removing either takes that away.
     yield dict(item='minecraft:stick[minecraft:max_stack_size=1,minecraft:max_damage=20,minecraft:tool={rules:[],damage_per_block:3}]', block='minecraft:stone')
+    for suffix in [',minecraft:damage=0', ',minecraft:damage=0,minecraft:unbreakable={}',
+                   ',minecraft:damage=2']:
+        yield dict(item='minecraft:stick[minecraft:max_stack_size=1,minecraft:max_damage=20,minecraft:tool={rules:[],damage_per_block:3}' + suffix + ']', block='minecraft:stone')
     for damage in ['', ',minecraft:damage=0', ',minecraft:damage=2', ',!minecraft:damage', ',minecraft:damage=0,minecraft:unbreakable={}']:
         yield dict(item='minecraft:diamond_pickaxe[minecraft:max_damage=20,minecraft:tool={rules:[],damage_per_block:3}' + damage + ']', block='minecraft:stone')
     for item in ['minecraft:diamond_pickaxe', 'minecraft:stick[minecraft:tool={rules:[],default_mining_speed:17.0f}]']:
@@ -70,9 +73,9 @@ def main():
         oracle_class_sha256=lab.digest(classes / 'dev/horizonlab/parity/VanillaStackMiningOracle.class', 'sha256'),
         rust_binary_sha256=lab.digest(binary, 'sha256'),
         output_sha256=lab.digest(build / 'rust.txt', 'sha256'),
-        scope='Actual Java item-command admission, TOOL mining speed/drop/wear amount and durable-prototype '
-              'capacity queries before/after saved-stack round trips. Custom durability on non-durable '
-              'prototypes is deferred. Eye immersion is covered separately by source-derived Game regressions; '
+        scope='Actual Java item-command admission, TOOL mining speed/drop/wear amount and damageable-stack '
+              'capacity queries before/after saved-stack round trips, including custom durability on non-durable '
+              'prototypes. Eye immersion is covered separately by source-derived Game regressions; '
               'this differential does not execute block destruction, durability mutation or statistics.'))
     print(f'{len(rows)} stack mining command/save cases match pinned vanilla {lab.VERSION}')
 

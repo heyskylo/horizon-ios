@@ -2,6 +2,7 @@ import json,hashlib,sys,uuid
 from pathlib import Path
 sys.path.insert(0,str(Path.cwd()/'tools'))
 import test_command_exec_parity as driver
+import harness_args
 CASES=[('honey-husk','husk',4,202.0,4,1),('no-push','husk',4,202.0,12,1),('honey-stand','armor_stand',12,202.0,4,1),('vertical-husk','husk',12,202.0,12,0)]
 PISTONS=[('honey-husk',3,201,4,'east',5,201,4),('honey-stand',11,201,4,'east',13,201,4),('vertical-husk',12,200,12,'up',12,202,12)]
 def program():
@@ -50,10 +51,11 @@ def program():
  c('/execute store result score end h255 run time query gametime','clock-end',trace=True);c('/scoreboard players operation end h255 -= start h255','clock-delta-op',3);c('/scoreboard players get end h255','clock-delta',3)
  return ops
 if __name__=='__main__':
+ build=harness_args.require_work_dir().resolve()
  reference=None
  if '--reference' in sys.argv:
   i=sys.argv.index('--reference');reference=Path(sys.argv[i+1]).read_bytes();del sys.argv[i:i+2]
- build=Path(sys.argv[sys.argv.index('--work-dir')+1]).resolve();assert not build.exists();build.mkdir(parents=True);ops=program();rows=[o for o in ops if o['op']=='cmd' and o.get('record',True)]
+ assert not build.exists();build.mkdir(parents=True);ops=program();rows=[o for o in ops if o['op']=='cmd' and o.get('record',True)]
  (build/'declaration.json').write_text(json.dumps({'sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'records':len(rows),'labels':[o['label'] for o in rows],'scope':'actual piston honey Husk first/second push; no-push ArmorStand and vertical controls; complete Pos/Motion/OnGround; actual block/piston progress and clocks'},indent=2)+'\n')
  driver.corpus_module.groups=lambda:[('NoAI Mob piston ground',ops)];sys.argv.append('--allow-gaps');driver.main();fresh=(build/'vanilla.jsonl').read_bytes()
  if reference is not None:assert fresh==reference,'reference changed'

@@ -7,6 +7,14 @@ use horizon_polytone::colors::PackColors;
 use crate::block_entity_render::DYES;
 use crate::pack_palette::{self, Environment};
 
+fn fluid(fog: horizon_polytone::colors::FluidFog) -> pack_palette::FluidFog {
+    pack_palette::FluidFog {
+        color: fog.color,
+        radius: fog.radius,
+        fade: fog.fade,
+    }
+}
+
 /// The colours of every namespace's file under the pack overlay at `root`.
 pub fn read(root: &Path) -> pack_palette::PackColors {
     let colors = PackColors::read(root);
@@ -28,6 +36,10 @@ pub fn read(root: &Path) -> pack_palette::PackColors {
             water_fog_brightening: env.water_fog_brightening,
             water_fog_brightening_time: env.water_fog_brightening_time,
             horizon_height: env.horizon_height,
+        },
+        fluid_fog: pack_palette::FluidFogs {
+            water: colors.fluid_fog.water.map(fluid),
+            lava: colors.fluid_fog.lava.map(fluid),
         },
     }
 }

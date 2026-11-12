@@ -1,8 +1,9 @@
 //! Foxes (`net.minecraft.world.entity.animal.fox.Fox`): the goal list, the
 //! flags byte (sleeping, sitting, crouching, interested, pouncing,
 //! faceplanted), stalking and pouncing, napping in the shade by day, seeking
-//! shelter, perching, eating berries and the food held in the mouth (with the
-//! item's on-consumed effects: a chorus fruit teleports it).
+//! shelter, perching, eating berries and the food held in the mouth: its whole
+//! `Consumable.onConsume` (the item's effects, its sounds and the eat game
+//! event), so a chorus fruit teleports it and a golden apple feeds it.
 //! Defending trusted players is not ported yet.
 //! The goal that walks to a dropped item is here; the game side takes the
 //! items (`Fox.pickUpItem`, `game/foxes.rs`). A totem in the mouth is a
@@ -22,11 +23,13 @@ use super::{
 use horizon_core::{
     geometry::{Axis, Vec3},
     jmath,
-    random::RandomSource,
+    random::{LegacyRandom, RandomSource},
 };
 use horizon_items::items::ConsumeEffect;
+use horizon_world::consumable::EmissionWorld;
 use horizon_world::registry::BlockStateId;
 use horizon_world::teleport_consume::TeleportConsume;
+use std::convert::Infallible;
 
 // Fox.DATA_FLAGS_ID, kept in `extra.ints[0]` (and sent to clients as is).
 pub const SITTING: i32 = 1;
@@ -37,7 +40,7 @@ pub const SLEEPING: i32 = 32;
 pub const FACEPLANTED: i32 = 64;
 pub const DEFENDING: i32 = 128;
 /// `Fox.ticksSinceEaten`.
-const TICKS_SINCE_EATEN: usize = 1;
+pub(crate) const TICKS_SINCE_EATEN: usize = 1;
 /// `Fox.interestedAngle` and `crouchAmount` in `anim.v`, the previous tick's
 /// values in `anim.vo`.
 const INTERESTED_ANGLE: usize = 0;
@@ -327,8 +330,10 @@ fn eats(w: &MobWorld, item: &str) -> bool {
         .is_some_and(|i| i.food.is_some() && i.consumable.is_some())
 }
 
-/// `Consumable.onConsume`'s `on_consume_effects` when a fox finishes an item
-/// (`Item.finishUsingItem`): the teleport that a chorus fruit gives it.
+/// `Consumable.onConsume` for a fox that finishes the item in its mouth
+/// (`Fox.aiStep`'s `ItemStack.finishUsingItem`): the consumable's crumbs and
+/// sound, the food's own sound, its `on_consume_effects` and the eat game
+/// event, in vanilla's order.
 fn consume(w: &MobWorld, m: &mut Mob, events: &mut Vec<MobEvent>, item: &str) {
     let Some(consumable) = w
         .items
@@ -337,10 +342,87 @@ fn consume(w: &MobWorld, m: &mut Mob, events: &mut Vec<MobEvent>, item: &str) {
     else {
         return;
     };
+    let stack = crate::items::ItemStack::new(item, 1);
+    // `emitParticlesAndSounds(random, user, stack, 16)`.
+    let _ = consumable.emit(&mut Eater { m, events }, (), stack, 16);
+    // `FoodProperties.onConsume`, the food component's `ConsumableListener`: the
+    // consumable's sound again, at full volume. A fox is no player, so it eats
+    // no food and does not burp; `Level.playSound` is no `Entity.playSound`, so
+    // a silent fox's food is still heard.
+    let pitch = m.random.triangle_float(1.0, 0.4);
+    let at = [m.position.x, m.position.y, m.position.z];
+    events.push(MobEvent::SoundId(consumable.sound.clone(), at, 1.0, pitch));
     for effect in &consumable.effects {
-        if let ConsumeEffect::TeleportRandomly(teleport) = effect {
-            teleport_randomly(w, m, events, teleport);
+        match effect {
+            ConsumeEffect::TeleportRandomly(teleport) => teleport_randomly(w, m, events, teleport),
+            // The rest reach the fox as `LivingEntity.addEffect` adds them.
+            other => m.apply_consume_effect(other),
         }
+    }
+    // `user.gameEvent(animation == DRINK ? GameEvent.DRINK : GameEvent.EAT)` at
+    // its own position, itself the source.
+    events.push(MobEvent::GameEvent {
+        event: if consumable.animation == horizon_world::consumable::UseAnimation::Drink {
+            "minecraft:drink"
+        } else {
+            "minecraft:eat"
+        },
+        at: [m.position.x, m.position.y, m.position.z],
+        source: m.id,
+        state: BlockStateId(0),
+    });
+}
+
+/// The fox as `Consumable`'s user: its own random, and its own ears.
+struct Eater<'a> {
+    m: &'a mut Mob,
+    events: &'a mut Vec<MobEvent>,
+}
+impl EmissionWorld for Eater<'_> {
+    type Error = Infallible;
+    type Stack = crate::items::ItemStack;
+    type Sound = String;
+    type Random = ();
+    type Source = LegacyRandom;
+    fn random_source(&mut self, (): ()) -> &mut LegacyRandom {
+        &mut self.m.random
+    }
+    /// `LivingEntity.spawnItemParticles` hands each of the 16 crumbs to
+    /// `Level.addParticle`, which a server does nothing with: the four draws a
+    /// crumb costs still come off the fox's random, as vanilla spends them.
+    fn spawn_item_particles(
+        &mut self,
+        _: crate::items::ItemStack,
+        count: i32,
+    ) -> Result<(), Infallible> {
+        let m = &mut *self.m;
+        let (at, eye) = ([m.position.x, m.position.y, m.position.z], m.eye_y());
+        let (pitch, yaw) = (m.head_pitch, m.yaw);
+        crate::particles::item_use_particles(
+            &mut m.random,
+            pitch,
+            yaw,
+            at,
+            eye,
+            count.max(0) as u32,
+            |_, _| {},
+        );
+        Ok(())
+    }
+    fn overrides_consume_sound(&self) -> bool {
+        false
+    }
+    fn consume_sound(&mut self, _: crate::items::ItemStack) -> Result<String, Infallible> {
+        unreachable!("the consumable plays its own sound")
+    }
+    /// `Entity.playSound`: at the fox's feet, and nothing from a silent fox.
+    fn play_sound(&mut self, sound: String, volume: f32, pitch: f32) -> Result<(), Infallible> {
+        if !self.m.silent {
+            let at = [self.m.position.x, self.m.position.y, self.m.position.z];
+            self.events
+                .push(MobEvent::SoundId(sound, at, volume, pitch));
+        }
+        Ok(())
     }
 }
 
@@ -463,7 +545,16 @@ fn alertable(m: &Mob, w: &MobWorld) -> bool {
         .nearby(from, 12.0, |s: &Seen| {
             s.id != id
                 && (s.position.y - y).abs() <= 6.0
-                && m.distance_sqr(s.position) <= 144.0
+                && {
+                    // `TargetingConditions.testInvisible`: the range shrinks
+                    // with visibility, floor 2.
+                    let range = if s.has_effect("invisibility") {
+                        2.0
+                    } else {
+                        12.0
+                    };
+                    m.distance_sqr(s.position) <= range * range
+                }
                 && match s.species {
                     Species::Fox => false,
                     Species::Chicken | Species::Rabbit => true,
@@ -479,7 +570,11 @@ fn alertable(m: &Mob, w: &MobWorld) -> bool {
             && !p.spectator
             && !p.sneaking
             && (p.position.y - y).abs() <= 6.0
-            && m.distance_sqr(p.position) <= 144.0
+            && {
+                let range =
+                    (12.0 * p.visibility_percent(Some(m.kind.id.as_str()), w.items)).max(2.0);
+                m.distance_sqr(p.position) <= range * range
+            }
     })
 }
 
@@ -511,7 +606,10 @@ impl Goal for Sleep {
         MOVE | LOOK | JUMP
     }
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        m.ai.nav.is_done() && (self.can_sleep(m, cx.w) || flag(m, SLEEPING))
+        m.ai.xxa == 0.0
+            && m.ai.yya == 0.0
+            && m.ai.zza == 0.0
+            && (self.can_sleep(m, cx.w) || flag(m, SLEEPING))
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.can_sleep(m, cx.w)
@@ -1413,10 +1511,201 @@ mod consume_tests {
                         .any(|e| matches!(e, MobEvent::EntityEvent { event: 46, .. })),
                     "entity event 46: {events:?}"
                 );
+                // `Consumable.onConsume` ends with `user.gameEvent(EAT)`, at the
+                // fox's new position and from the fox itself.
+                let eat = events.iter().position(
+                    |e| matches!(e, MobEvent::GameEvent { event, .. } if *event == "minecraft:eat"),
+                );
+                let Some(eat) = eat else {
+                    panic!("the eat game event: {events:?}");
+                };
+                assert!(
+                    matches!(&events[eat], MobEvent::GameEvent { at, source: 1, .. } if *at == [m.position.x, m.position.y, m.position.z]),
+                    "at its feet, from itself: {:?}",
+                    events[eat]
+                );
             },
         );
         // Without the vanilla data under .local/horizon-client (CI's unit
         // tests) there is no fox to feed: the test has nothing to check.
         let _ = ran;
+    }
+
+    /// `Consumable.onConsume` runs the whole of a golden apple's consume, not
+    /// just its effects: the two eat sounds (the consumable's, then the food
+    /// component's own), `ApplyStatusEffectsConsumeEffect`'s regeneration and
+    /// absorption, and `GameEvent.EAT` once they are in place. Vanilla draws the
+    /// crumbs of `spawnItemParticles` but hands them to `Level.addParticle`,
+    /// which a server does nothing with.
+    #[test]
+    fn a_golden_apple_feeds_the_fox_and_posts_the_eat_event() {
+        let ran = with_built_test_world(
+            &[],
+            |_, _| {},
+            |w, types| {
+                let kind = std::sync::Arc::new(types.types["minecraft:fox"].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+                m.on_ground = true;
+                m.extra.set_main_hand(Some("minecraft:golden_apple".into()));
+                m.extra.ints[TICKS_SINCE_EATEN] = 601;
+                let mut events = Vec::new();
+                ai_step(&mut m, w, &mut events);
+                // `ApplyStatusEffectsConsumeEffect`: regeneration II for 100
+                // ticks, then absorption for 2400.
+                assert!(
+                    m.extra
+                        .effects
+                        .contains(&("minecraft:regeneration", 100, 1)),
+                    "{:?}",
+                    m.extra.effects
+                );
+                assert!(
+                    m.extra.effects.contains(&("minecraft:absorption", 2400, 0)),
+                    "{:?}",
+                    m.extra.effects
+                );
+                assert_eq!(m.absorption, 4.0, "a level of absorption is four halves");
+                let eat_sounds: Vec<_> = events
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| {
+                        matches!(e, MobEvent::SoundId(name, ..) if name == "minecraft:entity.generic.eat")
+                    })
+                    .collect();
+                assert_eq!(eat_sounds.len(), 2, "{events:?}");
+                let MobEvent::SoundId(_, at, volume, pitch) = eat_sounds[1].1 else {
+                    unreachable!()
+                };
+                assert_eq!(*volume, 1.0, "the food's own sound is at full volume");
+                assert_eq!(*at, [0.5, 64.0, 0.5]);
+                // `Mth.randomBetween`/`triangle(1.0, 0.4)`: 0.6 to 1.4.
+                assert!((0.6..=1.4).contains(pitch), "its pitch is drawn: {pitch}");
+                assert_eq!(m.extra.main_hand, None, "the apple was eaten");
+                assert_eq!(m.extra.ints[TICKS_SINCE_EATEN], 0);
+                let eat = events.iter().position(
+                    |e| matches!(e, MobEvent::GameEvent { event, .. } if *event == "minecraft:eat"),
+                );
+                let Some(eat) = eat else {
+                    panic!("the eat game event: {events:?}");
+                };
+                assert!(
+                    eat > eat_sounds[1].0,
+                    "the event comes after the sounds, as vanilla's last step"
+                );
+                assert!(
+                    matches!(&events[eat], MobEvent::GameEvent { at, source: 1, .. } if *at == [0.5, 64.0, 0.5]),
+                    "at its feet, from itself: {:?}",
+                    events[eat]
+                );
+            },
+        );
+        // Without the vanilla data under .local/horizon-client (CI's unit
+        // tests) there is no fox to feed: the test has nothing to check.
+        let _ = ran;
+    }
+    #[cfg(test)]
+    mod alertable_tests {
+        use super::*;
+        use crate::mobs::sensor_scan_tests::kind;
+        use crate::mobs::world::{test_player, with_test_world};
+        use horizon_core::random::LegacyRandom;
+        use std::sync::Arc;
+
+        /// `Fox.FoxBehaviorGoal.alertable` uses
+        /// `TargetingConditions.forCombat().range(12)`, so an invisible player at
+        /// eleven blocks does not keep the fox alert, while a visible one does.
+        #[test]
+        fn an_invisible_player_far_away_is_not_alerting() {
+            let mut outcomes = Vec::new();
+            if !with_test_world(&[], |w, _| {
+                for invisible in [false, true] {
+                    let mut world = w.clone();
+                    let mut p = test_player(Vec3::new(11.5, 64.0, 0.5));
+                    p.invisible = invisible;
+                    world.player = Some(p);
+                    let mut fox_kind = (*kind()).clone();
+                    fox_kind.species = Species::Fox;
+                    let mut fox = Mob::new(1, Arc::new(fox_kind), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                    fox.ai.goals.add(
+                        1,
+                        Perch {
+                            rel: [1.0, 0.0],
+                            look_time: 0,
+                            looks_remaining: 0,
+                        },
+                    );
+                    let mut lr = LegacyRandom::new(0);
+                    let mut events = Vec::new();
+                    let mut cx = Cx {
+                        w: &world,
+                        lr: &mut lr,
+                        events: &mut events,
+                    };
+                    let mut goals = std::mem::take(&mut fox.ai.goals);
+                    let mut ran = false;
+                    for _ in 0..5000 {
+                        goals.tick(&mut fox, &mut cx);
+                        if goals.is_running("Perch") {
+                            ran = true;
+                            break;
+                        }
+                    }
+                    outcomes.push(ran);
+                    fox.ai.goals = goals;
+                }
+            }) {
+                return;
+            }
+            assert_eq!(
+                outcomes,
+                vec![false, true],
+                "a visible player at eleven keeps it alert; an invisible one does not"
+            );
+        }
+    }
+
+    mod sleep_tests {
+        use super::*;
+        use crate::mobs::sensor_scan_tests::kind;
+        use crate::mobs::world::with_test_world;
+        use horizon_core::random::LegacyRandom;
+        use std::sync::Arc;
+
+        /// `Fox.FoxSleepGoal.canUse` refuses to sleep while `xxa`, `yya` or
+        /// `zza` is nonzero, even when already asleep.
+        #[test]
+        fn a_fox_with_movement_input_does_not_sleep() {
+            let mut outcomes = Vec::new();
+            if !with_test_world(&[], |w, _| {
+                for moving in [false, true] {
+                    let mut kind = (*kind()).clone();
+                    kind.species = Species::Fox;
+                    let mut fox = Mob::new(1, Arc::new(kind), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                    set_flag(&mut fox, SLEEPING, true);
+                    if moving {
+                        fox.ai.xxa = 1.0;
+                    }
+                    fox.ai.goals.add(1, Sleep { countdown: 0 });
+                    let mut lr = LegacyRandom::new(0);
+                    let mut events = Vec::new();
+                    let mut cx = Cx {
+                        w,
+                        lr: &mut lr,
+                        events: &mut events,
+                    };
+                    let mut goals = std::mem::take(&mut fox.ai.goals);
+                    goals.tick(&mut fox, &mut cx);
+                    outcomes.push(goals.is_running("Sleep"));
+                    fox.ai.goals = goals;
+                }
+            }) {
+                return;
+            }
+            assert_eq!(
+                outcomes,
+                vec![true, false],
+                "a still fox stays asleep; a moving one does not"
+            );
+        }
     }
 }
