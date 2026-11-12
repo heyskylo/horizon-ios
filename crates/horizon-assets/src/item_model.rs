@@ -1764,14 +1764,13 @@ fn stack_from_template(template: &Value) -> Option<StackView> {
 
 /// `RangeSelectItemModel.lastIndexLessOrEqual`.
 fn last_index_less_or_equal(entries: &[(f32, ItemModelNode)], needle: f32) -> Option<usize> {
-    let haystack: Vec<f32> = entries.iter().map(|e| e.0).collect();
-    let found = if haystack.len() < 16 {
-        haystack
+    let found = if entries.len() < 16 {
+        entries
             .iter()
-            .position(|h| *h > needle)
-            .map_or(haystack.len() as i64 - 1, |i| i as i64 - 1)
+            .position(|e| e.0 > needle)
+            .map_or(entries.len() as i64 - 1, |i| i as i64 - 1)
     } else {
-        match binary_search(&haystack, needle) {
+        match binary_search(entries, needle) {
             Ok(index) => index as i64,
             Err(insertion) => insertion as i64 - 1,
         }
@@ -1780,8 +1779,8 @@ fn last_index_less_or_equal(entries: &[(f32, ItemModelNode)], needle: f32) -> Op
 }
 /// `Arrays.binarySearch(float[], float)`, including its handling of equal
 /// values (-0.0 below 0.0, NaN above everything).
-fn binary_search(a: &[f32], key: f32) -> std::result::Result<usize, usize> {
-    let (mut low, mut high) = (0i64, a.len() as i64 - 1);
+fn binary_search(entries: &[(f32, ItemModelNode)], key: f32) -> std::result::Result<usize, usize> {
+    let (mut low, mut high) = (0i64, entries.len() as i64 - 1);
     let bits = |v: f32| -> i32 {
         if v.is_nan() {
             0x7fc0_0000
@@ -1791,7 +1790,7 @@ fn binary_search(a: &[f32], key: f32) -> std::result::Result<usize, usize> {
     };
     while low <= high {
         let mid = (low + high) >> 1;
-        let value = a[mid as usize];
+        let value = entries[mid as usize].0;
         if value < key {
             low = mid + 1;
         } else if value > key {

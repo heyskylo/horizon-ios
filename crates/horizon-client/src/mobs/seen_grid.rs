@@ -15,6 +15,9 @@ pub struct SeenGrid {
     /// The widest box (along x or z) the grid has held: no box reaches
     /// further than this past its minimum corner.
     reach: f64,
+    /// The entries a query counts when it decides to scan them all instead (at least the grid's
+    /// own): a grid of part of a list answers as the whole list's would.
+    entries: usize,
 }
 
 fn column(x: f64, z: f64) -> (i32, i32) {
@@ -38,6 +41,22 @@ impl SeenGrid {
             grid.cell_of.push(at);
         }
         grid
+    }
+    /// The widest box and the entries it has, for a grid of part of its entries that must meet
+    /// the same entries in the same order (the server's parallel mob tick).
+    pub fn bounds(&self) -> (f64, usize) {
+        (self.reach, self.cell_of.len().max(self.entries))
+    }
+    /// [`Self::bounds`] of the grid of `boxes`, without building it.
+    pub fn bounds_of(boxes: impl Iterator<Item = Aabb>) -> (f64, usize) {
+        boxes.fold((0.0_f64, 0), |(reach, n), b| (reach.max(width(b)), n + 1))
+    }
+    /// Answer queries as a grid of `bounds` would: as wide a margin, and a scan past as many
+    /// entries.
+    pub fn answering_as(mut self, (reach, entries): (f64, usize)) -> Self {
+        self.reach = self.reach.max(reach);
+        self.entries = entries;
+        self
     }
     /// Entry `i`'s box is now `b` (the mob moved or resized).
     pub fn update(&mut self, i: usize, b: Aabb) {
@@ -78,7 +97,7 @@ impl SeenGrid {
         let hi = column(max_x, max_z);
         let span = |a: i32, b: i32| i64::from(b) - i64::from(a) + 1;
         let (nx, nz) = (span(lo.0, hi.0), span(lo.1, hi.1));
-        let max_cells = (self.cell_of.len() as i64).max(64);
+        let max_cells = (self.cell_of.len().max(self.entries) as i64).max(64);
         if nx < 1 || nz < 1 || nx.saturating_mul(nz) > max_cells {
             return false;
         }
@@ -349,5 +368,47 @@ mod tests {
             elapsed.as_secs_f64() * 1e3 / rounds as f64,
             rounds * n
         );
+    }
+
+    /// A grid of part of a list's boxes that answers as the whole list's grid decides when to scan
+    /// every entry and when to look in columns: the part meets its boxes as the whole would.
+    #[test]
+    fn a_part_answers_as_the_whole_list() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = |range: f64| {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (seed >> 11) as f64 / (1u64 << 53) as f64 * range
+        };
+        let boxes: Vec<Aabb> = (0..400)
+            .map(|_| boxed(next(400.0) - 200.0, next(8.0), next(400.0) - 200.0, 0.6))
+            .collect();
+        let whole = SeenGrid::new(boxes.iter().copied());
+        assert_eq!(SeenGrid::bounds_of(boxes.iter().copied()), whole.bounds());
+        let part: Vec<usize> = (0..boxes.len()).step_by(4).collect();
+        let grid = SeenGrid::new(part.iter().map(|&i| boxes[i])).answering_as(whole.bounds());
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        let mut scanned = 0;
+        for _ in 0..500 {
+            let side = next(100.0);
+            let area = boxed(next(400.0) - 200.0, next(8.0), next(400.0) - 200.0, side);
+            let indexed = whole.candidates(area, &mut a);
+            assert_eq!(grid.candidates(area, &mut b), indexed, "{side} blocks");
+            scanned += usize::from(!indexed);
+            if indexed {
+                let met = |out: &[u32]| -> Vec<usize> {
+                    out.iter()
+                        .map(|&j| part[j as usize])
+                        .filter(|&i| boxes[i].intersects(area))
+                        .collect()
+                };
+                let expected: Vec<usize> = a
+                    .iter()
+                    .map(|&j| j as usize)
+                    .filter(|i| i % 4 == 0 && boxes[*i].intersects(area))
+                    .collect();
+                assert_eq!(met(&b), expected);
+            }
+        }
+        assert!(scanned > 0 && scanned < 500, "{scanned} of 500 scanned");
     }
 }

@@ -1,6 +1,7 @@
 //! Blocks and items as the client knows them, below gameplay: block facts
 //! (`blocks`), item stacks and definitions (`items`), their data components
-//! (`item_data`), enchantments, cooldowns, bundles and item stacks in NBT.
+//! (`item_data`), mining speed (`mining`), enchantments, cooldowns, bundles and
+//! item stacks in NBT.
 //! horizon-client re-exports each module under its old path
 //! (`horizon_client::items`, ...).
 #![forbid(unsafe_code)]
@@ -16,6 +17,7 @@ pub mod flowers;
 pub mod item_data;
 pub mod item_nbt;
 pub mod items;
+pub mod mining;
 pub mod random_sequences;
 pub mod recipe_filters;
 pub mod use_animation;

@@ -73,6 +73,9 @@ impl Game<'_> {
             _ if let Some(i) = self.res.items().instrument(stack) => i.use_ticks(),
             _ if let Some(consumable) = self.consumable(stack) => consumable.ticks(),
             _ if let Some(ticks) = patched_ticks => ticks,
+            _ if let Some(seconds) = horizon_client::item_sync::consumable_seconds(stack) => {
+                (seconds * 20.0) as i32
+            }
             _ => match info {
                 Some(i) if let Some(c) = &i.consumable => c.ticks(),
                 _ if patched_blocks => 72_000,
