@@ -237,20 +237,32 @@ impl BlockState {
     }
 }
 
+/// `SerializableChunkData.postLoadChunk`: the entities a saved full chunk keeps in its own
+/// `entities` list, which `ServerLevel.addLegacyChunkEntities` adds as the chunk loads. Only a
+/// chunk last saved before 1.17 gave entities files of their own (`entities/`) has any; saving a
+/// full chunk writes no such list.
+pub fn legacy_entities(root: &Tag) -> Vec<Tag> {
+    match root.get("entities") {
+        Some(Tag::List(entities)) => entities.clone(),
+        _ => Vec::new(),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ChunkData {
     root: NamedTag,
     position: ChunkPos,
 }
 impl ChunkData {
-    pub fn new(root: NamedTag) -> io::Result<Self> {
-        let Some(Tag::Int(x)) = root.tag.get("xPos") else {
-            return Err(invalid("chunk is missing xPos"));
-        };
-        let Some(Tag::Int(z)) = root.tag.get("zPos") else {
-            return Err(invalid("chunk is missing zPos"));
-        };
-        let position = ChunkPos::new(*x, *z);
+    pub fn new(mut root: NamedTag) -> io::Result<Self> {
+        // `SerializableChunkData.parse` reads the position with
+        // `getIntOr("xPos", 0)` and `getIntOr("zPos", 0)`, so a chunk that does
+        // not carry them is the chunk at 0, 0; `Tag.asInt` also takes the
+        // narrower integer tags, not only `Int`.
+        let position = ChunkPos::new(
+            int_or_zero(&root.tag, "xPos"),
+            int_or_zero(&root.tag, "zPos"),
+        );
         let Some(Tag::Int(version)) = root.tag.get("DataVersion") else {
             return Err(invalid("chunk is missing DataVersion"));
         };
@@ -259,8 +271,18 @@ impl ChunkData {
                 "expected DataVersion {DATA_VERSION}, got {version}; data fixing is not implemented"
             )));
         }
-        let Some(Tag::List(sections)) = root.tag.get("sections") else {
-            return Err(invalid("chunk is missing sections"));
+        // `SerializableChunkData.parse` reads `getListOrEmpty("sections")`, so a
+        // chunk without one is a chunk with no sections. Keep an empty list in
+        // the tag: that is what the writer would put there, and every reader
+        // below finds it.
+        if !matches!(root.tag.get("sections"), Some(Tag::List(_))) {
+            let Tag::Compound(map) = &mut root.tag else {
+                unreachable!()
+            };
+            map.insert(key("sections"), Tag::List(Vec::new()));
+        }
+        let Tag::List(sections) = root.tag.get("sections").unwrap() else {
+            unreachable!()
         };
         let mut seen = std::collections::BTreeSet::new();
         for section in sections {
@@ -390,6 +412,17 @@ fn id_in(
     Some(id)
 }
 #[cold]
+/// `CompoundTag.getIntOr(name, 0)`: the tag as Java's `Tag.asInt` reads it,
+/// which is any integer tag, or 0.
+fn int_or_zero(tag: &Tag, name: &str) -> i32 {
+    match tag.get(name) {
+        Some(Tag::Byte(v)) => i32::from(*v),
+        Some(Tag::Short(v)) => i32::from(*v),
+        Some(Tag::Int(v)) => *v,
+        Some(Tag::Long(v)) => *v as i32,
+        _ => 0,
+    }
+}
 fn out_of_bounds() -> io::Error {
     invalid("section index out of bounds")
 }
