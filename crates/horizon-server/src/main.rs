@@ -129,7 +129,11 @@ fn main() -> ExitCode {
             Ok(())
         }
         Some("init") => init_answers(&args[1..]).and_then(|a| init::run(&dir, a)),
-        Some("run") => supervisor::run(&dir),
+        Some("run") => {
+            let done = supervisor::run(&dir);
+            signals::stopped();
+            done
+        }
         Some("start") => cli::start(&dir),
         Some("stop") => cli::stop(&dir, false),
         Some("restart") => cli::stop(&dir, true),

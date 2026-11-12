@@ -476,8 +476,8 @@ pub struct Streaming {
     decoration_order: DecorationOrder,
     order_area: Option<((i32, i32), i32)>,
     /// What the queued jobs' priorities were computed from (`requeue`): the
-    /// centre, the band, and the extra areas.
-    queue_basis: (((i32, i32), Option<Band>), Vec<((i32, i32), i32)>),
+    /// centre, the band, the extra areas, and the forced chunks.
+    queue_basis: forced_ring::Basis,
     finishing: FxHashSet<(i32, i32)>,
     decorates: bool,
     /// `ChunkGenerator::decorates_beside_final`.
@@ -1043,6 +1043,7 @@ mod bounded;
 mod queue_census;
 pub use queue_census::QueueCensus;
 mod forced_cover;
+mod forced_ring;
 mod relight_now;
 use bounded::nearest_first;
 use forced_cover::ForcedCover;
@@ -1326,11 +1327,9 @@ impl Streaming {
     /// render distance 32 nothing was decorated until every proto chunk had
     /// been generated.
     fn requeue(&mut self) {
-        let basis = (self.center, self.band);
-        if self.queue_basis.0 == basis && self.queue_basis.1 == self.extra {
+        if !forced_ring::basis_changed(self) {
             return;
         }
-        self.queue_basis = (basis, self.extra.clone());
         let mut queue = self.shared.queue.lock().unwrap();
         rank_again(&mut queue, |x, z| self.distance(x, z));
     }
@@ -2844,7 +2843,7 @@ impl Ranges<'_> {
             _ => own,
         }
     }
-    fn distance(&self, x: i32, z: i32) -> i64 {
+    fn player_distance(&self, x: i32, z: i32) -> i64 {
         let d = |c: (i32, i32)| {
             let (dx, dz) = (i64::from(x - c.0), i64::from(z - c.1));
             dx * dx + dz * dz

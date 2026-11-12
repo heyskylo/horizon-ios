@@ -97,6 +97,9 @@ impl Game<'_> {
             hive_emptying: std::mem::take(&mut c.hive_emptying_blast),
             rail_proof: std::mem::take(&mut c.rail_proof_blast),
             owner: c.explosion_owner.take(),
+            tnt_owner: c.blast_owner.take(),
+            tnt_guest: c.blast_guest.take(),
+            tnt_owner_player: std::mem::take(&mut c.blast_owner_player),
         }
     }
 
@@ -114,6 +117,9 @@ impl Game<'_> {
         c.hive_emptying_blast = s.hive_emptying;
         c.rail_proof_blast = s.rail_proof;
         c.explosion_owner = s.owner;
+        c.blast_owner = s.tnt_owner;
+        c.blast_guest = s.tnt_guest;
+        c.blast_owner_player = s.tnt_owner_player;
     }
 }
 
@@ -130,6 +136,9 @@ struct BlastState {
     hive_emptying: bool,
     rail_proof: bool,
     owner: Option<u32>,
+    tnt_owner: Option<(u32, horizon_client::text::Text)>,
+    tnt_guest: Option<u32>,
+    tnt_owner_player: bool,
 }
 
 #[cfg(test)]

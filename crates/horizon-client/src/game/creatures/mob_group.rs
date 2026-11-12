@@ -30,6 +30,11 @@ pub(super) type Gone = (u32, Vec3, f64, f64, Option<Mob>);
 /// A group's mobs and everything the loop keeps for them, in their list order.
 pub(super) struct Group<M: MobSlot> {
     pub mobs: Vec<M>,
+    /// Each mob's place in the whole list; empty when the group is the whole list.
+    pub global: Vec<usize>,
+    /// After each turn, where the turn's entries end: in `events`, `dead`, `corpses`, `gone` and
+    /// `guest_events`. A turn's entries stay where it left them.
+    pub ends: Vec<[usize; 5]>,
     /// Each mob's snapshot entry: as it was before the tick until its turn, as its turn left it
     /// after.
     pub snapshot: Vec<Seen>,
@@ -61,7 +66,26 @@ pub(super) struct Group<M: MobSlot> {
     pub guest_events: Vec<(u32, u32, MobEvent)>,
 }
 
+/// What decides each turn besides the group, read at the turn as the serial loop reads it.
+pub(super) struct Turns<'t, 'w> {
+    pub base: &'t MobWorld<'w>,
+    /// `base` for the despawn checks: no snapshot, no player.
+    pub despawn: MobWorld<'w>,
+    /// Whether a block column is in an entity-ticking chunk.
+    pub ticking: &'t dyn Fn(i32, i32) -> bool,
+    pub nearest: &'t super::prep::MobsNearest<'t>,
+    /// The one player's position, when the level has one: every mob's nearest.
+    pub single_player: Option<Option<Vec3>>,
+    /// Whether a mod canceled a mob's tick.
+    pub canceled: &'t dyn Fn(u32) -> bool,
+    /// `getCurrentDifficultyAt` a position.
+    pub difficulty: &'t (dyn Fn([f64; 3]) -> LocalDifficulty + Sync),
+    /// The last chunk's difficulty: mobs come in runs of one chunk.
+    pub cached_difficulty: Option<((i32, i32), LocalDifficulty)>,
+}
+
 /// What a group starts from besides its mobs and their snapshot.
+#[derive(Clone)]
 pub(super) struct Start {
     pub events: Vec<MobEvent>,
     pub random: LegacyRandom,
@@ -92,6 +116,8 @@ impl<M: MobSlot> Group<M> {
         Self {
             spare: start.guests.first().map(|g| g.1.clone()),
             mobs,
+            global: Vec::new(),
+            ends: Vec::with_capacity(n),
             snapshot,
             grid,
             index,
@@ -114,6 +140,101 @@ impl<M: MobSlot> Group<M> {
         }
     }
 
+    /// The group's spatial query extent and scan threshold match the whole list's `whole`.
+    pub(super) fn answering_as(self, whole: (f64, usize)) -> Self {
+        Self {
+            grid: self.grid.answering_as(whole),
+            ..self
+        }
+    }
+
+    /// Mob `i`'s place in the whole list.
+    pub(super) fn at(&self, i: usize) -> usize {
+        self.global.get(i).copied().unwrap_or(i)
+    }
+
+    /// Every mob's turn, in order. A group of the parallel tick draws the level random in list
+    /// order with the other groups (`OrderedDraws`), and shows each mob after its turn to the
+    /// mobs of the other groups that look it up by id (`foreign`).
+    pub(super) fn run(
+        &mut self,
+        turns: &mut Turns,
+        shared: &Shared,
+        foreign: Option<&super::mob_islands::Foreign>,
+    ) {
+        // A panic in a turn still lets the other groups finish (the threads' join passes it on).
+        let _done = self.random.lane_done();
+        for i in 0..self.mobs.len() {
+            let at = self.at(i);
+            self.random.begin_item(at);
+            #[cfg(test)]
+            super::mob_islands::inject_turn_failure(at);
+            if let Some(foreign) = foreign {
+                foreign.reader.set(at);
+            }
+            if let Some(foreign) = foreign {
+                foreign.in_seed_order(at, || self.turn(i, turns, shared));
+            } else {
+                self.turn(i, turns, shared);
+            }
+            let ends = [
+                self.events.len(),
+                self.dead.len(),
+                self.corpses.len(),
+                self.gone.len(),
+                self.guest_events.len(),
+            ];
+            self.ends.push(ends);
+            if let Some(foreign) = foreign {
+                foreign.publish(at, &self.snapshot[i]);
+            }
+            self.random.end_item();
+        }
+        self.random.finish_lane();
+    }
+
+    /// Mob `i`'s turn: whether its chunk is loaded and ticking is decided now, as the serial
+    /// loop decides it, then its tick or its despawn check.
+    fn turn(&mut self, i: usize, turns: &mut Turns, shared: &Shared) {
+        let position = self.mobs[i].mob().position;
+        let (bx, bz) = (position.x.floor() as i32, position.z.floor() as i32);
+        let seen_guest = self.bind_guest(i);
+        if !turns.base.world.loaded(bx, bz) {
+            self.unloaded(i);
+            return;
+        }
+        let nearest_player = turns
+            .single_player
+            .unwrap_or_else(|| turns.nearest.at(self.at(i), position));
+        // ServerLevel.tick: every loaded entity checks despawning, but
+        // only those in entity-ticking chunks (within the simulation
+        // distance) tick.
+        if !(turns.ticking)(bx, bz) {
+            turns.despawn.nearest_player = nearest_player;
+            self.rest(i, &turns.despawn);
+            return;
+        }
+        let controlling = self.controlling(i);
+        // A mod canceled its tick: it stays as it is.
+        if (turns.canceled)(self.mobs[i].mob().id) {
+            self.keep.push(true);
+            return;
+        }
+        // getCurrentDifficultyAt(blockPosition()): the mob's own chunk,
+        // not the local player's (a server thread has no player).
+        let chunk_key = (bx >> 4, bz >> 4);
+        let difficulty = match turns.cached_difficulty {
+            Some((key, difficulty)) if key == chunk_key => difficulty,
+            _ => {
+                let difficulty = (turns.difficulty)([position.x, position.y, position.z]);
+                turns.cached_difficulty = Some((chunk_key, difficulty));
+                difficulty
+            }
+        };
+        let player = (seen_guest, nearest_player, controlling);
+        self.tick(i, player, difficulty, turns.base, shared);
+    }
+
     /// The guest mob `i` sees now, kept in the bindings: none while no guest is on.
     pub(super) fn bind_guest(&mut self, i: usize) -> Option<u32> {
         if self.guests.is_empty() {
@@ -130,14 +251,14 @@ impl<M: MobSlot> Group<M> {
     }
 
     /// Mob `i`'s turn when its chunk isn't loaded: it is kept as it is, unless it would despawn.
-    pub(super) fn unloaded(&mut self, i: usize) {
+    fn unloaded(&mut self, i: usize) {
         let m = self.mobs[i].mob();
         self.keep.push(!m.hostile() || m.persistent);
     }
 
     /// Mob `i`'s turn outside the entity-ticking area: only its despawn check, which reads the
     /// nearest player and the difficulty, not the player the mob sees.
-    pub(super) fn rest(&mut self, i: usize, despawn_w: &MobWorld) {
+    fn rest(&mut self, i: usize, despawn_w: &MobWorld) {
         let m = self.mobs[i].mob_mut();
         let kept = horizon_client::mobs::ai::despawn_check(m, despawn_w);
         if !kept {
@@ -149,7 +270,7 @@ impl<M: MobSlot> Group<M> {
 
     /// Who controls mob `i`'s moves this tick: the velocity of the player riding it, when it is
     /// a controlled mount.
-    pub(super) fn controlling(&self, i: usize) -> Option<Vec3> {
+    fn controlling(&self, i: usize) -> Option<Vec3> {
         let m = self.mobs[i].mob();
         horizon_client::mobs::equine::controlled(m)
             .then(|| {
@@ -170,7 +291,7 @@ impl<M: MobSlot> Group<M> {
     /// Mob `i`'s own tick, then what the loop does with what it did. `players`: the guest it
     /// sees (none: the host's player), its nearest player, and the velocity of the player
     /// controlling it as a mount ([`Self::controlling`]).
-    pub(super) fn tick(
+    fn tick(
         &mut self,
         i: usize,
         (seen_guest, nearest_player, controlling_player_movement): (

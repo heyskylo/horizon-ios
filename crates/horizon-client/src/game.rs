@@ -5099,11 +5099,11 @@ impl Game<'_> {
         if removed && !creative {
             let held = self.held().cloned();
             self.mine_block_with_held(&facts.name, facts.hardness);
-            let harvest = !facts.requires_tool
-                || self
-                    .res
-                    .items()
-                    .correct_for_drops(held.as_ref(), &facts.name);
+            let harvest = self.res.items().has_correct_tool_for_drops(
+                held.as_ref(),
+                facts.requires_tool,
+                &facts.name,
+            );
             if harvest {
                 // Block.playerDestroy: the mined statistic, the exhaustion and the drops.
                 self.award_stat("mined", &facts.name, 1);

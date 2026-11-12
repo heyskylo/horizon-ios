@@ -1376,6 +1376,15 @@ impl Game<'_> {
         if !is_tnt && name.starts_with("minecraft:infested_") {
             self.spawn_infestation(pos);
         }
+        // Its dropExperience is whether the blast's indirect source is a
+        // player (a primed TNT's owner, not a mob's): ores, sculk and spawners
+        // sample their experience then, and pop it while blocks drop.
+        if !is_tnt && self.combat.blast_owner_player {
+            let xp = self.block_experience(&name);
+            if xp > 0 && self.ui.rules.bool("block_drops") {
+                self.spawn_orbs(pos.map(|v| f64::from(v) + 0.5), xp);
+            }
+        }
         if !is_tnt {
             let dynamic = self.pending.dynamic(pos);
             // LootContextParams.EXPLOSION_RADIUS under DESTROY_WITH_DECAY: the
@@ -1423,13 +1432,16 @@ impl Game<'_> {
             let rot = r.next_double() * f64::from(std::f32::consts::TAU);
             let fuse = r.next_int_bound(20).unwrap_or(0) + 10;
             // TntBlock.wasExploded hands the new TNT the blast's indirect
-            // source, so a chain reaction keeps the player who started it.
+            // source, so a chain reaction keeps a primed TNT's owner, player or mob.
             let (owner, guest) = match &self.combat.explicit_explosion_cause {
                 // A crystal/cart's explicit DamageSource does not change
                 // Explosion.getIndirectSourceEntity, which is null for them.
                 Some(_) => (None, None),
                 None => match &self.combat.blast_owner {
-                    Some(_) => (Some(Who::Player), self.combat.blast_guest),
+                    Some(_) if self.combat.blast_owner_player => {
+                        (Some(Who::Player), self.combat.blast_guest)
+                    }
+                    Some((id, _)) => (Some(Who::Mob(*id)), None),
                     None => (None, None),
                 },
             };

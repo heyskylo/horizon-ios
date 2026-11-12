@@ -903,6 +903,10 @@ thread_local! {
     /// a rule change).
     static TNT_EXPLODES: Cell<bool> = const { Cell::new(true) };
 }
+/// The `tnt_explodes` rule this thread's sulfur cubes read.
+pub fn tnt_explodes() -> bool {
+    TNT_EXPLODES.get()
+}
 /// Share the `tnt_explodes` rule with this thread's sulfur cubes.
 pub fn set_tnt_explodes(on: bool) {
     TNT_EXPLODES.set(on);
