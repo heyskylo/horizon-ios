@@ -1127,6 +1127,36 @@ def minecart_numeric_fields():
                        '/tick unfreeze', '/forceload remove 0 0 15 15')
 
 
+def tnt_minecart_explosion_power():
+    """MinecartTNT reads explosion_power / explosion_speed_factor with getFloatOr (4 and 1), clamped
+    to 0..128, and writes each only when it is not the default. explode() blows with
+    explosionPowerBase + explosionSpeedFactor * nextDouble() * 1.5 * min(speed, 5): a cart standing
+    still blows with its base power exactly."""
+    ops = setup('/forceload add 0 0 31 31', '/tick freeze')
+    ops += [{'op': 'settle'}]
+    cases = ('{explosion_power:2.5f}', '{explosion_power:500f}', '{explosion_power:-1f}',
+             '{explosion_power:7}', '{explosion_speed_factor:3.5f}', '{explosion_power:4f}', '{}')
+    for i, nbt in enumerate(cases):
+        tag = f'cart_pow_{i}'
+        extra = ',' + nbt[1:-1] if nbt != '{}' else ''
+        ops += setup(f'/summon tnt_minecart {2 + i * 2}.5 200 2.5 {{Tags:["{tag}"],NoGravity:1b{extra}}}')
+        for field in ('explosion_power', 'explosion_speed_factor'):
+            ops += [cmd(f'/data get entity @e[tag={tag},limit=1] {field} 100')]
+    ops += setup(*[f'/kill @e[tag=cart_pow_{i}]' for i in range(len(cases))], '/tick unfreeze')
+    # The blast itself: a NoAI husk (no sunburn) two blocks from a cart that blows at its base power.
+    for i, power in enumerate(('0f', '1.5f')):
+        x = 8 + i * 12
+        ops += setup(f'/summon husk {x + 2}.5 200 16.5 {{Tags:["pow_target"],NoAI:1b,NoGravity:1b,'
+                     'PersistenceRequired:1b}',
+                     f'/summon tnt_minecart {x}.5 200 16.5 {{Tags:["pow_blast"],NoGravity:1b,fuse:1,'
+                     f'explosion_power:{power}}}')
+        ops += [{'op': 'tick', 'n': 5}]
+        ops += [cmd('/execute if entity @e[tag=pow_blast]'),
+                cmd('/data get entity @e[tag=pow_target,limit=1] Health 100')]
+        ops += setup('/kill @e[tag=pow_target]', '/kill @e[tag=pow_blast]')
+    return ops + setup('/forceload remove 0 0 31 31')
+
+
 def rocket_data_merge():
     """#13083: /data merge and /data modify on a firework rocket run Entity.load over it
     (FireworkRocketEntity.readAdditionalSaveData: Life, LifeTime, FireworksItem, ShotAtAngle;
@@ -8138,6 +8168,7 @@ def groups():
         ('dragon command damage', dragon_command_damage()),
         ('vehicle item stack config', vehicle_item_stack_config()),
         ('minecart numeric fields', minecart_numeric_fields()),
+        ('tnt minecart explosion power', tnt_minecart_explosion_power()),
         ('enderman command damage', enderman_command_damage()),
         ('shulker command damage', shulker_command_damage()),
         ('SNBT trailing commas', snbt_trailing_commas()),
