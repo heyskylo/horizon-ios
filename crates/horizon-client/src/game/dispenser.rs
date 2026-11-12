@@ -1240,6 +1240,7 @@ impl Game<'_> {
                     _ => ProjectileKind::Snowball,
                 };
                 let mut shot = Projectile::new(kind, at, None);
+                shot.set_egg_item(&one);
                 // ArrowItem/SpectralArrowItem.asProjectile: dispensed arrows
                 // may be picked up.
                 if let Some(a) = shot.arrow.as_mut() {

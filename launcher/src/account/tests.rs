@@ -2112,6 +2112,73 @@ fn a_connection_failure_is_retryable_and_keeps_the_saved_sign_in() {
     assert!(!kept(&store).sign_in_required);
 }
 
+struct Fixed(Vec<SocketAddr>);
+
+impl ureq::Resolver for Fixed {
+    fn resolve(&self, _: &str) -> std::io::Result<Vec<SocketAddr>> {
+        Ok(self.0.clone())
+    }
+}
+
+#[test]
+fn addresses_alternate_families_starting_with_the_first() {
+    let v6 = |n: u16| SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], n));
+    let v4 = |n: u16| SocketAddr::from(([127, 0, 0, 1], n));
+    assert_eq!(
+        interleave(vec![v6(1), v6(2), v6(3), v4(4), v4(5)]),
+        vec![v6(1), v4(4), v6(2), v4(5), v6(3)]
+    );
+    assert_eq!(interleave(vec![v4(1), v6(2)]), vec![v4(1), v6(2)]);
+    assert_eq!(
+        interleave(vec![v4(1), v4(2), v4(3), v6(4), v6(5)]),
+        vec![v4(1), v6(4), v4(2), v6(5), v4(3)]
+    );
+    assert_eq!(interleave(vec![v4(1), v4(2)]), vec![v4(1), v4(2)]);
+    assert_eq!(interleave(vec![v6(1), v6(2)]), vec![v6(1), v6(2)]);
+    assert!(interleave(Vec::new()).is_empty());
+}
+
+#[test]
+fn a_dead_ipv6_address_falls_back_to_ipv4() {
+    // Loopback only: a closed IPv6 port stands for the broken route, a local listener for the host's
+    // IPv4 address. Both IPv6 answers come first, as a resolver lists them.
+    let dead = |p: u16| SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], p));
+    let closed = TcpListener::bind("[::1]:0")
+        .map(|l| l.local_addr().unwrap().port())
+        .unwrap_or(9);
+    let live = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = live.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut conn, _) = live.accept().unwrap();
+        let mut line = String::new();
+        BufReader::new(conn.try_clone().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        conn.write_all(
+            b"HTTP/1.1 200 OK
+Content-Length: 2
+Connection: close
+
+ok",
+        )
+        .unwrap();
+    });
+    let addrs = vec![
+        dead(closed),
+        dead(closed),
+        SocketAddr::from(([127, 0, 0, 1], port)),
+    ];
+    let agent = builder().resolver(Interleaved(Fixed(addrs))).build();
+    let body = agent
+        .get("http://horizon.test/")
+        .call()
+        .unwrap()
+        .into_string()
+        .unwrap();
+    assert_eq!(body, "ok");
+    server.join().unwrap();
+}
+
 #[test]
 fn a_rotated_microsoft_credential_survives_a_later_service_failure() {
     let store = MemoryStore::default();

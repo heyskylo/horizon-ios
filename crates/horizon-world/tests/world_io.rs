@@ -260,6 +260,28 @@ fn a_chunk_without_its_position_is_at_the_origin() {
     );
 }
 
+/// `SerializableChunkData.parse` reads `getListOrEmpty("sections")`, so a chunk
+/// without a section list is a chunk with no sections, not an unreadable one.
+#[test]
+fn a_chunk_without_sections_loads_as_an_empty_chunk() {
+    let chunk = ChunkData::new(NamedTag {
+        name: JavaString::default(),
+        tag: Tag::compound([
+            ("DataVersion", Tag::Int(DATA_VERSION)),
+            ("xPos", Tag::Int(2)),
+            ("zPos", Tag::Int(5)),
+        ]),
+    })
+    .unwrap();
+    assert_eq!(chunk.position(), ChunkPos::new(2, 5));
+    assert_eq!(chunk.block(BlockPos::new(33, 0, 80)).unwrap(), None);
+    let nbt = chunk.into_nbt();
+    let Some(Tag::List(sections)) = nbt.tag.get("sections") else {
+        panic!("sections is not a list")
+    };
+    assert!(sections.is_empty());
+}
+
 /// `getChunkDataInputStream`: the external branch never reads the stub's length
 /// — `streamLength != 0` only logs "Chunk has both internal and external
 /// streams" — and `createExternalChunkInputStream` answers `null` when the

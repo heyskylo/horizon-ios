@@ -296,6 +296,32 @@ impl Game<'_> {
             self.open_text_edit(key, front);
         }
     }
+    /// Whether `SignBlock.useWithoutItem` on the sign at `pos` consumes the
+    /// click. Vanilla answers: a waxed sign (the failed-interaction sound), a
+    /// side whose lines carry a click action (`executeClickCommandsIfPresent`,
+    /// which runs it), and a player who may build (the text editor). Every
+    /// other sign answers PASS, so `ServerPlayerGameMode.useItemOn` goes on to
+    /// `ItemStack.useOn` and an adventure-mode `can_place_on` stack places
+    /// against it. Vanilla also passes while another player is editing the
+    /// sign and when its text has styled lines; neither is modelled here.
+    pub(super) fn sign_consumes_click(&self, pos: [i32; 3]) -> bool {
+        let key = (pos[0], pos[1], pos[2]);
+        let Some(BlockEntity::Sign(sign)) = self.world.block_entities.get(&key) else {
+            return false;
+        };
+        if sign.waxed || self.may_build() {
+            return true;
+        }
+        let side = if self.facing_sign_front(key) {
+            &sign.front
+        } else {
+            &sign.back
+        };
+        side.click
+            .iter()
+            .flatten()
+            .any(|event| click_action(event).is_some())
+    }
     /// `SignBlock.useItemOn` with a `SignApplicator` in hand (dyes, ink sacs,
     /// honeycomb): the item changes the side the player faces and is used up.
     /// Whether it did; a sign it does not apply to goes on to the empty hand.

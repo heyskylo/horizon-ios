@@ -254,7 +254,7 @@ pub struct ChunkData {
     position: ChunkPos,
 }
 impl ChunkData {
-    pub fn new(root: NamedTag) -> io::Result<Self> {
+    pub fn new(mut root: NamedTag) -> io::Result<Self> {
         // `SerializableChunkData.parse` reads the position with
         // `getIntOr("xPos", 0)` and `getIntOr("zPos", 0)`, so a chunk that does
         // not carry them is the chunk at 0, 0; `Tag.asInt` also takes the
@@ -271,8 +271,18 @@ impl ChunkData {
                 "expected DataVersion {DATA_VERSION}, got {version}; data fixing is not implemented"
             )));
         }
-        let Some(Tag::List(sections)) = root.tag.get("sections") else {
-            return Err(invalid("chunk is missing sections"));
+        // `SerializableChunkData.parse` reads `getListOrEmpty("sections")`, so a
+        // chunk without one is a chunk with no sections. Keep an empty list in
+        // the tag: that is what the writer would put there, and every reader
+        // below finds it.
+        if !matches!(root.tag.get("sections"), Some(Tag::List(_))) {
+            let Tag::Compound(map) = &mut root.tag else {
+                unreachable!()
+            };
+            map.insert(key("sections"), Tag::List(Vec::new()));
+        }
+        let Tag::List(sections) = root.tag.get("sections").unwrap() else {
+            unreachable!()
         };
         let mut seen = std::collections::BTreeSet::new();
         for section in sections {

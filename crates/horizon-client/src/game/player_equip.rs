@@ -65,12 +65,13 @@ impl Game<'_> {
             return;
         };
         let at = [at.x, at.y, at.z];
-        let equippable = new
-            .and_then(|s| self.items().get(&s.item))
-            .and_then(|info| {
-                let own = info.equip_slot.as_deref()?;
-                Some((own == slot, info.equip_sound.clone()))
-            });
+        let equippable = new.and_then(|stack| {
+            let equippable = horizon_client::item_sync::equippable(stack, self.items())?;
+            Some((
+                equippable.slot == slot,
+                horizon_client::item_sync::equip_sound(stack, self.items()),
+            ))
+        });
         if let Some((true, sound)) = &equippable {
             let sound = sound
                 .as_deref()

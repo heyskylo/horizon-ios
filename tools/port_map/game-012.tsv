@@ -82,7 +82,7 @@ Goat.getHurtSound	port	crates/horizon-client/src/mobs/ai.rs::voice_sounds	scream
 Goat.getDeathSound	port	crates/horizon-client/src/mobs/ai.rs::voice_sounds	screaming death event selected by IsScreamingGoat
 Goat.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::goat_spawn	called for a live spawn by spawning.rs::finalize; Ctx::finalize has its own arm with the same draws for a structure mob: the ram and long jump cooldowns, screaming when nextDouble is below 0.02, ageBoundaryReached, and for an adult a lost horn one time in ten (nextFloat below 0.1, the side by nextBoolean)
 Goat.getDefaultDimensions	port	crates/horizon-client/src/mobs/living.rs::Mob::dims	baby box (0.45 x 0.65, eye 0.59375) from the species table; no long jump pose scale since there is no long jump
-Goat.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	IsScreamingGoat, HasLeftHorn, HasRightHorn
+Goat.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	IsScreamingGoat, HasLeftHorn, HasRightHorn; the GoatAi LONG_JUMP_COOLDOWN_TICKS brain memory is saved too
 Goat.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	IsScreamingGoat and both horn flags (default true)
 Goat.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	gap: minor: the two horn flags are synced; the screaming flag is not
 Goat.checkGoatSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	goats_spawnable_on below and bright enough

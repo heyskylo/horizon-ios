@@ -2,6 +2,7 @@ import json,hashlib,sys,uuid
 from pathlib import Path
 sys.path.insert(0,str(Path.cwd()/'tools'))
 import test_command_exec_parity as driver
+import harness_args
 CASES=[('absent',None,1),('zero',0,1),('past-negative',-5,1),('past-positive',1,1),('future',999999,1),('ai-control',999999,0)]
 def program():
  ops=[]
@@ -45,10 +46,11 @@ def program():
  c('/execute store result score end h262 run time query gametime','clock-end',trace=True);c('/scoreboard players operation end h262 -= start h262','clock-delta-op',2);c('/scoreboard players get end h262','clock-delta',2)
  return ops
 if __name__=='__main__':
+ build=harness_args.require_work_dir().resolve()
  reference=None
  if '--reference' in sys.argv:
   i=sys.argv.index('--reference');reference=Path(sys.argv[i+1]).read_bytes();del sys.argv[i:i+2]
- build=Path(sys.argv[sys.argv.index('--work-dir')+1]).resolve();assert not build.exists();build.mkdir(parents=True);ops=program();rows=[o for o in ops if o['op']=='cmd' and o.get('record',True)]
+ assert not build.exists();build.mkdir(parents=True);ops=program();rows=[o for o in ops if o['op']=='cmd' and o.get('record',True)]
  (build/'declaration.json').write_text(json.dumps({'sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'records':len(rows),'labels':[o['label'] for o in rows],'scope':'Enderman absolute anger_end_time, actual loaded actors and relative clocks0/1/2; no aggression or other neutral species repair'},indent=2)+'\n')
  driver.corpus_module.groups=lambda:[('Enderman absolute anger end',ops)];sys.argv.append('--allow-gaps');driver.main();fresh=(build/'vanilla.jsonl').read_bytes()
  if reference is not None:assert fresh==reference,'reference changed'
