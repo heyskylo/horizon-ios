@@ -9,9 +9,12 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 
 def missing_dependencies(game, android):
-    required = {name for name, spec in game["dependencies"].items()
-                if not isinstance(spec, dict) or not spec.get("optional", False)}
-    return sorted(required - android["dependencies"].keys())
+    missing = []
+    for section in ("dependencies", "build-dependencies"):
+        required = {name for name, spec in game.get(section, {}).items()
+                    if not isinstance(spec, dict) or not spec.get("optional", False)}
+        missing.extend(f"{section}: {name}" for name in sorted(required - android.get(section, {}).keys()))
+    return missing
 
 def main():
     def manifest(name):

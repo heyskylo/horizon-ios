@@ -107,6 +107,8 @@ rustix = { version = "1", default-features = false, features = ["std", "time", "
 
 [build-dependencies]
 horizon-mod-api-gen = { path = "../horizon-mod-api-gen" }
+# Shared build.rs is compiled on the host, including its target-gated Windows helper.
+winresource = "0.1"
 
 [features]
 default = ["audio"]
