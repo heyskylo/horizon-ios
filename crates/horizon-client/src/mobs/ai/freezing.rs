@@ -21,16 +21,11 @@ pub(crate) fn in_powder_snow(m: &Mob, w: &MobWorld) -> bool {
 /// worn piece in `#freeze_immune_wearables`.
 pub(crate) fn can_freeze(m: &Mob, w: &MobWorld) -> bool {
     // Skeleton.canFreeze: a skeleton never freezes, so powder snow builds no
-    // frozen ticks on it and deals it no freeze damage; the stray, the bogged,
-    // the parched and the wither skeleton inherit the same answer.
-    if matches!(
-        m.species(),
-        super::Species::Skeleton
-            | super::Species::Stray
-            | super::Species::Bogged
-            | super::Species::Parched
-            | super::Species::WitherSkeleton
-    ) {
+    // frozen ticks on it and deals it no freeze damage. Only `Skeleton`
+    // overrides it: the bogged, parched and wither skeleton extend
+    // `AbstractSkeleton` and freeze; the stray is immune through the
+    // `#freeze_immune_entity_types` tag below.
+    if m.species() == super::Species::Skeleton {
         return false;
     }
     // SulfurCube.canFreeze: a cube carrying a block in its body does not freeze

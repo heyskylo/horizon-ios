@@ -5788,8 +5788,8 @@ mod freeze_tests {
     /// `LivingEntity.aiStep`'s freezing, through `freeze_tick`: powder snow
     /// builds a mob's frozen ticks towards the 140 that freeze it, and at 140 a
     /// tick that falls on the 40-tick damage interval hurts it by 1. A skeleton
-    /// answers `canFreeze` false, so it takes neither — the stray, bogged,
-    /// parched and wither skeleton with it — while a zombie beside it freezes.
+    /// answers `canFreeze` false, so it takes neither, and so does the stray (by
+    /// tag), while the bogged, parched, wither skeleton and a zombie freeze.
     #[test]
     fn a_skeleton_never_freezes() {
         crate::mobs::world::with_built_test_world(
@@ -5829,15 +5829,19 @@ mod freeze_tests {
                 // Powder snow builds no frozen ticks on a skeleton, and one
                 // already frozen melts two ticks a tick instead of taking the
                 // damage a fully frozen mob takes at 140.
-                for skeleton in [
-                    "minecraft:skeleton",
-                    "minecraft:stray",
+                for skeleton in ["minecraft:skeleton", "minecraft:stray"] {
+                    assert_eq!(frozen(skeleton, 0), (0, 0.0), "{skeleton}");
+                    assert_eq!(frozen(skeleton, 140), (138, 0.0), "{skeleton} frozen");
+                }
+                // The bogged, parched and wither skeleton extend AbstractSkeleton,
+                // not Skeleton, and freeze like a zombie.
+                for sibling in [
                     "minecraft:bogged",
                     "minecraft:parched",
                     "minecraft:wither_skeleton",
                 ] {
-                    assert_eq!(frozen(skeleton, 0), (0, 0.0), "{skeleton}");
-                    assert_eq!(frozen(skeleton, 140), (138, 0.0), "{skeleton} frozen");
+                    assert_eq!(frozen(sibling, 0), (1, 0.0), "{sibling}");
+                    assert_eq!(frozen(sibling, 139), (140, 1.0), "{sibling} frozen");
                 }
                 // A zombie in the same block freezes, and at 140 takes the 1.
                 assert_eq!(frozen("minecraft:zombie", 139), (140, 1.0));
