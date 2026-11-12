@@ -402,11 +402,11 @@ where
     let highest = chunk
         .highest_filled_section_index()
         .map_or(min - 1, |i| min + (i as i32) * 16 + 15);
-    // The ore veins' densities are sampled up front, all over one volume so
-    // that their shared nodes' caches hit. Above the highest y a vein can
-    // place a block at, no density is asked for. Cutting the volume's top
-    // keeps every value below it (interpolation steps up from each cell's
-    // bottom).
+    // The ore veins' densities are sampled over this volume, each over its
+    // own vein's rows of it when one of them is first read
+    // (`bind_density_rows`). Above the highest y a vein can place a block at,
+    // no density is asked for. Cutting the volume's top keeps every value
+    // below it (interpolation steps up from each cell's bottom).
     let top = highest.min(rule.ore_vein_top());
     let sizes = inputs.noise_volume.sizes();
     let origin = inputs.noise_volume.minimum();
