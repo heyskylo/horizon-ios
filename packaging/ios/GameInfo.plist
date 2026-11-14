@@ -38,6 +38,10 @@
 	<string>0.1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<!-- Game Mode (iOS 18+): asks the system to favour the game's frame timing and to route pad and mouse input
+	     as a game would receive it. Read by GameController and UIKit, not by the Rust game. -->
+	<key>GCSupportsGameMode</key>
+	<true/>
 	<!-- The Azure app the launcher signs Microsoft accounts in with (packaging/ios/Launcher/MicrosoftAccount.swift):
 	     Horizon's own approved one, never another launcher's. The public default is shared with the official Horizon launcher.
 	     Build tooling may override it with HORIZON_MSA_CLIENT_ID. -->
@@ -51,6 +55,10 @@
 	<string>16.0</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>Horizon is MIT licensed. Not an official Minecraft product; not approved by or associated with Mojang or Microsoft.</string>
+	<!-- Pointers (a mouse or trackpad) arrive as indirect pointer events, which winit's UIKit patch turns into
+	     mouse input (third_party/winit/HORIZON.md), instead of being emulated as touches. -->
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 	<!-- With UIFileSharingEnabled, this is what lists Documents under "On My iPhone" in the Files app:
